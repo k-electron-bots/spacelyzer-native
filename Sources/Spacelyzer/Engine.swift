@@ -124,15 +124,19 @@ final class Tree: @unchecked Sendable {
         return n.firstChild..<(n.firstChild + UInt32(n.childCount))
     }
 
-    func categoryTotals() -> [(category: FileCategory, bytes: UInt64, items: UInt64)] {
+    func categoryTotals(filter: FilterResult? = nil) -> [(category: FileCategory, bytes: UInt64, items: UInt64)] {
         var out = [UInt64](repeating: 0, count: 22)
-        out.withUnsafeMutableBufferPointer { spz_tree_category_totals(ptr, $0.baseAddress) }
+        out.withUnsafeMutableBufferPointer { b in
+            if let f = filter { spz_filter_category_totals(ptr, f.ptr, b.baseAddress) } else { spz_tree_category_totals(ptr, b.baseAddress) }
+        }
         return FileCategory.allCases.map { (category: $0, bytes: out[$0.rawValue * 2], items: out[$0.rawValue * 2 + 1]) }
     }
 
-    func largestFiles(_ n: Int) -> [UInt32] {
+    func largestFiles(_ n: Int, filter: FilterResult? = nil) -> [UInt32] {
         var ids = [UInt32](repeating: 0, count: n)
-        let c = ids.withUnsafeMutableBufferPointer { spz_tree_largest_files(ptr, UInt32(n), $0.baseAddress) }
+        let c = ids.withUnsafeMutableBufferPointer { b in
+            filter.map { spz_filter_largest_files(ptr, $0.ptr, UInt32(n), b.baseAddress) } ?? spz_tree_largest_files(ptr, UInt32(n), b.baseAddress)
+        }
         return Array(ids.prefix(Int(c)))
     }
 
