@@ -1,0 +1,31 @@
+name: gatekeeper-check
+on:
+  workflow_dispatch:
+  push:
+    paths: ['.github/workflows/gatekeeper-check.yml']
+jobs:
+  check:
+    runs-on: macos-latest
+    steps:
+      - name: Download latest release DMG
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo "$GITHUB_REPOSITORY" --pattern '*.dmg' --dir . $(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName -q '.[0].tagName')
+          ls -l *.dmg; sw_vers
+      - name: Inspect DMG and app
+        run: |
+          D=$(ls *.dmg | head -1)
+          echo "== dmg codesign"; codesign -dv --verbose=4 "$D" 2>&1 || true
+          echo "== spctl dmg (open)"; spctl -a -vvv -t open --context context:primary-signature "$D" 2>&1 || true
+          hdiutil attach "$D" -nobrowse -mountpoint /tmp/m >/dev/null
+          A=/tmp/m/Spacelyzer.app
+          echo "== app codesign"; codesign -dvvv "$A" 2>&1 | grep -E "Identifier|Authority|TeamIdentifier|Signature|flags|Format|Timestamp|Runtime" || true
+          echo "== entitlements"; codesign -d --entitlements - "$A" 2>&1 | head -30 || true
+          echo "== spctl app"; spctl -a -vvv -t exec "$A" 2>&1 || true
+          echo "== stapler"; xcrun stapler validate "$A" 2>&1 || true
+          echo "== quarantine on copy"
+          cp -R "$A" /tmp/q.app; xattr -w com.apple.quarantine "0083;$(printf '%x' $(date +%s));Safari;" /tmp/q.app
+          spctl -a -vvv -t exec /tmp/q.app 2>&1 || true
+          echo "== keychain trust of signing cert"
+          security find-identity -v -p codesigning 2>&1 | head -5
