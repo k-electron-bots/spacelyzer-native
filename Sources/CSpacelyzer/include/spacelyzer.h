@@ -38,6 +38,20 @@ uint8_t spz_tree_skipped_reason(const SpzTree *t, uint32_t i);
 
 uint32_t spz_outline_rows(const SpzTree *t, uint32_t root, const uint32_t *expanded, uint32_t n_expanded, SpzRow *out, uint32_t cap);
 
+typedef struct SpzFilterResult SpzFilterResult;
+typedef struct {
+  uint32_t category_mask; uint8_t has_min; uint8_t has_max; uint8_t has_from; uint8_t has_to;
+  uint64_t min_size; uint64_t max_size; int64_t modified_from; int64_t modified_to;
+} SpzFilter;
+SpzFilterResult *spz_filter_apply(const SpzTree *t, const char *text, const char *ext, SpzFilter f);
+void spz_filter_free(SpzFilterResult *h);
+uint64_t spz_filter_total_bytes(const SpzFilterResult *h);
+uint64_t spz_filter_total_count(const SpzFilterResult *h);
+uint64_t spz_filter_size(const SpzFilterResult *h, uint32_t id);
+uint32_t spz_filter_count(const SpzFilterResult *h, uint32_t id);
+uint32_t spz_outline_rows_filtered(const SpzTree *t, uint32_t root, const uint32_t *expanded, uint32_t n_expanded, const SpzFilterResult *h, SpzRow *out, uint32_t cap);
+SpzLayout *spz_layout_new_filtered(const SpzTree *t, uint32_t root, float width, float height, const SpzFilterResult *h);
+
 SpzLayout *spz_layout_new(const SpzTree *t, uint32_t root, float width, float height);
 void spz_layout_free(SpzLayout *l);
 uint32_t spz_layout_count(const SpzLayout *l);

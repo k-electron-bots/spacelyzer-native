@@ -244,3 +244,24 @@ fn outline_rows_expand_collapse_and_never_cap() {
     let one = spacelyzer_engine::outline::visible_rows(&tree, 0, &HashSet::from([d]), None);
     assert_eq!(one.len() as u32, tree.child_count(0) + tree.child_count(d));
 }
+
+#[test]
+fn ffi_filter_roundtrip_matches_engine_filter() {
+    use std::ffi::CString;
+    let t = fixture();
+    let tree = Box::new(scan(t.path(), &ScanOptions::default(), &ScanProgress::default()).unwrap());
+    let tp: *const spacelyzer_engine::Tree = &*tree;
+    let text = CString::new("f1").unwrap();
+    let f = spacelyzer_engine::ffi::SpzFilter { category_mask: 0, has_min: 0, has_max: 0, has_from: 0, has_to: 0, min_size: 0, max_size: 0, modified_from: 0, modified_to: 0 };
+    unsafe {
+        let h = spacelyzer_engine::ffi::spz_filter_apply(tp, text.as_ptr(), std::ptr::null(), f);
+        let direct = apply_filter(&tree, &Filter { text: "f1".into(), ..Default::default() });
+        assert_eq!(spacelyzer_engine::ffi::spz_filter_total_bytes(h), direct.total_bytes);
+        assert_eq!(spacelyzer_engine::ffi::spz_filter_total_count(h), direct.total_count);
+        assert_eq!(spacelyzer_engine::ffi::spz_filter_size(h, 0), direct.sizes[0]);
+        let n = spacelyzer_engine::ffi::spz_outline_rows_filtered(tp, 0, std::ptr::null(), 0, h, std::ptr::null_mut(), 0);
+        let hidden: usize = tree.children(0).filter(|&c| direct.sizes[c as usize] == 0).count();
+        assert_eq!(n as usize, tree.child_count(0) as usize - hidden);
+        spacelyzer_engine::ffi::spz_filter_free(h);
+    }
+}

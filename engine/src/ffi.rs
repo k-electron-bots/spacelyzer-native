@@ -262,3 +262,78 @@ pub unsafe extern "C" fn spz_outline_rows(
     }
     rows.len() as u32
 }
+
+#[repr(C)]
+pub struct SpzFilter {
+    pub category_mask: u32,
+    pub has_min: u8,
+    pub has_max: u8,
+    pub has_from: u8,
+    pub has_to: u8,
+    pub min_size: u64,
+    pub max_size: u64,
+    pub modified_from: i64,
+    pub modified_to: i64,
+}
+
+pub struct FilterHandle(crate::filter::FilterResult);
+
+/// Run a filter over the whole tree in Rust. `text` and `ext` may be null.
+#[no_mangle]
+pub unsafe extern "C" fn spz_filter_apply(t: *const Tree, text: *const c_char, ext: *const c_char, f: SpzFilter) -> *mut FilterHandle {
+    let flt = crate::filter::Filter {
+        text: cstr(text),
+        category_mask: f.category_mask,
+        extension: cstr(ext),
+        min_size: (f.has_min != 0).then_some(f.min_size),
+        max_size: (f.has_max != 0).then_some(f.max_size),
+        modified_from: (f.has_from != 0).then_some(f.modified_from),
+        modified_to: (f.has_to != 0).then_some(f.modified_to),
+    };
+    Box::into_raw(Box::new(FilterHandle(crate::filter::apply(&*t, &flt))))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn spz_filter_free(h: *mut FilterHandle) {
+    if !h.is_null() {
+        drop(Box::from_raw(h));
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn spz_filter_total_bytes(h: *const FilterHandle) -> u64 { (*h).0.total_bytes }
+
+#[no_mangle]
+pub unsafe extern "C" fn spz_filter_total_count(h: *const FilterHandle) -> u64 { (*h).0.total_count }
+
+/// Filtered size of one node (sum of matching descendants).
+#[no_mangle]
+pub unsafe extern "C" fn spz_filter_size(h: *const FilterHandle, id: NodeId) -> u64 { let r = &(*h).0; r.sizes[id as usize] }
+
+/// Matching file count under one node.
+#[no_mangle]
+pub unsafe extern "C" fn spz_filter_count(h: *const FilterHandle, id: NodeId) -> u32 { let r = &(*h).0; r.counts[id as usize] }
+
+/// Like `spz_outline_rows`, but hides nodes with no matching bytes. Pass the handle from `spz_filter_apply`.
+#[no_mangle]
+pub unsafe extern "C" fn spz_outline_rows_filtered(
+    t: *const Tree, root: NodeId, expanded: *const NodeId, n_expanded: u32, h: *const FilterHandle,
+    out: *mut crate::outline::Row, cap: u32,
+) -> u32 {
+    let set: std::collections::HashSet<NodeId> = if expanded.is_null() {
+        Default::default()
+    } else {
+        std::slice::from_raw_parts(expanded, n_expanded as usize).iter().copied().collect()
+    };
+    let rows = crate::outline::visible_rows(&*t, root, &set, Some(&(*h).0.sizes));
+    if !out.is_null() {
+        std::ptr::copy_nonoverlapping(rows.as_ptr(), out, rows.len().min(cap as usize));
+    }
+    rows.len() as u32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn spz_layout_new_filtered(t: *const Tree, root: NodeId, width: f32, height: f32, h: *const FilterHandle) -> *mut Layout {
+    let opts = LayoutOptions { width, height, ..Default::default() };
+    Box::into_raw(Box::new(Layout { rects: crate::layout::layout_with(&*t, root, &opts, Some(&(*h).0.sizes)) }))
+}
