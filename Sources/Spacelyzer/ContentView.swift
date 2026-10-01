@@ -6,28 +6,23 @@ struct ContentView: View {
 
     var body: some View {
         @Bindable var model = model
-        VStack(spacing: 0) {
-          Group {
+        Group {
             if model.tree == nil && !model.scanning {
                 WelcomeView()
             } else {
-                HSplitView {
+                NavigationSplitView {
                     OutlineView()
-                        .frame(minWidth: 320, idealWidth: 420)
+                        .navigationSplitViewColumnWidth(min: 320, ideal: 420, max: 700)
+                } detail: {
                     TrailingPane()
                         .frame(minWidth: 380)
+                        .background(GeometryReader { g in
+                            Color.clear.onChange(of: g.size, initial: true) { _, _ in LayoutProbe.log("detail", g) }
+                        })
                 }
-                // The AppKit split view ignores the bottom safe-area inset, so reserve the status bar's height here.
-                .padding(.bottom, 26)
-                .background(GeometryReader { g in
-                    Color.clear.onChange(of: g.size, initial: true) { _, _ in LayoutProbe.log("split", g) }
-                })
             }
-          }
-          .frame(maxHeight: .infinity)
-          .clipped()
-          StatusBar()
         }
+        .safeAreaInset(edge: .bottom, spacing: 0) { StatusBar() }
         .searchable(text: $model.filterText, placement: .toolbar, prompt: "Filter by name")
         .toolbar {
             ToolbarItemGroup {
