@@ -42,7 +42,8 @@ mod tempdir {
     pub struct T(std::path::PathBuf);
     impl T {
         pub fn new() -> T {
-            let p = std::env::temp_dir().join(format!("spz-test-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+            static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let p = std::env::temp_dir().join(format!("spz-test-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
             std::fs::create_dir_all(&p).unwrap();
             T(p)
         }
