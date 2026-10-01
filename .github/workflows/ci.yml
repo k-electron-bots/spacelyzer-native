@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  engine-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --release -p spacelyzer-engine
+      - run: cargo build --release
+      - name: Scan benchmark (informational, shared runner)
+        run: ./target/release/spz bench /usr 3
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain versions
+        run: |
+          sw_vers; xcodebuild -version; swift --version; rustc --version || true
+      - name: Rust engine tests (native macOS, includes getattrlistbulk backend)
+        run: |
+          rustup update stable --no-self-update
+          cargo test --release -p spacelyzer-engine
+      - name: Bulk backend vs portable backend on real macOS trees
+        run: |
+          cargo build --release -p spacelyzer-engine
+          for d in /Applications /usr/lib "$HOME/Library"; do
+            [ -d "$d" ] && ./target/release/spz verify "$d" || true
+          done
+          ./target/release/spz verify /Applications
+      - name: Scan benchmark (informational, shared runner)
+        run: ./target/release/spz bench /Applications 3
+      - name: Build universal engine
+        run: ./scripts/build-engine.sh
+      - name: Build Swift app
+        run: swift build -c release --arch arm64 --arch x86_64
+      - name: Version
+        id: ver
+        run: echo "version=0.1.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+      - name: Import self-signed identity
+        id: sign
+        env:
+          SIGNING_CERT_P12_BASE64: ${{ secrets.SIGNING_CERT_P12_BASE64 }}
+          SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+        run: |
+          HASH="$(./scripts/sign-setup.sh | tail -1)"
+          echo "hash=$HASH" >> "$GITHUB_OUTPUT"
+      - name: Package signed DMG
+        run: ./scripts/package-dmg.sh "${{ steps.ver.outputs.version }}" "${{ steps.sign.outputs.hash }}"
+      - name: Launch app and screenshot (informational)
+        continue-on-error: true
+        run: |
+          SPZ_AUTOSCAN=/Applications open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Applications
+          sleep 12
+          screencapture -x dist/screenshot.png || true
+          pgrep -fl Spacelyzer || echo "app not running"
+          pkill Spacelyzer || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Spacelyzer-${{ steps.ver.outputs.version }}
+          path: |
+            dist/*.dmg
+            dist/*.sha256
+            dist/screenshot.png
+      - name: Publish release (main only)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V=v${{ steps.ver.outputs.version }}
+          gh release create "$V" dist/*.dmg dist/*.sha256 --title "Spacelyzer $V" --prerelease \
+            --notes "Self-signed development build (not notarized). Right-click the app and choose Open the first time. Built from ${{ github.sha }}."
