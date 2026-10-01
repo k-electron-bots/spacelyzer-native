@@ -73,15 +73,14 @@ jobs:
           pgrep -fl Spacelyzer || echo "app not running"
           pkill Spacelyzer || true
           sleep 2
-          # Scripted interaction run: expand, filter by kind+size, filter by name.
+          # Scripted interaction run: the app writes /tmp/spz-demo-step after each state settles.
+          rm -f /tmp/spz-demo-step
           open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Library --env SPZ_DEMO=1
-          for i in $(seq 1 40); do sleep 3; pgrep -x Spacelyzer >/dev/null || break; [ -f /tmp/.x ] ; done &
-          sleep 50
-          screencapture -x dist/screenshot-demo-1-expanded.png || true
-          sleep 8
-          screencapture -x dist/screenshot-demo-2-filter-video.png || true
-          sleep 7
-          screencapture -x dist/screenshot-demo-3-filter-name-lib.png || true
+          for step in 1 2 3; do
+            for i in $(seq 1 90); do [ "$(cat /tmp/spz-demo-step 2>/dev/null)" = "$step" ] && break; sleep 1; done
+            sleep 1
+            screencapture -x dist/screenshot-demo-$step.png || true
+          done
           pkill Spacelyzer || true
       - uses: actions/upload-artifact@v4
         with:
