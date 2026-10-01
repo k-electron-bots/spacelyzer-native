@@ -7,7 +7,7 @@ struct OutlineView: View {
     var body: some View {
         @Bindable var model = model
         if let tree = model.tree {
-            let total = max(1, tree.info(model.displayedRoot).size)
+            let total = max(1, model.activeFilter?.size(model.displayedRoot) ?? tree.info(model.displayedRoot).size)
             // Rows come from Rust already flattened; List only builds the rows on screen.
             List(selection: $model.selected) {
                 ForEach(model.outlineRows, id: \SpzRow.node) { row in
@@ -36,6 +36,7 @@ struct OutlineLine: View {
 
     var body: some View {
         let info = tree.info(node)
+        let shown = model.activeFilter?.size(node) ?? info.size
         HStack(spacing: 6) {
             Color.clear.frame(width: CGFloat(depth) * 14, height: 1)
             if info.kind == .directory && info.childCount > 0 {
@@ -48,8 +49,8 @@ struct OutlineLine: View {
                 .frame(width: 16)
             Text(tree.name(node)).lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 8)
-            Text(formatBytes(info.size)).monospacedDigit().foregroundStyle(.secondary)
-            ShareBar(fraction: Double(info.size) / Double(parentTotal))
+            Text(formatBytes(shown)).monospacedDigit().foregroundStyle(.secondary)
+            ShareBar(fraction: Double(shown) / Double(parentTotal))
                 .frame(width: 44, height: 6)
         }
     }

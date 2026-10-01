@@ -41,6 +41,7 @@ final class FilterResult: @unchecked Sendable {
     deinit { spz_filter_free(ptr) }
     var totalBytes: UInt64 { spz_filter_total_bytes(ptr) }
     var totalCount: UInt64 { spz_filter_total_count(ptr) }
+    func size(_ id: UInt32) -> UInt64 { spz_filter_size(ptr, id) }
 }
 
 final class Tree: @unchecked Sendable {
