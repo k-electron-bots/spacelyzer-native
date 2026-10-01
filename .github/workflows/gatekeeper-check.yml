@@ -15,6 +15,7 @@ jobs:
           ls -l *.dmg; sw_vers
       - name: Inspect DMG and app
         run: |
+          exec > >(tee /tmp/gk.txt) 2>&1
           D=$(ls *.dmg | head -1)
           echo "== dmg codesign"; codesign -dv --verbose=4 "$D" 2>&1 || true
           echo "== spctl dmg (open)"; spctl -a -vvv -t open --context context:primary-signature "$D" 2>&1 || true
@@ -29,3 +30,8 @@ jobs:
           spctl -a -vvv -t exec /tmp/q.app 2>&1 || true
           echo "== keychain trust of signing cert"
           security find-identity -v -p codesigning 2>&1 | head -5
+      - name: Publish as annotation
+        if: always()
+        run: |
+          body=$(sed 's/%/%25/g' /tmp/gk.txt | awk '{printf "%s%%0A", $0}' | head -c 60000)
+          echo "::notice title=gatekeeper::$body"
