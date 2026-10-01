@@ -9,7 +9,7 @@ struct OutlineView: View {
             let total = max(1, tree.info(model.displayedRoot).size)
             // Rows come from Rust already flattened; List only builds the rows on screen.
             List(selection: $model.selected) {
-                ForEach(model.outlineRows, id: \.node) { row in
+                ForEach(model.outlineRows, id: \SpzRow.node) { row in
                     OutlineLine(tree: tree, node: row.node, depth: Int(row.depth), parentTotal: total)
                         .tag(row.node)
                         .contextMenu {

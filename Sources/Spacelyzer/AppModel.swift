@@ -1,4 +1,5 @@
 import AppKit
+import CSpacelyzer
 import Foundation
 import Observation
 
