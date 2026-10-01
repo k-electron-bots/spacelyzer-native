@@ -35,6 +35,14 @@ struct NodeInfo {
 
 let noNode = UInt32.max
 
+final class FilterResult: @unchecked Sendable {
+    let ptr: OpaquePointer
+    init(_ p: OpaquePointer) { ptr = p }
+    deinit { spz_filter_free(ptr) }
+    var totalBytes: UInt64 { spz_filter_total_bytes(ptr) }
+    var totalCount: UInt64 { spz_filter_total_count(ptr) }
+}
+
 final class Tree: @unchecked Sendable {
     let ptr: OpaquePointer
     init(_ p: OpaquePointer) { ptr = p }
@@ -66,14 +74,27 @@ final class Tree: @unchecked Sendable {
         return id == noNode ? nil : id
     }
     /// Visible outline rows (node, depth), flattened in Rust from the expanded set. No cap.
-    func outlineRows(root: UInt32, expanded: Set<UInt32>) -> [SpzRow] {
+    func outlineRows(root: UInt32, expanded: Set<UInt32>, filter: FilterResult? = nil) -> [SpzRow] {
         let ex = Array(expanded)
-        let n = Int(ex.withUnsafeBufferPointer { spz_outline_rows(ptr, root, $0.baseAddress, UInt32($0.count), nil, 0) })
-        var rows = [SpzRow](repeating: SpzRow(node: 0, depth: 0), count: n)
-        _ = ex.withUnsafeBufferPointer { e in
-            rows.withUnsafeMutableBufferPointer { spz_outline_rows(ptr, root, e.baseAddress, UInt32(e.count), $0.baseAddress, UInt32(n)) }
+        func call(_ out: UnsafeMutablePointer<SpzRow>?, _ cap: Int, _ e: UnsafeBufferPointer<UInt32>) -> UInt32 {
+            if let f = filter {
+                return spz_outline_rows_filtered(ptr, root, e.baseAddress, UInt32(e.count), f.ptr, out, UInt32(cap))
+            }
+            return spz_outline_rows(ptr, root, e.baseAddress, UInt32(e.count), out, UInt32(cap))
         }
+        let n = Int(ex.withUnsafeBufferPointer { call(nil, 0, $0) })
+        var rows = [SpzRow](repeating: SpzRow(node: 0, depth: 0), count: n)
+        _ = ex.withUnsafeBufferPointer { e in rows.withUnsafeMutableBufferPointer { call($0.baseAddress, n, e) } }
         return rows
+    }
+
+    func applyFilter(text: String, kind: FileCategory?, minBytes: UInt64?) -> FilterResult {
+        var f = SpzFilter(category_mask: kind.map { UInt32(1) << UInt32($0.rawValue) } ?? 0,
+                          has_min: minBytes == nil ? 0 : 1, has_max: 0, has_from: 0, has_to: 0,
+                          min_size: minBytes ?? 0, max_size: 0, modified_from: 0, modified_to: 0)
+        let h = text.withCString { spz_filter_apply(ptr, $0, nil, f) }
+        f.has_min = 0
+        return FilterResult(h!)
     }
 
     func forget(_ id: UInt32) { spz_tree_forget(ptr, id) }
@@ -100,8 +121,11 @@ final class Tree: @unchecked Sendable {
         (0..<spz_tree_skipped_count(ptr)).map { (take(spz_tree_skipped_path(ptr, $0)), Int(spz_tree_skipped_reason(ptr, $0))) }
     }
 
-    func layout(root: UInt32, size: CGSize) -> TreemapLayout {
-        TreemapLayout(spz_layout_new(ptr, root, Float(size.width), Float(size.height)), size: size)
+    func layout(root: UInt32, size: CGSize, filter: FilterResult? = nil) -> TreemapLayout {
+        if let f = filter {
+            return TreemapLayout(spz_layout_new_filtered(ptr, root, Float(size.width), Float(size.height), f.ptr), size: size)
+        }
+        return TreemapLayout(spz_layout_new(ptr, root, Float(size.width), Float(size.height)), size: size)
     }
 }
 

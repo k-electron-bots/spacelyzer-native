@@ -17,6 +17,7 @@ struct ContentView: View {
                 }
             }
         }
+        .searchable(text: $model.filterText, placement: .toolbar, prompt: "Filter by name")
         .toolbar {
             ToolbarItemGroup {
                 Button { model.up() } label: { Label("Up", systemImage: "arrow.up") }
@@ -29,6 +30,19 @@ struct ContentView: View {
                 if model.scanning {
                     Button { model.cancel() } label: { Label("Stop", systemImage: "stop.circle") }
                 }
+            }
+            ToolbarItem {
+                Menu {
+                    Picker("Kind", selection: $model.filterKind) {
+                        Text("Any kind").tag(FileCategory?.none)
+                        ForEach(FileCategory.allCases.filter { $0 != .folder }, id: \.self) { Text($0.label).tag(Optional($0)) }
+                    }
+                    Picker("Minimum size", selection: $model.filterMinMB) {
+                        Text("Any size").tag(0)
+                        ForEach([1, 10, 100, 1000], id: \.self) { Text("≥ \($0) MB").tag($0) }
+                    }
+                } label: { Label("Filter", systemImage: model.filterIsActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle") }
+                .disabled(model.tree == nil)
             }
             ToolbarItem {
                 Picker("View", selection: $model.tab) {
@@ -85,6 +99,9 @@ struct StatusBar: View {
                 let incomplete = t.wasCancelled ? " (stopped early, partial)" : ""
                 Text("\(model.rootPath)  ·  \(formatBytes(t.info(0).size)) in \(spz_items(t)) items\(incomplete)")
                 if let s = model.lastScanSeconds { Text("· scanned in \(String(format: "%.2f", s))s").foregroundStyle(.secondary) }
+                if let f = model.activeFilter {
+                    Text("· filter: \(formatBytes(f.totalBytes)) in \(f.totalCount.formatted()) files (\(String(format: "%.1f", model.filterMillis)) ms in Rust)").foregroundStyle(.blue)
+                }
                 let skipped = t.skipped.count
                 if skipped > 0 { Text("· \(skipped) locations not readable").foregroundStyle(.orange) }
             }

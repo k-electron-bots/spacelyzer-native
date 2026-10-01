@@ -85,6 +85,7 @@ struct TreemapView: View {
             .overlay(alignment: .bottom) { readout }
             .onChange(of: model.displayedRoot) { relayout() }
             .onChange(of: model.revision) { relayout() }
+            .onChange(of: model.filterRevision) { relayout() }
             .onAppear { relayout() }
     }
 
@@ -111,10 +112,10 @@ struct TreemapView: View {
     private func relayout() {
         guard let tree = model.tree, size.width > 1, size.height > 1 else { return }
         let root = model.displayedRoot
-        let s = size
+        let s = size, flt = model.activeFilter
         task?.cancel()
         task = Task.detached(priority: .userInitiated) {
-            let l = tree.layout(root: root, size: s)
+            let l = tree.layout(root: root, size: s, filter: flt)
             if Task.isCancelled { return }
             await MainActor.run { layout = l }
         }

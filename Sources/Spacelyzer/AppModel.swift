@@ -25,6 +25,38 @@ final class AppModel {
     var displayedRoot: UInt32 = 0
     var selected: UInt32?
     var expanded: Set<UInt32> = []
+    var filterText = "" { didSet { scheduleFilter() } }
+    var filterKind: FileCategory? { didSet { scheduleFilter() } }
+    var filterMinMB: Int = 0 { didSet { scheduleFilter() } }
+    var activeFilter: FilterResult?
+    var filterRevision = 0
+    var filterMillis: Double = 0
+    private var filterTask: Task<Void, Never>?
+
+    var filterIsActive: Bool { !filterText.isEmpty || filterKind != nil || filterMinMB > 0 }
+
+    /// Filtering runs in Rust off the main thread, debounced; the UI keeps the last result until the new one lands.
+    func scheduleFilter() {
+        filterTask?.cancel()
+        guard let tree else { return }
+        let text = filterText, kind = filterKind, minB: UInt64? = filterMinMB > 0 ? UInt64(filterMinMB) * 1_000_000 : nil
+        let active = filterIsActive
+        filterTask = Task.detached(priority: .userInitiated) { [weak self] in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            if Task.isCancelled { return }
+            let t0 = DispatchTime.now().uptimeNanoseconds
+            let r = active ? tree.applyFilter(text: text, kind: kind, minBytes: minB) : nil
+            let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+            if Task.isCancelled { return }
+            await MainActor.run {
+                guard let self else { return }
+                self.activeFilter = r
+                self.filterMillis = ms
+                self.filterRevision += 1
+                self.refreshOutline()
+            }
+        }
+    }
     var outlineRows: [SpzRow] = []
     var outlineMillis: Double = 0
     private var outlineTask: Task<Void, Never>?
@@ -33,11 +65,11 @@ final class AppModel {
     /// set live here, so they survive re-projection.
     func refreshOutline() {
         guard let tree else { outlineRows = []; return }
-        let root = displayedRoot, ex = expanded
+        let root = displayedRoot, ex = expanded, flt = activeFilter
         outlineTask?.cancel()
         outlineTask = Task.detached(priority: .userInitiated) { [weak self] in
             let t0 = DispatchTime.now().uptimeNanoseconds
-            let rows = tree.outlineRows(root: root, expanded: ex)
+            let rows = tree.outlineRows(root: root, expanded: ex, filter: flt)
             let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
             if Task.isCancelled { return }
             await MainActor.run { self?.outlineRows = rows; self?.outlineMillis = ms }
@@ -98,6 +130,7 @@ final class AppModel {
                 displayedRoot = 0
                 selected = nil
                 revision += 1
+                scheduleFilter()
                 refreshOutline()
             } else {
                 error = "The scan failed. Check that the folder exists and you can read it."
