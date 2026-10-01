@@ -44,7 +44,7 @@ struct OutlineLine: View {
         let info = tree.info(node)
         let shown = model.activeFilter?.size(node) ?? info.size
         HStack(spacing: 6) {
-            Color.clear.frame(width: CGFloat(depth) * 14, height: 1)
+            Color.clear.frame(width: CGFloat(depth) * 10, height: 1)
             if info.kind == .directory && info.childCount > 0 {
                 Button { model.toggle(node) } label: {
                     Image(systemName: model.expanded.contains(node) ? "chevron.down" : "chevron.right").font(.caption2)

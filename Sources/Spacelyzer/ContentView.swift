@@ -11,7 +11,7 @@ struct ContentView: View {
             } else {
                 HSplitView {
                     OutlineView()
-                        .frame(minWidth: 280, idealWidth: 360)
+                        .frame(minWidth: 320, idealWidth: 420)
                     TrailingPane()
                         .frame(minWidth: 380)
                 }
