@@ -34,6 +34,19 @@ struct SpacelyzerApp: App {
                         if let n = model.outlineRows.dropFirst(2).first?.node { model.selected = n }
                         try? await Task.sleep(nanoseconds: 3_000_000_000); mark(5)
                         try? await Task.sleep(nanoseconds: 4_000_000_000)
+                        // Worst case for the outline: every folder expanded (all items become rows).
+                        if let t = model.tree {
+                            let t0 = Perf.now()
+                            var all = Set<UInt32>()
+                            for i in 0..<UInt32(t.nodeCount) where t.info(i).childCount > 0 { all.insert(i) }
+                            Perf.log("expand-all: collect \(all.count) dirs via per-node FFI = \(String(format: "%.1f", Perf.ms(since: t0))) ms")
+                            let t1 = Perf.now()
+                            model.expanded = all
+                            model.refreshOutline()
+                            while model.outlineRows.count < 100_000 && Perf.ms(since: t1) < 20_000 { try? await Task.sleep(nanoseconds: 20_000_000) }
+                            Perf.log("expand-all: rows=\(model.outlineRows.count) set-to-rows-on-main = \(String(format: "%.1f", Perf.ms(since: t1))) ms")
+                        }
+                        try? await Task.sleep(nanoseconds: 3_000_000_000); mark(6)
                     }
                 }
         }

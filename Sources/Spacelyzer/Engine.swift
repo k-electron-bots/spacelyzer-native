@@ -35,6 +35,19 @@ struct NodeInfo {
 
 let noNode = UInt32.max
 
+/// CI-only timing log (SPZ_DEMO): appends "label: value" lines to /tmp/spz-timing.txt.
+enum Perf {
+    static let on = ProcessInfo.processInfo.environment["SPZ_DEMO"] != nil
+    static func now() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
+    static func ms(since t: UInt64) -> Double { Double(DispatchTime.now().uptimeNanoseconds - t) / 1e6 }
+    static func log(_ line: String) {
+        guard on else { return }
+        let url = URL(fileURLWithPath: "/tmp/spz-timing.txt")
+        let data = (line + "\n").data(using: .utf8)!
+        if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(data); try? h.close() } else { try? data.write(to: url) }
+    }
+}
+
 final class FilterResult: @unchecked Sendable {
     let ptr: OpaquePointer
     init(_ p: OpaquePointer) { ptr = p }
@@ -83,9 +96,12 @@ final class Tree: @unchecked Sendable {
             }
             return spz_outline_rows(ptr, root, e.baseAddress, UInt32(e.count), out, UInt32(cap))
         }
+        let t0 = Perf.now()
         let n = Int(ex.withUnsafeBufferPointer { call(nil, 0, $0) })
+        let t1 = Perf.now()
         var rows = [SpzRow](repeating: SpzRow(node: 0, depth: 0), count: n)
         _ = ex.withUnsafeBufferPointer { e in rows.withUnsafeMutableBufferPointer { call($0.baseAddress, n, e) } }
+        Perf.log("outline rows=\(n) expanded=\(ex.count) filtered=\(filter != nil) count_call_ms=\(String(format: "%.2f", Double(t1 - t0) / 1e6)) fill_call_ms=\(String(format: "%.2f", Perf.ms(since: t1)))")
         return rows
     }
 
@@ -93,8 +109,10 @@ final class Tree: @unchecked Sendable {
         var f = SpzFilter(category_mask: kind.map { UInt32(1) << UInt32($0.rawValue) } ?? 0,
                           has_min: minBytes == nil ? 0 : 1, has_max: 0, has_from: 0, has_to: 0,
                           min_size: minBytes ?? 0, max_size: 0, modified_from: 0, modified_to: 0)
+        let t0 = Perf.now()
         let h = text.withCString { spz_filter_apply(ptr, $0, nil, f) }
         f.has_min = 0
+        Perf.log("filter text='\(text)' kind=\(String(describing: kind)) min=\(String(describing: minBytes)) rust_ms=\(String(format: "%.2f", Perf.ms(since: t0)))")
         return FilterResult(h!)
     }
 
@@ -123,10 +141,13 @@ final class Tree: @unchecked Sendable {
     }
 
     func layout(root: UInt32, size: CGSize, filter: FilterResult? = nil) -> TreemapLayout {
-        if let f = filter {
-            return TreemapLayout(spz_layout_new_filtered(ptr, root, Float(size.width), Float(size.height), f.ptr), size: size)
-        }
-        return TreemapLayout(spz_layout_new(ptr, root, Float(size.width), Float(size.height)), size: size)
+        let t0 = Perf.now()
+        let raw = filter.map { spz_layout_new_filtered(ptr, root, Float(size.width), Float(size.height), $0.ptr) } ?? spz_layout_new(ptr, root, Float(size.width), Float(size.height))
+        let rustMs = Perf.ms(since: t0)
+        let t1 = Perf.now()
+        let l = TreemapLayout(raw, size: size)
+        Perf.log("layout rects=\(l.rects.count) filtered=\(filter != nil) rust_ms=\(String(format: "%.2f", rustMs)) swift_copy_ms=\(String(format: "%.2f", Perf.ms(since: t1)))")
+        return l
     }
 }
 
