@@ -30,7 +30,12 @@ jobs:
       - name: Rust engine tests (native macOS, includes getattrlistbulk backend)
         run: |
           rustup update stable --no-self-update
-          cargo test --release -p spacelyzer-engine
+          set -o pipefail
+          cargo test --release -p spacelyzer-engine -- --nocapture 2>&1 | tee /tmp/cargotest.log || {
+            grep -E "panicked|assertion|firmlink check|FAILED|failed|error" /tmp/cargotest.log | sort -u | head -12 | while IFS= read -r l; do echo "::error::${l//%/%25}"; done
+            exit 1
+          }
+          grep -E "firmlink check" /tmp/cargotest.log | while IFS= read -r l; do echo "::notice::${l//%/%25}"; done
       - name: Bulk backend vs portable backend on real macOS trees
         run: |
           cargo build --release -p spacelyzer-engine
