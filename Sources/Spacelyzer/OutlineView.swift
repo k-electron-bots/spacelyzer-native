@@ -46,6 +46,11 @@ struct OutlineView: View {
             }
             .background(Color(nsColor: .controlBackgroundColor))
             .onAppear { model.refreshOutline() }
+            .onChange(of: model.selected) { _, n in
+                guard Perf.on else { return }
+                let idx = n.flatMap { s in rows.firstIndex(where: { $0.node == s }) }
+                Perf.log("selection changed: node=\(n.map(String.init) ?? "nil") rowIndex=\(idx.map(String.init) ?? "none") of \(rows.count)")
+            }
         } else {
             ProgressView("Scanning…").frame(maxWidth: .infinity, maxHeight: .infinity)
         }
