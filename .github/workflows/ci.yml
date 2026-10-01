@@ -85,5 +85,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           V=v${{ steps.ver.outputs.version }}
-          gh release create "$V" dist/*.dmg dist/*.sha256 --title "Spacelyzer $V" --prerelease \
-            --notes "Self-signed development build (not notarized). Right-click the app and choose Open the first time. Built from ${{ github.sha }}."
+          gh release create "$V" dist/*.dmg dist/*.sha256 dist/screenshot*.png --title "Spacelyzer $V" --prerelease \
+            --notes "Self-signed development build (not notarized). Not Apple-verified: after the first blocked open, use System Settings > Privacy & Security > Open Anyway. Screenshots attached are from the CI runner, not a real Mac. Built from ${{ github.sha }}."
