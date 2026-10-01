@@ -60,8 +60,10 @@ jobs:
       - name: Launch app and screenshot (informational)
         continue-on-error: true
         run: |
-          SPZ_AUTOSCAN=/Applications open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Applications
-          sleep 12
+          open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Library
+          sleep 8
+          screencapture -x dist/screenshot-scanning.png || true
+          sleep 35
           screencapture -x dist/screenshot.png || true
           pgrep -fl Spacelyzer || echo "app not running"
           pkill Spacelyzer || true
@@ -71,7 +73,7 @@ jobs:
           path: |
             dist/*.dmg
             dist/*.sha256
-            dist/screenshot.png
+            dist/screenshot*.png
       - name: Publish release (main only)
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         env:
