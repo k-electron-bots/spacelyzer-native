@@ -265,3 +265,56 @@ fn ffi_filter_roundtrip_matches_engine_filter() {
         spacelyzer_engine::ffi::spz_filter_free(h);
     }
 }
+
+#[test]
+fn overlapping_roots_agree_on_the_shared_subtree() {
+    let t = fixture();
+    let r = t.path();
+    std::fs::create_dir_all(r.join("outer/inner")).unwrap();
+    std::fs::write(r.join("outer/inner/a.bin"), vec![3u8; 300_000]).unwrap();
+    std::fs::write(r.join("outer/b.bin"), vec![4u8; 50_000]).unwrap();
+    let outer = scan(&r.join("outer"), &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    let inner = scan(&r.join("outer/inner"), &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    let in_outer = (0..outer.len() as u32).find(|&i| outer.name(i) == "inner").expect("inner dir present");
+    assert_eq!(outer.size(in_outer), inner.size(0), "same subtree, same bytes, whichever root you scan");
+    assert!(outer.size(0) > inner.size(0));
+    assert_eq!(outer.size(0), outer.size(in_outer) + (0..outer.len() as u32).filter(|&i| outer.name(i) == "b.bin").map(|i| outer.own_bytes(i)).sum::<u64>());
+}
+
+/// macOS only: /Applications is a firmlink to /System/Volumes/Data/Applications. Reaching it through
+/// both paths must not double count. Everything else is excluded to keep this fast.
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_firmlink_reached_twice_is_counted_once() {
+    use std::path::PathBuf;
+    let keep_top = ["Applications", "System"];
+    let mut exclude: Vec<PathBuf> = Vec::new();
+    for e in std::fs::read_dir("/").unwrap().flatten() {
+        let n = e.file_name().to_string_lossy().to_string();
+        if !keep_top.contains(&n.as_str()) { exclude.push(e.path()); }
+    }
+    // Under /System keep only /System/Volumes (so the Data volume is reachable); skip the rest.
+    for e in std::fs::read_dir("/System").unwrap().flatten() {
+        if e.file_name() != "Volumes" { exclude.push(e.path()); }
+    }
+    // Under the Data volume keep only Applications.
+    for e in std::fs::read_dir("/System/Volumes").unwrap().flatten() {
+        if e.file_name() != "Data" { exclude.push(e.path()); }
+    }
+    if let Ok(rd) = std::fs::read_dir("/System/Volumes/Data") {
+        for e in rd.flatten() {
+            if e.file_name() != "Applications" { exclude.push(e.path()); }
+        }
+    }
+    let opts = ScanOptions { exclude, cross_devices: true, ..Default::default() };
+    let both = scan(std::path::Path::new("/"), &opts, &ScanProgress::default()).unwrap();
+    let only = scan(std::path::Path::new("/Applications"), &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    let apps: Vec<u32> = (0..both.len() as u32).filter(|&i| both.name(i) == "Applications").collect();
+    // The directory exists at most once in the tree, and its size matches a direct scan of /Applications.
+    assert!(apps.len() <= 2, "Applications dir nodes: {}", apps.len());
+    let sum: u64 = apps.iter().map(|&i| both.size(i)).sum();
+    let direct = only.size(0);
+    let ratio = sum as f64 / direct.max(1) as f64;
+    eprintln!("firmlink check: nodes={} sum={} direct={} ratio={:.4}", apps.len(), sum, direct, ratio);
+    assert!(ratio < 1.05, "double counted: ratio {ratio}");
+}
