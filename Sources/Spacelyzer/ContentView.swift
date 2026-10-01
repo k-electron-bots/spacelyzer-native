@@ -16,6 +16,8 @@ struct ContentView: View {
                     TrailingPane()
                         .frame(minWidth: 380)
                 }
+                // The AppKit split view ignores the bottom safe-area inset, so reserve the status bar's height here.
+                .padding(.bottom, 26)
             }
           }
           .frame(maxHeight: .infinity)
