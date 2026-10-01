@@ -221,10 +221,6 @@ struct LargestView: View {
     var body: some View {
         if let t = model.tree {
             let ids = t.largestFiles(200, filter: model.activeFilter)
-            if model.activeFilter != nil && ids.isEmpty {
-                ContentUnavailableView("No matches", systemImage: "line.3.horizontal.decrease.circle",
-                                       description: Text("No file matches the current filter."))
-            }
             List(ids, id: \.self, selection: Bindable(model).selected) { id in
                 HStack {
                     VStack(alignment: .leading) {
@@ -234,6 +230,12 @@ struct LargestView: View {
                     Spacer()
                     Text(formatBytes(t.info(id).size)).monospacedDigit()
                 }.tag(id)
+            }
+            .overlay {
+                if model.activeFilter != nil && ids.isEmpty {
+                    ContentUnavailableView("No matches", systemImage: "line.3.horizontal.decrease.circle",
+                                           description: Text("No file matches the current filter."))
+                }
             }
             .safeAreaInset(edge: .top, spacing: 0) {
                 Text(ids.count >= 200 ? "Showing the 200 largest\(model.activeFilter != nil ? " matching" : "") files" : "\(ids.count.formatted()) \(model.activeFilter != nil ? "matching " : "")files")
