@@ -86,6 +86,12 @@ final class AppModel {
     var exclusions: [String] = []
 
     var pendingRemoval: UInt32?
+    /// Seam for the Trash operation so tests can assert it was or wasn't reached without touching any file.
+    var trashItem: (URL) throws -> URL = { url in
+        var out: NSURL?
+        try FileManager.default.trashItem(at: url, resultingItemURL: &out)
+        return out! as URL
+    }
     var lastRemoved: [RemovedItem] = []
     var removalMessage: String?
 
@@ -190,9 +196,8 @@ final class AppModel {
         let url = URL(fileURLWithPath: path)
         let size = tree.info(id).size
         do {
-            var out: NSURL?
-            try FileManager.default.trashItem(at: url, resultingItemURL: &out)
-            lastRemoved = [RemovedItem(original: url, trashed: out! as URL, size: size)]
+            let trashed = try trashItem(url)
+            lastRemoved = [RemovedItem(original: url, trashed: trashed, size: size)]
             tree.forget(id)
             if selected == id { selected = nil }
             revision += 1

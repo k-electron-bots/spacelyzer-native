@@ -76,6 +76,29 @@ struct SpacelyzerApp: App {
                         try? await Task.sleep(nanoseconds: 4_000_000_000)
                         model.filterText = "zzzqqq"
                         try? await Task.sleep(nanoseconds: 3_000_000_000); mark(10)
+                        // Step 11: removal guards, with the Trash operation mocked (nothing on disk is touched).
+                        var calls = 0
+                        model.trashItem = { url in calls += 1; return url }
+                        func settle() async { try? await Task.sleep(nanoseconds: 1_500_000_000) }
+                        let victim: UInt32 = 67
+                        model.selected = victim; model.removalMessage = nil; model.pendingRemoval = nil
+                        await settle()   // filter 'zzzqqq' is active: victim is outside it
+                        model.proposeRemoval(of: victim)
+                        Perf.log("guard A (propose while outside filter): pending=\(model.pendingRemoval != nil) message=\(model.removalMessage != nil) trashCalls=\(calls) expect pending=false message=true calls=0")
+                        model.removalMessage = nil
+                        model.filterText = ""; await settle()
+                        model.proposeRemoval(of: victim)
+                        Perf.log("guard B1 (propose with no filter): pending=\(model.pendingRemoval != nil) trashCalls=\(calls) expect pending=true calls=0")
+                        model.filterText = "zzzqqq"; await settle()   // filter changes while the confirmation is open
+                        model.confirmRemoval()
+                        Perf.log("guard B2 (confirm after filter hid it): pending=\(model.pendingRemoval != nil) message=\(model.removalMessage != nil) trashCalls=\(calls) expect pending=false message=true calls=0")
+                        model.removalMessage = nil
+                        model.filterText = ""; await settle()
+                        model.proposeRemoval(of: victim); model.confirmRemoval()
+                        Perf.log("guard C (control, no filter, mocked): trashCalls=\(calls) expect calls=1 (proves the mock is wired and the guard does not always refuse)")
+                        model.removalMessage = nil
+                        model.filterText = "zzzqqq"; model.selected = model.outlineRows.first?.node ?? 1
+                        await settle(); mark(11)
                     }
                 }
         }
