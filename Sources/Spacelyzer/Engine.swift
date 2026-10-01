@@ -65,6 +65,17 @@ final class Tree: @unchecked Sendable {
         let id = spz_tree_find(ptr, path)
         return id == noNode ? nil : id
     }
+    /// Visible outline rows (node, depth), flattened in Rust from the expanded set. No cap.
+    func outlineRows(root: UInt32, expanded: Set<UInt32>) -> [SpzRow] {
+        let ex = Array(expanded)
+        let n = Int(ex.withUnsafeBufferPointer { spz_outline_rows(ptr, root, $0.baseAddress, UInt32($0.count), nil, 0) })
+        var rows = [SpzRow](repeating: SpzRow(node: 0, depth: 0), count: n)
+        _ = ex.withUnsafeBufferPointer { e in
+            rows.withUnsafeMutableBufferPointer { spz_outline_rows(ptr, root, e.baseAddress, UInt32(e.count), $0.baseAddress, UInt32(n)) }
+        }
+        return rows
+    }
+
     func forget(_ id: UInt32) { spz_tree_forget(ptr, id) }
 
     func children(_ id: UInt32) -> Range<UInt32> {

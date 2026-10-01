@@ -1,43 +1,25 @@
 import SwiftUI
 
-/// One row of the hierarchy. Children are produced only when a row is expanded.
-struct OutlineRow: Identifiable, Hashable {
-    let id: UInt32
-    let tree: Tree
-
-    static func == (a: OutlineRow, b: OutlineRow) -> Bool { a.id == b.id }
-    func hash(into h: inout Hasher) { h.combine(id) }
-
-    /// Largest 2,000 children; the long tail of tiny items is summarised by the parent's size.
-    var children: [OutlineRow]? {
-        let info = tree.info(id)
-        guard info.kind == .directory, info.childCount > 0 else { return nil }
-        let r = tree.children(id)
-        let capped = r.lowerBound..<min(r.upperBound, r.lowerBound + 2000)
-        return capped.filter { tree.info($0).size > 0 }.map { OutlineRow(id: $0, tree: tree) }
-    }
-}
-
 struct OutlineView: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
         @Bindable var model = model
         if let tree = model.tree {
-            let root = OutlineRow(id: model.displayedRoot, tree: tree)
             let total = max(1, tree.info(model.displayedRoot).size)
+            // Rows come from Rust already flattened; List only builds the rows on screen.
             List(selection: $model.selected) {
-                OutlineGroup(root.children ?? [], children: \.children) { row in
-                    OutlineLine(row: row, parentTotal: total)
-                        .tag(row.id)
+                ForEach(model.outlineRows, id: \.node) { row in
+                    OutlineLine(tree: tree, node: row.node, depth: Int(row.depth), parentTotal: total)
+                        .tag(row.node)
                         .contextMenu {
-                            Button("Show in Finder") { model.reveal(row.id) }
-                            Button("Move to Trash…", role: .destructive) { model.proposeRemoval(of: row.id) }
+                            Button("Show in Finder") { model.reveal(row.node) }
+                            Button("Move to Trash…", role: .destructive) { model.proposeRemoval(of: row.node) }
                         }
                 }
             }
-            .id(model.revision * 1_000_003 + Int(model.displayedRoot))
             .listStyle(.sidebar)
+            .onAppear { model.refreshOutline() }
         } else {
             ProgressView("Scanning…").frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -45,16 +27,25 @@ struct OutlineView: View {
 }
 
 struct OutlineLine: View {
-    let row: OutlineRow
+    @Environment(AppModel.self) private var model
+    let tree: Tree
+    let node: UInt32
+    let depth: Int
     let parentTotal: UInt64
 
     var body: some View {
-        let info = row.tree.info(row.id)
+        let info = tree.info(node)
         HStack(spacing: 6) {
+            Color.clear.frame(width: CGFloat(depth) * 14, height: 1)
+            if info.kind == .directory && info.childCount > 0 {
+                Button { model.toggle(node) } label: {
+                    Image(systemName: model.expanded.contains(node) ? "chevron.down" : "chevron.right").font(.caption2)
+                }.buttonStyle(.plain).frame(width: 12)
+            } else { Color.clear.frame(width: 12, height: 1) }
             Image(systemName: icon(info))
                 .foregroundStyle(info.kind == .directory ? Color.accentColor : .secondary)
                 .frame(width: 16)
-            Text(row.tree.name(row.id)).lineLimit(1).truncationMode(.middle)
+            Text(tree.name(node)).lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 8)
             Text(formatBytes(info.size)).monospacedDigit().foregroundStyle(.secondary)
             ShareBar(fraction: Double(info.size) / Double(parentTotal))

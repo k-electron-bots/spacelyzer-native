@@ -23,6 +23,30 @@ final class AppModel {
 
     var displayedRoot: UInt32 = 0
     var selected: UInt32?
+    var expanded: Set<UInt32> = []
+    var outlineRows: [SpzRow] = []
+    var outlineMillis: Double = 0
+    private var outlineTask: Task<Void, Never>?
+
+    /// Recompute the flattened outline in Rust off the main thread. Selection and the expanded
+    /// set live here, so they survive re-projection.
+    func refreshOutline() {
+        guard let tree else { outlineRows = []; return }
+        let root = displayedRoot, ex = expanded
+        outlineTask?.cancel()
+        outlineTask = Task.detached(priority: .userInitiated) { [weak self] in
+            let t0 = DispatchTime.now().uptimeNanoseconds
+            let rows = tree.outlineRows(root: root, expanded: ex)
+            let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+            if Task.isCancelled { return }
+            await MainActor.run { self?.outlineRows = rows; self?.outlineMillis = ms }
+        }
+    }
+
+    func toggle(_ id: UInt32) {
+        if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
+        refreshOutline()
+    }
     var coloring: TreemapColoring = .folder
     var tab: TrailingTab = .treemap
     var revision = 0   // bumps when the tree changes, so views refresh
@@ -73,6 +97,7 @@ final class AppModel {
                 displayedRoot = 0
                 selected = nil
                 revision += 1
+                refreshOutline()
             } else {
                 error = "The scan failed. Check that the folder exists and you can read it."
             }
@@ -87,11 +112,13 @@ final class AppModel {
         guard n.kind == .directory, n.childCount > 0 else { return }
         displayedRoot = id
         selected = id
+        refreshOutline()
     }
 
     func up() {
         guard let tree, let p = tree.info(displayedRoot).parent else { return }
         displayedRoot = p
+        refreshOutline()
     }
 
     // MARK: Removal (always to the Trash, always after confirmation, always undoable)
@@ -126,6 +153,7 @@ final class AppModel {
             tree.forget(id)
             if selected == id { selected = nil }
             revision += 1
+            refreshOutline()
             removalMessage = "Moved \(url.lastPathComponent) to the Trash."
         } catch {
             removalMessage = "Could not move it to the Trash: \(error.localizedDescription)"
