@@ -43,7 +43,12 @@ jobs:
       - name: Build universal engine
         run: ./scripts/build-engine.sh
       - name: Build Swift app
-        run: swift build -c release --arch arm64 --arch x86_64
+        run: |
+          set -o pipefail
+          swift build -c release --arch arm64 --arch x86_64 2>&1 | tee /tmp/swiftbuild.log || {
+            grep -E "error:" /tmp/swiftbuild.log | sort -u | head -15 | while IFS= read -r l; do echo "::error::${l//%/%25}"; done
+            exit 1
+          }
       - name: Version
         id: ver
         run: echo "version=0.1.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
