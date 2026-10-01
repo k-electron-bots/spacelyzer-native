@@ -4,6 +4,7 @@
 
 pub mod category;
 pub mod filter;
+pub mod outline;
 pub mod ffi;
 pub mod layout;
 pub mod scan;

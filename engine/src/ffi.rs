@@ -243,3 +243,22 @@ pub unsafe extern "C" fn spz_string_free(s: *mut c_char) {
         drop(CString::from_raw(s));
     }
 }
+
+/// Visible outline rows under `root` given the expanded node ids. Pass `out == null` to get
+/// the count, then call again with a buffer of that many `Row`s (two u32s each).
+#[no_mangle]
+pub unsafe extern "C" fn spz_outline_rows(
+    t: *const Tree, root: NodeId, expanded: *const NodeId, n_expanded: u32, out: *mut crate::outline::Row, cap: u32,
+) -> u32 {
+    let set: std::collections::HashSet<NodeId> = if expanded.is_null() {
+        Default::default()
+    } else {
+        std::slice::from_raw_parts(expanded, n_expanded as usize).iter().copied().collect()
+    };
+    let rows = crate::outline::visible_rows(&*t, root, &set, None);
+    if !out.is_null() {
+        let n = rows.len().min(cap as usize);
+        std::ptr::copy_nonoverlapping(rows.as_ptr(), out, n);
+    }
+    rows.len() as u32
+}

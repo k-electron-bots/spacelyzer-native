@@ -11,6 +11,7 @@ typedef struct {
   uint64_t size; uint64_t own_bytes; uint32_t parent; uint32_t child_count; uint32_t first_child;
   uint8_t kind; uint8_t category;
 } SpzNode;
+typedef struct { uint32_t node; uint32_t depth; } SpzRow;
 typedef struct {
   float x; float y; float w; float h; uint32_t node; uint32_t depth; uint32_t branch; uint32_t flags; uint64_t size;
 } SpzRect;
@@ -34,6 +35,8 @@ uint32_t spz_tree_largest_files(const SpzTree *t, uint32_t cap, uint32_t *out);
 uint32_t spz_tree_skipped_count(const SpzTree *t);
 char *spz_tree_skipped_path(const SpzTree *t, uint32_t i);
 uint8_t spz_tree_skipped_reason(const SpzTree *t, uint32_t i);
+
+uint32_t spz_outline_rows(const SpzTree *t, uint32_t root, const uint32_t *expanded, uint32_t n_expanded, SpzRow *out, uint32_t cap);
 
 SpzLayout *spz_layout_new(const SpzTree *t, uint32_t root, float width, float height);
 void spz_layout_free(SpzLayout *l);

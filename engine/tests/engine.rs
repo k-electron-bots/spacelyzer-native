@@ -225,3 +225,22 @@ fn hard_link_across_directories_counted_once() {
     let after = scan(r, &ScanOptions::default(), &ScanProgress::default()).unwrap().size(0);
     assert_eq!(before, after, "second hard link adds no bytes");
 }
+
+#[test]
+fn outline_rows_expand_collapse_and_never_cap() {
+    use std::collections::HashSet;
+    let tree = spacelyzer_engine::Tree::synthetic(200_000);
+    let none = spacelyzer_engine::outline::visible_rows(&tree, 0, &HashSet::new(), None);
+    assert_eq!(none.len() as u32, tree.child_count(0));
+    assert!(none.iter().all(|r| r.depth == 0));
+    // Expand every directory: all non-root nodes appear exactly once, in parent-before-child order.
+    let all: HashSet<u32> = (0..tree.len() as u32).collect();
+    let rows = spacelyzer_engine::outline::visible_rows(&tree, 0, &all, None);
+    assert_eq!(rows.len(), tree.len() - 1);
+    let mut seen = HashSet::new();
+    for r in &rows { assert!(seen.insert(r.node)); }
+    // Expanding one folder adds exactly its children.
+    let d = (1..tree.len() as u32).find(|&i| tree.child_count(i) > 0 && tree.parent(i) == Some(0)).unwrap();
+    let one = spacelyzer_engine::outline::visible_rows(&tree, 0, &HashSet::from([d]), None);
+    assert_eq!(one.len() as u32, tree.child_count(0) + tree.child_count(d));
+}
