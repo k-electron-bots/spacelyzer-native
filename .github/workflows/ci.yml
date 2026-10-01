@@ -89,6 +89,9 @@ jobs:
           # Keyboard/focus regressions on the expanded 153k-row outline, driven with real key events.
           keys() { osascript -e "tell application \"System Events\" to $1" 2>&1 | head -2 | sed 's/^/osascript: /' >> /tmp/spz-timing.txt; }
           echo "kbd: begin" >> /tmp/spz-timing.txt
+          osascript -e 'tell application "Spacelyzer" to activate' 2>&1 | sed 's/^/activate: /' >> /tmp/spz-timing.txt; sleep 2
+          osascript -e 'tell application "System Events" to get name of first process whose frontmost is true' 2>&1 | sed 's/^/frontmost: /' >> /tmp/spz-timing.txt
+          osascript -e 'tell application "System Events" to tell process "Spacelyzer" to get position of window 1' 2>&1 | sed 's/^/winpos: /' >> /tmp/spz-timing.txt
           keys 'click at {200, 166}'; sleep 1
           for i in $(seq 1 40); do keys 'key code 125'; done; sleep 2
           screencapture -x dist/screenshot-demo-7.png || true
