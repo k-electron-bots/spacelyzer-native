@@ -165,10 +165,10 @@ struct TrailingPane: View {
                     if let t = model.tree { Text(t.name(model.displayedRoot).isEmpty ? model.rootPath : t.path(model.displayedRoot)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head) }
                 }.padding(8)
                 TreemapView().padding([.horizontal, .bottom], 8)
-            case .kinds: KindsView()
-            case .largest: LargestView()
+            case .kinds: KindsView().frame(maxHeight: .infinity)
+            case .largest: LargestView().frame(maxHeight: .infinity)
             }
-            if let id = model.selected, let t = model.tree { SelectionBar(tree: t, id: id) }
+            if let id = model.selected, let t = model.tree { SelectionBar(tree: t, id: id).fixedSize(horizontal: false, vertical: true).layoutPriority(1) }
         }
     }
 }
