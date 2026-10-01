@@ -13,9 +13,11 @@ struct ContentView: View {
                 NavigationSplitView {
                     OutlineView()
                         .navigationSplitViewColumnWidth(min: 320, ideal: 420, max: 700)
+                        .padding(.bottom, StatusBar.height)
                 } detail: {
                     TrailingPane()
                         .frame(minWidth: 380)
+                        .padding(.bottom, StatusBar.height)
                         .background(GeometryReader { g in
                             Color.clear.onChange(of: g.size, initial: true) { _, _ in LayoutProbe.log("detail", g) }
                         })
@@ -94,6 +96,8 @@ struct WelcomeView: View {
 }
 
 struct StatusBar: View {
+    /// Measured on CI: NavigationSplitView columns extend to the window bottom (frame bottom = 612 = window height), under this bar.
+    static let height: CGFloat = 26
     @Environment(AppModel.self) private var model
     var body: some View {
         HStack {
