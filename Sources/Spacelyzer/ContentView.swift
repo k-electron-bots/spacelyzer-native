@@ -12,7 +12,7 @@ struct ContentView: View {
             } else {
                 NavigationSplitView {
                     OutlineView()
-                        .navigationSplitViewColumnWidth(min: 320, ideal: 420, max: 700)
+                        .navigationSplitViewColumnWidth(min: 280, ideal: 340, max: 700)
                         .padding(.bottom, StatusBar.height)
                 } detail: {
                     TrailingPane()
@@ -52,7 +52,7 @@ struct ContentView: View {
                 } label: { Label("Filter", systemImage: model.filterIsActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle") }
                 .disabled(model.tree == nil)
             }
-            ToolbarItem {
+            ToolbarItem(placement: .principal) {
                 Picker("View", selection: $model.tab) {
                     Text("Treemap").tag(TrailingTab.treemap)
                     Text("Kinds").tag(TrailingTab.kinds)
