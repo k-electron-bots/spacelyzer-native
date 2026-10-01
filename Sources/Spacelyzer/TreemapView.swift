@@ -68,6 +68,11 @@ struct TreemapView: View {
                 }
             }
             .clipped()
+            .overlay {
+                if model.activeFilter != nil && (layout?.rects.isEmpty ?? false) {
+                    ContentUnavailableView("No matches", systemImage: "line.3.horizontal.decrease.circle")
+                }
+            }
             .contentShape(Rectangle())
             .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0; relayout() }
             .onContinuousHover { phase in

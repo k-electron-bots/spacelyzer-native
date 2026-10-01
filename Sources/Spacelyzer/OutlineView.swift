@@ -20,6 +20,12 @@ struct OutlineView: View {
                 }
             }
             .listStyle(.sidebar)
+            .overlay {
+                if model.activeFilter != nil && model.outlineRows.isEmpty {
+                    ContentUnavailableView("No matches", systemImage: "line.3.horizontal.decrease.circle",
+                                           description: Text("Nothing in this folder matches the current filter."))
+                }
+            }
             .onAppear { model.refreshOutline() }
         } else {
             ProgressView("Scanning…").frame(maxWidth: .infinity, maxHeight: .infinity)
