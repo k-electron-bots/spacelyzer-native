@@ -18,6 +18,7 @@ const ATTR_CMN_RETURNED_ATTRS: u32 = 0x8000_0000;
 const ATTR_CMN_NAME: u32 = 0x0000_0001;
 const ATTR_CMN_DEVID: u32 = 0x0000_0002;
 const ATTR_CMN_OBJTYPE: u32 = 0x0000_0008;
+const ATTR_CMN_MODTIME: u32 = 0x0000_0400;
 const ATTR_CMN_FILEID: u32 = 0x0200_0000;
 const ATTR_FILE_LINKCOUNT: u32 = 0x0000_0001;
 const ATTR_FILE_ALLOCSIZE: u32 = 0x0000_0004;
@@ -89,7 +90,7 @@ pub(crate) fn enumerate_bulk(dir: &Path) -> std::io::Result<Vec<RawEntry>> {
     let mut al = AttrList {
         bitmapcount: ATTR_BIT_MAP_COUNT,
         reserved: 0,
-        commonattr: ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_NAME | ATTR_CMN_DEVID | ATTR_CMN_OBJTYPE | ATTR_CMN_FILEID,
+        commonattr: ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_NAME | ATTR_CMN_DEVID | ATTR_CMN_OBJTYPE | ATTR_CMN_MODTIME | ATTR_CMN_FILEID,
         volattr: 0,
         dirattr: 0,
         fileattr: ATTR_FILE_LINKCOUNT | ATTR_FILE_ALLOCSIZE,
@@ -134,6 +135,7 @@ fn parse_record(rec: &[u8]) -> Option<RawEntry> {
     let mut name: Option<Box<str>> = None;
     let (mut dev, mut ino, mut objtype) = (0u64, 0u64, 0u32);
     let (mut nlink, mut alloc) = (1u32, 0u64);
+    let mut mtime = 0i64;
 
     if ret_common & ATTR_CMN_NAME != 0 {
         let ref_pos = c.pos;
@@ -149,6 +151,10 @@ fn parse_record(rec: &[u8]) -> Option<RawEntry> {
     }
     if ret_common & ATTR_CMN_OBJTYPE != 0 {
         objtype = c.u32()?;
+    }
+    if ret_common & ATTR_CMN_MODTIME != 0 {
+        mtime = c.i64()?; // timespec: tv_sec
+        let _nsec = c.i64()?;
     }
     if ret_common & ATTR_CMN_FILEID != 0 {
         ino = c.u64()?;
@@ -166,5 +172,5 @@ fn parse_record(rec: &[u8]) -> Option<RawEntry> {
         VREG => Kind::File,
         _ => Kind::File, // devices, sockets, fifos: recorded as files with whatever size they report
     };
-    Some(RawEntry { name, kind, alloc, nlink, dev, ino })
+    Some(RawEntry { name, kind, alloc, nlink, dev, ino, mtime })
 }

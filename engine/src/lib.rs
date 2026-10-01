@@ -3,13 +3,15 @@
 //! this crate through the C ABI in `ffi`.
 
 pub mod category;
+pub mod filter;
 pub mod ffi;
 pub mod layout;
 pub mod scan;
 pub mod tree;
 
 pub use category::Category;
-pub use layout::{layout, hit_test, LayoutOptions, Rect};
+pub use filter::{apply as apply_filter, Filter, FilterResult};
+pub use layout::{layout, layout_with, hit_test, LayoutOptions, Rect};
 pub use tree::{SkipReason, Skipped};
 pub use scan::{scan, ScanOptions, ScanProgress};
 pub use tree::{Kind, NodeId, Tree};

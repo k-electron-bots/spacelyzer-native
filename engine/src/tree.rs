@@ -34,6 +34,7 @@ pub struct Tree {
     pub(crate) category: Vec<u8>,
     /// Cumulative allocated bytes (own bytes for files).
     pub(crate) size: Vec<u64>,
+    pub(crate) mtime: Vec<i64>,
     pub(crate) first_child: Vec<NodeId>,
     pub(crate) child_count: Vec<u32>,
     pub(crate) root_path: String,
@@ -72,6 +73,9 @@ impl Tree {
     }
     pub fn name(&self, id: NodeId) -> &str {
         &self.names[id as usize]
+    }
+    pub fn mtime(&self, id: NodeId) -> i64 {
+        self.mtime[id as usize]
     }
     pub fn size(&self, id: NodeId) -> u64 {
         self.size[id as usize]
@@ -188,5 +192,65 @@ impl Tree {
             self.size[p as usize] = self.size[p as usize].saturating_sub(removed);
             cur = self.parent(p);
         }
+    }
+}
+
+impl Tree {
+    /// Deterministic synthetic tree with about `n` nodes for benchmarks and tests (not a scan).
+    /// Every directory has up to 50 children, a fifth of which are directories.
+    #[doc(hidden)]
+    pub fn synthetic(n: usize) -> Tree {
+        let mut t = Tree { root_path: "/synthetic".into(), ..Default::default() };
+        let exts = ["swift", "rs", "png", "mov", "json", "txt", "zip", "so", "mp3", "pdf", "bin", "ttf"];
+        let mut rng: u64 = 0x9E3779B97F4A7C15;
+        let mut next = move || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+        let mut push = |t: &mut Tree, name: String, parent: u32, kind: Kind, size: u64, mtime: i64| -> u32 {
+            let id = t.names.len() as u32;
+            let cat = if kind == Kind::Directory { Category::Folder as u8 } else { Category::classify(&name) as u8 };
+            t.names.push(name.into());
+            t.parent.push(parent);
+            t.kind.push(kind as u8);
+            t.category.push(cat);
+            t.size.push(size);
+            t.mtime.push(mtime);
+            t.first_child.push(NO_NODE);
+            t.child_count.push(0);
+            id
+        };
+        push(&mut t, String::new(), NO_NODE, Kind::Directory, 0, 0);
+        let mut cur = 0usize;
+        while t.names.len() < n && cur < t.names.len() {
+            if t.kind[cur] == Kind::Directory as u8 {
+                let kids = 10 + (next() % 41) as u32;
+                let first = t.names.len() as u32;
+                for k in 0..kids {
+                    if t.names.len() >= n {
+                        break;
+                    }
+                    let r = next();
+                    if r % 5 == 0 {
+                        push(&mut t, format!("dir{}", k), cur as u32, Kind::Directory, 0, 1_600_000_000 + (r % 100_000_000) as i64);
+                    } else {
+                        let size = 4096 * (1 + (r >> 8) % 64) * if r % 97 == 0 { 2000 } else { 1 };
+                        push(&mut t, format!("file{}_{}.{}", k, r % 1000, exts[(r >> 20) as usize % exts.len()]), cur as u32, Kind::File, size, 1_500_000_000 + (r % 200_000_000) as i64);
+                    }
+                }
+                t.first_child[cur] = first;
+                t.child_count[cur] = t.names.len() as u32 - first;
+            }
+            cur += 1;
+        }
+        // Roll sizes up (children after parents), then sort each directory's children by size.
+        for i in (1..t.names.len()).rev() {
+            let p = t.parent[i] as usize;
+            t.size[p] += t.size[i];
+        }
+        t.items = t.names.len() as u64 - 1;
+        t
     }
 }

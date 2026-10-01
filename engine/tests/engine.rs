@@ -140,3 +140,88 @@ fn default_backend_agrees_with_portable_backend() {
         assert_eq!(a.size(id), b.size(id), "size differs for {}", a.path(id));
     }
 }
+
+#[test]
+fn filter_counts_and_rollups_match_brute_force() {
+    let t = fixture();
+    let tree = scan(t.path(), &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    let f = Filter { text: "F3".into(), min_size: Some(1000), ..Default::default() };
+    let r = apply_filter(&tree, &f);
+    let mut count = 0u64;
+    let mut bytes = 0u64;
+    for id in 0..tree.len() as u32 {
+        if tree.kind(id) == Kind::Directory { continue; }
+        let sz = tree.own_bytes(id);
+        if tree.name(id).to_ascii_lowercase().contains("f3") && sz >= 1000 { count += 1; bytes += sz; }
+    }
+    assert!(count > 0);
+    assert_eq!(r.total_count, count);
+    assert_eq!(r.total_bytes, bytes);
+    for id in 0..tree.len() as u32 {
+        if tree.child_count(id) > 0 {
+            let s: u64 = tree.children(id).map(|c| r.sizes[c as usize]).sum();
+            assert_eq!(r.sizes[id as usize], s + if tree.kind(id) == Kind::Directory { 0 } else { r.sizes[id as usize] - s });
+        }
+    }
+}
+
+#[test]
+fn empty_filter_matches_everything_and_extension_kind_work() {
+    let t = fixture();
+    let tree = scan(t.path(), &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    let all = apply_filter(&tree, &Filter::default());
+    assert_eq!(all.total_bytes, tree.size(0));
+    let mov = apply_filter(&tree, &Filter { extension: ".MOV".into(), ..Default::default() });
+    assert_eq!(mov.total_count, 2); // big.mov and its hard link entry (link counted 0 bytes)
+    let vid = apply_filter(&tree, &Filter { category_mask: spacelyzer_engine::filter::mask(&[spacelyzer_engine::Category::Video]), ..Default::default() });
+    assert_eq!(vid.total_bytes, mov.total_bytes);
+    let none = apply_filter(&tree, &Filter { max_size: Some(0), min_size: Some(1), ..Default::default() });
+    assert_eq!(none.total_count, 0);
+}
+
+#[test]
+fn modified_time_filter_and_filtered_layout() {
+    let t = fixture();
+    let tree = scan(t.path(), &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    let future = Filter { modified_from: Some(i64::MAX - 1), ..Default::default() };
+    assert_eq!(apply_filter(&tree, &future).total_count, 0);
+    let recent = Filter { modified_from: Some(1), ..Default::default() };
+    assert_eq!(apply_filter(&tree, &recent).total_bytes, tree.size(0));
+    let r = apply_filter(&tree, &Filter { text: "f1".into(), ..Default::default() });
+    let rects = spacelyzer_engine::layout_with(&tree, 0, &LayoutOptions { min_edge: 0.0, inset: 0.0, ..Default::default() }, Some(&r.sizes));
+    assert!(!rects.is_empty());
+    // Only nodes with matching bytes are drawn.
+    assert!(rects.iter().filter(|x| x.depth > 0).all(|x| r.sizes[x.node as usize] > 0));
+}
+
+#[test]
+fn symlink_cycles_and_dir_symlinks_are_not_followed_or_double_counted() {
+    let t = fixture();
+    let r = t.path();
+    std::fs::create_dir_all(r.join("real/inner")).unwrap();
+    std::fs::write(r.join("real/inner/data.bin"), vec![1u8; 100_000]).unwrap();
+    std::os::unix::fs::symlink(r.join("real"), r.join("real/inner/loop")).unwrap();
+    std::os::unix::fs::symlink(r.join("real"), r.join("alias_dir")).unwrap();
+    let base = scan(r, &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    let data: u64 = (0..base.len() as u32).filter(|&i| base.name(i) == "data.bin").map(|i| base.own_bytes(i)).sum();
+    assert!(data >= 100_000 && data < 110_000, "one allocation of data.bin");
+    let count = (0..base.len() as u32).filter(|&i| base.name(i) == "data.bin").count();
+    assert_eq!(count, 1);
+    let total = base.size(0);
+    let again = scan(r, &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    assert_eq!(again.size(0), total, "repeat scan is stable");
+}
+
+#[test]
+fn hard_link_across_directories_counted_once() {
+    let t = fixture();
+    let r = t.path();
+    std::fs::create_dir_all(r.join("a")).unwrap();
+    std::fs::create_dir_all(r.join("b")).unwrap();
+    std::fs::write(r.join("a/x"), vec![2u8; 200_000]).unwrap();
+    std::fs::hard_link(r.join("a/x"), r.join("b/y")).unwrap();
+    let before = scan(r, &ScanOptions::default(), &ScanProgress::default()).unwrap().size(0);
+    std::fs::remove_file(r.join("b/y")).unwrap();
+    let after = scan(r, &ScanOptions::default(), &ScanProgress::default()).unwrap().size(0);
+    assert_eq!(before, after, "second hard link adds no bytes");
+}

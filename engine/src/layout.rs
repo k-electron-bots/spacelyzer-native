@@ -50,8 +50,15 @@ struct Item {
 }
 
 pub fn layout(tree: &Tree, root: NodeId, opts: &LayoutOptions) -> Vec<Rect> {
+    layout_with(tree, root, opts, None)
+}
+
+/// Layout using per-node sizes from a filter result instead of the tree's own sizes.
+/// Children are re-sorted by those sizes.
+pub fn layout_with(tree: &Tree, root: NodeId, opts: &LayoutOptions, sizes: Option<&[u64]>) -> Vec<Rect> {
+    let sz = |id: NodeId| -> u64 { sizes.map(|s| s[id as usize]).unwrap_or_else(|| tree.size(id)) };
     let mut out = Vec::new();
-    let total = tree.size(root);
+    let total = sz(root);
     if total == 0 || opts.width <= 0.0 || opts.height <= 0.0 {
         return out;
     }
@@ -68,7 +75,7 @@ pub fn layout(tree: &Tree, root: NodeId, opts: &LayoutOptions) -> Vec<Rect> {
         if w < opts.min_edge || h < opts.min_edge {
             continue;
         }
-        let dir_total = tree.size(dir) as f64;
+        let dir_total = sz(dir) as f64;
         if dir_total <= 0.0 {
             continue;
         }
@@ -77,8 +84,13 @@ pub fn layout(tree: &Tree, root: NodeId, opts: &LayoutOptions) -> Vec<Rect> {
         let mut small = 0.0f64;
         let mut small_bytes = 0u64;
         let min_area = (opts.min_edge as f64) * (opts.min_edge as f64);
-        for c in tree.children(dir) {
-            let s = tree.size(c);
+        let mut kids: Vec<NodeId> = tree.children(dir).collect();
+        if sizes.is_some() {
+            kids.retain(|&c| sz(c) > 0);
+            kids.sort_unstable_by_key(|&c| std::cmp::Reverse(sz(c)));
+        }
+        for c in kids {
+            let s = sz(c);
             if s == 0 {
                 continue;
             }
@@ -116,7 +128,7 @@ pub fn layout(tree: &Tree, root: NodeId, opts: &LayoutOptions) -> Vec<Rect> {
                         && rh > opts.min_edge * 3.0;
                     out.push(Rect {
                         x: rx, y: ry, w: rw, h: rh, node: c, depth: depth + 1, branch: b,
-                        flags: if descend { FLAG_DIR } else { FLAG_LEAF }, size: tree.size(c),
+                        flags: if descend { FLAG_DIR } else { FLAG_LEAF }, size: sz(c),
                     });
                     if descend {
                         work.push_back((c, (rx, ry, rw, rh), depth + 1, b));

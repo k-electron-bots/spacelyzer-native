@@ -47,9 +47,11 @@ pub(crate) struct RawEntry {
     pub nlink: u32,
     pub dev: u64,
     pub ino: u64,
+    pub mtime: i64,
 }
 
 struct Ent {
+    mtime: i64,
     name: Box<str>,
     kind: Kind,
     size: u64,
@@ -179,7 +181,7 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
                 }
                 let kind = if is_package(&r.name) { Kind::Package } else { Kind::Directory };
                 subdirs.push((ents.len(), path));
-                ents.push(Ent { name: r.name, kind, size: 0, dir: None });
+                ents.push(Ent { mtime: r.mtime, name: r.name, kind, size: 0, dir: None });
             }
             k => {
                 let size = if k == Kind::File && r.nlink > 1 && !ctx.files.claim(r.dev, r.ino) {
@@ -188,7 +190,7 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
                     r.alloc
                 };
                 local_bytes += size;
-                ents.push(Ent { name: r.name, kind: k, size, dir: None });
+                ents.push(Ent { mtime: r.mtime, name: r.name, kind: k, size, dir: None });
             }
         }
     }
@@ -212,7 +214,7 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
 /// Breadth-first flatten so each directory's children are contiguous and size-sorted.
 fn flatten(root_path: String, root: DirNode, ctx: Ctx, progress: &ScanProgress) -> Tree {
     let mut t = Tree { root_path, ..Default::default() };
-    let push = |t: &mut Tree, name: &str, parent: u32, kind: Kind, size: u64| -> u32 {
+    let push = |t: &mut Tree, name: &str, parent: u32, kind: Kind, size: u64, mtime: i64| -> u32 {
         let id = t.names.len() as u32;
         t.names.push(name.into());
         t.parent.push(parent);
@@ -223,11 +225,12 @@ fn flatten(root_path: String, root: DirNode, ctx: Ctx, progress: &ScanProgress) 
             Category::classify(name) as u8
         });
         t.size.push(size);
+        t.mtime.push(mtime);
         t.first_child.push(NO_NODE);
         t.child_count.push(0);
         id
     };
-    push(&mut t, "", NO_NODE, Kind::Directory, root.total);
+    push(&mut t, "", NO_NODE, Kind::Directory, root.total, 0);
     let mut queue: std::collections::VecDeque<(u32, DirNode)> = std::collections::VecDeque::new();
     queue.push_back((0, root));
     while let Some((id, mut node)) = queue.pop_front() {
@@ -238,7 +241,7 @@ fn flatten(root_path: String, root: DirNode, ctx: Ctx, progress: &ScanProgress) 
         t.first_child[id as usize] = t.names.len() as u32;
         t.child_count[id as usize] = node.ents.len() as u32;
         for e in node.ents {
-            let cid = push(&mut t, &e.name, id, e.kind, e.size);
+            let cid = push(&mut t, &e.name, id, e.kind, e.size, e.mtime);
             if let Some(d) = e.dir {
                 queue.push_back((cid, *d));
             }
@@ -289,6 +292,7 @@ pub(crate) fn enumerate_portable(dir: &Path) -> std::io::Result<Vec<RawEntry>> {
             nlink: md.nlink() as u32,
             dev: md.dev(),
             ino: md.ino(),
+            mtime: md.mtime(),
         });
     }
     Ok(out)
