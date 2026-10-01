@@ -56,9 +56,13 @@ struct SpacelyzerApp: App {
                         DemoInput.click(fromTop: 124, x: 168)                       // a visible outline row
                         try? await Task.sleep(nanoseconds: 1_000_000_000)
                         Perf.log("kbd: after click selected=\(model.selected.map(String.init) ?? "nil")")
+                        let idx0 = model.selected.flatMap { n in model.outlineRows.firstIndex { $0.node == n } }
+                        Check.expect("click-selects-a-row", idx0 != nil)
                         for _ in 0..<40 { DemoInput.key(125); try? await Task.sleep(nanoseconds: 30_000_000) }
                         try? await Task.sleep(nanoseconds: 2_000_000_000)
                         Perf.log("kbd: after 40 down arrows selected=\(model.selected.map(String.init) ?? "nil")")
+                        let idx1 = model.selected.flatMap { n in model.outlineRows.firstIndex { $0.node == n } }
+                        Check.expect("40-down-arrows-move-40-rows", idx0 != nil && idx1 == idx0.map { $0 + 40 }, "from=\(idx0 ?? -1) to=\(idx1 ?? -1)")
                         mark(8)
                         try? await Task.sleep(nanoseconds: 4_000_000_000)
                         let before = model.selected
@@ -70,6 +74,7 @@ struct SpacelyzerApp: App {
                         try? await Task.sleep(nanoseconds: 1_000_000_000)
                         for _ in 0..<5 { DemoInput.key(125); try? await Task.sleep(nanoseconds: 50_000_000) }
                         try? await Task.sleep(nanoseconds: 2_500_000_000)
+                        Check.expect("arrows-in-filter-field-do-not-move-selection", model.filterText == "lib" && model.selected == before, "text=\(model.filterText)")
                         Perf.log("kbd: filterText='\(model.filterText)' selection before=\(before.map(String.init) ?? "nil") after5arrows=\(model.selected.map(String.init) ?? "nil")")
                         mark(9)
                         // Step 10: no-matches state from the model (independent of event injection).
@@ -85,17 +90,21 @@ struct SpacelyzerApp: App {
                         await settle()   // filter 'zzzqqq' is active: victim is outside it
                         model.proposeRemoval(of: victim)
                         Perf.log("guardA propose-outside-filter pending=\(model.pendingRemoval != nil) message=\(model.removalMessage != nil) trashCalls=\(calls) expect pending=false message=true calls=0")
+                        Check.expect("propose-outside-filter-is-refused", model.pendingRemoval == nil && model.removalMessage != nil && calls == 0)
                         model.removalMessage = nil
                         model.filterText = ""; await settle()
                         model.proposeRemoval(of: victim)
                         Perf.log("guardB1 propose-no-filter pending=\(model.pendingRemoval != nil) trashCalls=\(calls) expect pending=true calls=0")
+                        Check.expect("propose-with-no-filter-opens-confirmation", model.pendingRemoval != nil && calls == 0)
                         model.filterText = "zzzqqq"; await settle()   // filter changes while the confirmation is open
                         model.confirmRemoval()
                         Perf.log("guardB2 confirm-after-filter-hid-it pending=\(model.pendingRemoval != nil) message=\(model.removalMessage != nil) trashCalls=\(calls) expect pending=false message=true calls=0")
+                        Check.expect("confirm-after-filter-hid-it-trashes-nothing", model.pendingRemoval == nil && model.removalMessage != nil && calls == 0)
                         model.removalMessage = nil
                         model.filterText = ""; await settle()
                         model.proposeRemoval(of: victim); model.confirmRemoval()
                         Perf.log("guardC control-no-filter-mocked trashCalls=\(calls) expect calls=1 proves-mock-wired")
+                        Check.expect("control-unfiltered-confirm-reaches-mock-once", calls == 1, "calls=\(calls)")
                         model.removalMessage = nil
                         model.filterText = "zzzqqq"; model.selected = model.outlineRows.first?.node ?? 1
                         await settle(); mark(11)
@@ -131,5 +140,15 @@ struct SpacelyzerApp: App {
                                         windowNumber: w.windowNumber, context: nil, characters: ch, charactersIgnoringModifiers: ch,
                                         isARepeat: false, keyCode: code) { NSApp.postEvent(e, atStart: false) }
         }
+    }
+}
+
+/// CI-only: pass/fail assertions, written to their own file so evidence never depends on log truncation.
+@MainActor enum Check {
+    static func expect(_ name: String, _ ok: Bool, _ detail: String = "") {
+        let line = "\(ok ? "PASS" : "FAIL") \(name) \(detail)\n"
+        let url = URL(fileURLWithPath: "/tmp/spz-assertions.txt")
+        if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); try? h.close() } else { try? line.write(to: url, atomically: true, encoding: .utf8) }
+        Perf.log("check \(line.trimmingCharacters(in: .whitespacesAndNewlines))")
     }
 }

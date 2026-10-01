@@ -79,7 +79,7 @@ jobs:
           pkill Spacelyzer || true
           sleep 2
           # Scripted interaction run: the app writes /tmp/spz-demo-step after each state settles.
-          rm -f /tmp/spz-demo-step /tmp/spz-geom.txt /tmp/spz-timing.txt
+          rm -f /tmp/spz-demo-step /tmp/spz-geom.txt /tmp/spz-timing.txt /tmp/spz-assertions.txt
           open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Library --env SPZ_DEMO=1
           for step in 1 2 3 4 5 6 7 8 9 10 11; do
             for i in $(seq 1 90); do [ "$(cat /tmp/spz-demo-step 2>/dev/null)" = "$step" ] && break; sleep 1; done
@@ -92,6 +92,17 @@ jobs:
             echo "::notice title=timing::$body"
           fi
           pkill Spacelyzer || true
+      - name: UI assertions (fail the build on any failure)
+        run: |
+          cp /tmp/spz-assertions.txt dist/ui-assertions.txt 2>/dev/null || true
+          cat /tmp/spz-assertions.txt || true
+          expected=7
+          n=$(grep -c '^PASS\|^FAIL' /tmp/spz-assertions.txt 2>/dev/null || echo 0)
+          if grep -q '^FAIL' /tmp/spz-assertions.txt 2>/dev/null || [ "$n" -ne "$expected" ]; then
+            echo "::error title=ui-assertions::expected $expected results, got $n; $(tr '\n' ';' < /tmp/spz-assertions.txt 2>/dev/null)"
+            exit 1
+          fi
+          echo "::notice title=ui-assertions::all $n UI assertions passed: $(cut -d' ' -f2 /tmp/spz-assertions.txt | tr '\n' ' ')"
       - uses: actions/upload-artifact@v4
         with:
           name: Spacelyzer-${{ steps.ver.outputs.version }}
@@ -99,11 +110,12 @@ jobs:
             dist/*.dmg
             dist/*.sha256
             dist/screenshot*.png
+            dist/ui-assertions.txt
       - name: Publish release (main only)
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           V=v${{ steps.ver.outputs.version }}
-          gh release create "$V" dist/*.dmg dist/*.sha256 dist/screenshot*.png --title "Spacelyzer $V" --prerelease \
+          gh release create "$V" dist/*.dmg dist/*.sha256 dist/screenshot*.png dist/ui-assertions.txt --title "Spacelyzer $V" --prerelease \
             --notes "Self-signed development build (not notarized). Not Apple-verified: after the first blocked open, use System Settings > Privacy & Security > Open Anyway. Screenshots attached are from the CI runner, not a real Mac. Built from ${{ github.sha }}."
