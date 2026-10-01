@@ -62,8 +62,10 @@ struct SpacelyzerApp: App {
                         mark(8)
                         try? await Task.sleep(nanoseconds: 4_000_000_000)
                         let before = model.selected
+                        Perf.log("kbd: step 9 begin, clicking filter field")
                         DemoInput.click(fromTop: 65, x: 148)                        // filter field
                         try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        Perf.log("kbd: filter field clicked")
                         for c in "lib" { DemoInput.key(0, chars: String(c)) }
                         try? await Task.sleep(nanoseconds: 1_000_000_000)
                         for _ in 0..<5 { DemoInput.key(125); try? await Task.sleep(nanoseconds: 50_000_000) }
@@ -95,7 +97,7 @@ struct SpacelyzerApp: App {
         let p = NSPoint(x: x, y: w.frame.height - y)
         for t in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
             if let e = NSEvent.mouseEvent(with: t, location: p, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                                          windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) { w.sendEvent(e) }
+                                          windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) { NSApp.postEvent(e, atStart: false) }
         }
     }
     static func key(_ code: UInt16, chars: String? = nil) {
@@ -104,7 +106,7 @@ struct SpacelyzerApp: App {
         for t in [NSEvent.EventType.keyDown, .keyUp] {
             if let e = NSEvent.keyEvent(with: t, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                         windowNumber: w.windowNumber, context: nil, characters: ch, charactersIgnoringModifiers: ch,
-                                        isARepeat: false, keyCode: code) { w.sendEvent(e) }
+                                        isARepeat: false, keyCode: code) { NSApp.postEvent(e, atStart: false) }
         }
     }
 }
