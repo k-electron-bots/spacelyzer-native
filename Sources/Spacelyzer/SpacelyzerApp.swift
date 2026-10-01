@@ -8,7 +8,7 @@ struct SpacelyzerApp: App {
         WindowGroup("Spacelyzer") {
             ContentView()
                 .environment(model)
-                .frame(minWidth: 1040, minHeight: 600)
+                .frame(minWidth: 960, minHeight: 600)
                 .task {
                     // CI uses this to launch with a scan already running and take a screenshot.
                     let env = ProcessInfo.processInfo.environment
