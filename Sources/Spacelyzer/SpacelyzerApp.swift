@@ -84,18 +84,18 @@ struct SpacelyzerApp: App {
                         model.selected = victim; model.removalMessage = nil; model.pendingRemoval = nil
                         await settle()   // filter 'zzzqqq' is active: victim is outside it
                         model.proposeRemoval(of: victim)
-                        Perf.log("guard A (propose while outside filter): pending=\(model.pendingRemoval != nil) message=\(model.removalMessage != nil) trashCalls=\(calls) expect pending=false message=true calls=0")
+                        Perf.log("guardA propose-outside-filter pending=\(model.pendingRemoval != nil) message=\(model.removalMessage != nil) trashCalls=\(calls) expect pending=false message=true calls=0")
                         model.removalMessage = nil
                         model.filterText = ""; await settle()
                         model.proposeRemoval(of: victim)
-                        Perf.log("guard B1 (propose with no filter): pending=\(model.pendingRemoval != nil) trashCalls=\(calls) expect pending=true calls=0")
+                        Perf.log("guardB1 propose-no-filter pending=\(model.pendingRemoval != nil) trashCalls=\(calls) expect pending=true calls=0")
                         model.filterText = "zzzqqq"; await settle()   // filter changes while the confirmation is open
                         model.confirmRemoval()
-                        Perf.log("guard B2 (confirm after filter hid it): pending=\(model.pendingRemoval != nil) message=\(model.removalMessage != nil) trashCalls=\(calls) expect pending=false message=true calls=0")
+                        Perf.log("guardB2 confirm-after-filter-hid-it pending=\(model.pendingRemoval != nil) message=\(model.removalMessage != nil) trashCalls=\(calls) expect pending=false message=true calls=0")
                         model.removalMessage = nil
                         model.filterText = ""; await settle()
                         model.proposeRemoval(of: victim); model.confirmRemoval()
-                        Perf.log("guard C (control, no filter, mocked): trashCalls=\(calls) expect calls=1 (proves the mock is wired and the guard does not always refuse)")
+                        Perf.log("guardC control-no-filter-mocked trashCalls=\(calls) expect calls=1 proves-mock-wired")
                         model.removalMessage = nil
                         model.filterText = "zzzqqq"; model.selected = model.outlineRows.first?.node ?? 1
                         await settle(); mark(11)
