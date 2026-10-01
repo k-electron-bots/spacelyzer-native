@@ -1,3 +1,4 @@
+import CSpacelyzer
 import SwiftUI
 
 struct OutlineView: View {
