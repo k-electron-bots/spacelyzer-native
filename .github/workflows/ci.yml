@@ -76,7 +76,7 @@ jobs:
           # Scripted interaction run: the app writes /tmp/spz-demo-step after each state settles.
           rm -f /tmp/spz-demo-step
           open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Library --env SPZ_DEMO=1
-          for step in 1 2 3; do
+          for step in 1 2 3 4 5; do
             for i in $(seq 1 90); do [ "$(cat /tmp/spz-demo-step 2>/dev/null)" = "$step" ] && break; sleep 1; done
             sleep 1
             screencapture -x dist/screenshot-demo-$step.png || true

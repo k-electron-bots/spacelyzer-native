@@ -27,6 +27,13 @@ struct SpacelyzerApp: App {
                         model.filterKind = nil; model.filterMinMB = 0; model.filterText = "lib"
                         try? await Task.sleep(nanoseconds: 3_000_000_000); mark(3)
                         try? await Task.sleep(nanoseconds: 4_000_000_000)
+                        model.filterText = ""; model.tab = .kinds
+                        try? await Task.sleep(nanoseconds: 3_000_000_000); mark(4)
+                        try? await Task.sleep(nanoseconds: 4_000_000_000)
+                        model.tab = .largest
+                        if let n = model.outlineRows.dropFirst(2).first?.node { model.selected = n }
+                        try? await Task.sleep(nanoseconds: 3_000_000_000); mark(5)
+                        try? await Task.sleep(nanoseconds: 4_000_000_000)
                     }
                 }
         }
