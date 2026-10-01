@@ -12,6 +12,7 @@ struct ContentView: View {
             } else {
                 NavigationSplitView {
                     OutlineView()
+                        .safeAreaInset(edge: .top, spacing: 0) { FilterBar() }
                         .navigationSplitViewColumnWidth(min: 280, ideal: 340, max: 700)
                         .padding(.bottom, StatusBar.height)
                 } detail: {
@@ -25,7 +26,6 @@ struct ContentView: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) { StatusBar() }
-        .searchable(text: $model.filterText, placement: .toolbar, prompt: "Filter by name")
         .toolbar {
             ToolbarItemGroup {
                 Button { model.up() } label: { Label("Up", systemImage: "arrow.up") }
@@ -38,19 +38,6 @@ struct ContentView: View {
                 if model.scanning {
                     Button { model.cancel() } label: { Label("Stop", systemImage: "stop.circle") }
                 }
-            }
-            ToolbarItem {
-                Menu {
-                    Picker("Kind", selection: $model.filterKind) {
-                        Text("Any kind").tag(FileCategory?.none)
-                        ForEach(FileCategory.allCases.filter { $0 != .folder }, id: \.self) { Text($0.label).tag(Optional($0)) }
-                    }
-                    Picker("Minimum size", selection: $model.filterMinMB) {
-                        Text("Any size").tag(0)
-                        ForEach([1, 10, 100, 1000], id: \.self) { Text("≥ \($0) MB").tag($0) }
-                    }
-                } label: { Label("Filter", systemImage: model.filterIsActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle") }
-                .disabled(model.tree == nil)
             }
             ToolbarItem(placement: .principal) {
                 Picker("View", selection: $model.tab) {
@@ -135,5 +122,38 @@ enum LayoutProbe {
         let url = URL(fileURLWithPath: "/tmp/spz-geom.txt")
         let data = (line + "\n").data(using: .utf8)!
         if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(data); try? h.close() } else { try? data.write(to: url) }
+    }
+}
+
+
+/// Always-visible filter row (name field plus kind and size menu) at the top of the outline.
+struct FilterBar: View {
+    @Environment(AppModel.self) private var model
+    var body: some View {
+        @Bindable var model = model
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Filter by name", text: $model.filterText).textFieldStyle(.plain)
+            if !model.filterText.isEmpty {
+                Button { model.filterText = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(.secondary)
+            }
+            Menu {
+                Picker("Kind", selection: $model.filterKind) {
+                    Text("Any kind").tag(FileCategory?.none)
+                    ForEach(FileCategory.allCases.filter { $0 != .folder }, id: \.self) { Text($0.label).tag(Optional($0)) }
+                }
+                Picker("Minimum size", selection: $model.filterMinMB) {
+                    Text("Any size").tag(0)
+                    ForEach([1, 10, 100, 1000], id: \.self) { Text("≥ \($0) MB").tag($0) }
+                }
+            } label: {
+                Image(systemName: model.filterIsActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+            }
+            .menuStyle(.borderlessButton).fixedSize()
+        }
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+        .padding(.horizontal, 10).padding(.bottom, 4)
+        .disabled(model.tree == nil)
     }
 }
