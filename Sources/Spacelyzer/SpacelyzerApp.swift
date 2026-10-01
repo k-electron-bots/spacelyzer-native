@@ -47,6 +47,33 @@ struct SpacelyzerApp: App {
                             Perf.log("expand-all: rows=\(model.outlineRows.count) set-to-rows-on-main = \(String(format: "%.1f", Perf.ms(since: t1))) ms")
                         }
                         try? await Task.sleep(nanoseconds: 3_000_000_000); mark(6)
+                        // Step 7: selection set from outside the outline (as a treemap click would) must scroll into view.
+                        try? await Task.sleep(nanoseconds: 4_000_000_000)
+                        if model.outlineRows.count > 5000 { model.selected = model.outlineRows[5000].node }
+                        try? await Task.sleep(nanoseconds: 3_000_000_000); mark(7)
+                        // Steps 8-9: in-process NSEvents through the window's responder chain (no OS input permission needed).
+                        try? await Task.sleep(nanoseconds: 3_000_000_000)
+                        DemoInput.click(fromTop: 124, x: 168)                       // a visible outline row
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        Perf.log("kbd: after click selected=\(model.selected.map(String.init) ?? "nil")")
+                        for _ in 0..<40 { DemoInput.key(125); try? await Task.sleep(nanoseconds: 30_000_000) }
+                        try? await Task.sleep(nanoseconds: 2_000_000_000)
+                        Perf.log("kbd: after 40 down arrows selected=\(model.selected.map(String.init) ?? "nil")")
+                        mark(8)
+                        try? await Task.sleep(nanoseconds: 4_000_000_000)
+                        let before = model.selected
+                        DemoInput.click(fromTop: 65, x: 148)                        // filter field
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        for c in "lib" { DemoInput.key(0, chars: String(c)) }
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        for _ in 0..<5 { DemoInput.key(125); try? await Task.sleep(nanoseconds: 50_000_000) }
+                        try? await Task.sleep(nanoseconds: 2_500_000_000)
+                        Perf.log("kbd: filterText='\(model.filterText)' selection before=\(before.map(String.init) ?? "nil") after5arrows=\(model.selected.map(String.init) ?? "nil")")
+                        mark(9)
+                        // Step 10: no-matches state from the model (independent of event injection).
+                        try? await Task.sleep(nanoseconds: 4_000_000_000)
+                        model.filterText = "zzzqqq"
+                        try? await Task.sleep(nanoseconds: 3_000_000_000); mark(10)
                     }
                 }
         }
@@ -56,6 +83,28 @@ struct SpacelyzerApp: App {
                 Button("Scan Startup Disk") { model.scanStartupVolume() }
                 Button("Scan Home Folder") { model.scanHome() }
             }
+        }
+    }
+}
+
+/// CI-only: posts NSEvents straight to the app's key window so the real responder chain and SwiftUI focus handle them.
+@MainActor enum DemoInput {
+    static var window: NSWindow? { NSApp.keyWindow ?? NSApp.windows.first { $0.isVisible } }
+    static func click(fromTop y: CGFloat, x: CGFloat) {
+        guard let w = window else { Perf.log("kbd: no window"); return }
+        let p = NSPoint(x: x, y: w.frame.height - y)
+        for t in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            if let e = NSEvent.mouseEvent(with: t, location: p, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                          windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) { w.sendEvent(e) }
+        }
+    }
+    static func key(_ code: UInt16, chars: String? = nil) {
+        guard let w = window else { return }
+        let ch = chars ?? (code == 125 ? String(UnicodeScalar(NSDownArrowFunctionKey)!) : "")
+        for t in [NSEvent.EventType.keyDown, .keyUp] {
+            if let e = NSEvent.keyEvent(with: t, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                        windowNumber: w.windowNumber, context: nil, characters: ch, charactersIgnoringModifiers: ch,
+                                        isARepeat: false, keyCode: code) { w.sendEvent(e) }
         }
     }
 }

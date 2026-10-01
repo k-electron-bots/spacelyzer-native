@@ -36,6 +36,10 @@ struct OutlineView: View {
                 .onKeyPress(.upArrow) { move(-1, rows, proxy) }
                 .onKeyPress(.rightArrow) { expand(true, tree) }
                 .onKeyPress(.leftArrow) { expand(false, tree) }
+                .onChange(of: model.selected) { _, n in
+                    // Any selection change (treemap, Largest list, keys) scrolls the outline to the row if it is present.
+                    if let n, rows.contains(where: { $0.node == n }) { proxy.scrollTo(n) }
+                }
                 .onKeyPress(.return) { if let s = model.selected { model.drill(into: s) }; return .handled }
             }
             .overlay {

@@ -81,30 +81,11 @@ jobs:
           # Scripted interaction run: the app writes /tmp/spz-demo-step after each state settles.
           rm -f /tmp/spz-demo-step /tmp/spz-geom.txt /tmp/spz-timing.txt
           open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Library --env SPZ_DEMO=1
-          for step in 1 2 3 4 5 6; do
+          for step in 1 2 3 4 5 6 7 8 9 10; do
             for i in $(seq 1 90); do [ "$(cat /tmp/spz-demo-step 2>/dev/null)" = "$step" ] && break; sleep 1; done
             sleep 1
             screencapture -x dist/screenshot-demo-$step.png || true
           done
-          # Keyboard/focus regressions on the expanded 153k-row outline, driven with real key events.
-          keys() { osascript -e "tell application \"System Events\" to $1" 2>&1 | head -2 | sed 's/^/osascript: /' >> /tmp/spz-timing.txt; }
-          echo "kbd: begin" >> /tmp/spz-timing.txt
-          osascript -e 'tell application "Spacelyzer" to activate' 2>&1 | sed 's/^/activate: /' >> /tmp/spz-timing.txt; sleep 2
-          osascript -e 'tell application "System Events" to get name of first process whose frontmost is true' 2>&1 | sed 's/^/frontmost: /' >> /tmp/spz-timing.txt
-          osascript -e 'tell application "System Events" to tell process "Spacelyzer" to get position of window 1' 2>&1 | sed 's/^/winpos: /' >> /tmp/spz-timing.txt
-          keys 'click at {200, 166}'; sleep 1
-          for i in $(seq 1 40); do keys 'key code 125'; done; sleep 2
-          screencapture -x dist/screenshot-demo-7.png || true
-          echo "kbd: after 40 down arrows" >> /tmp/spz-timing.txt
-          keys 'click at {180, 107}'; sleep 1
-          keys 'keystroke "lib"'; sleep 2
-          echo "kbd: filter typed, now 5 down arrows in filter field" >> /tmp/spz-timing.txt
-          for i in $(seq 1 5); do keys 'key code 125'; done; sleep 2
-          screencapture -x dist/screenshot-demo-8.png || true
-          keys 'key code 0 using command down'; keys 'keystroke "zzzqqq"'; sleep 3
-          echo "kbd: no-match query" >> /tmp/spz-timing.txt
-          screencapture -x dist/screenshot-demo-9.png || true
-          sleep 2
           if [ -f /tmp/spz-timing.txt ]; then
             body=$(sed 's/%/%25/g' /tmp/spz-timing.txt | awk '{printf "%s%%0A", $0}' | head -c 30000)
             echo "::notice title=timing::$body"
