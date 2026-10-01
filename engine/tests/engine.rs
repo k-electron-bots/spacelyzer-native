@@ -309,7 +309,12 @@ fn macos_firmlink_reached_twice_is_counted_once() {
     let opts = ScanOptions { exclude, cross_devices: true, ..Default::default() };
     let both = scan(std::path::Path::new("/"), &opts, &ScanProgress::default()).unwrap();
     let only = scan(std::path::Path::new("/Applications"), &ScanOptions::default(), &ScanProgress::default()).unwrap();
-    let apps: Vec<u32> = (0..both.len() as u32).filter(|&i| both.name(i) == "Applications").collect();
+    // Only the /Applications entry points: a direct child of "/" or of the Data volume (app bundles
+    // contain unrelated folders that happen to be named "Applications").
+    let apps: Vec<u32> = (0..both.len() as u32)
+        .filter(|&i| both.name(i) == "Applications")
+        .filter(|&i| both.parent(i).map(|p| p == 0 || both.name(p) == "Data").unwrap_or(false))
+        .collect();
     // The directory exists at most once in the tree, and its size matches a direct scan of /Applications.
     assert!(apps.len() <= 2, "Applications dir nodes: {}", apps.len());
     let sum: u64 = apps.iter().map(|&i| both.size(i)).sum();
