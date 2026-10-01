@@ -184,12 +184,14 @@ struct SelectionBar: View {
                 Text(tree.name(id).isEmpty ? tree.path(id) : tree.name(id)).font(.headline).lineLimit(1)
                 Text("\(formatBytes(info.size))  ·  \(info.category.label)").font(.caption).foregroundStyle(.secondary)
                 if let f = model.activeFilter, f.size(id) == 0 {
-                    Text("Not in the current filter (still selected)").font(.caption.weight(.semibold)).foregroundStyle(.orange)
+                    Text("Not in the current filter (still selected). Move to Trash is off until you clear the filter or reselect.").font(.caption.weight(.semibold)).foregroundStyle(.orange)
                 }
             }
             Spacer()
             Button("Show in Finder") { model.reveal(id) }
             Button("Move to Trash…", role: .destructive) { model.proposeRemoval(of: id) }
+                .disabled(model.isOutsideFilter(id))
+                .help(model.isOutsideFilter(id) ? "This item is outside the current filter. Clear the filter or select it again." : "")
         }.padding(10).background(.bar)
     }
 }

@@ -157,8 +157,16 @@ final class AppModel {
 
     // MARK: Removal (always to the Trash, always after confirmation, always undoable)
 
+    /// True when a filter is active and this item is outside it (hidden from every view).
+    func isOutsideFilter(_ id: UInt32) -> Bool {
+        guard let f = activeFilter else { return false }
+        return f.size(id) == 0
+    }
+
     func proposeRemoval(of id: UInt32) {
         guard id != 0 else { return }
+        // A selection the filter has hidden must not be removable from here: clear the filter or reselect first.
+        if isOutsideFilter(id) { removalMessage = "That item is outside the current filter. Clear the filter or select it again to move it to the Trash."; return }
         pendingRemoval = id
     }
 
@@ -173,6 +181,7 @@ final class AppModel {
     func confirmRemoval() {
         guard let tree, let id = pendingRemoval else { return }
         pendingRemoval = nil
+        if isOutsideFilter(id) { removalMessage = "The filter changed and this item is no longer shown, so nothing was moved. Select it again to remove it."; return }
         let path = tree.path(id)
         if isProtected(path) {
             removalMessage = "\(path) is protected and cannot be removed from here."
