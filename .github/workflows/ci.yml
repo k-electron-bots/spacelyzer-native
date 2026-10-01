@@ -72,6 +72,17 @@ jobs:
           screencapture -x dist/screenshot.png || true
           pgrep -fl Spacelyzer || echo "app not running"
           pkill Spacelyzer || true
+          sleep 2
+          # Scripted interaction run: expand, filter by kind+size, filter by name.
+          open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Library --env SPZ_DEMO=1
+          for i in $(seq 1 40); do sleep 3; pgrep -x Spacelyzer >/dev/null || break; [ -f /tmp/.x ] ; done &
+          sleep 50
+          screencapture -x dist/screenshot-demo-1-expanded.png || true
+          sleep 8
+          screencapture -x dist/screenshot-demo-2-filter-video.png || true
+          sleep 7
+          screencapture -x dist/screenshot-demo-3-filter-name-lib.png || true
+          pkill Spacelyzer || true
       - uses: actions/upload-artifact@v4
         with:
           name: Spacelyzer-${{ steps.ver.outputs.version }}
