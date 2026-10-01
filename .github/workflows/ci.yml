@@ -79,13 +79,14 @@ jobs:
           pkill Spacelyzer || true
           sleep 2
           # Scripted interaction run: the app writes /tmp/spz-demo-step after each state settles.
-          rm -f /tmp/spz-demo-step
+          rm -f /tmp/spz-demo-step /tmp/spz-geom.txt
           open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Library --env SPZ_DEMO=1
           for step in 1 2 3 4 5; do
             for i in $(seq 1 90); do [ "$(cat /tmp/spz-demo-step 2>/dev/null)" = "$step" ] && break; sleep 1; done
             sleep 1
             screencapture -x dist/screenshot-demo-$step.png || true
           done
+          cat /tmp/spz-geom.txt 2>/dev/null | sort -u | head -12 | while IFS= read -r l; do echo "::notice title=layout::${l//%/%25}"; done
           pkill Spacelyzer || true
       - uses: actions/upload-artifact@v4
         with:

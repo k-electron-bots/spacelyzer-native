@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ContentView: View {
@@ -18,6 +19,9 @@ struct ContentView: View {
                 }
                 // The AppKit split view ignores the bottom safe-area inset, so reserve the status bar's height here.
                 .padding(.bottom, 26)
+                .background(GeometryReader { g in
+                    Color.clear.onChange(of: g.size, initial: true) { _, _ in LayoutProbe.log("split", g) }
+                })
             }
           }
           .frame(maxHeight: .infinity)
@@ -117,4 +121,20 @@ struct StatusBar: View {
         .background(.bar)
     }
     private func spz_items(_ t: Tree) -> String { (t.nodeCount - 1).formatted() }
+}
+
+
+/// CI-only layout measurement (SPZ_DEMO): appends geometry and window metrics to /tmp/spz-geom.txt.
+enum LayoutProbe {
+    @MainActor static func log(_ tag: String, _ g: GeometryProxy) {
+        guard ProcessInfo.processInfo.environment["SPZ_DEMO"] != nil else { return }
+        let f = g.frame(in: .global)
+        var line = "\(tag): frame=\(f) size=\(g.size) safe=\(g.safeAreaInsets)"
+        if let w = NSApp.keyWindow ?? NSApp.windows.first {
+            line += " window.frame=\(w.frame) contentLayoutRect=\(w.contentLayoutRect) contentView.frame=\(w.contentView?.frame ?? .zero)"
+        }
+        let url = URL(fileURLWithPath: "/tmp/spz-geom.txt")
+        let data = (line + "\n").data(using: .utf8)!
+        if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(data); try? h.close() } else { try? data.write(to: url) }
+    }
 }
