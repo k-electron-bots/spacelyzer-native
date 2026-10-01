@@ -337,3 +337,23 @@ pub unsafe extern "C" fn spz_layout_new_filtered(t: *const Tree, root: NodeId, w
     let opts = LayoutOptions { width, height, ..Default::default() };
     Box::into_raw(Box::new(Layout { rects: crate::layout::layout_with(&*t, root, &opts, Some(&(*h).0.sizes)) }))
 }
+
+/// Largest matching files under a filter; returns the count written (up to `cap`).
+#[no_mangle]
+pub unsafe extern "C" fn spz_filter_largest_files(t: *const Tree, h: *const FilterHandle, cap: u32, out: *mut NodeId) -> u32 {
+    let v = crate::filter::largest_files(&*t, &(*h).0, cap as usize);
+    for (i, id) in v.iter().enumerate() {
+        *out.add(i) = *id;
+    }
+    v.len() as u32
+}
+
+/// Per-category (bytes, items) over the filtered set, CATEGORY_COUNT * 2 u64s.
+#[no_mangle]
+pub unsafe extern "C" fn spz_filter_category_totals(t: *const Tree, h: *const FilterHandle, out: *mut u64) {
+    let totals = crate::filter::category_totals(&*t, &(*h).0);
+    for (i, (b, n)) in totals.iter().enumerate().take(CATEGORY_COUNT) {
+        *out.add(i * 2) = *b;
+        *out.add(i * 2 + 1) = *n;
+    }
+}

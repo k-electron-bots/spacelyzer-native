@@ -124,3 +124,32 @@ pub fn apply(tree: &Tree, f: &Filter) -> FilterResult {
 pub fn mask(cats: &[Category]) -> u32 {
     cats.iter().fold(0, |m, c| m | (1u32 << (*c as u8)))
 }
+
+/// The `n` largest matching regular files, largest first. Mirrors `Tree::largest_files` over the filtered set.
+pub fn largest_files(tree: &Tree, r: &FilterResult, n: usize) -> Vec<NodeId> {
+    let mut v: Vec<NodeId> = (0..tree.len() as NodeId)
+        .filter(|&i| tree.kind[i as usize] == Kind::File as u8 && r.sizes[i as usize] > 0)
+        .collect();
+    let n = n.min(v.len());
+    if n == 0 {
+        return vec![];
+    }
+    v.select_nth_unstable_by_key(n - 1, |&i| std::cmp::Reverse(r.sizes[i as usize]));
+    v.truncate(n);
+    v.sort_by_key(|&i| std::cmp::Reverse(r.sizes[i as usize]));
+    v
+}
+
+/// Matching bytes and item counts per category (same units as `Tree::category_totals`).
+pub fn category_totals(tree: &Tree, r: &FilterResult) -> [(u64, u64); crate::category::CATEGORY_COUNT] {
+    let mut out = [(0u64, 0u64); crate::category::CATEGORY_COUNT];
+    for i in 0..tree.len() {
+        if tree.kind[i] == Kind::Directory as u8 || r.counts[i] == 0 {
+            continue;
+        }
+        let c = tree.category[i] as usize;
+        out[c].0 += r.sizes[i];
+        out[c].1 += 1;
+    }
+    out
+}

@@ -323,3 +323,23 @@ fn macos_firmlink_reached_twice_is_counted_once() {
     eprintln!("firmlink check: nodes={} sum={} direct={} ratio={:.4}", apps.len(), sum, direct, ratio);
     assert!(ratio < 1.05, "double counted: ratio {ratio}");
 }
+
+#[test]
+fn filtered_largest_and_kinds_honor_the_filter() {
+    let t = fixture();
+    let tree = scan(t.path(), &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    let f = Filter { text: "f1".into(), ..Default::default() };
+    let r = apply_filter(&tree, &f);
+    let big = spacelyzer_engine::filter::largest_files(&tree, &r, 1000);
+    assert!(!big.is_empty());
+    for w in big.windows(2) { assert!(r.sizes[w[0] as usize] >= r.sizes[w[1] as usize]); }
+    for &i in &big { assert!(tree.name(i).to_ascii_lowercase().contains("f1")); }
+    assert_eq!(big.len() as u64, r.total_count);
+    let cats = spacelyzer_engine::filter::category_totals(&tree, &r);
+    assert_eq!(cats.iter().map(|c| c.0).sum::<u64>(), r.total_bytes);
+    assert_eq!(cats.iter().map(|c| c.1).sum::<u64>(), r.total_count);
+    // Nothing matches: both are empty, never the unfiltered list.
+    let none = apply_filter(&tree, &Filter { text: "zzzqqq-no-such".into(), ..Default::default() });
+    assert!(spacelyzer_engine::filter::largest_files(&tree, &none, 10).is_empty());
+    assert!(spacelyzer_engine::filter::category_totals(&tree, &none).iter().all(|c| c.0 == 0 && c.1 == 0));
+}
