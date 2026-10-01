@@ -5,7 +5,8 @@ struct ContentView: View {
 
     var body: some View {
         @Bindable var model = model
-        Group {
+        VStack(spacing: 0) {
+          Group {
             if model.tree == nil && !model.scanning {
                 WelcomeView()
             } else {
@@ -16,6 +17,10 @@ struct ContentView: View {
                         .frame(minWidth: 380)
                 }
             }
+          }
+          .frame(maxHeight: .infinity)
+          .clipped()
+          StatusBar()
         }
         .searchable(text: $model.filterText, placement: .toolbar, prompt: "Filter by name")
         .toolbar {
@@ -52,7 +57,6 @@ struct ContentView: View {
                 }.pickerStyle(.segmented)
             }
         }
-        .safeAreaInset(edge: .bottom) { StatusBar() }
         .alert("Move to Trash?", isPresented: Binding(get: { model.pendingRemoval != nil }, set: { if !$0 { model.pendingRemoval = nil } })) {
             Button("Move to Trash", role: .destructive) { model.confirmRemoval() }
             Button("Cancel", role: .cancel) { model.pendingRemoval = nil }
