@@ -44,8 +44,12 @@ struct TreemapView: View {
                             }
                             // Labels only where they fit.
                             for r in layout.rects where !r.isDirectoryFrame && !r.isRemainder && r.rect.width > 70 && r.rect.height > 22 {
-                                let t = Text(tree.name(r.node)).font(.system(size: 11, weight: .medium))
-                                ctx.draw(t, in: r.rect.insetBy(dx: 4, dy: 3))
+                                let box = r.rect.insetBy(dx: 4, dy: 3)
+                                let label = fitLabel(tree.name(r.node), width: box.width, ctx: ctx)
+                                ctx.drawLayer { l in
+                                    l.clip(to: Path(box))
+                                    l.draw(label, at: CGPoint(x: box.minX, y: box.minY), anchor: .topLeading)
+                                }
                             }
                         }
                         .drawingGroup()
@@ -87,6 +91,25 @@ struct TreemapView: View {
             .onChange(of: model.revision) { relayout() }
             .onChange(of: model.filterRevision) { relayout() }
             .onAppear { relayout() }
+    }
+
+    /// One line, middle-truncated with an ellipsis to fit `width`. Never wraps or splits a name.
+    private func fitLabel(_ name: String, width: CGFloat, ctx: GraphicsContext) -> GraphicsContext.ResolvedText {
+        func resolved(_ t: String) -> GraphicsContext.ResolvedText {
+            ctx.resolve(Text(t).font(.system(size: 11, weight: .medium)).foregroundColor(.white))
+        }
+        var r = resolved(name)
+        if r.measure(in: CGSize(width: 10_000, height: 20)).width <= width { return r }
+        var chars = Array(name)
+        while chars.count > 3 {
+            chars.removeSubrange((chars.count / 2)..<(chars.count / 2 + 1))
+            let keep = chars.count / 2
+            let candidate = String(chars[..<keep]) + "…" + String(chars[keep...])
+            r = resolved(candidate)
+            if r.measure(in: CGSize(width: 10_000, height: 20)).width <= width { return r }
+            chars = Array(candidate.replacingOccurrences(of: "…", with: ""))
+        }
+        return resolved("…")
     }
 
     private func fill(_ r: TreemapRect, tree: Tree) -> Color {
