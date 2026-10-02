@@ -310,7 +310,8 @@ struct SpacelyzerApp: App {
                         let split = DemoInput.allViews(of: NSSplitView.self).first
                         split?.setPosition(460, ofDividerAt: 0)
                         try? await Task.sleep(nanoseconds: 1_500_000_000)
-                        let sideW = DemoInput.allViews(of: NSTableView.self).first?.enclosingScrollView?.frame.width ?? 0
+                        let outline = DemoInput.allViews(of: NSTableView.self).first { $0.tableColumns.first?.identifier.rawValue == "outline" }
+                        let sideW = outline?.view(atColumn: 0, row: 0, makeIfNecessary: true)?.bounds.width ?? 0
                         Check.expect("sidebar-widened-for-counts-no-modal", sideW >= 400 && model.removalMessage == nil, "sidebar=\(Int(sideW))")
                         mark(17)
                         try? await Task.sleep(nanoseconds: 3_000_000_000)
@@ -325,44 +326,109 @@ struct SpacelyzerApp: App {
                             Check.expect("typing-in-ext-field-applies-extension-filter", model.filterExt == "pdf" && model.filterIsActive, "ext=\(model.filterExt)")
                             w.makeFirstResponder(nil)
                         } else { Check.expect("typing-in-ext-field-applies-extension-filter", false, "ext field not found") }
-                        // SwiftUI fills a Menu's NSMenu when it opens, so items are picked while it is tracking.
-                        // Menu 0 = filters (pick "Last 7 days", then "Clear all filters"); menu 1 = sort (pick "Name").
+                        // Menu tracking uses a different run-loop mode. Default-mode timers never fired in E1c.
+                        // Each interaction gets a fresh open, common-mode driver, and a bounded cancellation.
                         final class Picks: @unchecked Sendable { var done: [String: Bool] = [:]; var titles: [String] = [] }
                         let picks = Picks()
-                        @MainActor func titles(_ m: NSMenu, _ out: inout [String]) { for it in m.items { out.append(it.title); if let sub = it.submenu { titles(sub, &out) } } }
-                        @MainActor func pick(_ title: String, _ m: NSMenu) -> Bool {
-                            func find(_ m: NSMenu) -> (NSMenu, Int)? {
-                                for (i, it) in m.items.enumerated() {
-                                    if it.title == title { return (m, i) }
-                                    if let sub = it.submenu, let r = find(sub) { return r }
-                                }
-                                return nil
-                            }
-                            guard let (mm, i) = find(m) else { return false }
-                            mm.performActionForItem(at: i); return true
+                        @MainActor func schedule(_ delay: TimeInterval, _ action: @escaping @MainActor () -> Void) {
+                            let timer = Timer(timeInterval: delay, repeats: false) { _ in MainActor.assumeIsolated { action() } }
+                            RunLoop.main.add(timer, forMode: .common)
+                            RunLoop.main.add(timer, forMode: .eventTracking)
                         }
-                        for (k, step) in [(0, 18), (1, 19)] where pops.count > k {
-                            let b = pops[k]
-                            if k == 1 { model.filterExt = "pdf"; model.filterModifiedDays = 30; model.outlineSort = .items; try? await Task.sleep(nanoseconds: 1_500_000_000) }
-                            Timer.scheduledTimer(withTimeInterval: 4, repeats: false) { _ in MainActor.assumeIsolated {
-                                guard let m = b.menu else { return }
-                                var t: [String] = []; titles(m, &t); picks.titles += t
-                                if k == 0 { picks.done["date"] = pick("Last 7 days", m) } else { picks.done["sort"] = pick("Name", m) }
-                            } }
-                            if k == 0 {
-                                Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { _ in MainActor.assumeIsolated {
-                                    if let m = b.menu { picks.done["clear"] = pick("Clear all filters", m) }
-                                } }
+                        @MainActor func drive(_ button: NSPopUpButton, title: String, key: String, step: Int?) {
+                            schedule(2) {
+                                guard let menu = button.menu else { return }
+                                func find(_ m: NSMenu) -> (NSMenu, Int)? {
+                                    for (i, item) in m.items.enumerated() {
+                                        picks.titles.append(item.title)
+                                        if item.title == title { return (m, i) }
+                                        if let sub = item.submenu { sub.update(); if let result = find(sub) { return result } }
+                                    }
+                                    return nil
+                                }
+                                if let (m, i) = find(menu) {
+                                    picks.done[key] = true
+                                    m.performActionForItem(at: i)
+                                }
+                                menu.cancelTracking()
                             }
-                            Timer.scheduledTimer(withTimeInterval: 7, repeats: false) { _ in MainActor.assumeIsolated { b.menu?.cancelTracking() } }
-                            Task { @MainActor in try? await Task.sleep(nanoseconds: 300_000_000); mark(step) }
-                            b.performClick(nil)   // blocks in menu tracking until the timer cancels it
+                            schedule(5) { button.menu?.cancelTracking() }
+                            if let step { schedule(0.4) { mark(step) } }
+                            button.performClick(nil)
+                        }
+                        var dateEffect = false, sortEffect = false, resetEffect = false
+                        if pops.count >= 2 {
+                            drive(pops[0], title: "Last 7 days", key: "date", step: 18)
                             try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            dateEffect = model.filterModifiedDays == 7 && model.filterExt == "pdf" && !model.filterPending
+                            drive(pops[1], title: "Name", key: "sort", step: 19)
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            sortEffect = model.outlineSort == .name
+                            // Seed every independent filter, then reset through the actual menu action.
+                            model.filterText = "doc"; model.filterExt = "pdf"; model.filterKind = .document
+                            model.filterMinMB = 1; model.filterMaxMB = 100; model.filterModifiedDays = 7
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            drive(pops[0], title: "Clear all filters", key: "clear", step: nil)
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            resetEffect = model.filterText.isEmpty && model.filterExt.isEmpty && model.filterKind == nil
+                                && model.filterMinMB == 0 && model.filterMaxMB == 0 && model.filterModifiedDays == 0
+                                && !model.filterIsActive && !model.filterPending && model.activeFilter == nil
+                                && !model.outlineRows.isEmpty
                         }
                         Perf.log("menu titles seen: \(picks.titles.joined(separator: " | "))")
-                        Check.expect("menu-items-change-date-filter-and-sort", picks.done["date"] == true && picks.done["sort"] == true && model.outlineSort == .name, "date=\(String(describing: picks.done["date"])) sort=\(String(describing: picks.done["sort"])) sortMode=\(model.outlineSort)")
-                        Check.expect("clear-all-filters-menu-item-resets", picks.done["clear"] == true, "clear=\(String(describing: picks.done["clear"]))")
+                        Check.expect("menu-items-change-date-filter-and-sort", picks.done["date"] == true && picks.done["sort"] == true && dateEffect && sortEffect,
+                                     "dateEffect=\(dateEffect) sortEffect=\(sortEffect) days=\(model.filterModifiedDays) sort=\(model.outlineSort)")
+                        Check.expect("clear-all-filters-menu-item-resets", picks.done["clear"] == true && resetEffect, "resetEffect=\(resetEffect)")
                         mark(20)
+                        try? await Task.sleep(nanoseconds: 4_000_000_000)
+                        // Dedicated disposable fixture: empty folders, a five-digit count and a depth-12 folder.
+                        let countRoot = URL(fileURLWithPath: "/tmp/spz-count-fixture")
+                        try? FileManager.default.removeItem(at: countRoot)
+                        do {
+                            try await Task.detached {
+                                let fm = FileManager.default
+                                try fm.createDirectory(at: countRoot, withIntermediateDirectories: true)
+                                try fm.createDirectory(at: countRoot.appendingPathComponent("a-empty"), withIntermediateDirectories: true)
+                                let large = countRoot.appendingPathComponent("b-large")
+                                try fm.createDirectory(at: large, withIntermediateDirectories: true)
+                                for i in 0..<10001 { fm.createFile(atPath: large.appendingPathComponent("item-\(i)").path, contents: Data()) }
+                                let deep = countRoot.appendingPathComponent((1...12).map { "z-deep-\($0)" }.joined(separator: "/"))
+                                try fm.createDirectory(at: deep, withIntermediateDirectories: true)
+                                try fm.createDirectory(at: deep.appendingPathComponent("empty-deep"), withIntermediateDirectories: true)
+                            }.value
+                            model.scan(countRoot.path)
+                            while model.scanning { try? await Task.sleep(nanoseconds: 100_000_000) }
+                            if let t = model.tree {
+                                model.expanded = Set((0..<UInt32(t.nodeCount)).filter { t.info($0).childCount > 0 && t.path($0) != countRoot.appendingPathComponent("b-large").path })
+                                model.refreshOutline()
+                            }
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            // Keep a top empty folder, large count and deep folders in the same visual frame.
+                            model.outlineSort = .name
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            if let split {
+                                split.setPosition(410, ofDividerAt: 0)
+                                try? await Task.sleep(nanoseconds: 500_000_000)
+                                split.setPosition(410 + 399 - OutlineDemoEvidence.width, ofDividerAt: 0)
+                                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                            }
+                            Check.expect("counts-hidden-below-400", OutlineDemoEvidence.width > 397 && OutlineDemoEvidence.width < 400 && OutlineDemoEvidence.countsVisible(false), "cellWidth=\(OutlineDemoEvidence.width)")
+                            mark(21)
+                            try? await Task.sleep(nanoseconds: 4_000_000_000)
+                            if let split {
+                                split.setPosition(split.subviews[0].frame.width + 401 - OutlineDemoEvidence.width, ofDividerAt: 0)
+                                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                            }
+                            let largeText = "\(10001.formatted()) items"
+                            Check.expect("counts-visible-above-400-empty-large-deep", OutlineDemoEvidence.width >= 400 && OutlineDemoEvidence.width < 403 && OutlineDemoEvidence.countsVisible(true)
+                                         && OutlineDemoEvidence.hasCount("0 items") && OutlineDemoEvidence.hasCount(largeText), "cellWidth=\(OutlineDemoEvidence.width) large=\(largeText)")
+                            mark(22)
+                            try? await Task.sleep(nanoseconds: 4_000_000_000)
+                        } catch {
+                            Check.expect("counts-hidden-below-400", false, "fixture error: \(error)")
+                            Check.expect("counts-visible-above-400-empty-large-deep", false, "fixture error: \(error)")
+                            mark(21); try? await Task.sleep(nanoseconds: 4_000_000_000); mark(22)
+                        }
                     }
                 }
         }
