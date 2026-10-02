@@ -590,14 +590,20 @@ struct SpacelyzerApp: App {
                                     field.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: field))
                                     Check.expect("name-editor-external-clear-cancels-marked-text", markedBeforeClear && cancelled && model.filterText.isEmpty, "manual delegate current-field simulation, not delayed IME insertion")
                                     model.clearFilters()
+                                    let consumedDeadline = Date().addingTimeInterval(3)
+                                    while model.nameEditorConsumedReset != model.filterResetRevision && Date() < consumedDeadline { try? await Task.sleep(nanoseconds: 10_000_000) }
+                                    let resetConsumed = model.nameEditorConsumedReset == model.filterResetRevision
                                     editor.setMarkedText("再", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: 0, length: 0))
                                     let emptyMarked = editor.hasMarkedText()
                                     let equalBeforeClear = field.stringValue == model.filterText && model.filterText.isEmpty
                                     // Exercise an ordinary edit-origin update while marked; no reset intent.
+                                    let updatesBefore = model.nameEditorUpdateCount
+                                    let resetBefore = model.filterResetRevision, externalBefore = model.externalFilterTextRevision
                                     model.setFilterTextFromEditor(model.filterText)
-                                    model.demoIncreaseContrast = false
-                                    try? await Task.sleep(nanoseconds: 150_000_000)
-                                    Check.expect("name-editor-ordinary-update-preserves-marked-text", emptyMarked && editor.hasMarkedText() && editor.string.contains("再"))
+                                    model.nameEditorRefreshRevision &+= 1
+                                    let updateDeadline = Date().addingTimeInterval(3)
+                                    while model.nameEditorUpdateCount == updatesBefore && Date() < updateDeadline { try? await Task.sleep(nanoseconds: 10_000_000) }
+                                    Check.expect("name-editor-ordinary-update-preserves-marked-text", resetConsumed && model.nameEditorUpdateCount > updatesBefore && model.filterResetRevision == resetBefore && model.externalFilterTextRevision == externalBefore && emptyMarked && editor.hasMarkedText() && editor.string.contains("再"))
                                     model.clearFilters()
                                     try? await Task.sleep(nanoseconds: 150_000_000)
                                     Check.expect("name-editor-already-empty-reset-with-marked-divergence", equalBeforeClear && emptyMarked && !editor.hasMarkedText() && editor.string.isEmpty && field.stringValue.isEmpty && model.filterText.isEmpty)
