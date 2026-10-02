@@ -252,7 +252,7 @@ private struct NameFilterField: NSViewRepresentable {
         let editor = field.currentEditor() as? NSTextView
         // Capture external intent before cancellation can synchronously notify the delegate.
         // Editor text can diverge from field/model while composition is underway.
-        if field.stringValue != target || (editor != nil && editor!.string != target) {
+        if field.stringValue != target || (editor != nil && (editor!.string != target || editor!.hasMarkedText())) {
             context.coordinator.programmaticChange = true
             defer { context.coordinator.programmaticChange = false }
             if let editor {
