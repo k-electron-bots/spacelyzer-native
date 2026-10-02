@@ -93,3 +93,5 @@ Karim's standing requirement: long-range stability, memory management and resili
 - Menu-driving timers must run during menu tracking; checks assert actual date/sort/reset effects after settling, never just action lookup.
 - Count evidence uses live outline cells near the 400pt threshold, empty folders, five-digit counts and deep rows. Timeouts fail the demo and cannot masquerade as later screenshots.
 - Spotlight first-results and dua-inspired streaming remain evaluation only. No preview contributes to authoritative totals or authorizes removal. Preserve MIT notices for any copied upstream code.
+
+- CI captures each demo state before advancing, then collects named images rather than polling a transient latest-step value. Assert all evidence exists; distinguish timeout from app exit in failures.
