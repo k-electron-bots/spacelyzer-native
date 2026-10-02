@@ -271,7 +271,7 @@ final class AppModel {
     /// True when a filter is active and this item is outside it (hidden from every view).
     func isOutsideFilter(_ id: UInt32) -> Bool {
         guard let f = activeFilter else { return false }
-        return f.size(id) == 0
+        return f.count(id) == 0
     }
 
     /// Why removal is unavailable right now, or nil when it is allowed.
