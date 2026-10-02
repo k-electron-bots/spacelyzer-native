@@ -68,6 +68,9 @@ private final class OutlineCell: NSTableCellView {
     var depth = 0
     var hasChildren = false
     var onToggle: (() -> Void)?
+    /// CI-only optional override; nil follows native live accessibility preferences.
+    var contrastOverride: Bool? { didSet { updateTextColors() } }
+    private var increasedContrast: Bool { contrastOverride ?? NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -83,18 +86,32 @@ private final class OutlineCell: NSTableCellView {
         size.textColor = .secondaryLabelColor
         size.alignment = .right
         count.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
-        count.textColor = .tertiaryLabelColor
+        count.textColor = .secondaryLabelColor
         count.alignment = .right
         icon.imageScaling = .scaleProportionallyDown
         for v in [chevron, icon, name, size, count, bar] as [NSView] { addSubview(v) }
         textField = name
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(accessibilityOptionsChanged), name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+        updateTextColors()
     }
     required init?(coder: NSCoder) { fatalError() }
 
     @objc private func toggle() { onToggle?() }
 
     override var backgroundStyle: NSView.BackgroundStyle {
-        didSet { size.textColor = backgroundStyle == .emphasized ? .alternateSelectedControlTextColor : .secondaryLabelColor }
+        didSet { updateTextColors() }
+    }
+    @objc private func accessibilityOptionsChanged() { updateTextColors() }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateTextColors()
+    }
+    private func updateTextColors() {
+        let selected = backgroundStyle == .emphasized
+        let text: NSColor = selected ? .alternateSelectedControlTextColor : (increasedContrast ? .labelColor : .secondaryLabelColor)
+        size.textColor = text
+        count.textColor = text
+        name.textColor = selected ? .alternateSelectedControlTextColor : .labelColor
     }
 
     override func layout() {
@@ -164,6 +181,14 @@ private struct OutlineTable: NSViewRepresentable {
             c.table?.reloadData()
         }
         c.syncSelection(selected)
+        if let table = c.table {
+            let visible = table.rows(in: table.visibleRect)
+            if visible.location != NSNotFound {
+                for row in visible.location..<min(table.numberOfRows, NSMaxRange(visible)) {
+                    (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? OutlineCell)?.contrastOverride = Perf.on ? model.demoIncreaseContrast : nil
+                }
+            }
+        }
     }
 
     @MainActor final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
@@ -194,6 +219,9 @@ private struct OutlineTable: NSViewRepresentable {
             cell.icon.contentTintColor = isDir ? .controlAccentColor : .secondaryLabelColor
             let nm = tree.name(r.node)
             cell.name.stringValue = nm
+            cell.name.toolTip = tree.path(r.node)
+            cell.toolTip = tree.path(r.node)
+            cell.contrastOverride = Perf.on ? model.demoIncreaseContrast : nil
             cell.size.stringValue = formatBytes(shown)
             cell.count.stringValue = isDir ? "\(info.childCount.formatted()) item\(info.childCount == 1 ? "" : "s")" : ""
             cell.bar.fraction = Double(shown) / Double(max(1, total))
@@ -316,6 +344,37 @@ struct ShareBar: View {
             ($0.accessibilityLabel() ?? "").contains("folder") && (!$0.hasChildren || !($0.chevron.accessibilityLabel() ?? "").isEmpty)
                 && !$0.bar.isAccessibilityElement() && !$0.icon.isAccessibilityElement()
         }
+    }
+    static func countColorContract(increased: Bool) -> Bool {
+        guard let table else { return false }
+        let range = table.rows(in: table.visibleRect)
+        guard range.location != NSNotFound else { return false }
+        let cells = (range.location..<min(table.numberOfRows, NSMaxRange(range))).compactMap {
+            table.view(atColumn: 0, row: $0, makeIfNecessary: false) as? OutlineCell
+        }.filter { !$0.count.stringValue.isEmpty && !$0.count.isHidden }
+        let selected = cells.filter { $0.backgroundStyle == .emphasized }
+        let other = cells.filter { $0.backgroundStyle != .emphasized }
+        // The color-identity check is policy/branch evidence, not rendered contrast proof.
+        let policy = !selected.isEmpty && !other.isEmpty
+            && selected.allSatisfy { $0.count.textColor == .alternateSelectedControlTextColor }
+            && other.allSatisfy { $0.count.textColor == (increased ? .labelColor : .secondaryLabelColor) }
+        for cell in cells {
+            cell.effectiveAppearance.performAsCurrentDrawingAppearance {
+                let fg = cell.count.textColor?.usingColorSpace(.sRGB)
+                let bg = (cell.backgroundStyle == .emphasized ? NSColor.selectedContentBackgroundColor : NSColor.controlBackgroundColor).usingColorSpace(.sRGB)
+                if let fg, let bg {
+                    func luminance(_ c: NSColor) -> Double {
+                        func linear(_ v: CGFloat) -> Double { let x = Double(v); return x <= 0.04045 ? x / 12.92 : pow((x + 0.055) / 1.055, 2.4) }
+                        return 0.2126 * linear(c.redComponent) + 0.7152 * linear(c.greenComponent) + 0.0722 * linear(c.blueComponent)
+                    }
+                    let alpha = fg.alphaComponent
+                    let blended = NSColor(srgbRed: fg.redComponent * alpha + bg.redComponent * (1-alpha), green: fg.greenComponent * alpha + bg.greenComponent * (1-alpha), blue: fg.blueComponent * alpha + bg.blueComponent * (1-alpha), alpha: 1)
+                    let a = luminance(blended), b = luminance(bg)
+                    Perf.log("count semantic-color contrast=\((max(a,b)+0.05)/(min(a,b)+0.05)) selected=\(cell.backgroundStyle == .emphasized) increased=\(increased) alpha=\(fg.alphaComponent); background proxy, inspect pixels")
+                }
+            }
+        }
+        return policy
     }
     static var hasVisibleDeepRow: Bool {
         guard let table else { return false }
