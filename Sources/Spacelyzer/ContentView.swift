@@ -250,7 +250,9 @@ private struct NameFilterField: NSViewRepresentable {
     func updateNSView(_ field: NSTextField, context: Context) {
         if field.stringValue != model.filterText {
             if let editor = field.currentEditor() as? NSTextView {
-                if editor.hasMarkedText() { return } // Never overwrite an unfinished IME composition.
+                // Explicit external reset/change wins over unfinished composition. Cancel it before
+                // replacing text, so a delayed composition commit cannot restore an old filter.
+                if editor.hasMarkedText() { editor.unmarkText() }
                 let selection = editor.selectedRange()
                 editor.string = model.filterText
                 editor.setSelectedRange(NSRange(location: min(selection.location, editor.string.utf16.count), length: min(selection.length, max(0, editor.string.utf16.count - min(selection.location, editor.string.utf16.count)))))
