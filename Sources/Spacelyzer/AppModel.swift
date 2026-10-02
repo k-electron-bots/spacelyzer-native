@@ -192,7 +192,7 @@ final class AppModel {
     func scan(_ path: String) {
         cancel()
         scanGeneration &+= 1
-        let generation = scanGeneration
+        let generation = scanGeneration, barrier = beforePublish, completed = afterPublish
         scanning = true
         error = nil
         rootPath = path
@@ -207,12 +207,19 @@ final class AppModel {
         Task {
             let t = await s.run { [weak self] snap in
                 Task { @MainActor in
-                    guard let self, self.scanGeneration == generation, self.session === s else { return }
-                    self.progress = snap
-                    self.elapsed = Date().timeIntervalSince(start)
+                    await barrier?("scan-progress", generation)
+                    if let self, self.scanGeneration == generation, self.session === s {
+                        self.progress = snap
+                        self.elapsed = Date().timeIntervalSince(start)
+                    }
+                    await completed?("scan-progress", generation)
                 }
             }
-            guard scanGeneration == generation, session === s else { return }
+            await barrier?("scan-completion", generation)
+            guard scanGeneration == generation, session === s else {
+                await completed?("scan-completion", generation)
+                return
+            }
             scanning = false
             lastScanSeconds = Date().timeIntervalSince(start)
             session = nil
@@ -231,6 +238,7 @@ final class AppModel {
             } else {
                 error = "The scan failed. Check that the folder exists and you can read it."
             }
+            await completed?("scan-completion", generation)
         }
     }
 
