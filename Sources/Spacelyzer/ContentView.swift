@@ -248,25 +248,31 @@ private struct NameFilterField: NSViewRepresentable {
         return field
     }
     func updateNSView(_ field: NSTextField, context: Context) {
-        if field.stringValue != model.filterText {
-            if let editor = field.currentEditor() as? NSTextView {
-                // Explicit external reset/change wins over unfinished composition. Cancel it before
-                // replacing text, so a delayed composition commit cannot restore an old filter.
-                if editor.hasMarkedText() { editor.unmarkText() }
+        let target = model.filterText
+        let editor = field.currentEditor() as? NSTextView
+        // Capture external intent before cancellation can synchronously notify the delegate.
+        // Editor text can diverge from field/model while composition is underway.
+        if field.stringValue != target || (editor != nil && editor!.string != target) {
+            context.coordinator.programmaticChange = true
+            defer { context.coordinator.programmaticChange = false }
+            if let editor {
                 let selection = editor.selectedRange()
-                editor.string = model.filterText
-                editor.setSelectedRange(NSRange(location: min(selection.location, editor.string.utf16.count), length: min(selection.length, max(0, editor.string.utf16.count - min(selection.location, editor.string.utf16.count)))))
+                if editor.hasMarkedText() { editor.unmarkText() }
+                editor.string = target
+                let start = min(selection.location, target.utf16.count)
+                editor.setSelectedRange(NSRange(location: start, length: min(selection.length, max(0, target.utf16.count - start))))
             }
-            field.stringValue = model.filterText
+            field.stringValue = target
         }
         model.nameFilterKeyView = field
         model.connectOutlineFocusLoop()
     }
     final class Coordinator: NSObject, NSTextFieldDelegate {
         let model: AppModel
+        var programmaticChange = false
         init(_ model: AppModel) { self.model = model }
         func controlTextDidChange(_ notification: Notification) {
-            guard let field = notification.object as? NSTextField else { return }
+            guard !programmaticChange, let field = notification.object as? NSTextField else { return }
             model.filterText = field.stringValue
         }
     }
