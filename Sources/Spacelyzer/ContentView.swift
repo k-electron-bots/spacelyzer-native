@@ -134,11 +134,13 @@ struct FilterBar: View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
             TextField("Filter by name", text: $model.filterText).textFieldStyle(.plain)
+                .accessibilityLabel("Filter by name")
             TextField("ext", text: $model.filterExt).textFieldStyle(.plain).frame(width: 38)
                 .help("File extension, for example pdf or mp4")
                 .accessibilityLabel("Extension filter")
             if !model.filterText.isEmpty {
                 Button { model.filterText = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(.secondary)
+                    .accessibilityLabel("Clear name filter").help("Clear name filter")
             }
             Menu {
                 Picker("Kind", selection: $model.filterKind) {
@@ -165,6 +167,8 @@ struct FilterBar: View {
                 Image(systemName: model.filterIsActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
             }
             .menuStyle(.borderlessButton).fixedSize()
+            .help("Filter by kind, size and modified date")
+            .accessibilityLabel(model.filterIsActive ? "Filters, active" : "Filters")
             Menu {
                 Picker("Sort folders by", selection: $model.outlineSort) {
                     ForEach(OutlineSort.allCases) { Text($0.label).tag($0) }

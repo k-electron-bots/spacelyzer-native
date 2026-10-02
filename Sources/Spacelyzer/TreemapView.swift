@@ -200,10 +200,13 @@ struct SelectionBar: View {
             }
             Spacer()
             Button("Show in Finder") { model.reveal(id) }
+                .help("Reveal the selected item in Finder")
             Button("Move to Trash…", role: .destructive) { model.proposeRemoval(of: id) }
                 .disabled(model.removalBlockedReason(id) != nil)
                 .help(model.removalBlockedReason(id) ?? "")
         }.padding(10).background(.bar)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Selected item: \(tree.name(id).isEmpty ? tree.path(id) : tree.name(id)), \(formatBytes(info.size))")
     }
 }
 
