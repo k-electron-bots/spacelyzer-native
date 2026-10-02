@@ -46,3 +46,5 @@ Status: v0.1.48 had a crash when a second folder was scanned after a large tree 
 - Index-assisted early results and dua-cli progressive traversal: see [evaluation](EVAL-index-accelerant.md). Evaluation only, distinct from persisted-tree/FSEvents repeat-scan work.
 
 - Run37040037876 failed capture1: app-launched screencapture did not create images. Replaced with CI-only state/capture acknowledgement: runner captures using its existing permission, then acknowledges before app state advances. No permission bypass. New consolidated check pending.
+
+- Run37043128105 at c892613 passed all30 checks and captured22 images. Pixel review confirms399/401pt empty/five-digit counts and real date/sort/reset effects. Depth12 evidence is not yet accepted: /tmp vs /private/tmp path mismatch left the large folder expanded. Canonical-path fixture exclusion and explicit visible-depth12 check repaired; independent signoff remains pending.
