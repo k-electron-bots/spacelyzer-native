@@ -652,6 +652,23 @@ private actor PublicationBarrier {
         await swapped.release()
         let swapCompleted = await wait { await swapped.completed() }
         Check.expect("race-old-outline-after-tree-swap-rejected", swapParked && swapNewer && swapCompleted && (m.outlineRows.map { $0.node }) == swapRows && m.outlineRevision == swapRevision && m.selected == nil)
+        // Hold scan messages from a real old session while a newer session completes.
+        for stage in ["scan-progress", "scan-completion"] {
+            let scanModel = AppModel(), scanBarrier = PublicationBarrier(stage)
+            scanModel.beforePublish = { await scanBarrier.before($0, $1) }
+            scanModel.afterPublish = { await scanBarrier.after($0, $1) }
+            scanModel.scan(tree.rootPath)
+            let scanParked = await wait { await scanBarrier.parked() }
+            scanModel.scan(root.path)
+            let scanNewer = await wait { !scanModel.scanning && scanModel.tree?.rootPath == root.path }
+            let currentTree = scanModel.tree, currentRevision = scanModel.revision
+            let currentItems = scanModel.progress.items, currentBytes = scanModel.progress.bytes
+            let currentElapsed = scanModel.elapsed, currentSeconds = scanModel.lastScanSeconds
+            await scanBarrier.release()
+            let scanCompleted = await wait { await scanBarrier.completed() }
+            Check.expect("race-old-\(stage)-after-new-scan-rejected", scanParked && scanNewer && scanCompleted && scanModel.tree === currentTree && scanModel.revision == currentRevision && scanModel.progress.items == currentItems && scanModel.progress.bytes == currentBytes && scanModel.elapsed == currentElapsed && scanModel.lastScanSeconds == currentSeconds && !scanModel.scanning && scanModel.error == nil)
+            scanModel.beforePublish = nil; scanModel.afterPublish = nil
+        }
         try? FileManager.default.removeItem(at: root)
 
         m.tree = tree
