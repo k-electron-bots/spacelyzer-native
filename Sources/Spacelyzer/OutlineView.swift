@@ -110,7 +110,7 @@ private final class OutlineCell: NSTableCellView {
         let selected = backgroundStyle == .emphasized
         let text: NSColor = selected ? .alternateSelectedControlTextColor : (increasedContrast ? .labelColor : .secondaryLabelColor)
         size.textColor = text
-        count.textColor = text
+        count.textColor = selected ? .alternateSelectedControlTextColor : .labelColor
         name.textColor = selected ? .alternateSelectedControlTextColor : .labelColor
     }
 
@@ -357,7 +357,7 @@ struct ShareBar: View {
         // The color-identity check is policy/branch evidence, not rendered contrast proof.
         let policy = !selected.isEmpty && !other.isEmpty
             && selected.allSatisfy { $0.count.textColor == .alternateSelectedControlTextColor }
-            && other.allSatisfy { $0.count.textColor == (increased ? .labelColor : .secondaryLabelColor) }
+            && other.allSatisfy { $0.count.textColor == .labelColor }
         for cell in cells {
             cell.effectiveAppearance.performAsCurrentDrawingAppearance {
                 let fg = cell.count.textColor?.usingColorSpace(.sRGB)
@@ -375,6 +375,11 @@ struct ShareBar: View {
             }
         }
         return policy
+    }
+    static var inactiveSelectedCountPolicy: Bool {
+        guard let table, let window = table.window, !window.isKeyWindow, table.selectedRow >= 0,
+              let cell = table.view(atColumn: 0, row: table.selectedRow, makeIfNecessary: false) as? OutlineCell else { return false }
+        return cell.backgroundStyle != .emphasized && cell.count.textColor == .labelColor
     }
     static var hasVisibleDeepRow: Bool {
         guard let table else { return false }
