@@ -9,9 +9,10 @@ Make repeat scans of the same location much faster **without ever replacing auth
 source of totals.
 
 ## Options
-1. **Spotlight / NSMetadataQuery.** Rejected for totals: content-search index, excludes private, hidden and
-   system areas, can lag or be rebuilding or disabled, and reports logical not allocated sizes. Possible later
-   only as an explicitly labelled approximate preview.
+1. **Spotlight / NSMetadataQuery.** An accelerant for discovery and early results, not a substitute for accounting.
+   Scope can be excluded and index results may be stale or absent. Candidate paths and allocated bytes must be
+   validated against the filesystem. See [index-assisted first results](EVAL-index-accelerant.md), a separate
+   evaluation from persisted-tree repeat scans. No claim that indexed size matches allocated-byte totals.
 2. **Persisted tree + FSEvents.** Candidate. Save the Rust tree (arena, sizes, mtimes) plus per-volume
    `FSEventsCopyUUIDForDevice` and the last event ID. On launch, replay events `sinceWhen` the saved ID and
    rescan only the reported directories, then roll sizes up.
