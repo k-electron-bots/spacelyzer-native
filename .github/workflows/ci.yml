@@ -118,7 +118,7 @@ jobs:
         run: |
           cp /tmp/spz-assertions.txt dist/ui-assertions.txt 2>/dev/null || true
           cat /tmp/spz-assertions.txt || true
-          expected=66
+          expected=67
           if grep -q 'APP NOT RUNNING' /tmp/spz-timing.txt 2>/dev/null; then echo "::error title=ui-assertions::app was not running at the end of the demo (crash or exit)"; exit 1; fi
           if grep -q 'DEMO .*TIMEOUT' /tmp/spz-timing.txt 2>/dev/null; then echo "::error title=ui-assertions::$(grep 'DEMO .*TIMEOUT' /tmp/spz-timing.txt)"; exit 1; fi
           for step in $(seq 1 38); do [ -s "dist/screenshot-demo-$step.png" ] || { echo "::error title=ui-assertions::missing screenshot step $step"; exit 1; }; done
