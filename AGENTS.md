@@ -88,3 +88,8 @@ Karim's standing requirement: long-range stability, memory management and resili
 - Work in epics; tasks inside an epic are thin commits in dependency order. CI, tags and releases run per epic (tag `epic-<n>-<name>`), not per task.
 - Docs move with the code: any task that changes behaviour, a check, a limit or the roadmap updates README, ROADMAP and AGENTS in the same commit (or the next one in the same epic, never later than the epic tag). An item is ticked only after its check passes.
 - Verification is independent: at each epic end, hand a separate verifier only the intended behaviour, scope, commit/artifact references and known limitations. The author's own checks do not replace it.
+
+## E1 verification repair and acceleration evaluation
+- Menu-driving timers must run during menu tracking; checks assert actual date/sort/reset effects after settling, never just action lookup.
+- Count evidence uses live outline cells near the 400pt threshold, empty folders, five-digit counts and deep rows. Timeouts fail the demo and cannot masquerade as later screenshots.
+- Spotlight first-results and dua-inspired streaming remain evaluation only. No preview contributes to authoritative totals or authorizes removal. Preserve MIT notices for any copied upstream code.
