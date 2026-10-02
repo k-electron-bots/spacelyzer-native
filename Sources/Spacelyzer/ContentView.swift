@@ -248,6 +248,7 @@ private struct NameFilterField: NSViewRepresentable {
         return field
     }
     func updateNSView(_ field: NSTextField, context: Context) {
+        _ = model.nameEditorRefreshRevision
         let target = model.filterText
         let editor = field.currentEditor() as? NSTextView
         // Capture external intent before cancellation can synchronously notify the delegate.
@@ -270,6 +271,10 @@ private struct NameFilterField: NSViewRepresentable {
         }
         model.nameFilterKeyView = field
         model.connectOutlineFocusLoop()
+        if Perf.on {
+            model.nameEditorConsumedReset = context.coordinator.resetRevision
+            model.nameEditorUpdateCount &+= 1
+        }
     }
     final class Coordinator: NSObject, NSTextFieldDelegate {
         let model: AppModel
