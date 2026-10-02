@@ -18,7 +18,7 @@ read by a person). Nothing here has been verified on a personal Mac yet.
 Features are grouped in epics. Tasks inside an epic are thin commits in dependency order, one concern each. CI, tags and releases run per epic (push tag `epic-<n>-<name>`), not per task, to save free-tier quota. Each epic ends with CI assertions plus inspected screenshots before it is called done.
 
 ## Epics
-1. Outline and filters (E1): reveal ancestors (done, CI 19), extension/size/date filters (done, CI 20-22), item counts (shown in rows wide enough, not visible at the 1024x768 CI window; unverified visually), sort options (Rust sort modes tested, UI menu added, check 23 pending the epic-1 CI run).
+1. Outline and filters (E1): reveal ancestors (done, CI 19), extension/size/date filters (done, CI 20-22), item counts (shown in rows wide enough, not visible at the 1024x768 CI window; unverified visually), sort options (Rust sort modes tested; UI check 23 PASS in epic-1 run 37022036702). E1 tagged epic-1-outline-filters.
 2. Glass and accessibility (E2): selection bar and buttons, filter field, Reduce Transparency/Motion, minimum window size, VoiceOver labels and tree check.
 3. Volume and space accounting (E3): used/free/purgeable, snapshots, unaccounted space.
 4. Inspect and remove (E4): details, Quick Look, then batch removal with history (depends on details).
