@@ -175,6 +175,8 @@ private struct OutlineTable: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         let c = context.coordinator
         c.tree = tree
+        model.outlineKeyView = c.table
+        model.connectOutlineFocusLoop()
         c.total = total
         if c.shownRevision != revision {
             c.shownRevision = revision
