@@ -7,6 +7,7 @@ read by a person). Nothing here has been verified on a personal Mac yet.
 ## Done and verified on CI
 - Rust engine: parallel scan, flat tree, hard-link and firmlink handling, filter, outline projection, treemap layout and hit-testing.
 - Windowed outline (no row cap), keyboard navigation, one filter for every view, "No matches" states.
+- Selecting a file hidden in collapsed folders expands its ancestors (CI check 19). Extension and maximum-size filters in the UI (CI checks 20-21); the modified-date picker is wired but has no assertion yet.
 - Selection safety: Move to Trash is unavailable when the selection is hidden by the filter or a filter result is pending.
 
 ## Underway
@@ -17,8 +18,8 @@ read by a person). Nothing here has been verified on a personal Mac yet.
 1. Pixel polish against Apple's Liquid Glass guidance: system styling for the status bar, selection bar and filter field,
    glass button styles, concentric corners, hover states, Reduce Transparency and Reduce Motion, minimum window size.
 2. Accessibility: labels for every row and control, VoiceOver pass.
-3. Outline: reveal collapsed ancestors on selection, sort options, item counts.
-4. Filters: file extension, maximum size and date range in the UI.
+3. Outline: sort options, item counts.
+4. Filters: assertion for the modified-date range.
 5. Volume view: used, free and purgeable space, snapshots, unaccounted space.
 6. Details and Quick Look for the selected item; batch removal with history.
 7. Exclusions with persistence; a reviewable list of unreadable locations; Full Disk Access detection.
