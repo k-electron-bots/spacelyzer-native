@@ -355,13 +355,25 @@ struct SpacelyzerApp: App {
                                     }
                                     return nil
                                 }
+                                if key == "date", let item = menu.items.first(where: { $0.title == "Modified" }), let sub = item.submenu {
+                                    schedule(0.4) { mark(23) }; schedule(2) { sub.cancelTracking() }
+                                    sub.popUp(positioning: sub.items.first, at: NSPoint(x: 15, y: 15), in: button)
+                                }
+                                if key == "date", let item = menu.items.first(where: { $0.title == "Maximum size" }), let sub = item.submenu {
+                                    schedule(0.4) { mark(24) }; schedule(2) { sub.cancelTracking() }
+                                    sub.popUp(positioning: sub.items.first, at: NSPoint(x: 15, y: 15), in: button)
+                                }
+                                if key == "sort", let item = menu.items.first(where: { $0.title == "Sort folders by" }), let sub = item.submenu {
+                                    schedule(0.4) { mark(25) }; schedule(2) { sub.cancelTracking() }
+                                    sub.popUp(positioning: sub.items.first, at: NSPoint(x: 15, y: 15), in: button)
+                                }
                                 if let (m, i) = find(menu) {
                                     picks.done[key] = true
                                     m.performActionForItem(at: i)
                                 }
                                 menu.cancelTracking()
                             }
-                            schedule(5) { button.menu?.cancelTracking() }
+                            schedule(15) { button.menu?.cancelTracking() }
                             if let step { schedule(0.4) { mark(step) } }
                             button.performClick(nil)
                         }
@@ -424,7 +436,7 @@ struct SpacelyzerApp: App {
                                 split.setPosition(dividerPosition, ofDividerAt: 0)
                                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                             }
-                            Check.expect("counts-hidden-below-400", OutlineDemoEvidence.width > 397 && OutlineDemoEvidence.width < 400 && OutlineDemoEvidence.countsVisible(false), "cellWidth=\(OutlineDemoEvidence.width)")
+                            Check.expect("counts-hidden-below-400", OutlineDemoEvidence.width > 397 && OutlineDemoEvidence.width < 400 && OutlineDemoEvidence.countsVisible(false) && OutlineDemoEvidence.hasVisibleDeepRow, "cellWidth=\(OutlineDemoEvidence.width)")
                             mark(21)
                             try? await Task.sleep(nanoseconds: 4_000_000_000)
                             if let split {
