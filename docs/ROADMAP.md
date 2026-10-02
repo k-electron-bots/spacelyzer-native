@@ -52,3 +52,6 @@ Status: v0.1.48 had a crash when a second folder was scanned after a large tree 
 - Final E1 evidence run also requires actual date, maximum-size and sort choice submenu images23-25, plus an explicitly visible depth12 cell below and above400pt. No separate menu-only run.
 
 - Run37046851306 failed strengthened depth checks at correct399/401 widths: b-large still expanded; choice-menu images23-25 were blank. Do not accept those pixels. Depth fixture now selects nodes by root-child identity instead of path. Menu visual automation remains unresolved; no new checkpoint before that review decision.
+
+## E2 underway, not verified
+- First product slice: filter control surface uses macOS26 system glass with macOS14 material fallback and live Reduce Transparency opaque fallback; Reduce Motion disables implicit content animations. Parent/Stop/selection actions and folder chevrons have explicit accessible labels; decorative outline icons/bars are excluded. Awaiting macOS compile, pixels in accessibility modes and VoiceOver/keyboard evidence. E1 submenu/depth evidence remains open and will share E2 consolidated verification, not another immediate harness-only run.
