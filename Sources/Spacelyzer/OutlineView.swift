@@ -103,6 +103,9 @@ struct OutlineLine: View {
             ShareBar(fraction: Double(shown) / Double(parentTotal))
                 .frame(width: 44, height: 6)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(tree.name(node)), \(info.kind == .directory ? "folder" : "item"), \(formatBytes(shown))")
+        .accessibilityValue(info.kind == .directory && info.childCount > 0 ? (model.expanded.contains(node) ? "expanded" : "collapsed") : "")
     }
 
     private func icon(_ i: NodeInfo) -> String {
