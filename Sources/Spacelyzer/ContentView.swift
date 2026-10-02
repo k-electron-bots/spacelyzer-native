@@ -235,7 +235,8 @@ private struct NameFilterField: NSViewRepresentable {
     let model: AppModel
     func makeCoordinator() -> Coordinator { Coordinator(model) }
     func makeNSView(context: Context) -> NSTextField {
-        let field = NSTextField()
+        let field = AttachedNameField()
+        field.onAttachment = { [weak model] in model?.connectOutlineFocusLoop() }
         field.isBordered = false; field.drawsBackground = false
         field.focusRingType = .default
         field.placeholderString = "Filter by name"
@@ -247,7 +248,15 @@ private struct NameFilterField: NSViewRepresentable {
         return field
     }
     func updateNSView(_ field: NSTextField, context: Context) {
-        if field.stringValue != model.filterText { field.stringValue = model.filterText }
+        if field.stringValue != model.filterText {
+            if let editor = field.currentEditor() as? NSTextView {
+                if editor.hasMarkedText() { return } // Never overwrite an unfinished IME composition.
+                let selection = editor.selectedRange()
+                editor.string = model.filterText
+                editor.setSelectedRange(NSRange(location: min(selection.location, editor.string.utf16.count), length: min(selection.length, max(0, editor.string.utf16.count - min(selection.location, editor.string.utf16.count)))))
+            }
+            field.stringValue = model.filterText
+        }
         model.nameFilterKeyView = field
         model.connectOutlineFocusLoop()
     }
@@ -259,4 +268,9 @@ private struct NameFilterField: NSViewRepresentable {
             model.filterText = field.stringValue
         }
     }
+}
+
+private final class AttachedNameField: NSTextField {
+    var onAttachment: (() -> Void)?
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); onAttachment?() }
 }
