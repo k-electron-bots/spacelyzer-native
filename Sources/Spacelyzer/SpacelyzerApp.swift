@@ -20,6 +20,7 @@ struct SpacelyzerApp: App {
                     if env["SPZ_AUTOSCAN"] != nil, env["SPZ_DEMO"] != nil {
                         while model.scanning || model.tree == nil { try? await Task.sleep(nanoseconds: 500_000_000) }
                         try? await Task.sleep(nanoseconds: 3_000_000_000)
+                        await PublicationRegression.run(tree: model.tree!)
                         MainStall.shared.start()
                         func mark(_ n: Int) {
                             // CI-only handshake: the runner owns screen-capture permission.
@@ -435,10 +436,12 @@ struct SpacelyzerApp: App {
                                 model.selected = nil
                                 model.expanded = Set((0..<UInt32(t.nodeCount)).filter { t.info($0).childCount > 0 && $0 != largeID })
                                 Perf.log("fixture largeID=\(String(describing: largeID)) excluded=\(largeID.map { !model.expanded.contains($0) } ?? false)")
+                                Check.expect("fixture-large-identity-excluded", largeID != nil && largeID.map { !model.expanded.contains($0) } == true)
                                 model.refreshOutline()
                                 Perf.log("count fixture expanded=\(model.expanded.count) rootRows=\(t.info(0).childCount)")
                             }
                             try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            Check.expect("fixture-projection-depth12-not-large-descendants", model.outlineRows.contains { $0.depth >= 12 } && !model.outlineRows.contains { model.tree?.name($0.node).hasPrefix("item-") == true })
                             // Keep a top empty folder, large count and deep folders in the same visual frame.
                             model.outlineSort = .name
                             try? await Task.sleep(nanoseconds: 1_500_000_000)
@@ -574,5 +577,93 @@ private struct DemoAccessibilityModes: ViewModifier {
             content.environment(\.accessibilityReduceTransparency, reduceTransparency)
                 .environment(\.accessibilityReduceMotion, reduceMotion)
         } else { content }
+    }
+}
+
+/// Holds exactly one computed publication until the newer operation has completed.
+/// Token-specific completion proves the old main-actor closure ran, rather than relying on sleeps.
+private actor PublicationBarrier {
+    let stage: String
+    private var token: UInt64?
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var finished = false
+    init(_ stage: String) { self.stage = stage }
+    func before(_ stage: String, _ generation: UInt64) async {
+        guard stage == self.stage, token == nil else { return }
+        token = generation
+        await withCheckedContinuation { continuation = $0 }
+    }
+    func after(_ stage: String, _ generation: UInt64) {
+        if stage == self.stage && generation == token { finished = true }
+    }
+    func release() { continuation?.resume(); continuation = nil }
+    func parked() -> Bool { continuation != nil }
+    func completed() -> Bool { finished }
+}
+
+@MainActor private enum PublicationRegression {
+    static func wait(_ condition: () async -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline {
+            if await condition() { return true }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return false
+    }
+    static func run(tree: Tree) async {
+        let m = AppModel(); m.tree = tree
+        let filter = PublicationBarrier("filter")
+        m.beforePublish = { await filter.before($0, $1) }
+        m.afterPublish = { await filter.after($0, $1) }
+        m.filterText = "not-present-old-filter"
+        let parked = await wait { await filter.parked() }
+        m.clearFilters()
+        let newer = await wait { !m.filterPending && m.activeFilter == nil }
+        let revision = m.filterRevision
+        await filter.release()
+        let completed = await wait { await filter.completed() }
+        Check.expect("race-old-filter-after-newer-rejected", parked && newer && completed && m.activeFilter == nil && !m.filterPending && m.filterRevision == revision)
+
+        let outline = PublicationBarrier("outline")
+        m.beforePublish = { await outline.before($0, $1) }
+        m.afterPublish = { await outline.after($0, $1) }
+        m.refreshOutline()
+        let outlineParked = await wait { await outline.parked() }
+        m.tree = nil; m.selected = nil; m.refreshOutline()
+        let outlineRevision = m.outlineRevision
+        await outline.release()
+        let outlineCompleted = await wait { await outline.completed() }
+        Check.expect("race-old-outline-after-tree-clear-rejected", outlineParked && outlineCompleted && m.outlineRows.isEmpty && m.outlineIndex.isEmpty && m.selected == nil && m.outlineRevision == outlineRevision)
+
+        // A different arena may reuse numeric NodeIds. Reject old rows even if ids look valid.
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("spz-publication-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: root.appendingPathComponent("new-tree-only").path, contents: Data())
+        let replacement = await ScanSession(root: root.path, excludes: [])?.run { _ in }
+        m.tree = tree
+        let swapped = PublicationBarrier("outline")
+        m.beforePublish = { await swapped.before($0, $1) }
+        m.afterPublish = { await swapped.after($0, $1) }
+        m.refreshOutline()
+        let swapParked = await wait { await swapped.parked() }
+        m.tree = replacement; m.expanded = []; m.selected = nil; m.refreshOutline()
+        let swapNewer = await wait { m.outlineRows.count == 1 && replacement?.name(m.outlineRows[0].node) == "new-tree-only" }
+        let swapRows = m.outlineRows.map { $0.node }, swapRevision = m.outlineRevision
+        await swapped.release()
+        let swapCompleted = await wait { await swapped.completed() }
+        Check.expect("race-old-outline-after-tree-swap-rejected", swapParked && swapNewer && swapCompleted && m.outlineRows.map { $0.node } == swapRows && m.outlineRevision == swapRevision && m.selected == nil)
+        try? FileManager.default.removeItem(at: root)
+
+        m.tree = tree
+        let derived = PublicationBarrier("derived")
+        m.beforePublish = { await derived.before($0, $1) }
+        m.afterPublish = { await derived.after($0, $1) }
+        m.refreshDerived()
+        let derivedParked = await wait { await derived.parked() }
+        m.tree = nil; m.refreshDerived()
+        await derived.release()
+        let derivedCompleted = await wait { await derived.completed() }
+        Check.expect("race-old-derived-after-clear-rejected", derivedParked && derivedCompleted && m.largestIDs.isEmpty && m.kindRows.isEmpty)
+        m.beforePublish = nil; m.afterPublish = nil
     }
 }
