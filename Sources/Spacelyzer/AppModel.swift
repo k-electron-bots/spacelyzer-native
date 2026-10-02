@@ -14,6 +14,8 @@ struct RemovedItem { var original: URL; var trashed: URL; var size: UInt64 }
 
 @MainActor @Observable
 final class AppModel {
+    /// CI-only contrast branch injection. Product cells ignore it unless SPZ_DEMO is enabled.
+    var demoIncreaseContrast: Bool?
     var tree: Tree?
     var rootPath: String = ""
     var scanning = false
