@@ -485,7 +485,7 @@ struct SpacelyzerApp: App {
                             NSApp.appearance = NSAppearance(named: .aqua)
                             DemoInput.window?.setContentSize(NSSize(width: 960, height: 600))
                             try? await Task.sleep(nanoseconds: 1_000_000_000)
-                            Check.expect("e2-minimum-window-fits", DemoInput.window?.contentView?.bounds.width == 960 && DemoInput.window?.contentView?.bounds.height == 600, "size=\(String(describing: DemoInput.window?.contentView?.bounds.size))")
+                            Check.expect("e2-minimum-window-fits", abs(DemoRootLayout.size.width - 960) < 1 && abs(DemoRootLayout.size.height - 600) < 1 && DemoInput.window?.contentLayoutRect.width == 960 && DemoInput.window?.contentLayoutRect.height == 600, "root=\(DemoRootLayout.size) layout=\(String(describing: DemoInput.window?.contentLayoutRect.size)) contentView=\(String(describing: DemoInput.window?.contentView?.bounds.size)); all required, pixels decide")
                             mark(26)
                             NSApp.appearance = NSAppearance(named: .darkAqua)
                             try? await Task.sleep(nanoseconds: 1_000_000_000); mark(27)
@@ -517,6 +517,19 @@ struct SpacelyzerApp: App {
                                 Check.expect("e2-count-color-contract-\(step)", OutlineDemoEvidence.countColorContract(increased: increase))
                                 mark(step)
                             }
+                            // Inactive selection must not leave stale emphasized white text on neutral background.
+                            DemoInput.window?.resignKey()
+                            try? await Task.sleep(nanoseconds: 500_000_000)
+                            Check.expect("e2-inactive-count-color-policy", OutlineDemoEvidence.inactiveSelectedCountPolicy)
+                            mark(35)
+                            DemoInput.window?.makeKeyAndOrderFront(nil)
+                            if let table = OutlineDemoEvidence.table {
+                                table.reloadData()
+                                if let node = model.selected, let row = model.outlineIndex[node] { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
+                            }
+                            try? await Task.sleep(nanoseconds: 500_000_000)
+                            Check.expect("e2-count-reuse-color-policy", OutlineDemoEvidence.countColorContract(increased: true))
+                            mark(36)
                             model.demoIncreaseContrast = nil; NSApp.appearance = savedAppearance
                             if let table = OutlineDemoEvidence.table, let window = table.window {
                                 let selectedBefore = model.selected
