@@ -84,16 +84,17 @@ jobs:
           pkill Spacelyzer || true
           sleep 2
           # Scripted interaction run: the app writes /tmp/spz-demo-step after each state settles.
-          rm -f /tmp/spz-demo-*.png /tmp/spz-demo-step /tmp/spz-geom.txt /tmp/spz-timing.txt /tmp/spz-assertions.txt
+          rm -f /tmp/spz-demo-ready-* /tmp/spz-demo-ack-* /tmp/spz-demo-*.png /tmp/spz-demo-step /tmp/spz-geom.txt /tmp/spz-timing.txt /tmp/spz-assertions.txt
           open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Library --env SPZ_DEMO=1
           for step in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22; do
-            for i in $(seq 1 120); do [ -f "/tmp/spz-demo-$step.png" ] && break; sleep 1; done
-            if [ ! -f "/tmp/spz-demo-$step.png" ]; then
+            for i in $(seq 1 240); do [ -f "/tmp/spz-demo-ready-$step" ] && break; sleep 1; done
+            if [ ! -f "/tmp/spz-demo-ready-$step" ]; then
               echo "DEMO STEP TIMEOUT: expected $step, last $(cat /tmp/spz-demo-step 2>/dev/null)" >> /tmp/spz-timing.txt
               break
             fi
             if [ "$step" = 7 ]; then (sample Spacelyzer 12 5 -file /tmp/spz-sample.txt >/dev/null 2>&1 &) ; fi
-            cp "/tmp/spz-demo-$step.png" "dist/screenshot-demo-$step.png"
+            screencapture -x "dist/screenshot-demo-$step.png"
+            touch "/tmp/spz-demo-ack-$step"
           done
           pgrep -x Spacelyzer >/dev/null && echo 'app still running at end' >> /tmp/spz-timing.txt || echo 'APP NOT RUNNING at end (crashed or exited)' >> /tmp/spz-timing.txt
           if [ -f /tmp/spz-timing.txt ]; then
