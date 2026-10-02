@@ -530,7 +530,7 @@ struct SpacelyzerApp: App {
                                 if let node = model.selected, let row = model.outlineIndex[node] { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
                             }
                             try? await Task.sleep(nanoseconds: 500_000_000)
-                            Check.expect("e2-count-visible-reload-color-policy", OutlineDemoEvidence.countColorContract(increased: true) && model.selected == selectedBeforeInactive && OutlineDemoEvidence.table?.selectedRow == tableRowBeforeInactive && selectedBeforeInactive.flatMap { model.outlineIndex[$0] } == tableRowBeforeInactive)
+                            Check.expect("e2-count-visible-reload-color-policy", OutlineDemoEvidence.countColorContract(increased: true) && model.selected == selectedBeforeInactive && OutlineDemoEvidence.table?.selectedRow == tableRowBeforeInactive && selectedBeforeInactive.flatMap { model.outlineIndex[$0] } == tableRowBeforeInactive, "key=\(DemoInput.window?.isKeyWindow ?? false) responder=\(String(describing: DemoInput.window?.firstResponder)) node=\(String(describing: model.selected)) row=\(OutlineDemoEvidence.table?.selectedRow ?? -1) expectedRow=\(tableRowBeforeInactive ?? -1)")
                             mark(36)
                             model.demoIncreaseContrast = nil; NSApp.appearance = savedAppearance
                             if let table = OutlineDemoEvidence.table, let window = table.window {
@@ -542,7 +542,7 @@ struct SpacelyzerApp: App {
                                 let responder = window.firstResponder
                                 let focusMoved = intendedControl != nil && intendedControl !== table && !intendedControl!.isHidden && intendedControl!.window === window && ((intendedControl as? NSControl)?.isEnabled ?? true)
                                     && (responder === intendedControl || (responder as? NSTextView)?.delegate === intendedControl)
-                                Check.expect("e2-tab-leaves-outline-without-selection-change", focusMoved && model.selected == selectedBefore)
+                                Check.expect("e2-tab-leaves-outline-without-selection-change", focusMoved && model.selected == selectedBefore, "key=\(window.isKeyWindow) intended=\(String(describing: intendedControl)) responder=\(String(describing: responder)) delegate=\(String(describing: (responder as? NSTextView)?.delegate)) selectedBefore=\(String(describing: selectedBefore)) selectedAfter=\(String(describing: model.selected))")
                                 // Escape must not invoke a destructive action or clear the current tree.
                                 let treeBefore = model.tree, removedBefore = model.lastRemoved.count
                                 let pendingBefore = model.pendingRemoval, messageBefore = model.removalMessage
