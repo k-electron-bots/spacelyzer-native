@@ -140,7 +140,7 @@ struct SpacelyzerApp: App {
                         }
                         try? await Task.sleep(nanoseconds: 500_000_000)
                         Perf.log(MainStall.shared.summary("hover-sweep-300-moves"))
-                        Check.expect("hover-sweep-main-stall-under-250ms", MainStall.shared.max < 250, "max=\(String(format: "%.1f", MainStall.shared.max))ms")
+                        Check.expect("hover-sweep-main-stall-under-250ms", MainStall.shared.peak < 250, "max=\(String(format: "%.1f", MainStall.shared.peak))ms")
                         mark(12)
                         // Step 12: Right/Left expand and collapse, Return drills (real key events).
                         try? await Task.sleep(nanoseconds: 4_000_000_000)

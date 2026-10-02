@@ -244,18 +244,18 @@ final class MainStall: @unchecked Sendable {
                 let t0 = DispatchTime.now().uptimeNanoseconds
                 DispatchQueue.main.async { [self] in
                     let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
-                    lock.lock(); n += 1; maxMs = max(maxMs, ms)
+                    lock.lock(); n += 1; maxMs = Swift.max(maxMs, ms)
                     if ms > 16 { over16 += 1 }; if ms > 50 { over50 += 1 }; if ms > 100 { over100 += 1 }
                     lock.unlock()
                 }
                 Thread.sleep(forTimeInterval: 0.005)
             }
         }
-        t.qualityOfService = .userInteractive
+        t.qualityOfService = QualityOfService.userInteractive
         t.start()
     }
     func reset() { lock.lock(); maxMs = 0; over16 = 0; over50 = 0; over100 = 0; n = 0; lock.unlock() }
-    var max: Double { lock.lock(); defer { lock.unlock() }; return maxMs }
+    var peak: Double { lock.lock(); defer { lock.unlock() }; return maxMs }
     func summary(_ label: String) -> String {
         lock.lock(); defer { lock.unlock() }
         return "stall \(label): max=\(String(format: "%.1f", maxMs))ms pings=\(n) over16=\(over16) over50=\(over50) over100=\(over100)"
