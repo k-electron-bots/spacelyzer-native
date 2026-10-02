@@ -657,10 +657,10 @@ private actor PublicationBarrier {
             let scanModel = AppModel(), scanBarrier = PublicationBarrier(stage)
             scanModel.beforePublish = { await scanBarrier.before($0, $1) }
             scanModel.afterPublish = { await scanBarrier.after($0, $1) }
-            scanModel.scan(tree.rootPath)
+            scanModel.scan(tree.path(0))
             let scanParked = await wait { await scanBarrier.parked() }
             scanModel.scan(root.path)
-            let scanNewer = await wait { !scanModel.scanning && scanModel.tree?.rootPath == root.path }
+            let scanNewer = await wait { !scanModel.scanning && scanModel.tree?.path(0) == root.resolvingSymlinksInPath().path }
             let currentTree = scanModel.tree, currentRevision = scanModel.revision
             let currentItems = scanModel.progress.items, currentBytes = scanModel.progress.bytes
             let currentElapsed = scanModel.elapsed, currentSeconds = scanModel.lastScanSeconds
