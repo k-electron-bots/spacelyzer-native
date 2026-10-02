@@ -421,8 +421,9 @@ struct SpacelyzerApp: App {
                             model.scan(countRoot.path)
                             while model.scanning { try? await Task.sleep(nanoseconds: 100_000_000) }
                             if let t = model.tree {
-                                model.expanded = Set((0..<UInt32(t.nodeCount)).filter { t.info($0).childCount > 0 && t.path($0) != countRoot.appendingPathComponent("b-large").resolvingSymlinksInPath().path })
+                                model.expanded = Set((0..<UInt32(t.nodeCount)).filter { t.info($0).childCount > 0 && !(t.name($0) == "b-large" && t.info($0).parent == 0) })
                                 model.refreshOutline()
+                                Perf.log("count fixture expanded=\(model.expanded.count) rootRows=\(t.info(0).childCount)")
                             }
                             try? await Task.sleep(nanoseconds: 1_500_000_000)
                             // Keep a top empty folder, large count and deep folders in the same visual frame.
