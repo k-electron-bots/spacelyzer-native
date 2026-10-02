@@ -252,7 +252,11 @@ private struct NameFilterField: NSViewRepresentable {
         let editor = field.currentEditor() as? NSTextView
         // Capture external intent before cancellation can synchronously notify the delegate.
         // Editor text can diverge from field/model while composition is underway.
-        if field.stringValue != target || (editor != nil && (editor!.string != target || editor!.hasMarkedText())) {
+        let externalIntent = context.coordinator.externalRevision != model.externalFilterTextRevision || context.coordinator.resetRevision != model.filterResetRevision
+        context.coordinator.externalRevision = model.externalFilterTextRevision
+        context.coordinator.resetRevision = model.filterResetRevision
+        let marked = editor?.hasMarkedText() ?? false
+        if externalIntent || (!marked && (field.stringValue != target || (editor != nil && editor!.string != target))) {
             context.coordinator.programmaticChange = true
             defer { context.coordinator.programmaticChange = false }
             if let editor {
@@ -270,10 +274,16 @@ private struct NameFilterField: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextFieldDelegate {
         let model: AppModel
         var programmaticChange = false
-        init(_ model: AppModel) { self.model = model }
+        var externalRevision: UInt64
+        var resetRevision: UInt64
+        init(_ model: AppModel) {
+            self.model = model
+            externalRevision = model.externalFilterTextRevision
+            resetRevision = model.filterResetRevision
+        }
         func controlTextDidChange(_ notification: Notification) {
             guard !programmaticChange, let field = notification.object as? NSTextField else { return }
-            model.filterText = field.stringValue
+            model.setFilterTextFromEditor(field.stringValue)
         }
     }
 }
