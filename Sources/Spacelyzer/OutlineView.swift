@@ -1,6 +1,9 @@
+import AppKit
 import CSpacelyzer
 import SwiftUI
 
+/// The outline is an NSTableView: AppKit virtualizes rows and scrolls to a row in O(1), which a LazyVStack could not do
+/// for 150k rows (profiled: scrollTo and row re-evaluation dominated every arrow press).
 struct OutlineView: View {
     @Environment(AppModel.self) private var model
     static let rowHeight: CGFloat = 28
@@ -8,128 +11,257 @@ struct OutlineView: View {
     var body: some View {
         if let tree = model.tree {
             let total = max(1, model.activeFilter?.size(model.displayedRoot) ?? tree.info(model.displayedRoot).size)
-            let rows = model.outlineRows
-            // Windowed: LazyVStack creates only the rows on screen, so 150k rows cost the same as 50.
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(0..<rows.count, id: \.self) { i in
-                            let row = rows[i]
-                            let info = tree.info(row.node)
-                            // Inputs are plain values and the row is Equatable, so a selection change re-evaluates
-                            // two rows (old and new), not every realized row with its context menu.
-                            OutlineLine(tree: tree, node: row.node, depth: Int(row.depth), parentTotal: total,
-                                        shown: model.activeFilter?.size(row.node) ?? info.size,
-                                        expanded: model.expanded.contains(row.node),
-                                        selected: model.selected == row.node, model: model)
-                                .equatable()
-                                .frame(height: Self.rowHeight)
-                                .padding(.horizontal, 8)
-                                .background(model.selected == row.node ? Color.accentColor.opacity(0.22) : .clear, in: RoundedRectangle(cornerRadius: 6))
-                                .contentShape(Rectangle())
-                                .onTapGesture { model.selected = row.node }
-                                .id(row.node)
-                        }
+            OutlineTable(model: model, tree: tree, total: total, revision: model.outlineRevision, selected: model.selected)
+                .overlay {
+                    if model.activeFilter != nil && model.outlineRows.isEmpty {
+                        ContentUnavailableView("No matches", systemImage: "line.3.horizontal.decrease.circle",
+                                               description: Text("Nothing in this folder matches the current filter."))
                     }
-                    .padding(.horizontal, 4)
                 }
-                .focusable()
-                .focusEffectDisabled()
-                .onKeyPress(.downArrow) { move(+1, rows, proxy) }
-                .onKeyPress(.upArrow) { move(-1, rows, proxy) }
-                .onKeyPress(.rightArrow) { expand(true, tree) }
-                .onKeyPress(.leftArrow) { expand(false, tree) }
+                .onAppear { model.refreshOutline() }
                 .onChange(of: model.selected) { _, n in
-                    // Any selection change (treemap, Largest list, keys) scrolls the outline to the row if it is present.
-                    if let n, model.outlineIndex[n] != nil { proxy.scrollTo(n) }
+                    guard Perf.on else { return }
+                    let idx = n.flatMap { model.outlineIndex[$0] }
+                    Perf.log("selection changed: node=\(n.map(String.init) ?? "nil") rowIndex=\(idx.map(String.init) ?? "none") of \(model.outlineRows.count)")
                 }
-                .onKeyPress(.return) { if let s = model.selected { model.drill(into: s) }; return .handled }
-            }
-            .overlay {
-                if model.activeFilter != nil && rows.isEmpty {
-                    ContentUnavailableView("No matches", systemImage: "line.3.horizontal.decrease.circle",
-                                           description: Text("Nothing in this folder matches the current filter."))
-                }
-            }
-            .background(Color(nsColor: .controlBackgroundColor))
-            .onAppear { model.refreshOutline() }
-            .onChange(of: model.selected) { _, n in
-                guard Perf.on else { return }
-                let idx = n.flatMap { model.outlineIndex[$0] }
-                Perf.log("selection changed: node=\(n.map(String.init) ?? "nil") rowIndex=\(idx.map(String.init) ?? "none") of \(rows.count)")
-            }
         } else {
             ProgressView("Scanning…").frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
+}
 
-    private func move(_ d: Int, _ rows: [SpzRow], _ proxy: ScrollViewProxy) -> KeyPress.Result {
-        guard !rows.isEmpty else { return .ignored }
-        let cur = model.selected.flatMap { model.outlineIndex[$0] }
-        let next = max(0, min(rows.count - 1, (cur ?? (d > 0 ? -1 : rows.count)) + d))
-        model.selected = rows[next].node
-        // Scrolling happens once, in onChange(of: model.selected); a second scrollTo here doubled the layout work per key press.
-        return .handled
+private final class KeyTable: NSTableView {
+    var onKey: ((UInt16) -> Bool)?
+    var contextRow: ((Int) -> NSMenu?)?
+    override func keyDown(with event: NSEvent) {
+        if let h = onKey, h(event.keyCode) { return }
+        super.keyDown(with: event)
     }
-
-    private func expand(_ open: Bool, _ tree: Tree) -> KeyPress.Result {
-        guard let s = model.selected else { return .ignored }
-        let info = tree.info(s)
-        if info.kind == .directory && info.childCount > 0 && model.expanded.contains(s) != open { model.toggle(s); return .handled }
-        return .ignored
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let r = row(at: convert(event.locationInWindow, from: nil))
+        return r >= 0 ? contextRow?(r) : nil
     }
 }
 
-struct OutlineLine: View, Equatable {
-    let tree: Tree
-    let node: UInt32
-    let depth: Int
-    let parentTotal: UInt64
-    let shown: UInt64
-    let expanded: Bool
-    let selected: Bool
+private final class ShareBarView: NSView {
+    var fraction: Double = 0 { didSet { needsDisplay = true } }
+    override var isFlipped: Bool { true }
+    override func draw(_ dirtyRect: NSRect) {
+        let r = bounds
+        NSColor.quaternaryLabelColor.setFill()
+        NSBezierPath(roundedRect: r, xRadius: r.height / 2, yRadius: r.height / 2).fill()
+        let w = max(2, r.width * min(1, max(0, fraction)))
+        NSColor.controlAccentColor.withAlphaComponent(0.7).setFill()
+        NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: w, height: r.height), xRadius: r.height / 2, yRadius: r.height / 2).fill()
+    }
+}
+
+private final class OutlineCell: NSTableCellView {
+    let chevron = NSButton()
+    let icon = NSImageView()
+    let name = NSTextField(labelWithString: "")
+    let size = NSTextField(labelWithString: "")
+    fileprivate let bar = ShareBarView()
+    var depth = 0
+    var hasChildren = false
+    var onToggle: (() -> Void)?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        chevron.isBordered = false
+        chevron.bezelStyle = .inline
+        chevron.imagePosition = .imageOnly
+        chevron.target = self
+        chevron.action = #selector(toggle)
+        chevron.setButtonType(.momentaryChange)
+        name.lineBreakMode = .byTruncatingMiddle
+        name.font = .systemFont(ofSize: NSFont.systemFontSize)
+        size.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        size.textColor = .secondaryLabelColor
+        size.alignment = .right
+        icon.imageScaling = .scaleProportionallyDown
+        for v in [chevron, icon, name, size, bar] as [NSView] { addSubview(v) }
+        textField = name
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    @objc private func toggle() { onToggle?() }
+
+    override var backgroundStyle: NSView.BackgroundStyle {
+        didSet { size.textColor = backgroundStyle == .emphasized ? .alternateSelectedControlTextColor : .secondaryLabelColor }
+    }
+
+    override func layout() {
+        super.layout()
+        let h = bounds.height, w = bounds.width
+        let x0 = 8 + CGFloat(depth) * 10
+        chevron.frame = NSRect(x: x0, y: (h - 14) / 2, width: 14, height: 14)
+        chevron.isHidden = !hasChildren
+        icon.frame = NSRect(x: x0 + 18, y: (h - 16) / 2, width: 16, height: 16)
+        bar.frame = NSRect(x: w - 8 - 44, y: (h - 6) / 2, width: 44, height: 6)
+        let sizeW: CGFloat = 70
+        size.frame = NSRect(x: bar.frame.minX - 8 - sizeW, y: (h - 16) / 2, width: sizeW, height: 16)
+        let nx = x0 + 40
+        name.frame = NSRect(x: nx, y: (h - 16) / 2, width: max(20, size.frame.minX - 8 - nx), height: 16)
+    }
+}
+
+private struct OutlineTable: NSViewRepresentable {
     let model: AppModel
+    let tree: Tree
+    let total: UInt64
+    let revision: Int
+    let selected: UInt32?
 
-    static func == (a: Self, b: Self) -> Bool {
-        a.tree === b.tree && a.node == b.node && a.depth == b.depth && a.parentTotal == b.parentTotal
-            && a.shown == b.shown && a.expanded == b.expanded && a.selected == b.selected
+    func makeCoordinator() -> Coordinator { Coordinator(model) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let table = KeyTable()
+        let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("outline"))
+        col.resizingMask = .autoresizingMask
+        table.addTableColumn(col)
+        table.headerView = nil
+        table.rowHeight = OutlineView.rowHeight
+        table.style = .inset
+        table.usesAutomaticRowHeights = false
+        table.allowsMultipleSelection = false
+        table.allowsEmptySelection = true
+        table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
+        table.dataSource = context.coordinator
+        table.delegate = context.coordinator
+        table.target = context.coordinator
+        table.doubleAction = #selector(Coordinator.doubleClicked)
+        table.setAccessibilityLabel("Folder outline")
+        table.onKey = { [weak c = context.coordinator] code in c?.key(code) ?? false }
+        table.contextRow = { [weak c = context.coordinator] r in c?.menu(for: r) }
+        context.coordinator.table = table
+        let scroll = NSScrollView()
+        scroll.documentView = table
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground = false
+        scroll.autohidesScrollers = true
+        return scroll
     }
 
-    var body: some View {
-        let info = tree.info(node)
-        HStack(spacing: 6) {
-            Color.clear.frame(width: CGFloat(depth) * 10, height: 1)
-            if info.kind == .directory && info.childCount > 0 {
-                Button { model.toggle(node) } label: {
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.caption2)
-                }.buttonStyle(.plain).frame(width: 12)
-            } else { Color.clear.frame(width: 12, height: 1) }
-            Image(systemName: icon(info))
-                .foregroundStyle(info.kind == .directory ? Color.accentColor : .secondary)
-                .frame(width: 16)
-            Text(tree.name(node)).lineLimit(1).truncationMode(.middle)
-            Spacer(minLength: 8)
-            Text(formatBytes(shown)).monospacedDigit().foregroundStyle(.secondary)
-            ShareBar(fraction: Double(shown) / Double(max(1, parentTotal)))
-                .frame(width: 44, height: 6)
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        let c = context.coordinator
+        c.tree = tree
+        c.total = total
+        if c.shownRevision != revision {
+            c.shownRevision = revision
+            c.table?.reloadData()
         }
-        .contextMenu {
-            Button("Show in Finder") { model.reveal(node) }
-            Button("Move to Trash…", role: .destructive) { model.proposeRemoval(of: node) }
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(tree.name(node)), \(info.kind == .directory ? "folder" : "item"), \(formatBytes(shown))")
-        .accessibilityValue(info.kind == .directory && info.childCount > 0 ? (expanded ? "expanded" : "collapsed") : "")
+        c.syncSelection(selected)
     }
 
-    private func icon(_ i: NodeInfo) -> String {
-        switch i.kind {
-        case .directory: "folder"
-        case .package: "app.gift"
-        case .symlink: "link"
-        case .file: "doc"
+    @MainActor final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+        let model: AppModel
+        weak var table: KeyTable?
+        var tree: Tree?
+        var total: UInt64 = 1
+        var shownRevision = -1
+        private var suppress = false
+        init(_ m: AppModel) { model = m }
+
+        func numberOfRows(in tableView: NSTableView) -> Int { model.outlineRows.count }
+
+        func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+            guard let tree, row < model.outlineRows.count else { return nil }
+            let id = NSUserInterfaceItemIdentifier("cell")
+            let cell = (tableView.makeView(withIdentifier: id, owner: nil) as? OutlineCell) ?? { let c = OutlineCell(frame: .zero); c.identifier = id; return c }()
+            let r = model.outlineRows[row]
+            let info = tree.info(r.node)
+            let shown = model.activeFilter?.size(r.node) ?? info.size
+            let isDir = info.kind == .directory
+            let expanded = model.expanded.contains(r.node)
+            cell.depth = Int(r.depth)
+            cell.hasChildren = isDir && info.childCount > 0
+            cell.chevron.image = NSImage(systemSymbolName: expanded ? "chevron.down" : "chevron.right", accessibilityDescription: expanded ? "Collapse" : "Expand")?
+                .withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
+            cell.icon.image = NSImage(systemSymbolName: Self.icon(info), accessibilityDescription: nil)
+            cell.icon.contentTintColor = isDir ? .controlAccentColor : .secondaryLabelColor
+            let nm = tree.name(r.node)
+            cell.name.stringValue = nm
+            cell.size.stringValue = formatBytes(shown)
+            cell.bar.fraction = Double(shown) / Double(max(1, total))
+            let node = r.node
+            cell.onToggle = { [weak self] in self?.model.toggle(node) }
+            cell.setAccessibilityLabel("\(nm), \(isDir ? "folder" : "item"), \(formatBytes(shown))")
+            cell.setAccessibilityValue(cell.hasChildren ? (expanded ? "expanded" : "collapsed") : nil)
+            cell.needsLayout = true
+            return cell
+        }
+
+        static func icon(_ i: NodeInfo) -> String {
+            switch i.kind {
+            case .directory: "folder"
+            case .package: "app.gift"
+            case .symlink: "link"
+            case .file: "doc"
+            }
+        }
+
+        func tableViewSelectionDidChange(_ notification: Notification) {
+            guard !suppress, let t = table else { return }
+            let r = t.selectedRow
+            let node: UInt32? = r >= 0 && r < model.outlineRows.count ? model.outlineRows[r].node : nil
+            if model.selected != node { model.selected = node }
+        }
+
+        /// Model -> table. O(1): dictionary lookup, then AppKit scrolls straight to the row.
+        func syncSelection(_ node: UInt32?) {
+            guard let t = table else { return }
+            let idx = node.flatMap { model.outlineIndex[$0] }
+            if let idx {
+                if t.selectedRow != idx {
+                    suppress = true
+                    t.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
+                    suppress = false
+                    t.scrollRowToVisible(idx)
+                }
+            } else if t.selectedRow >= 0 {
+                suppress = true; t.deselectAll(nil); suppress = false
+            }
+        }
+
+        func key(_ code: UInt16) -> Bool {
+            guard let tree, let s = model.selected else { return false }
+            let info = tree.info(s)
+            let isDir = info.kind == .directory && info.childCount > 0
+            switch code {
+            case 124: if isDir && !model.expanded.contains(s) { model.toggle(s) }; return isDir      // right
+            case 123: if isDir && model.expanded.contains(s) { model.toggle(s) }; return isDir       // left
+            case 36, 76: model.drill(into: s); return true                                           // return, enter
+            default: return false
+            }
+        }
+
+        @objc func doubleClicked() {
+            guard let t = table, t.clickedRow >= 0, t.clickedRow < model.outlineRows.count else { return }
+            model.drill(into: model.outlineRows[t.clickedRow].node)
+        }
+
+        func menu(for row: Int) -> NSMenu? {
+            guard row < model.outlineRows.count else { return nil }
+            let node = model.outlineRows[row].node
+            let m = NSMenu()
+            let a = BlockItem(title: "Show in Finder") { [weak self] in self?.model.reveal(node) }
+            let b = BlockItem(title: "Move to Trash…") { [weak self] in self?.model.proposeRemoval(of: node) }
+            m.addItem(a); m.addItem(b)
+            return m
         }
     }
+}
+
+private final class BlockItem: NSMenuItem {
+    private let block: () -> Void
+    init(title: String, block: @escaping () -> Void) {
+        self.block = block
+        super.init(title: title, action: #selector(run), keyEquivalent: "")
+        target = self
+    }
+    required init(coder: NSCoder) { fatalError() }
+    @objc private func run() { block() }
 }
 
 struct ShareBar: View {

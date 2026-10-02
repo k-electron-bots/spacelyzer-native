@@ -82,13 +82,15 @@ final class AppModel {
     var outlineRows: [SpzRow] = []
     /// node -> row index, built off the main thread with the rows so selection lookups are O(1).
     var outlineIndex: [UInt32: Int] = [:]
+    /// Bumps whenever outlineRows is replaced, so the table reloads exactly once per change.
+    var outlineRevision = 0
     var outlineMillis: Double = 0
     private var outlineTask: Task<Void, Never>?
 
     /// Recompute the flattened outline in Rust off the main thread. Selection and the expanded
     /// set live here, so they survive re-projection.
     func refreshOutline() {
-        guard let tree else { outlineRows = []; outlineIndex = [:]; return }
+        guard let tree else { outlineRows = []; outlineIndex = [:]; outlineRevision += 1; return }
         let root = displayedRoot, ex = expanded, flt = activeFilter
         outlineTask?.cancel()
         outlineTask = Task.detached(priority: .userInitiated) { [weak self] in
@@ -98,7 +100,7 @@ final class AppModel {
             var index = [UInt32: Int](minimumCapacity: rows.count)
             for (i, r) in rows.enumerated() { index[r.node] = i }
             if Task.isCancelled { return }
-            await MainActor.run { self?.outlineRows = rows; self?.outlineIndex = index; self?.outlineMillis = ms }
+            await MainActor.run { self?.outlineRows = rows; self?.outlineIndex = index; self?.outlineRevision += 1; self?.outlineMillis = ms }
         }
     }
 
@@ -161,7 +163,7 @@ final class AppModel {
                 // Node ids are only valid for one tree: drop every id-keyed cache in the same main-actor turn
                 // so no view can index the new tree with ids from the old one.
                 filterTask?.cancel(); derivedTask?.cancel(); outlineTask?.cancel()
-                outlineRows = []; outlineIndex = [:]; expanded = []; largestIDs = []; kindRows = []; activeFilter = nil
+                outlineRows = []; outlineIndex = [:]; outlineRevision += 1; expanded = []; largestIDs = []; kindRows = []; activeFilter = nil
                 pendingRemoval = nil
                 tree = t
                 displayedRoot = 0
