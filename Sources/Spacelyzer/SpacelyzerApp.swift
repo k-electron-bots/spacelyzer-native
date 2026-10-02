@@ -533,28 +533,27 @@ struct SpacelyzerApp: App {
                             var responderSetup = false
                             if let table = OutlineDemoEvidence.table {
                                 responderSetup = table.window?.makeFirstResponder(table) == true
-                                model.connectOutlineFocusLoop()
                                 table.reloadData()
                                 if let node = model.selected, let row = model.outlineIndex[node] { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
                             }
                             try? await Task.sleep(nanoseconds: 500_000_000)
-                            Check.expect("e2-count-visible-reload-color-policy", activeSetup && responderSetup && OutlineDemoEvidence.countColorContract(increased: true) && model.selected == selectedBeforeInactive && OutlineDemoEvidence.table?.selectedRow == tableRowBeforeInactive && selectedBeforeInactive.flatMap { model.outlineIndex[$0] } == tableRowBeforeInactive, "style=\(OutlineDemoEvidence.selectionDiagnostic) key=\(DemoInput.window?.isKeyWindow ?? false) responder=\(String(describing: DemoInput.window?.firstResponder)) node=\(String(describing: model.selected)) row=\(OutlineDemoEvidence.table?.selectedRow ?? -1) expectedRow=\(tableRowBeforeInactive ?? -1)")
+                            Check.expect("e2-count-visible-reload-color-policy", activeSetup && responderSetup && NSApp.isActive && (DemoInput.window?.isKeyWindow ?? false) && DemoInput.window?.firstResponder === OutlineDemoEvidence.table && OutlineDemoEvidence.countColorContract(increased: true) && model.selected == selectedBeforeInactive && OutlineDemoEvidence.table?.selectedRow == tableRowBeforeInactive && selectedBeforeInactive.flatMap { model.outlineIndex[$0] } == tableRowBeforeInactive, "style=\(OutlineDemoEvidence.selectionDiagnostic) key=\(DemoInput.window?.isKeyWindow ?? false) responder=\(String(describing: DemoInput.window?.firstResponder)) node=\(String(describing: model.selected)) row=\(OutlineDemoEvidence.table?.selectedRow ?? -1) expectedRow=\(tableRowBeforeInactive ?? -1)")
                             mark(36)
                             model.demoIncreaseContrast = nil; NSApp.appearance = savedAppearance
                             if let table = OutlineDemoEvidence.table, let window = table.window {
                                 let selectedBefore = model.selected
                                 let tableSetup = window.makeFirstResponder(table)
-                                model.connectOutlineFocusLoop()
                                 let intendedControl = model.nameFilterKeyView
                                 DemoInput.key(48, chars: "\t")
                                 try? await Task.sleep(nanoseconds: 500_000_000)
                                 let responder = window.firstResponder
-                                let focusMoved = activeSetup && tableSetup && NSApp.isActive && window.isKeyWindow && intendedControl != nil && intendedControl !== table && !intendedControl!.isHidden && intendedControl!.window === window && ((intendedControl as? NSControl)?.isEnabled ?? true)
+                                let focusMoved = table.nextValidKeyView === intendedControl && activeSetup && tableSetup && NSApp.isActive && window.isKeyWindow && intendedControl != nil && intendedControl !== table && !intendedControl!.isHidden && intendedControl!.window === window && ((intendedControl as? NSControl)?.isEnabled ?? true)
                                     && (responder === intendedControl || (responder as? NSTextView)?.delegate === intendedControl)
                                 Check.expect("e2-tab-leaves-outline-without-selection-change", focusMoved && model.selected == selectedBefore, "key=\(window.isKeyWindow) intended=\(String(describing: intendedControl)) responder=\(String(describing: responder)) delegate=\(String(describing: (responder as? NSTextView)?.delegate)) selectedBefore=\(String(describing: selectedBefore)) selectedAfter=\(String(describing: model.selected))")
+                                let reverseChain = intendedControl?.previousValidKeyView === table
                                 DemoInput.key(48, chars: "\t", modifiers: .shift)
                                 try? await Task.sleep(nanoseconds: 500_000_000)
-                                Check.expect("e2-shift-tab-returns-to-outline", activeSetup && NSApp.isActive && window.isKeyWindow && window.firstResponder === table && model.selected == selectedBefore)
+                                Check.expect("e2-shift-tab-returns-to-outline", focusMoved && reverseChain && activeSetup && NSApp.isActive && window.isKeyWindow && window.firstResponder === table && model.selected == selectedBefore)
                                 // Escape must not invoke a destructive action or clear the current tree.
                                 let treeBefore = model.tree, removedBefore = model.lastRemoved.count
                                 let pendingBefore = model.pendingRemoval, messageBefore = model.removalMessage
@@ -563,11 +562,36 @@ struct SpacelyzerApp: App {
                                 Check.expect("e2-escape-preserves-tree-and-removal-state", model.tree === treeBefore && model.lastRemoved.count == removedBefore && pendingBefore == nil && messageBefore == nil && model.pendingRemoval == pendingBefore && model.removalMessage == messageBefore)
                                 window.makeFirstResponder(table)
                                 Check.expect("e2-outline-single-selection-policy", !table.allowsMultipleSelection && table.selectedRowIndexes.count <= 1)
+                                // Text editor parity through native editing APIs; IME simulation is not real keyboard IME proof.
+                                if let field = model.nameFilterKeyView, window.makeFirstResponder(field), let editor = field.currentEditor() as? NSTextView {
+                                    editor.setSelectedRange(NSRange(location: 0, length: editor.string.utf16.count))
+                                    editor.insertText("edge", replacementRange: editor.selectedRange())
+                                    field.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: field))
+                                    try? await Task.sleep(nanoseconds: 100_000_000)
+                                    Check.expect("name-editor-typing-model-sync", editor.string == "edge" && field.stringValue == "edge" && model.filterText == "edge")
+                                    editor.setSelectedRange(NSRange(location: 2, length: 0))
+                                    model.filterText = "edge-case"
+                                    try? await Task.sleep(nanoseconds: 100_000_000)
+                                    Check.expect("name-editor-external-sync-preserves-cursor", editor.string == model.filterText && editor.selectedRange().location == 2 && editor.selectedRange().length == 0)
+                                    model.clearFilters()
+                                    try? await Task.sleep(nanoseconds: 100_000_000)
+                                    Check.expect("name-editor-clear-all-while-editing", editor.string.isEmpty && field.stringValue.isEmpty && model.filterText.isEmpty && editor.selectedRange().location == 0)
+                                    editor.setMarkedText("日本", selectedRange: NSRange(location: 2, length: 0), replacementRange: NSRange(location: 0, length: 0))
+                                    let marked = editor.hasMarkedText()
+                                    editor.unmarkText()
+                                    field.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: field))
+                                    try? await Task.sleep(nanoseconds: 100_000_000)
+                                    Check.expect("name-editor-marked-text-commit-simulation", marked && !editor.hasMarkedText() && model.filterText == editor.string && model.filterText == "日本")
+                                    model.clearFilters()
+                                } else {
+                                    for name in ["name-editor-typing-model-sync", "name-editor-external-sync-preserves-cursor", "name-editor-clear-all-while-editing", "name-editor-marked-text-commit-simulation"] { Check.expect(name, false, "active native editor unavailable") }
+                                }
                             } else {
                                 Check.expect("e2-tab-leaves-outline-without-selection-change", false, "table missing")
                                 Check.expect("e2-shift-tab-returns-to-outline", false, "table missing")
                                 Check.expect("e2-escape-preserves-tree-and-removal-state", false, "table missing")
                                 Check.expect("e2-outline-single-selection-policy", false, "table missing")
+                                for name in ["name-editor-typing-model-sync", "name-editor-external-sync-preserves-cursor", "name-editor-clear-all-while-editing", "name-editor-marked-text-commit-simulation"] { Check.expect(name, false, "table missing") }
                             }
                             // Actual SwiftUI zero-area and no-match screens on a disposable root.
                             let zeroRoot = FileManager.default.temporaryDirectory.appendingPathComponent("spz-zero-view-\(UUID().uuidString)")
