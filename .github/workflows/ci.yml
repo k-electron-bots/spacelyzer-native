@@ -17,6 +17,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --release -p spacelyzer-engine
       - run: cargo build --release
+      - name: Dependency allowlist
+        run: ./scripts/check-deps.sh
       - name: Scan benchmark (informational, shared runner)
         run: ./target/release/spz bench /usr 3
 
