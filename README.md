@@ -63,6 +63,12 @@ with any other disk analyzer has been run, so no speed-up claim is made.
 The last row is how long until the rows arrived on the main thread, not a full redraw measurement.
 Engine timings are reported separately from UI and copy timings.
 
+## Verification status
+
+E1 is not signed off. Diagnostic v0.1.89 failed its UI gate (26 of 28 checks reached); it is not a recommended delivery. Zero-byte filtering fixes passed independent engine review, but real date/sort/reset controls and count layouts still need consolidated evidence.
+
+Performance research: [index-assisted early results and dua-cli inspiration](docs/EVAL-index-accelerant.md), evaluation only. No Spotlight query or progressive result list is implemented.
+
 ## Get it
 
 Download the DMG from the [latest release](https://github.com/k-electron-bots/spacelyzer-native/releases).
