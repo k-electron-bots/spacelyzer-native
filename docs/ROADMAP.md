@@ -141,3 +141,6 @@ Independent source blocker found marked-state-only overwrite cancelled ordinary 
 
 
 Independent origin/revision source blocker closed; composition fixture now waits explicit coordinator-consumed reset revision before creating marked text. Ordinary update uses a refresh token read in updateNSView and checks actual update count advanced with unchanged external/reset revisions, marked text preserved; not sleep/contrast redraw inference. Evidence counters are observation-ignored to avoid redraw feedback. Equal-before-clear assertion retained.67 contracts38 states still pending runtime/source fixture recheck, no automatic notifications/actual IME/full E2 claim.
+
+
+Run100 at33c905f passed engine jobs but failed Swift compilation before UI/artifacts: native editor coordinator init read main-actor AppModel revisions from nonisolated context. Coordinator is now explicitly MainActor in source; semantics unchanged, repaired compilation/runtime still pending. No new focus/editing/zero-area pixels from100. All prior open scope retained. Public unauthenticated GitHub API rate limit reached on shared IP; stop those requests until reset, use bounded live UI reads, never pretend absence of API results means task completed/unavailable. No immediate harness-only rerun or readiness.
