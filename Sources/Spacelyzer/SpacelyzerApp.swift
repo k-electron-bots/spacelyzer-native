@@ -522,7 +522,7 @@ struct SpacelyzerApp: App {
                             let selectedBeforeInactive = model.selected
                             let tableRowBeforeInactive = OutlineDemoEvidence.table?.selectedRow
                             let focusWindow = OutlineDemoEvidence.table?.window
-                            func focusDiagnostic(_ phase: String) -> String {
+                            @MainActor func focusDiagnostic(_ phase: String) -> String {
                                 let chosen = DemoInput.window
                                 return "\(phase) appActive=\(NSApp.isActive) policy=\(NSApp.activationPolicy().rawValue) intendedNumber=\(focusWindow?.windowNumber ?? -1) chosenNumber=\(chosen?.windowNumber ?? -1) keyNumber=\(NSApp.keyWindow?.windowNumber ?? -1) mainNumber=\(NSApp.mainWindow?.windowNumber ?? -1) intendedKey=\(focusWindow?.isKeyWindow ?? false) main=\(focusWindow?.isMainWindow ?? false) visible=\(focusWindow?.isVisible ?? false) canBecomeKey=\(focusWindow?.canBecomeKey ?? false) sameChosen=\(focusWindow != nil && chosen === focusWindow) responder=\(String(describing: focusWindow?.firstResponder))"
                             }
@@ -617,7 +617,7 @@ struct SpacelyzerApp: App {
                                     let updateDeadline = Date().addingTimeInterval(3)
                                     while model.nameEditorUpdateCount == updatesBefore && Date() < updateDeadline { try? await Task.sleep(nanoseconds: 10_000_000) }
                                     Check.expect("name-editor-ordinary-update-preserves-marked-text", resetConsumed && model.nameEditorUpdateCount > updatesBefore && model.filterResetRevision == resetBefore && model.externalFilterTextRevision == externalBefore && emptyMarked && editor.hasMarkedText() && editor.string.contains("再"))
-                                    func resetDiagnostic(_ phase: String) -> String {
+                                    @MainActor func resetDiagnostic(_ phase: String) -> String {
                                         "\(phase) equalBeforeClear=\(equalBeforeClear) initialMarked=\(emptyMarked) marked=\(editor.hasMarkedText()) editor=\(editor.string.debugDescription) field=\(field.stringValue.debugDescription) model=\(model.filterText.debugDescription) resetRevision=\(model.filterResetRevision) consumedReset=\(model.nameEditorConsumedReset) externalRevision=\(model.externalFilterTextRevision) updateCount=\(model.nameEditorUpdateCount)"
                                     }
                                     Perf.log(resetDiagnostic("before-same-value-clear"))
