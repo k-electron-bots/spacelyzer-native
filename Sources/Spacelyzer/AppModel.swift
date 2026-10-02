@@ -158,6 +158,11 @@ final class AppModel {
             lastScanSeconds = Date().timeIntervalSince(start)
             session = nil
             if let t {
+                // Node ids are only valid for one tree: drop every id-keyed cache in the same main-actor turn
+                // so no view can index the new tree with ids from the old one.
+                filterTask?.cancel(); derivedTask?.cancel(); outlineTask?.cancel()
+                outlineRows = []; outlineIndex = [:]; expanded = []; largestIDs = []; kindRows = []; activeFilter = nil
+                pendingRemoval = nil
                 tree = t
                 displayedRoot = 0
                 selected = nil
