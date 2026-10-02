@@ -525,7 +525,7 @@ struct SpacelyzerApp: App {
                                 DemoInput.key(48, chars: "\t")
                                 try? await Task.sleep(nanoseconds: 500_000_000)
                                 let responder = window.firstResponder
-                                let focusMoved = intendedControl != nil && intendedControl !== table && !intendedControl!.isHidden && intendedControl!.window === window
+                                let focusMoved = intendedControl != nil && intendedControl !== table && !intendedControl!.isHidden && intendedControl!.window === window && ((intendedControl as? NSControl)?.isEnabled ?? true)
                                     && (responder === intendedControl || (responder as? NSTextView)?.delegate === intendedControl)
                                 Check.expect("e2-tab-leaves-outline-without-selection-change", focusMoved && model.selected == selectedBefore)
                                 // Escape must not invoke a destructive action or clear the current tree.
