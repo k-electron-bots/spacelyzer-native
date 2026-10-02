@@ -409,7 +409,7 @@ struct SpacelyzerApp: App {
                             model.scan(countRoot.path)
                             while model.scanning { try? await Task.sleep(nanoseconds: 100_000_000) }
                             if let t = model.tree {
-                                model.expanded = Set((0..<UInt32(t.nodeCount)).filter { t.info($0).childCount > 0 && t.path($0) != countRoot.appendingPathComponent("b-large").path })
+                                model.expanded = Set((0..<UInt32(t.nodeCount)).filter { t.info($0).childCount > 0 && t.path($0) != countRoot.appendingPathComponent("b-large").resolvingSymlinksInPath().path })
                                 model.refreshOutline()
                             }
                             try? await Task.sleep(nanoseconds: 1_500_000_000)
@@ -434,7 +434,7 @@ struct SpacelyzerApp: App {
                             }
                             let largeText = "\(10001.formatted()) items"
                             Check.expect("counts-visible-above-400-empty-large-deep", OutlineDemoEvidence.width >= 400 && OutlineDemoEvidence.width < 403 && OutlineDemoEvidence.countsVisible(true)
-                                         && OutlineDemoEvidence.hasCount("0 items") && OutlineDemoEvidence.hasCount(largeText), "cellWidth=\(OutlineDemoEvidence.width) large=\(largeText)")
+                                         && OutlineDemoEvidence.hasCount("0 items") && OutlineDemoEvidence.hasCount(largeText) && OutlineDemoEvidence.hasVisibleDeepCount, "cellWidth=\(OutlineDemoEvidence.width) large=\(largeText)")
                             mark(22)
                             try? await Task.sleep(nanoseconds: 4_000_000_000)
                         } catch {
