@@ -91,7 +91,7 @@ jobs:
           done
           pgrep -x Spacelyzer >/dev/null && echo 'app still running at end' >> /tmp/spz-timing.txt || echo 'APP NOT RUNNING at end (crashed or exited)' >> /tmp/spz-timing.txt
           if [ -f /tmp/spz-timing.txt ]; then
-            body=$(grep -v '^selection changed' /tmp/spz-timing.txt | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}' | head -c 30000)
+            body=$(grep -v -E '^(selection changed|outline rows|derived |filter text)' /tmp/spz-timing.txt | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}' | tail -c 30000)
             echo "::notice title=timing::$body"
           fi
           pkill Spacelyzer || true
