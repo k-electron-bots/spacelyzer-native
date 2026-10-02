@@ -263,6 +263,23 @@ struct SpacelyzerApp: App {
                         } else {
                             Check.expect("selecting-a-hidden-file-reveals-its-folders", false, "no largest file")
                         }
+                        // Filters beyond name/kind/min size: extension and maximum size, verified against the Rust result.
+                        if let t = model.tree, let probe = model.largestIDs.first, let dot = t.name(probe).lastIndex(of: "."), dot != t.name(probe).startIndex {
+                            let ext = String(t.name(probe)[t.name(probe).index(after: dot)...]).lowercased()
+                            model.clearFilters(); model.filterExt = ext
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            let ids = model.largestIDs
+                            let allMatch = !ids.isEmpty && ids.allSatisfy { t.name($0).lowercased().hasSuffix("." + ext) }
+                            Check.expect("extension-filter-keeps-only-that-extension", allMatch && model.activeFilter != nil, "ext=\(ext) shown=\(ids.count)")
+                            model.clearFilters(); model.filterMaxMB = 1
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            let ids2 = model.largestIDs
+                            Check.expect("max-size-filter-keeps-only-small-files", !ids2.isEmpty && ids2.allSatisfy { t.info($0).size <= 1_000_000 }, "shown=\(ids2.count) largest=\(ids2.first.map { String(t.info($0).size) } ?? "nil")")
+                            model.clearFilters()
+                        } else {
+                            Check.expect("extension-filter-keeps-only-that-extension", false, "no probe file with an extension")
+                            Check.expect("max-size-filter-keeps-only-small-files", false, "no probe file")
+                        }
                         mark(16)
                     }
                 }

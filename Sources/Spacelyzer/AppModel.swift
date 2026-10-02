@@ -28,6 +28,10 @@ final class AppModel {
     var filterText = "" { didSet { scheduleFilter() } }
     var filterKind: FileCategory? { didSet { scheduleFilter() } }
     var filterMinMB: Int = 0 { didSet { scheduleFilter() } }
+    var filterMaxMB: Int = 0 { didSet { scheduleFilter() } }
+    /// Only files modified within the last N days (0 = any time).
+    var filterModifiedDays: Int = 0 { didSet { scheduleFilter() } }
+    var filterExt = "" { didSet { scheduleFilter() } }
     var activeFilter: FilterResult?
     var filterRevision = 0
     /// True from the moment a filter input changes until its result lands. Views may be showing the previous filter.
@@ -35,7 +39,9 @@ final class AppModel {
     var filterMillis: Double = 0
     private var filterTask: Task<Void, Never>?
 
-    var filterIsActive: Bool { !filterText.isEmpty || filterKind != nil || filterMinMB > 0 }
+    var filterIsActive: Bool { !filterText.isEmpty || filterKind != nil || filterMinMB > 0 || filterMaxMB > 0 || filterModifiedDays > 0 || !filterExt.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    func clearFilters() { filterText = ""; filterKind = nil; filterMinMB = 0; filterMaxMB = 0; filterModifiedDays = 0; filterExt = "" }
 
     /// Filtering runs in Rust off the main thread, debounced; the UI keeps the last result until the new one lands.
     func scheduleFilter() {
@@ -43,12 +49,15 @@ final class AppModel {
         filterPending = true
         guard let tree else { filterPending = false; return }
         let text = filterText, kind = filterKind, minB: UInt64? = filterMinMB > 0 ? UInt64(filterMinMB) * 1_000_000 : nil
+        let maxB: UInt64? = filterMaxMB > 0 ? UInt64(filterMaxMB) * 1_000_000 : nil
+        let from: Int64? = filterModifiedDays > 0 ? Int64(Date().timeIntervalSince1970) - Int64(filterModifiedDays) * 86_400 : nil
+        let ext = filterExt.trimmingCharacters(in: .whitespaces)
         let active = filterIsActive
         filterTask = Task.detached(priority: .userInitiated) { [weak self] in
             try? await Task.sleep(nanoseconds: 150_000_000)
             if Task.isCancelled { return }
             let t0 = DispatchTime.now().uptimeNanoseconds
-            let r = active ? tree.applyFilter(text: text, kind: kind, minBytes: minB) : nil
+            let r = active ? tree.applyFilter(text: text, kind: kind, minBytes: minB, maxBytes: maxB, modifiedFrom: from, ext: ext) : nil
             let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
             if Task.isCancelled { return }
             await MainActor.run {

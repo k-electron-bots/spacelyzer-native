@@ -134,6 +134,9 @@ struct FilterBar: View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
             TextField("Filter by name", text: $model.filterText).textFieldStyle(.plain)
+            TextField("ext", text: $model.filterExt).textFieldStyle(.plain).frame(width: 38)
+                .help("File extension, for example pdf or mp4")
+                .accessibilityLabel("Extension filter")
             if !model.filterText.isEmpty {
                 Button { model.filterText = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(.secondary)
             }
@@ -146,6 +149,18 @@ struct FilterBar: View {
                     Text("Any size").tag(0)
                     ForEach([1, 10, 100, 1000], id: \.self) { Text("≥ \($0) MB").tag($0) }
                 }
+                Picker("Maximum size", selection: $model.filterMaxMB) {
+                    Text("No maximum").tag(0)
+                    ForEach([1, 10, 100, 1000], id: \.self) { Text("≤ \($0) MB").tag($0) }
+                }
+                Picker("Modified", selection: $model.filterModifiedDays) {
+                    Text("Any time").tag(0)
+                    Text("Last 7 days").tag(7)
+                    Text("Last 30 days").tag(30)
+                    Text("Last year").tag(365)
+                }
+                Divider()
+                Button("Clear all filters") { model.clearFilters() }.disabled(!model.filterIsActive)
             } label: {
                 Image(systemName: model.filterIsActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
             }

@@ -109,14 +109,15 @@ final class Tree: @unchecked Sendable {
         return rows
     }
 
-    func applyFilter(text: String, kind: FileCategory?, minBytes: UInt64?) -> FilterResult {
-        var f = SpzFilter(category_mask: kind.map { UInt32(1) << UInt32($0.rawValue) } ?? 0,
-                          has_min: minBytes == nil ? 0 : 1, has_max: 0, has_from: 0, has_to: 0,
-                          min_size: minBytes ?? 0, max_size: 0, modified_from: 0, modified_to: 0)
+    func applyFilter(text: String, kind: FileCategory?, minBytes: UInt64?, maxBytes: UInt64? = nil, modifiedFrom: Int64? = nil, ext: String = "") -> FilterResult {
+        let f = SpzFilter(category_mask: kind.map { UInt32(1) << UInt32($0.rawValue) } ?? 0,
+                          has_min: minBytes == nil ? 0 : 1, has_max: maxBytes == nil ? 0 : 1,
+                          has_from: modifiedFrom == nil ? 0 : 1, has_to: 0,
+                          min_size: minBytes ?? 0, max_size: maxBytes ?? 0,
+                          modified_from: modifiedFrom ?? 0, modified_to: 0)
         let t0 = Perf.now()
-        let h = text.withCString { spz_filter_apply(ptr, $0, nil, f) }
-        f.has_min = 0
-        Perf.log("filter text='\(text)' kind=\(String(describing: kind)) min=\(String(describing: minBytes)) rust_ms=\(String(format: "%.2f", Perf.ms(since: t0)))")
+        let h = text.withCString { t in ext.withCString { e in spz_filter_apply(ptr, t, e, f) } }
+        Perf.log("filter text='\(text)' ext='\(ext)' kind=\(String(describing: kind)) min=\(String(describing: minBytes)) max=\(String(describing: maxBytes)) from=\(String(describing: modifiedFrom)) rust_ms=\(String(format: "%.2f", Perf.ms(since: t0)))")
         return FilterResult(h!)
     }
 
