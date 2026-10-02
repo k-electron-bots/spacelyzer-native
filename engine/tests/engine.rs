@@ -428,3 +428,148 @@ fn filtered_outline_shows_zero_byte_matches_and_their_folders() {
         assert!(!names.contains("other.bin"));
     }
 }
+
+#[test]
+fn edge_empty_and_missing_or_file_roots() {
+    let t = tempdir::T::new();
+    let tree = scan(t.path(), &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    assert_eq!(tree.len(), 1);
+    assert_eq!(tree.child_count(0), 0);
+    assert!(outline::visible_rows(&tree, 0, &Default::default(), None).is_empty());
+    let file = t.path().join("file"); fs::write(&file, b"x").unwrap();
+    assert!(scan(&file, &ScanOptions::default(), &ScanProgress::default()).is_err());
+    fs::remove_file(&file).unwrap();
+    assert!(scan(&file, &ScanOptions::default(), &ScanProgress::default()).is_err());
+}
+
+#[test]
+fn edge_names_roundtrip_and_mixed_case_extensions() {
+    let t = tempdir::T::new();
+    for name in [" leading.PDF", "trailing .pDf", "line\nbreak.PDF", "quote'\"$.PDF", "日本語.PDF", ".hidden.pdf", "no-extension"] {
+        fs::write(t.path().join(name), b"abc").unwrap();
+    }
+    let tree = scan(t.path(), &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    for id in 0..tree.len() as u32 { assert_eq!(tree.find(&tree.path(id)), Some(id)); }
+    let result = apply_filter(&tree, &Filter { extension: ".pDf".into(), ..Default::default() });
+    assert_eq!(result.total_count, 6);
+    let rows = outline::visible_rows(&tree, 0, &Default::default(), Some(&result));
+    assert_eq!(rows.len(), 6);
+}
+
+#[test]
+fn edge_inverted_and_extreme_filter_bounds_are_empty() {
+    let t = fixture();
+    let tree = scan(t.path(), &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    for f in [
+        Filter { min_size: Some(u64::MAX), max_size: Some(0), ..Default::default() },
+        Filter { modified_from: Some(i64::MAX), modified_to: Some(i64::MIN), ..Default::default() },
+        Filter { text: "not-present-at-all".into(), ..Default::default() },
+    ] {
+        let result = apply_filter(&tree, &f);
+        assert_eq!(result.total_count, 0); assert_eq!(result.total_bytes, 0);
+        assert!(outline::visible_rows(&tree, 0, &Default::default(), Some(&result)).is_empty());
+    }
+}
+
+#[test]
+fn edge_sparse_and_zero_hardlinks_preserve_allocated_accounting() {
+    let t = tempdir::T::new();
+    let sparse = t.path().join("sparse.bin");
+    std::fs::File::create(&sparse).unwrap().set_len(64 * 1024 * 1024).unwrap();
+    fs::write(t.path().join("zero.pdf"), []).unwrap();
+    fs::create_dir(t.path().join("nested")).unwrap();
+    fs::hard_link(t.path().join("zero.pdf"), t.path().join("nested/link.pdf")).unwrap();
+    let tree = scan(t.path(), &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    assert_eq!(tree.size(0), naive(t.path(), &mut Default::default()));
+    let result = apply_filter(&tree, &Filter { extension: "pdf".into(), ..Default::default() });
+    assert_eq!(result.total_count, 2); assert_eq!(result.total_bytes, 0);
+    let all = (0..tree.len() as u32).collect();
+    assert_eq!(outline::visible_rows(&tree, 0, &all, Some(&result)).len(), 3);
+}
+
+#[test]
+fn edge_depth_and_root_child_identity_exclusion() {
+    let t = tempdir::T::new();
+    fs::create_dir(t.path().join("b-large")).unwrap();
+    fs::write(t.path().join("b-large/file"), []).unwrap();
+    let mut p = t.path().to_path_buf();
+    for i in 1..=24 { p.push(format!("deep-{i}")); fs::create_dir(&p).unwrap(); }
+    let tree = scan(t.path(), &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    let large = (0..tree.len() as u32).find(|&n| tree.parent(n) == Some(0) && tree.name(n) == "b-large").unwrap();
+    let expanded = (0..tree.len() as u32).filter(|&n| tree.child_count(n) > 0 && n != large).collect();
+    let rows = outline::visible_rows(&tree, 0, &expanded, None);
+    assert!(rows.iter().any(|r| r.depth >= 12));
+    assert!(!rows.iter().any(|r| tree.name(r.node) == "file"));
+}
+
+
+use spacelyzer_engine::outline::{visible_rows_sorted, SortMode};
+use std::{collections::HashSet,time::{UNIX_EPOCH,Duration}};
+fn independent_fixture()->(std::path::PathBuf,Tree){
+ static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+ let p=std::env::temp_dir().join(format!("spz-independent-{}-{}",std::process::id(),N.fetch_add(1,std::sync::atomic::Ordering::SeqCst)));
+ let _=fs::remove_dir_all(&p); fs::create_dir_all(p.join("a/sub")).unwrap();fs::create_dir_all(p.join("z")).unwrap();fs::create_dir_all(p.join("empty")).unwrap();
+ for (name,n,time) in [("a/sub/old.PDF",8192,1000),("a/sub/new.pdf",4096,3000),("z/middle.bin",16384,2000),("zero.pdf",0,3000)] {
+  fs::write(p.join(name),vec![1u8;n]).unwrap();let f=fs::File::options().write(true).open(p.join(name)).unwrap();f.set_times(fs::FileTimes::new().set_modified(UNIX_EPOCH+Duration::from_secs(time))).unwrap();
+ }
+ let t=scan(&p,&ScanOptions::default(),&ScanProgress::default()).unwrap();(p,t)
+}
+#[test]fn independent_all_modes_every_nested_sibling_group_and_filtered_sizes(){
+ let(p,t)=independent_fixture();let expanded=(0..t.len() as u32).collect::<HashSet<_>>();let f=apply_filter(&t,&Filter{extension:"pdf".into(),..Default::default()});
+ for filter in [None,Some(&f)] {for mode in [SortMode::SizeDesc,SortMode::SizeAsc,SortMode::NameAsc,SortMode::ItemsDesc,SortMode::ModifiedDesc]{
+  let sizes=filter.map(|f|f.sizes.as_slice()); let rows=visible_rows_sorted(&t,0,&expanded,filter,mode);
+  let expected=(1..t.len() as u32).filter(|&i|filter.map(|f|f.counts[i as usize]>0).unwrap_or(true)).collect::<HashSet<_>>(); assert_eq!(rows.iter().map(|r|r.node).collect::<HashSet<_>>(),expected);
+  for parent in 0..t.len() as u32 {let ids=rows.iter().filter(|r|t.parent(r.node)==Some(parent)).map(|r|r.node).collect::<Vec<_>>();for w in ids.windows(2){let(a,b)=(w[0],w[1]);let size=|i:u32|sizes.map(|s|s[i as usize]).unwrap_or(t.size(i));assert!(match mode{SortMode::SizeDesc=>size(a)>=size(b),SortMode::SizeAsc=>size(a)<=size(b),SortMode::NameAsc=>t.name(a).to_lowercase()<=t.name(b).to_lowercase(),SortMode::ItemsDesc=>t.child_count(a)>=t.child_count(b),SortMode::ModifiedDesc=>t.mtime(a)>=t.mtime(b)},"{mode:?} parent={parent}");}}
+ }}fs::remove_dir_all(p).unwrap();
+}
+#[test]fn independent_extension_max_size_and_mtime_inclusive_boundaries(){
+ let(p,t)=independent_fixture();let id=|name:&str|(1..t.len() as u32).find(|&i|t.name(i)==name).unwrap();let old=id("old.PDF");let new=id("new.pdf");
+ let f=apply_filter(&t,&Filter{extension:".PdF".into(),max_size:Some(t.own_bytes(old)),modified_from:Some(1000),modified_to:Some(3000),..Default::default()});assert_eq!(f.total_count,3);assert_eq!(f.counts[old as usize],1);assert_eq!(f.counts[new as usize],1);
+ let f=apply_filter(&t,&Filter{extension:"pdf".into(),modified_from:Some(1001),modified_to:Some(2999),..Default::default()});assert_eq!(f.total_count,0);
+ let f=apply_filter(&t,&Filter{extension:"pdf".into(),max_size:Some(t.own_bytes(new)),modified_from:Some(3000),..Default::default()});assert_eq!(f.total_count,2);assert_eq!(f.counts[old as usize],0);assert_eq!(f.counts[new as usize],1);
+ fs::remove_dir_all(p).unwrap();
+}
+#[test]fn independent_zero_byte_match_is_visible_in_filtered_outline(){
+ let(p,t)=independent_fixture();let zero=(1..t.len() as u32).find(|&i|t.name(i)=="zero.pdf").unwrap();let f=apply_filter(&t,&Filter{text:"zero.pdf".into(),..Default::default()});assert_eq!(f.total_count,1);let rows=visible_rows_sorted(&t,0,&HashSet::new(),Some(&f),SortMode::SizeDesc);assert!(rows.iter().any(|r|r.node==zero),"one matching zero-byte file counted but omitted from outline");let _=fs::remove_dir_all(p);
+}
+#[test]fn independent_sorted_ffi_invalid_inputs_and_output_cap(){
+ use spacelyzer_engine::ffi::*;
+ let(p,mut t)=independent_fixture();t.uid=777;let mut foreign=Tree::synthetic(40);foreign.uid=778;
+ let params=SpzFilter{category_mask:0,has_min:0,has_max:0,has_from:0,has_to:0,min_size:0,max_size:0,modified_from:0,modified_to:0};
+ unsafe{let h=spz_filter_apply(&foreign,std::ptr::null(),std::ptr::null(),params);let expanded=[0,u32::MAX];
+  for sort in [0,1,2,3,4,999]{
+   assert_eq!(spz_outline_rows_sorted(std::ptr::null(),0,std::ptr::null(),0,std::ptr::null(),sort,std::ptr::null_mut(),0),0);
+   assert_eq!(spz_outline_rows_sorted(&t,u32::MAX,std::ptr::null(),0,std::ptr::null(),sort,std::ptr::null_mut(),0),0);
+   assert_eq!(spz_outline_rows_sorted(&t,0,std::ptr::null(),0,h,sort,std::ptr::null_mut(),0),0);
+   let n=spz_outline_rows_sorted(&t,0,expanded.as_ptr(),2,std::ptr::null(),sort,std::ptr::null_mut(),0);assert!(n>1);
+   let sentinel=spacelyzer_engine::outline::Row{node:u32::MAX,depth:u32::MAX};let mut out=[sentinel;3];
+   assert_eq!(spz_outline_rows_sorted(&t,0,expanded.as_ptr(),2,std::ptr::null(),sort,out.as_mut_ptr(),1),n);assert_ne!(out[0],sentinel);assert_eq!(out[1],sentinel);assert_eq!(out[2],sentinel);
+  }spz_filter_free(h);
+ }fs::remove_dir_all(p).unwrap();
+}
+#[test]fn independent_combined_filter_contradictions_and_zero_boundary(){
+ let(p,t)=independent_fixture();
+ for f in [Filter{min_size:Some(8193),max_size:Some(4096),..Default::default()},Filter{modified_from:Some(3001),modified_to:Some(1000),..Default::default()},Filter{extension:"pdf".into(),category_mask:1<<spacelyzer_engine::Category::Video as u8,..Default::default()}]{
+  let r=apply_filter(&t,&f);assert_eq!(r.total_count,0);assert!(visible_rows_sorted(&t,0,&HashSet::new(),Some(&r),SortMode::NameAsc).is_empty());
+ }
+ let r=apply_filter(&t,&Filter{extension:"pdf".into(),max_size:Some(0),..Default::default()});assert_eq!(r.total_count,1);assert_eq!(r.total_bytes,0);assert_eq!(visible_rows_sorted(&t,0,&HashSet::new(),Some(&r),SortMode::NameAsc).len(),1);
+ fs::remove_dir_all(p).unwrap();
+}
+#[test]fn independent_non_ascii_case_insensitive_name_contract(){
+ let(p,_)=independent_fixture();fs::write(p.join("Ä-report.pdf"),vec![1u8;4096]).unwrap();let t=scan(&p,&ScanOptions::default(),&ScanProgress::default()).unwrap();
+ let r=apply_filter(&t,&Filter{text:"ä-report".into(),..Default::default()});let _=fs::remove_dir_all(p);assert_eq!(r.total_count,1,"documented case-insensitive name search should match non-ASCII case pair");
+}
+#[test]fn independent_zero_match_cross_view_consistency(){
+ let(p,t)=independent_fixture();let r=apply_filter(&t,&Filter{text:"zero.pdf".into(),..Default::default()});let rows=visible_rows_sorted(&t,0,&HashSet::new(),Some(&r),SortMode::NameAsc);let largest=spacelyzer_engine::filter::largest_files(&t,&r,200);let _=fs::remove_dir_all(p);assert_eq!(rows.len(),1);assert_eq!(largest.len(),1,"zero-byte matching regular file visible in outline should remain in Largest");
+}
+
+#[test]
+fn unicode_name_and_extension_lowercase_contract() {
+    let t = tempdir::T::new();
+    for name in ["Ä-report.Ü", "Σ-book.Ε", "日本語.txt"] { fs::write(t.path().join(name), b"x").unwrap(); }
+    let tree = scan(t.path(), &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    for (text, extension) in [("ä-report", "ü"), ("σ-book", "ε"), ("日本語", "TXT")] {
+        let r = apply_filter(&tree, &Filter { text: text.into(), extension: extension.into(), ..Default::default() });
+        assert_eq!(r.total_count, 1);
+    }
+                            }
