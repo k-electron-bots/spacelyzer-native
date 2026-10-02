@@ -584,17 +584,17 @@ private struct DemoAccessibilityModes: ViewModifier {
 /// Token-specific completion proves the old main-actor closure ran, rather than relying on sleeps.
 private actor PublicationBarrier {
     let stage: String
-    private var token: UInt64?
+    private var token: UUID?
     private var continuation: CheckedContinuation<Void, Never>?
     private var finished = false
     init(_ stage: String) { self.stage = stage }
-    func before(_ stage: String, _ generation: UInt64) async {
+    func before(_ stage: String, _ generation: UInt64, _ publication: UUID) async {
         guard stage == self.stage, token == nil else { return }
-        token = generation
+        token = publication
         await withCheckedContinuation { continuation = $0 }
     }
-    func after(_ stage: String, _ generation: UInt64) {
-        if stage == self.stage && generation == token { finished = true }
+    func after(_ stage: String, _ generation: UInt64, _ publication: UUID) {
+        if stage == self.stage && publication == token { finished = true }
     }
     func release() { continuation?.resume(); continuation = nil }
     func parked() -> Bool { continuation != nil }
@@ -613,27 +613,29 @@ private actor PublicationBarrier {
     static func run(tree: Tree) async {
         let m = AppModel(); m.tree = tree
         let filter = PublicationBarrier("filter")
-        m.beforePublish = { await filter.before($0, $1) }
-        m.afterPublish = { await filter.after($0, $1) }
+        m.beforePublish = { await filter.before($0, $1, $2) }
+        m.afterPublish = { await filter.after($0, $1, $2) }
         m.filterText = "not-present-old-filter"
         let parked = await wait { await filter.parked() }
         m.clearFilters()
         let newer = await wait { !m.filterPending && m.activeFilter == nil }
         let revision = m.filterRevision
+        let filterStillHeld = !(await filter.completed())
         await filter.release()
         let completed = await wait { await filter.completed() }
-        Check.expect("race-old-filter-after-newer-rejected", parked && newer && completed && m.activeFilter == nil && !m.filterPending && m.filterRevision == revision)
+        Check.expect("race-old-filter-after-newer-rejected", parked && newer && completed && filterStillHeld && m.activeFilter == nil && !m.filterPending && m.filterRevision == revision)
 
         let outline = PublicationBarrier("outline")
-        m.beforePublish = { await outline.before($0, $1) }
-        m.afterPublish = { await outline.after($0, $1) }
+        m.beforePublish = { await outline.before($0, $1, $2) }
+        m.afterPublish = { await outline.after($0, $1, $2) }
         m.refreshOutline()
         let outlineParked = await wait { await outline.parked() }
         m.tree = nil; m.selected = nil; m.refreshOutline()
         let outlineRevision = m.outlineRevision
+        let outlineStillHeld = !(await outline.completed())
         await outline.release()
         let outlineCompleted = await wait { await outline.completed() }
-        Check.expect("race-old-outline-after-tree-clear-rejected", outlineParked && outlineCompleted && m.outlineRows.isEmpty && m.outlineIndex.isEmpty && m.selected == nil && m.outlineRevision == outlineRevision)
+        Check.expect("race-old-outline-after-tree-clear-rejected", outlineParked && outlineCompleted && outlineStillHeld && m.outlineRows.isEmpty && m.outlineIndex.isEmpty && m.selected == nil && m.outlineRevision == outlineRevision)
 
         // A different arena may reuse numeric NodeIds. Reject old rows even if ids look valid.
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("spz-publication-\(UUID().uuidString)")
@@ -642,45 +644,48 @@ private actor PublicationBarrier {
         let replacement = await ScanSession(root: root.path, excludes: [])?.run { _ in }
         m.tree = tree
         let swapped = PublicationBarrier("outline")
-        m.beforePublish = { await swapped.before($0, $1) }
-        m.afterPublish = { await swapped.after($0, $1) }
+        m.beforePublish = { await swapped.before($0, $1, $2) }
+        m.afterPublish = { await swapped.after($0, $1, $2) }
         m.refreshOutline()
         let swapParked = await wait { await swapped.parked() }
         m.tree = replacement; m.expanded = []; m.selected = nil; m.refreshOutline()
         let swapNewer = await wait { m.outlineRows.count == 1 && replacement?.name(m.outlineRows[0].node) == "new-tree-only" }
         let swapRows = m.outlineRows.map { $0.node }, swapRevision = m.outlineRevision
+        let swapStillHeld = !(await swapped.completed())
         await swapped.release()
         let swapCompleted = await wait { await swapped.completed() }
-        Check.expect("race-old-outline-after-tree-swap-rejected", swapParked && swapNewer && swapCompleted && (m.outlineRows.map { $0.node }) == swapRows && m.outlineRevision == swapRevision && m.selected == nil)
+        Check.expect("race-old-outline-after-tree-swap-rejected", swapParked && swapNewer && swapCompleted && swapStillHeld && (m.outlineRows.map { $0.node }) == swapRows && m.outlineRevision == swapRevision && m.selected == nil)
         // Hold scan messages from a real old session while a newer session completes.
         for stage in ["scan-progress", "scan-completion"] {
             let scanModel = AppModel(), scanBarrier = PublicationBarrier(stage)
-            scanModel.beforePublish = { await scanBarrier.before($0, $1) }
-            scanModel.afterPublish = { await scanBarrier.after($0, $1) }
+            scanModel.beforePublish = { await scanBarrier.before($0, $1, $2) }
+            scanModel.afterPublish = { await scanBarrier.after($0, $1, $2) }
             scanModel.scan(tree.path(0))
             let scanParked = await wait { await scanBarrier.parked() }
             scanModel.scan(root.path)
-            let scanNewer = await wait { !scanModel.scanning && scanModel.tree?.path(0) == root.resolvingSymlinksInPath().path }
+            let scanNewer = await wait { !scanModel.scanning && replacement != nil && scanModel.tree != nil && scanModel.tree?.path(0) == replacement?.path(0) && scanModel.tree !== tree }
             let currentTree = scanModel.tree, currentRevision = scanModel.revision
             let currentItems = scanModel.progress.items, currentBytes = scanModel.progress.bytes
             let currentElapsed = scanModel.elapsed, currentSeconds = scanModel.lastScanSeconds
+            let scanStillHeld = !(await scanBarrier.completed())
             await scanBarrier.release()
             let scanCompleted = await wait { await scanBarrier.completed() }
-            Check.expect("race-old-\(stage)-after-new-scan-rejected", scanParked && scanNewer && scanCompleted && scanModel.tree === currentTree && scanModel.revision == currentRevision && scanModel.progress.items == currentItems && scanModel.progress.bytes == currentBytes && scanModel.elapsed == currentElapsed && scanModel.lastScanSeconds == currentSeconds && !scanModel.scanning && scanModel.error == nil)
+            Check.expect("race-old-\(stage)-after-new-scan-rejected", scanParked && scanNewer && scanCompleted && scanStillHeld && scanModel.tree === currentTree && scanModel.revision == currentRevision && scanModel.progress.items == currentItems && scanModel.progress.bytes == currentBytes && scanModel.elapsed == currentElapsed && scanModel.lastScanSeconds == currentSeconds && !scanModel.scanning && scanModel.error == nil)
             scanModel.beforePublish = nil; scanModel.afterPublish = nil
         }
         try? FileManager.default.removeItem(at: root)
 
         m.tree = tree
         let derived = PublicationBarrier("derived")
-        m.beforePublish = { await derived.before($0, $1) }
-        m.afterPublish = { await derived.after($0, $1) }
+        m.beforePublish = { await derived.before($0, $1, $2) }
+        m.afterPublish = { await derived.after($0, $1, $2) }
         m.refreshDerived()
         let derivedParked = await wait { await derived.parked() }
         m.tree = nil; m.refreshDerived()
+        let derivedStillHeld = !(await derived.completed())
         await derived.release()
         let derivedCompleted = await wait { await derived.completed() }
-        Check.expect("race-old-derived-after-clear-rejected", derivedParked && derivedCompleted && m.largestIDs.isEmpty && m.kindRows.isEmpty)
+        Check.expect("race-old-derived-after-clear-rejected", derivedParked && derivedCompleted && derivedStillHeld && m.largestIDs.isEmpty && m.kindRows.isEmpty)
         m.beforePublish = nil; m.afterPublish = nil
     }
 }
