@@ -48,3 +48,5 @@ Status: v0.1.48 had a crash when a second folder was scanned after a large tree 
 - Run37040037876 failed capture1: app-launched screencapture did not create images. Replaced with CI-only state/capture acknowledgement: runner captures using its existing permission, then acknowledges before app state advances. No permission bypass. New consolidated check pending.
 
 - Run37043128105 at c892613 passed all30 checks and captured22 images. Pixel review confirms399/401pt empty/five-digit counts and real date/sort/reset effects. Depth12 evidence is not yet accepted: /tmp vs /private/tmp path mismatch left the large folder expanded. Canonical-path fixture exclusion and explicit visible-depth12 check repaired; independent signoff remains pending.
+
+- Final E1 evidence run also requires actual date, maximum-size and sort choice submenu images23-25, plus an explicitly visible depth12 cell below and above400pt. No separate menu-only run.
