@@ -183,3 +183,6 @@ Explicit editor UX policy: an external clear/change cancels unfinished marked co
 
 
 Independent reset robustness correction: capture external target before unmarkText; suppress synchronous coordinator feedback during programmatic cancellation/replacement and install captured target in editor/field. Check editor string/marked divergence even when field equals model; regression includes already-empty model with marked editor then clear. Current-field manual delegate simulation cannot prove arbitrary delayed IME insertion behavior; no all-delayed-commit guarantee.66 scoped contracts38 states, uncompiled/unexecuted. Source recheck before checkpoint, actual IME/automatic notifications still open.
+
+
+Independent source blocker found marked-state-only overwrite cancelled ordinary composition on any redraw. Repair separates editor-origin updates from external text changes and explicit clear/reset revisions. Only actual external intent cancels composition; marked ordinary updates preserve editor text. Captured target/programmatic delegate suppression retained. Equal-value clear bumps reset revision; regression asserts field==model==empty before marked reset, plus ordinary marked/unrelated update preservation.67 contracts38 states pending source recheck, noCI/runtime/IME/E2 claim.
