@@ -385,9 +385,11 @@ struct SpacelyzerApp: App {
                                     }
                                 }
                                 // Fresh tracking begins with no highlighted item. Count actual selectable items.
-                                let steps = menu.items.prefix(i + 1).filter { !$0.isSeparatorItem && $0.isEnabled }.count
-                                for offset in 0..<steps { schedule(Double(offset) * 0.12) { navigationKey(125, NSDownArrowFunctionKey) } }
-                                schedule(Double(steps) * 0.12 + 0.15) { navigationKey(124, NSRightArrowFunctionKey) }
+                                let steps = max(0, menu.items.prefix(i + 1).filter { !$0.isSeparatorItem && $0.isEnabled && !$0.isHidden }.count - 1)
+                                // Home normalizes any inherited highlight to the first selectable item.
+                                navigationKey(115, NSHomeFunctionKey)
+                                for offset in 0..<steps { schedule(0.15 + Double(offset) * 0.12) { navigationKey(125, NSDownArrowFunctionKey) } }
+                                schedule(Double(steps) * 0.12 + 0.3) { navigationKey(124, NSRightArrowFunctionKey) }
                                 schedule(Double(steps) * 0.12 + 0.8) {
                                     Check.expect("submenu-parent-tracking-\(step)", menu.highlightedItem === menu.items[i], "parent=\(parentTitle) highlighted=\(menu.highlightedItem?.title ?? "nil") items=\(sub.items.count); pixels required")
                                     mark(step)
@@ -519,15 +521,19 @@ struct SpacelyzerApp: App {
                             if let table = OutlineDemoEvidence.table, let window = table.window {
                                 let selectedBefore = model.selected
                                 window.makeFirstResponder(table)
+                                let intendedControl = table.nextValidKeyView
                                 DemoInput.key(48, chars: "\t")
                                 try? await Task.sleep(nanoseconds: 500_000_000)
-                                let focusMoved = window.firstResponder !== table && window.firstResponder != nil
+                                let responder = window.firstResponder
+                                let focusMoved = intendedControl != nil && intendedControl !== table && !intendedControl!.isHidden && intendedControl!.window === window
+                                    && (responder === intendedControl || (responder as? NSTextView)?.delegate === intendedControl)
                                 Check.expect("e2-tab-leaves-outline-without-selection-change", focusMoved && model.selected == selectedBefore)
                                 // Escape must not invoke a destructive action or clear the current tree.
                                 let treeBefore = model.tree, removedBefore = model.lastRemoved.count
+                                let pendingBefore = model.pendingRemoval, messageBefore = model.removalMessage
                                 DemoInput.key(53, chars: String(UnicodeScalar(27)!))
                                 try? await Task.sleep(nanoseconds: 500_000_000)
-                                Check.expect("e2-escape-preserves-tree-and-removal-state", model.tree === treeBefore && model.lastRemoved.count == removedBefore)
+                                Check.expect("e2-escape-preserves-tree-and-removal-state", model.tree === treeBefore && model.lastRemoved.count == removedBefore && pendingBefore == nil && messageBefore == nil && model.pendingRemoval == pendingBefore && model.removalMessage == messageBefore)
                                 window.makeFirstResponder(table)
                                 Check.expect("e2-outline-single-selection-policy", !table.allowsMultipleSelection && table.selectedRowIndexes.count <= 1)
                             } else {
