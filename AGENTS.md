@@ -83,3 +83,8 @@ Karim's standing requirement: long-range stability, memory management and resili
 - Cancellation and failure: cancelling a scan, scanning an unreadable or vanished folder, and a scan error must leave the previous view usable or a clear empty state, never a crash or stale rows.
 - Every Rust allocation behind the FFI has one owner and one free path; trees are freed when the last Swift reference drops. Check with a leak check or allocation counters, and say which.
 - Every UI check that exercises these paths must fail CI, and a crash during the demo run must fail the build (the app not running at the end is a failure).
+
+## Workflow: epics, docs and verification
+- Work in epics; tasks inside an epic are thin commits in dependency order. CI, tags and releases run per epic (tag `epic-<n>-<name>`), not per task.
+- Docs move with the code: any task that changes behaviour, a check, a limit or the roadmap updates README, ROADMAP and AGENTS in the same commit (or the next one in the same epic, never later than the epic tag). An item is ticked only after its check passes.
+- Verification is independent: at each epic end, hand a separate verifier only the intended behaviour, scope, commit/artifact references and known limitations. The author's own checks do not replace it.
