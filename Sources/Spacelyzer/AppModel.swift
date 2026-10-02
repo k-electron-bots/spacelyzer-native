@@ -58,7 +58,25 @@ final class AppModel {
                 self.filterMillis = ms
                 self.filterRevision += 1
                 self.refreshOutline()
+                self.refreshDerived()
             }
+        }
+    }
+    /// Largest-files and per-kind lists are computed in Rust off the main thread, never inside a view body.
+    var largestIDs: [UInt32] = []
+    var kindRows: [KindRow] = []
+    private var derivedTask: Task<Void, Never>?
+    func refreshDerived() {
+        derivedTask?.cancel()
+        guard let tree else { largestIDs = []; kindRows = []; return }
+        let flt = activeFilter
+        derivedTask = Task.detached(priority: .userInitiated) { [weak self] in
+            let t0 = Perf.now()
+            let ids = tree.largestFiles(200, filter: flt)
+            let kinds = tree.categoryTotals(filter: flt).filter { $0.bytes > 0 }.sorted { $0.bytes > $1.bytes }.map { KindRow(category: $0.category, bytes: $0.bytes, items: $0.items) }
+            if Task.isCancelled { return }
+            Perf.log("derived largest=\(ids.count) kinds=\(kinds.count) filtered=\(flt != nil) rust_ms=\(String(format: "%.2f", Perf.ms(since: t0)))")
+            await MainActor.run { self?.largestIDs = ids; self?.kindRows = kinds }
         }
     }
     var outlineRows: [SpzRow] = []
@@ -215,6 +233,7 @@ final class AppModel {
             if selected == id { selected = nil }
             revision += 1
             refreshOutline()
+            refreshDerived()
             removalMessage = "Moved \(url.lastPathComponent) to the Trash."
         } catch {
             removalMessage = "Could not move it to the Trash: \(error.localizedDescription)"
@@ -241,4 +260,12 @@ final class AppModel {
 
 func formatBytes(_ b: UInt64) -> String {
     ByteCountFormatter.string(fromByteCount: Int64(b), countStyle: .file)
+}
+
+
+struct KindRow: Identifiable, Sendable {
+    var category: FileCategory
+    var bytes: UInt64
+    var items: UInt64
+    var id: FileCategory { category }
 }

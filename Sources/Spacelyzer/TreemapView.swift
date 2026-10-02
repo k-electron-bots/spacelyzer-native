@@ -23,6 +23,63 @@ func categoryColor(_ c: FileCategory) -> Color {
     }
 }
 
+
+private struct TreemapBase: View, Equatable {
+    let layout: TreemapLayout
+    let tree: Tree
+    let coloring: TreemapColoring
+    static func == (a: Self, b: Self) -> Bool { a.layout === b.layout && a.tree === b.tree && a.coloring == b.coloring }
+    var body: some View {
+        Canvas { ctx, _ in
+            for r in layout.rects where !r.isDirectoryFrame || r.depth <= 1 {
+                let color = fill(r, tree: tree, coloring: coloring)
+                let path = Path(roundedRect: r.rect.insetBy(dx: 0.5, dy: 0.5), cornerRadius: 1.5)
+                ctx.fill(path, with: .color(r.isDirectoryFrame ? color.opacity(0.18) : color))
+            }
+            // Labels only where they fit.
+            for r in layout.rects where !r.isDirectoryFrame && !r.isRemainder && r.rect.width > 70 && r.rect.height > 22 {
+                let box = r.rect.insetBy(dx: 4, dy: 3)
+                let label = fitLabel(tree.name(r.node), width: box.width, ctx: ctx)
+                ctx.drawLayer { l in
+                    l.clip(to: Path(box))
+                    l.draw(label, at: CGPoint(x: box.minX, y: box.minY), anchor: .topLeading)
+                }
+            }
+        }
+        .drawingGroup()
+    }
+}
+
+/// One line, middle-truncated with an ellipsis to fit `width`. Never wraps or splits a name.
+func fitLabel(_ name: String, width: CGFloat, ctx: GraphicsContext) -> GraphicsContext.ResolvedText {
+    func resolved(_ t: String) -> GraphicsContext.ResolvedText {
+        ctx.resolve(Text(t).font(.system(size: 11, weight: .medium)).foregroundColor(.white))
+    }
+    var r = resolved(name)
+    if r.measure(in: CGSize(width: 10_000, height: 20)).width <= width { return r }
+    var chars = Array(name)
+    while chars.count > 3 {
+        chars.removeSubrange((chars.count / 2)..<(chars.count / 2 + 1))
+        let keep = chars.count / 2
+        let candidate = String(chars[..<keep]) + "…" + String(chars[keep...])
+        r = resolved(candidate)
+        if r.measure(in: CGSize(width: 10_000, height: 20)).width <= width { return r }
+        chars = Array(candidate.replacingOccurrences(of: "…", with: ""))
+    }
+    return resolved("…")
+}
+
+func fill(_ r: TreemapRect, tree: Tree, coloring: TreemapColoring) -> Color {
+    if r.isRemainder { return Color(nsColor: .quaternaryLabelColor) }
+    let depth = Double(min(6, max(0, r.depth)))
+    switch coloring {
+    case .folder: return branchColor(r.branch).opacity(0.55 + depth * 0.07)
+    case .kind: return categoryColor(tree.info(r.node).category).opacity(0.55 + depth * 0.07)
+    case .depth: return Color(hue: 0.58, saturation: 0.55, brightness: 0.28 + depth * 0.11)
+    }
+}
+
+
 struct TreemapView: View {
     @Environment(AppModel.self) private var model
     @State private var size: CGSize = .zero
@@ -35,24 +92,8 @@ struct TreemapView: View {
             .overlay(alignment: .topLeading) {
                 if let layout, let tree = model.tree {
                     ZStack(alignment: .topLeading) {
-                        // Base layer: redraws only when the layout or colouring changes.
-                        Canvas { ctx, _ in
-                            for r in layout.rects where !r.isDirectoryFrame || r.depth <= 1 {
-                                let color = fill(r, tree: tree)
-                                let path = Path(roundedRect: r.rect.insetBy(dx: 0.5, dy: 0.5), cornerRadius: 1.5)
-                                ctx.fill(path, with: .color(r.isDirectoryFrame ? color.opacity(0.18) : color))
-                            }
-                            // Labels only where they fit.
-                            for r in layout.rects where !r.isDirectoryFrame && !r.isRemainder && r.rect.width > 70 && r.rect.height > 22 {
-                                let box = r.rect.insetBy(dx: 4, dy: 3)
-                                let label = fitLabel(tree.name(r.node), width: box.width, ctx: ctx)
-                                ctx.drawLayer { l in
-                                    l.clip(to: Path(box))
-                                    l.draw(label, at: CGPoint(x: box.minX, y: box.minY), anchor: .topLeading)
-                                }
-                            }
-                        }
-                        .drawingGroup()
+                        // Base layer: its own Equatable view, so hover and selection never redraw it.
+                        TreemapBase(layout: layout, tree: tree, coloring: model.coloring).equatable()
                         // Thin overlay for hover and selection, so pointer moves are cheap.
                         Canvas { ctx, _ in
                             if let h = hovered {
@@ -96,35 +137,6 @@ struct TreemapView: View {
             .onChange(of: model.revision) { relayout() }
             .onChange(of: model.filterRevision) { relayout() }
             .onAppear { relayout() }
-    }
-
-    /// One line, middle-truncated with an ellipsis to fit `width`. Never wraps or splits a name.
-    private func fitLabel(_ name: String, width: CGFloat, ctx: GraphicsContext) -> GraphicsContext.ResolvedText {
-        func resolved(_ t: String) -> GraphicsContext.ResolvedText {
-            ctx.resolve(Text(t).font(.system(size: 11, weight: .medium)).foregroundColor(.white))
-        }
-        var r = resolved(name)
-        if r.measure(in: CGSize(width: 10_000, height: 20)).width <= width { return r }
-        var chars = Array(name)
-        while chars.count > 3 {
-            chars.removeSubrange((chars.count / 2)..<(chars.count / 2 + 1))
-            let keep = chars.count / 2
-            let candidate = String(chars[..<keep]) + "…" + String(chars[keep...])
-            r = resolved(candidate)
-            if r.measure(in: CGSize(width: 10_000, height: 20)).width <= width { return r }
-            chars = Array(candidate.replacingOccurrences(of: "…", with: ""))
-        }
-        return resolved("…")
-    }
-
-    private func fill(_ r: TreemapRect, tree: Tree) -> Color {
-        if r.isRemainder { return Color(nsColor: .quaternaryLabelColor) }
-        let depth = Double(min(6, max(0, r.depth)))
-        switch model.coloring {
-        case .folder: return branchColor(r.branch).opacity(0.55 + depth * 0.07)
-        case .kind: return categoryColor(tree.info(r.node).category).opacity(0.55 + depth * 0.07)
-        case .depth: return Color(hue: 0.58, saturation: 0.55, brightness: 0.28 + depth * 0.11)
-        }
     }
 
     @ViewBuilder private var readout: some View {
@@ -200,9 +212,9 @@ struct KindsView: View {
     @Environment(AppModel.self) private var model
     var body: some View {
         if let t = model.tree {
-            let rows = t.categoryTotals(filter: model.activeFilter).filter { $0.bytes > 0 }.sorted { $0.bytes > $1.bytes }
+            let rows = model.kindRows
             let total = max(1, rows.reduce(0) { $0 + $1.bytes })
-            List(rows, id: \.category) { r in
+            List(rows) { r in
                 HStack {
                     Circle().fill(categoryColor(r.category)).frame(width: 10, height: 10)
                     Text(r.category.label)
@@ -220,7 +232,7 @@ struct LargestView: View {
     @Environment(AppModel.self) private var model
     var body: some View {
         if let t = model.tree {
-            let ids = t.largestFiles(200, filter: model.activeFilter)
+            let ids = model.largestIDs
             List(ids, id: \.self, selection: Bindable(model).selected) { id in
                 HStack {
                     VStack(alignment: .leading) {
