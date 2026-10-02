@@ -12,11 +12,11 @@ README come from CI at 1024x768, not from a personal Mac.*
 
 | | |
 |---|---|
-| **Outline** | Every folder and file, largest first, with size and share bars. Expand one folder or all 24,903 of them. Arrow keys move, Right/Left expand and collapse, Return drills in. |
+| **Outline** | Every folder and file with size and share bars, largest first by default; a sort menu offers size (either way), name, most items and recently modified. Folders show their item count when the sidebar is wide enough (>= 400 pt). Selecting a file hidden in collapsed folders expands its ancestors. Expand one folder or all 24,903 of them. Arrow keys move, Right/Left expand and collapse, Return drills in. |
 | **Treemap** | Area equals size. Colour by folder, kind or depth. Hover for a readout, click to select, double-click to drill. Tiny items fold into one labelled remainder, nothing is dropped. |
 | **Kinds** | Where the space goes by file type, ranked by size. |
 | **Largest** | The 200 largest files, with full paths. The header says when the list is capped. |
-| **Filter** | Name, kind and minimum size, combined. One filter drives every view, so the outline, treemap, Kinds and Largest always describe the same files. The status bar shows the match count and total. |
+| **Filter** | Name, extension, kind, minimum and maximum size, and a modified-date window (7 days, 30 days, year), combined; "Clear all filters" resets them. One filter drives every view, so the outline, treemap, Kinds and Largest always describe the same files. The status bar shows the match count and total. |
 | **Trash** | Move to Trash after a confirmation that shows the full path, with undo. Protected system paths are refused. Items hidden by the filter cannot be removed. |
 
 ![Kinds view](docs/images/kinds.png)
