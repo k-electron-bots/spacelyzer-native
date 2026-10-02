@@ -65,6 +65,10 @@ final class Tree: @unchecked Sendable {
     var wasCancelled: Bool { spz_tree_cancelled(ptr) != 0 }
 
     func info(_ id: UInt32) -> NodeInfo {
+        // Bounds-checked at the FFI edge: a stale id from a previous tree must never reach Rust (a Rust panic aborts the app).
+        guard UInt64(id) < nodeCount else {
+            return NodeInfo(size: 0, ownBytes: 0, parent: nil, childCount: 0, firstChild: 0, kind: .file, category: .other)
+        }
         let n = spz_tree_node(ptr, id)
         return NodeInfo(
             size: n.size, ownBytes: n.own_bytes,
@@ -81,8 +85,8 @@ final class Tree: @unchecked Sendable {
         return String(cString: s)
     }
 
-    func name(_ id: UInt32) -> String { take(spz_tree_name(ptr, id)) }
-    func path(_ id: UInt32) -> String { take(spz_tree_path(ptr, id)) }
+    func name(_ id: UInt32) -> String { guard UInt64(id) < nodeCount else { return "" }; return take(spz_tree_name(ptr, id)) }
+    func path(_ id: UInt32) -> String { guard UInt64(id) < nodeCount else { return "" }; return take(spz_tree_path(ptr, id)) }
     func find(path: String) -> UInt32? {
         let id = spz_tree_find(ptr, path)
         return id == noNode ? nil : id
@@ -150,6 +154,7 @@ final class Tree: @unchecked Sendable {
         let rustMs = Perf.ms(since: t0)
         let t1 = Perf.now()
         let l = TreemapLayout(raw, size: size)
+        l.treeID = ObjectIdentifier(self)
         Perf.log("layout rects=\(l.rects.count) filtered=\(filter != nil) rust_ms=\(String(format: "%.2f", rustMs)) swift_copy_ms=\(String(format: "%.2f", Perf.ms(since: t1)))")
         return l
     }
@@ -170,6 +175,8 @@ final class TreemapLayout: @unchecked Sendable {
     private let ptr: OpaquePointer?
     let size: CGSize
     let rects: [TreemapRect]
+    /// Identity of the tree these rects (and their node ids) belong to.
+    var treeID: ObjectIdentifier?
 
     init(_ p: OpaquePointer?, size: CGSize) {
         ptr = p

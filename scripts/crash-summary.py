@@ -8,7 +8,7 @@ try:
     out = [str(b.get('exception')), str(b.get('termination'))]
     for th in b.get('threads', []):
         if th.get('triggered'):
-            for fr in th.get('frames', [])[:14]:
+            for fr in th.get('frames', [])[:40]:
                 out.append(str(fr.get('symbol')) + ' ' + str(fr.get('imageIndex')))
     print('%0A'.join(out))
 except Exception as e:

@@ -89,7 +89,7 @@ struct TreemapView: View {
     var body: some View {
         Color.clear
             .overlay(alignment: .topLeading) {
-                if let layout, let tree = model.tree {
+                if let layout, let tree = model.tree, layout.treeID == ObjectIdentifier(tree) {
                     ZStack(alignment: .topLeading) {
                         // Base layer: its own Equatable view, so hover and selection never redraw it.
                         TreemapBase(layout: layout, tree: tree, coloring: model.coloring).equatable()
@@ -133,7 +133,7 @@ struct TreemapView: View {
             )
             .overlay(alignment: .bottom) { readout }
             .onChange(of: model.displayedRoot) { relayout() }
-            .onChange(of: model.revision) { relayout() }
+            .onChange(of: model.revision) { hovered = nil; relayout() }
             .onChange(of: model.filterRevision) { relayout() }
             .onAppear { relayout() }
     }
