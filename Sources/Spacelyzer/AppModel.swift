@@ -22,7 +22,11 @@ final class AppModel {
     func connectOutlineFocusLoop() {
         guard let table = outlineKeyView, let field = nameFilterKeyView,
               table.window != nil, table.window === field.window else { return }
-        table.nextKeyView = field
+        if table.nextKeyView !== field {
+            // Preserve the existing forward chain beyond the filter, without making a two-node cycle.
+            if field.nextKeyView == nil, let successor = table.nextKeyView, successor !== table { field.nextKeyView = successor }
+            table.nextKeyView = field
+        }
     }
     var tree: Tree?
     var rootPath: String = ""
