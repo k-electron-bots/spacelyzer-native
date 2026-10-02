@@ -95,6 +95,24 @@ jobs:
             echo "::notice title=timing::$body"
           fi
           pkill Spacelyzer || true
+          sleep 3
+          for f in $(ls -t ~/Library/Logs/DiagnosticReports/Spacelyzer*.ips 2>/dev/null | head -1); do
+            cp "$f" dist/crash-report.ips
+            c=$(python3 - "$f" <<'PY'
+import sys,json
+t=open(sys.argv[1]).read()
+try:
+    parts=t.split('\n',1); h=json.loads(parts[0]); b=json.loads(parts[1])
+    out=[str(b.get('exception')), str(b.get('termination'))]
+    for th in b.get('threads',[]):
+        if th.get('triggered'):
+            for fr in th.get('frames',[])[:14]: out.append(str(fr.get('symbol'))+' '+str(fr.get('imageIndex')))
+    print('%0A'.join(out))
+except Exception as e: print('parse error',e, t[:800].replace('\n','%0A'))
+PY
+)
+            echo "::notice title=crash::$c"
+          done
       - name: UI assertions (fail the build on any failure)
         run: |
           cp /tmp/spz-assertions.txt dist/ui-assertions.txt 2>/dev/null || true
