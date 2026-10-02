@@ -1,5 +1,5 @@
-/// Coarse grouping used for treemap colour and the "Kinds" breakdown. Mirrors the
-/// Spacelyzer categories.
+/// Coarse grouping used for treemap colour and the "Kinds" breakdown. Groups file types into
+/// a fixed set of kinds.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Category {
