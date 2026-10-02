@@ -120,7 +120,12 @@ struct TreemapView: View {
             .clipped()
             .overlay {
                 if !model.filterPending, model.activeFilter != nil, let currentLayout, currentLayout.rects.isEmpty {
-                    ContentUnavailableView("No matches", systemImage: "line.3.horizontal.decrease.circle")
+                    if model.activeFilter?.count(model.displayedRoot) == 0 {
+                        ContentUnavailableView("No matches", systemImage: "line.3.horizontal.decrease.circle")
+                    } else {
+                        ContentUnavailableView("Matching items use no drawable space", systemImage: "square.dashed",
+                                               description: Text("Zero allocated bytes cannot make a treemap region. See these items in the outline or Largest list."))
+                    }
                 }
             }
             .contentShape(Rectangle())
