@@ -1,36 +1,98 @@
 # Spacelyzer Native
 
-A native macOS disk space analyzer. SwiftUI for the Mac interface, a Rust engine for the heavy work.
-Based on the intent and visual design of [k-electron/spacelyzer](https://github.com/k-electron/spacelyzer)
-(read-only reference; nothing here modifies it).
+See what is using your disk. A native macOS disk space analyzer: a SwiftUI interface on top of a Rust engine
+built for speed. It follows the intent and visual design of
+[k-electron/spacelyzer](https://github.com/k-electron/spacelyzer), which stays read-only and untouched.
 
-## Architecture
+![Spacelyzer scanning /Library: outline on the left, treemap on the right](docs/images/overview.png)
 
-- `engine/` Rust crate. Parallel work-stealing scanner (`getattrlistbulk` on macOS, `readdir`+`lstat`
-  fallback), compact size-sorted arena tree, hard-link and firmlink de-duplication, squarified
-  treemap layout, hit testing, kind breakdown. Exposed as a C ABI (`Sources/CSpacelyzer/include/spacelyzer.h`).
-- `Sources/Spacelyzer` SwiftUI app: outline + treemap + kinds + largest files, Trash with confirm and undo.
-- `scripts/` engine build, signing import, DMG packaging. `.github/workflows/ci.yml` builds, tests, signs, publishes.
+*A scan of `/Library` (153,203 items, 41.82 GB, scanned in 2.1 s on a shared GitHub CI Mac). Screenshots in this
+README come from CI at 1024x768, not from a personal Mac.*
 
-Why it should be faster than the Swift original: one syscall per directory batch with sizes included,
-no per-entry Foundation objects, one flat arena instead of a value tree, and layout/hit-testing in Rust
-off the main thread. Treat that as a hypothesis until measured on a real Mac (`spz bench <path>`).
+## What you get
 
-## Status
+| | |
+|---|---|
+| **Outline** | Every folder and file, largest first, with size and share bars. Expand one folder or all 24,903 of them. Arrow keys move, Right/Left expand and collapse, Return drills in. |
+| **Treemap** | Area equals size. Colour by folder, kind or depth. Hover for a readout, click to select, double-click to drill. Tiny items fold into one labelled remainder, nothing is dropped. |
+| **Kinds** | Where the space goes by file type, ranked by size. |
+| **Largest** | The 200 largest files, with full paths. The header says when the list is capped. |
+| **Filter** | Name, kind and minimum size, combined. One filter drives every view, so the outline, treemap, Kinds and Largest always describe the same files. The status bar shows the match count and total. |
+| **Trash** | Move to Trash after a confirmation that shows the full path, with undo. Protected system paths are refused. Items hidden by the filter cannot be removed. |
 
-See the latest GitHub Release for the DMG. Builds are self-signed (certificate label
-`Spacelyzer Self-Signed (k.electron.ai@gmail.com)`), not notarized: right-click the app, choose Open.
-Full Disk Access (System Settings > Privacy & Security) is needed for a complete scan.
+![Kinds view](docs/images/kinds.png)
 
-## Not yet done
+![Largest files under the filter "lib": only matching files, count in the status bar](docs/images/filtered-largest.png)
 
-Duplicate detection, filters bar, exclusions UI, Quick Look preview, volume accounting/purgeable breakdown,
-app icon. Native visual and real-disk behaviour are validated by hand on a Mac.
+*Filter "lib": 3,463 matching files, 620 MB. The selected folder is outside the filter, so the app says so and keeps
+Move to Trash off until you clear the filter or select something else.*
+
+![No matches state in both panes](docs/images/no-matches.png)
+
+## How it is built
+
+```
+SwiftUI (visible rows and rectangles only)
+        |  C ABI: small calls, flat arrays
+Rust engine
+  scan      parallel, getattrlistbulk on macOS
+  tree      one flat arena, hard links counted once
+  filter    parallel pass + roll-up to ancestors
+  outline   flattened visible rows (no cap)
+  layout    squarified treemap + hit-testing index
+```
+
+- **The UI thread only draws and handles input.** Scanning, filtering, outline projection, treemap layout, the Largest
+  and Kinds lists all run in Rust off the main thread, are cancelled when superseded, and publish a single result.
+  The previous picture stays up until the new one is ready.
+- **Rust owns the data.** Dataset, filter, sort, aggregation, layout and hit-testing live in the engine. SwiftUI never
+  holds a node per file: the outline is windowed, so only the visible rows get views.
+- **Honest numbers.** Sizes are allocated bytes (block-rounded), like Finder's "Size on disk". Hard-linked files count once.
+
+## Measured so far
+
+All from a shared GitHub Actions Mac, one folder (`/Library`, 153k items). Informational, not a benchmark, and there
+is **no baseline of the original app on the same folder yet, so no speedup claim is made.**
+
+| What | Rust engine | Notes |
+|---|---|---|
+| Scan, 153k items | about 2 s wall | includes disk and OS cache effects |
+| Filter by name, 153k items | 10-20 ms | 1M synthetic nodes on a 2-core Linux box: 8-28 ms |
+| Treemap layout, 215 rects | 0.1 ms | plus 0.05 ms to copy into Swift |
+| Outline projection, 153k rows (everything expanded) | 18 ms | rows reach the UI in 40-106 ms after the windowed outline; 16.9 s before it |
+
+The last row is how long until the rows arrived on the main thread, not a full redraw measurement.
+The original's own recorded miss is filtering at 1M items (0.65 s against a 200 ms budget). Engine timings are
+reported separately from UI and copy timings.
+
+## Get it
+
+Download the DMG from the [latest release](https://github.com/k-electron-bots/spacelyzer-native/releases).
+
+The build is **self-signed, not notarized**. macOS will block the first launch. Use System Settings > Privacy &
+Security > scroll to Security > **Open Anyway** (the button stays for about an hour and asks for your login password).
+Do not clear quarantine flags or turn Gatekeeper off. Full Disk Access (Privacy & Security) is needed for a complete
+scan of protected folders; the app reports how many locations it could not read.
+
+## Not done yet
+
+Duplicate detection, exclusions UI and persistence, a reviewable skipped-items list, volume accounting (purgeable
+space, snapshots), Quick Look and item details, batch removal and history, size-unit toggle, Full Disk Access detection,
+app icon, VoiceOver pass. Not yet tested: real Mac behaviour at other window sizes and multi-volume setups. See
+[docs/GAP_MAP.md](docs/GAP_MAP.md) for the full comparison with the original.
 
 ## Develop
 
 ```bash
-cargo test -p spacelyzer-engine
-./target/release/spz scan <path>      # after cargo build --release
-./scripts/build-engine.sh && swift build -c release   # macOS only
+cargo test --release -p spacelyzer-engine           # engine tests
+cargo build --release && ./target/release/spz scan <path>
+./scripts/build-engine.sh && swift build -c release  # macOS only
 ```
+
+Read [AGENTS.md](AGENTS.md) first: threading rules, polish bar, destructive-action rules, how CI verifies the UI.
+Dependencies are `libc` and `rayon` (plus rayon's own crates), see [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md);
+CI fails if anything else appears.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
