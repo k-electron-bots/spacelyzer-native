@@ -1,0 +1,75 @@
+# AGENTS.md
+
+Working agreement for anyone (human or agent) changing Spacelyzer Native. Read it before the first edit.
+
+## What this is
+A native macOS disk analyzer. SwiftUI draws the interface. A Rust engine owns every computation over the dataset:
+scan, filter, sort, aggregate, layout, hit-testing. The reference design is
+[k-electron/spacelyzer](https://github.com/k-electron/spacelyzer), which is read-only here.
+
+## The bar (from the owner, Karim)
+1. Performance is real and perceived. Make the work fast, and never block the UI thread.
+2. Every element is polished: every component, slider, panel, button. Things fit, nothing janks.
+3. Follow Apple's current Liquid Glass guidance. Rust crates only from reputable sources.
+4. Do not claim what has not been measured or looked at.
+
+## Hard rules
+**Threading**
+- The main thread only renders and handles input. Anything that scales with the dataset (scan, filter, layout,
+  outline projection, largest files, kind totals) runs in Rust off the main thread and publishes one result.
+- Never compute from the dataset inside a SwiftUI `body`. Cache in `AppModel`, refresh off-main, publish.
+- Cancel superseded work (`Task.cancel`) and keep the previous picture on screen until the new one lands.
+- Show activity if work takes over 150 ms.
+- SwiftUI gets visible rows and rectangles only. No per-node views, no arbitrary cap that hides user data.
+
+**Engine (Rust)**
+- Data lives in flat arenas (`Vec`), not node objects. No per-node path strings, no per-node allocation on hot paths.
+- Keep Rust timings (engine) separate from copy/UI timings. Report both, never blended.
+- Sizes are allocated bytes. Hard links count once. Firmlinks and volume boundaries are handled in the engine.
+- New dependency: add a row to `docs/DEPENDENCIES.md` first. `scripts/check-deps.sh` enforces the allowlist.
+  Only widely used crates from crates.io with a named maintainer. No git or path dependencies.
+
+**UI polish**
+- Prefer standard SwiftUI/AppKit components. They pick up Liquid Glass automatically on the latest SDK.
+  Do not paint custom backgrounds on sidebars, toolbars or bars. Do not hard-code control metrics.
+- Use glass sparingly on custom elements (`glassEffect`, `.buttonStyle(.glass)`), only for the main functional layer,
+  and never stack glass on glass. Gate macOS 26 API with `#available`, keep a good fallback for macOS 14.
+- Concentric corner radii, system spacing, system colours (light, dark, increased contrast). Labels truncate in the
+  middle with an ellipsis, never wrap or clip mid-glyph.
+- Respect Reduce Transparency and Reduce Motion. Everything needs an accessibility label.
+- Apple's guidance: https://developer.apple.com/documentation/TechnologyOverviews/adopting-liquid-glass
+
+**Destructive actions**
+- Move to Trash only, always after a confirmation that shows the full path. Never permanent delete.
+- Removal is unavailable when the selection is hidden by the filter or while a filter result is pending.
+- Tests that trash anything use a disposable fixture under `/tmp/spz-trash-fixture`, never real user files.
+
+## Working method
+- One concern per commit, in dependency order. Validate a slice before building on it. Do not bundle architecture,
+  filters, visual fixes and packaging.
+- Fix the cause, not the symptom. If a revert or a change did not land, check `git log` before saying it did.
+- Write the failing check first when you can (Rust test, or a UI assertion in the CI demo run).
+- Read screenshots yourself. A visual change is not done until you have looked at the pixels at the sizes that matter.
+- Public docs and release notes only say what was measured. Keep the "not verified" list honest.
+
+## How to verify
+- Engine: `cargo test --release -p spacelyzer-engine`. CLI: `./target/release/spz scan|verify|bench|filterbench <path>`.
+- App (macOS): `./scripts/build-engine.sh && swift build -c release`.
+- CI (`.github/workflows/ci.yml`) builds, tests, signs (self-signed), runs the scripted demo, takes screenshots,
+  and runs the UI assertions. The demo run (`SPZ_DEMO=1`) posts real events to the app window and logs
+  `Perf` timings and main-thread stalls. `ui-assertions.txt` is published with each release and fails the build on any FAIL.
+- CI output only goes through check-run annotations (public). Annotations are capped, so durable evidence goes in
+  files (`ui-assertions.txt`) and release assets.
+
+## Signing and secrets
+Self-signed with the project certificate. No Apple Developer ID, no notarization, no paid CI. Secrets live in the
+vault and CI secrets only. Never in the repo, artifacts, logs or messages. Gatekeeper will block the first launch:
+the supported path is System Settings > Privacy & Security > Open Anyway. Do not suggest clearing quarantine
+flags or disabling Gatekeeper.
+
+## Layout
+- `engine/src`: `scan`, `scan_macos`, `tree`, `layout`, `filter`, `outline`, `category`, `ffi`, `bin/spz`.
+- `Sources/CSpacelyzer/include/spacelyzer.h`: the C ABI. Keep it in step with `engine/src/ffi.rs`.
+- `Sources/Spacelyzer`: `AppModel` (state), `OutlineView`, `TreemapView`, `ContentView` (split view, toolbar, filter bar,
+  status bar), `Engine.swift` (Swift wrappers, `Perf`, `MainStall`), `SpacelyzerApp.swift` (CI demo and `DemoInput`).
+- `docs/GAP_MAP.md`: what the original has that this does not. Keep it current.
