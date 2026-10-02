@@ -14,16 +14,17 @@ read by a person). Nothing here has been verified on a personal Mac yet.
 1. Verify real Trash round trip on a disposable fixture (in CI), and main-thread stall measurements for hover, typing and expand-all.
 2. Largest and Kinds lists moved off the main thread and cached (committed, awaiting CI proof).
 
-## Next
-1. Pixel polish against Apple's Liquid Glass guidance: system styling for the status bar, selection bar and filter field,
-   glass button styles, concentric corners, hover states, Reduce Transparency and Reduce Motion, minimum window size.
-2. Accessibility: labels for every row and control, VoiceOver pass.
-3. Outline: sort options, item counts.
-5. Volume view: used, free and purgeable space, snapshots, unaccounted space.
-6. Details and Quick Look for the selected item; batch removal with history.
-7. Exclusions with persistence; a reviewable list of unreadable locations; Full Disk Access detection.
-8. Duplicate finder.
-9. App icon, size-unit toggle (decimal or binary).
+## How work is organised
+Features are grouped in epics. Tasks inside an epic are thin commits in dependency order, one concern each. CI, tags and releases run per epic (push tag `epic-<n>-<name>`), not per task, to save free-tier quota. Each epic ends with CI assertions plus inspected screenshots before it is called done.
+
+## Epics
+1. Outline and filters (E1): reveal ancestors (done, CI 19), extension/size/date filters (done, CI 20-22), item counts (committed, unverified), sort options (Rust sort key, then UI control, then CI check).
+2. Glass and accessibility (E2): selection bar and buttons, filter field, Reduce Transparency/Motion, minimum window size, VoiceOver labels and tree check.
+3. Volume and space accounting (E3): used/free/purgeable, snapshots, unaccounted space.
+4. Inspect and remove (E4): details, Quick Look, then batch removal with history (depends on details).
+5. Scan control (E5): persistent exclusions, unreadable-location list, Full Disk Access detection.
+6. Duplicates (E6): Rust duplicate finder, then UI (depends on E4 removal).
+7. Polish (E7): app icon, decimal/binary units, long-session soak and leak check, cold first-click investigation.
 
 ## Not verified
 Real-Mac behaviour, other window sizes, multiple volumes, APFS clones, purgeable space, VoiceOver.

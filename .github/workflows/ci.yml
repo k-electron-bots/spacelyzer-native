@@ -1,8 +1,10 @@
 name: CI
 
 on:
+  # Epic-level CI to conserve the free quota: commits to main do not run CI.
+  # Push a tag named epic-<n>-<name> (or run manually) to verify and release an epic.
   push:
-    branches: [main]
+    tags: ['epic-*']
   pull_request:
   workflow_dispatch:
 
@@ -124,8 +126,8 @@ jobs:
             dist/screenshot*.png
             dist/ui-assertions.txt
             dist/main-thread-sample.txt
-      - name: Publish release (main only)
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      - name: Publish release (epic tags only)
+        if: startsWith(github.ref, 'refs/tags/epic-')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
