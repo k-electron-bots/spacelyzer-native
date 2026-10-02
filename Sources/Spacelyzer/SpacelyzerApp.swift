@@ -204,10 +204,6 @@ struct SpacelyzerApp: App {
                         for i in 0..<8 {
                             model.filterText = ""; model.displayedRoot = 0
                             model.scan(i % 2 == 0 ? "/Library" : "/usr/share")
-                            if i == 3 {   // cancel a scan in flight, then expect a usable state
-                                try? await Task.sleep(nanoseconds: 300_000_000)
-                                model.cancel()
-                            }
                             var w = 0
                             while model.scanning && w < 300 { try? await Task.sleep(nanoseconds: 200_000_000); w += 1 }
                             try? await Task.sleep(nanoseconds: 500_000_000)
@@ -221,6 +217,20 @@ struct SpacelyzerApp: App {
                         // Plateau check: the last two large-scan cycles must not exceed the first two by more than 25%.
                         let early = max(foot[0], foot[2]), late = max(foot[4], foot[6])
                         Check.expect("rescan-memory-plateaus-over-8-cycles", late <= early * 1.25 && alive, "early_max_mb=\(String(format: "%.0f", early)) late_max_mb=\(String(format: "%.0f", late)) all_mb=\(foot.map { String(format: "%.0f", $0) }.joined(separator: ","))")
+                        // Cancel mid-scan of the large folder: must end with scanning=false and a valid (partial) tree, no crash.
+                        model.scan("/Library")
+                        try? await Task.sleep(nanoseconds: 400_000_000)
+                        let sawScanning = model.scanning
+                        model.cancel()
+                        var cw = 0
+                        while model.scanning && cw < 100 { try? await Task.sleep(nanoseconds: 100_000_000); cw += 1 }
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                        let partial = model.tree.map { $0.wasCancelled && $0.nodeCount > 0 && $0.nodeCount < 153_000 } ?? false
+                        Perf.log("cancel: sawScanning=\(sawScanning) scanning=\(model.scanning) nodes=\(model.tree.map { String($0.nodeCount) } ?? "nil") cancelled=\(model.tree.map { String($0.wasCancelled) } ?? "nil")")
+                        Check.expect("cancel-mid-scan-leaves-a-usable-partial-tree", sawScanning && !model.scanning && partial, "nodes=\(model.tree.map { String($0.nodeCount) } ?? "nil")")
+                        model.scan("/usr/share")
+                        while model.scanning { try? await Task.sleep(nanoseconds: 200_000_000) }
+                        Check.expect("rescan-after-cancel-works", (model.tree?.nodeCount ?? 0) > 1000 && !(model.tree?.wasCancelled ?? true), "nodes=\(model.tree.map { String($0.nodeCount) } ?? "nil")")
                         mark(16)
                     }
                 }
