@@ -117,6 +117,9 @@ jobs:
         continue-on-error: true
         run: |
           cp /tmp/spz-assertions.txt dist/ui-assertions.txt 2>/dev/null || true
+          # Ordinary log lines survive artifact-service failure and annotation truncation.
+          echo 'Critical focus/reset evidence (strict assertions remain below):'
+          grep -E '^(before-resign|after-direct-resign|before-activation|activation-wait-seconds=|reload-after-responder-wait|tab-chain |same-value-fixture-start |before-same-value-clear |check FAIL|app still running at end|APP NOT RUNNING|DEMO .*TIMEOUT)' /tmp/spz-timing.txt 2>/dev/null || true
           cat /tmp/spz-assertions.txt || true
           expected=67
           if grep -q 'APP NOT RUNNING' /tmp/spz-timing.txt 2>/dev/null; then echo "::error title=ui-assertions::app was not running at the end of the demo (crash or exit)"; exit 1; fi
@@ -148,5 +151,5 @@ jobs:
           gh release create "$V" dist/*.dmg dist/*.sha256 dist/screenshot*.png dist/ui-assertions.txt dist/main-thread-sample.txt --title "Spacelyzer $V" --prerelease \
             --notes "UI assertions: ${{ steps.asserts.outcome }}. Self-signed development build (not notarized). Not Apple-verified: after the first blocked open, use System Settings > Privacy & Security > Open Anyway. Screenshots attached are from the CI runner, not a real Mac. Built from ${{ github.sha }}."
       - name: Fail the build if UI assertions failed (after artifacts and release are published)
-        if: steps.asserts.outcome == 'failure'
+        if: always() && steps.asserts.outcome != 'success'
         run: exit 1
