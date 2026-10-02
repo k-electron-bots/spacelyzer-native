@@ -180,3 +180,6 @@ Independent focus source review requested attachment/parity corrections before c
 
 
 Explicit editor UX policy: an external clear/change cancels unfinished marked composition before replacing filter text; newer external model intent wins over a later composition notification. New regression changes model while hasMarkedText=true, checks marked state cancelled/editor-field-model cleared and a simulated delayed delegate cannot resurrect stale filter. Native editing tests explicitly invoke delegate, so they do not prove automatic notifications or actual IME behavior.65 scoped contracts38 images planned. Independent lifecycle/focus source scope is suitable for checkpoint; no editing parity/full E2 claim.
+
+
+Independent reset robustness correction: capture external target before unmarkText; suppress synchronous coordinator feedback during programmatic cancellation/replacement and install captured target in editor/field. Check editor string/marked divergence even when field equals model; regression includes already-empty model with marked editor then clear. Current-field manual delegate simulation cannot prove arbitrary delayed IME insertion behavior; no all-delayed-commit guarantee.66 scoped contracts38 states, uncompiled/unexecuted. Source recheck before checkpoint, actual IME/automatic notifications still open.
