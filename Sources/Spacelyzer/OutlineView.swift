@@ -68,7 +68,7 @@ struct OutlineView: View {
         let cur = model.selected.flatMap { model.outlineIndex[$0] }
         let next = max(0, min(rows.count - 1, (cur ?? (d > 0 ? -1 : rows.count)) + d))
         model.selected = rows[next].node
-        proxy.scrollTo(rows[next].node)
+        // Scrolling happens once, in onChange(of: model.selected); a second scrollTo here doubled the layout work per key press.
         return .handled
     }
 
