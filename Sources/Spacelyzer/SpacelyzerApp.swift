@@ -374,9 +374,21 @@ struct SpacelyzerApp: App {
                                 guard let menu = button.menu, let i = menu.items.firstIndex(where: { $0.title == parentTitle }), let sub = menu.items[i].submenu else {
                                     Check.expect("submenu-visible-\(step)", false, "missing parent menu"); mark(step); button.menu?.cancelTracking(); return
                                 }
-                                // Invoke the native item's action through its menu. Never call submenuAction directly.
-                                menu.performActionForItem(at: i)
-                                schedule(0.5) {
+                                // Action dispatch picks effects but does not enter submenu tracking.
+                                // Navigate the actual tracked menu with native down/right events instead.
+                                func navigationKey(_ code: UInt16, _ scalar: Int) {
+                                    let chars = String(UnicodeScalar(scalar)!)
+                                    for type in [NSEvent.EventType.keyDown, .keyUp] {
+                                        if let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: button.window?.windowNumber ?? 0, context: nil, characters: chars, charactersIgnoringModifiers: chars, isARepeat: false, keyCode: code) {
+                                            NSApp.postEvent(event, atStart: false)
+                                        }
+                                    }
+                                }
+                                // Fresh tracking begins with no highlighted item. Count actual selectable items.
+                                let steps = menu.items.prefix(i + 1).filter { !$0.isSeparatorItem && $0.isEnabled }.count
+                                for offset in 0..<steps { schedule(Double(offset) * 0.12) { navigationKey(125, NSDownArrowFunctionKey) } }
+                                schedule(Double(steps) * 0.12 + 0.15) { navigationKey(124, NSRightArrowFunctionKey) }
+                                schedule(Double(steps) * 0.12 + 0.8) {
                                     Check.expect("submenu-parent-tracking-\(step)", menu.highlightedItem === menu.items[i], "parent=\(parentTitle) highlighted=\(menu.highlightedItem?.title ?? "nil") items=\(sub.items.count); pixels required")
                                     mark(step)
                                     menu.cancelTracking()
@@ -471,7 +483,7 @@ struct SpacelyzerApp: App {
                             NSApp.appearance = NSAppearance(named: .aqua)
                             DemoInput.window?.setContentSize(NSSize(width: 960, height: 600))
                             try? await Task.sleep(nanoseconds: 1_000_000_000)
-                            Check.expect("e2-minimum-window-fits", DemoInput.window?.contentView?.bounds.width == 960, "width=\(DemoInput.window?.contentView?.bounds.width ?? 0)")
+                            Check.expect("e2-minimum-window-fits", DemoInput.window?.contentView?.bounds.width == 960 && DemoInput.window?.contentView?.bounds.height == 600, "size=\(String(describing: DemoInput.window?.contentView?.bounds.size))")
                             mark(26)
                             NSApp.appearance = NSAppearance(named: .darkAqua)
                             try? await Task.sleep(nanoseconds: 1_000_000_000); mark(27)
@@ -492,6 +504,37 @@ struct SpacelyzerApp: App {
                             try? await Task.sleep(nanoseconds: 500_000_000)
                             Check.expect("e2-mode-restored", !demoReduceTransparency && !demoReduceMotion)
                             mark(30)
+                            // E2 count readability: selected/unselected, both appearances and contrast branches.
+                            for (step, appearance, increase) in [(31, NSAppearance.Name.aqua, false), (32, .darkAqua, false), (33, .aqua, true), (34, .darkAqua, true)] {
+                                NSApp.appearance = NSAppearance(named: appearance)
+                                model.demoIncreaseContrast = increase
+                                if let table = OutlineDemoEvidence.table, let window = table.window {
+                                    window.makeFirstResponder(table)
+                                }
+                                try? await Task.sleep(nanoseconds: 700_000_000)
+                                Check.expect("e2-count-color-contract-\(step)", OutlineDemoEvidence.countColorContract(increased: increase))
+                                mark(step)
+                            }
+                            model.demoIncreaseContrast = nil; NSApp.appearance = savedAppearance
+                            if let table = OutlineDemoEvidence.table, let window = table.window {
+                                let selectedBefore = model.selected
+                                window.makeFirstResponder(table)
+                                DemoInput.key(48, chars: "\t")
+                                try? await Task.sleep(nanoseconds: 500_000_000)
+                                let focusMoved = window.firstResponder !== table && window.firstResponder != nil
+                                Check.expect("e2-tab-leaves-outline-without-selection-change", focusMoved && model.selected == selectedBefore)
+                                // Escape must not invoke a destructive action or clear the current tree.
+                                let treeBefore = model.tree, removedBefore = model.lastRemoved.count
+                                DemoInput.key(53, chars: String(UnicodeScalar(27)!))
+                                try? await Task.sleep(nanoseconds: 500_000_000)
+                                Check.expect("e2-escape-preserves-tree-and-removal-state", model.tree === treeBefore && model.lastRemoved.count == removedBefore)
+                                window.makeFirstResponder(table)
+                                Check.expect("e2-outline-single-selection-policy", !table.allowsMultipleSelection && table.selectedRowIndexes.count <= 1)
+                            } else {
+                                Check.expect("e2-tab-leaves-outline-without-selection-change", false, "table missing")
+                                Check.expect("e2-escape-preserves-tree-and-removal-state", false, "table missing")
+                                Check.expect("e2-outline-single-selection-policy", false, "table missing")
+                            }
 
                         } catch {
                             Check.expect("counts-hidden-below-400", false, "fixture error: \(error)")
