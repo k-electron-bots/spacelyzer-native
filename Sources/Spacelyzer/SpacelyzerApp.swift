@@ -21,6 +21,7 @@ struct SpacelyzerApp: App {
                         while model.scanning || model.tree == nil { try? await Task.sleep(nanoseconds: 500_000_000) }
                         try? await Task.sleep(nanoseconds: 3_000_000_000)
                         await PublicationRegression.run(tree: model.tree!)
+                        await ZeroMatchRegression.run()
                         MainStall.shared.start()
                         func mark(_ n: Int) {
                             // CI-only handshake: the runner owns screen-capture permission.
@@ -530,7 +531,7 @@ struct SpacelyzerApp: App {
                                 if let node = model.selected, let row = model.outlineIndex[node] { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
                             }
                             try? await Task.sleep(nanoseconds: 500_000_000)
-                            Check.expect("e2-count-visible-reload-color-policy", OutlineDemoEvidence.countColorContract(increased: true) && model.selected == selectedBeforeInactive && OutlineDemoEvidence.table?.selectedRow == tableRowBeforeInactive && selectedBeforeInactive.flatMap { model.outlineIndex[$0] } == tableRowBeforeInactive, "key=\(DemoInput.window?.isKeyWindow ?? false) responder=\(String(describing: DemoInput.window?.firstResponder)) node=\(String(describing: model.selected)) row=\(OutlineDemoEvidence.table?.selectedRow ?? -1) expectedRow=\(tableRowBeforeInactive ?? -1)")
+                            Check.expect("e2-count-visible-reload-color-policy", OutlineDemoEvidence.countColorContract(increased: true) && model.selected == selectedBeforeInactive && OutlineDemoEvidence.table?.selectedRow == tableRowBeforeInactive && selectedBeforeInactive.flatMap { model.outlineIndex[$0] } == tableRowBeforeInactive, "style=\(OutlineDemoEvidence.selectionDiagnostic) key=\(DemoInput.window?.isKeyWindow ?? false) responder=\(String(describing: DemoInput.window?.firstResponder)) node=\(String(describing: model.selected)) row=\(OutlineDemoEvidence.table?.selectedRow ?? -1) expectedRow=\(tableRowBeforeInactive ?? -1)")
                             mark(36)
                             model.demoIncreaseContrast = nil; NSApp.appearance = savedAppearance
                             if let table = OutlineDemoEvidence.table, let window = table.window {
@@ -752,5 +753,35 @@ private actor PublicationBarrier {
         let derivedCompleted = await wait { await derived.completed() }
         Check.expect("race-old-derived-after-clear-rejected", derivedParked && derivedCompleted && derivedStillHeld && m.largestIDs.isEmpty && m.kindRows.isEmpty)
         m.beforePublish = nil; m.afterPublish = nil
+    }
+}
+
+@MainActor private enum ZeroMatchRegression {
+    static func run() async {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("spz-zero-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: root.appendingPathComponent("empty.pdf").path, contents: Data())
+        FileManager.default.createFile(atPath: root.appendingPathComponent("other.txt").path, contents: Data())
+        defer { try? FileManager.default.removeItem(at: root) }
+        let m = AppModel(); m.scan(root.path)
+        let deadline = Date().addingTimeInterval(10)
+        while m.scanning && Date() < deadline { try? await Task.sleep(nanoseconds: 10_000_000) }
+        guard let tree = m.tree, let zero = (0..<UInt32(tree.nodeCount)).first(where: { tree.name($0) == "empty.pdf" }),
+              let hidden = (0..<UInt32(tree.nodeCount)).first(where: { tree.name($0) == "other.txt" }) else {
+            Check.expect("zero-match-selection-removal-policy", false, "fixture missing")
+            return
+        }
+        m.filterExt = "pdf"
+        while m.filterPending && Date() < deadline { try? await Task.sleep(nanoseconds: 10_000_000) }
+        var calls = 0
+        m.trashItem = { url in calls += 1; return url }
+        let visible = m.activeFilter?.count(zero) == 1 && m.activeFilter?.size(zero) == 0 && !m.isOutsideFilter(zero) && m.removalBlockedReason(zero) == nil
+        m.proposeRemoval(of: hidden)
+        let hiddenBlocked = m.pendingRemoval == nil && calls == 0
+        m.removalMessage = nil
+        m.proposeRemoval(of: zero)
+        let opened = m.pendingRemoval == zero && calls == 0
+        m.confirmRemoval()
+        Check.expect("zero-match-selection-removal-policy", visible && hiddenBlocked && opened && calls == 1, "visible=\(visible) hiddenBlocked=\(hiddenBlocked) opened=\(opened) mockedCalls=\(calls)")
     }
 }
