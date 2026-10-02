@@ -377,7 +377,7 @@ struct SpacelyzerApp: App {
                                 // Invoke the native item's action through its menu. Never call submenuAction directly.
                                 menu.performActionForItem(at: i)
                                 schedule(0.5) {
-                                    Check.expect("submenu-visible-\(step)", sub.isAttached(), "parent=\(parentTitle) attached=\(sub.isAttached()) items=\(sub.items.count)")
+                                    Check.expect("submenu-parent-tracking-\(step)", menu.highlightedItem === menu.items[i], "parent=\(parentTitle) highlighted=\(menu.highlightedItem?.title ?? "nil") items=\(sub.items.count); pixels required")
                                     mark(step)
                                     menu.cancelTracking()
                                 }
