@@ -82,6 +82,7 @@ struct SpacelyzerApp: App {
                         model.filterText = "zzzqqq"
                         try? await Task.sleep(nanoseconds: 3_000_000_000); mark(10)
                         // Step 11: removal guards, with the Trash operation mocked (nothing on disk is touched).
+                        let realTrash = model.trashItem
                         var calls = 0
                         model.trashItem = { url in calls += 1; return url }
                         func settle() async { try? await Task.sleep(nanoseconds: 1_500_000_000) }
@@ -122,6 +123,53 @@ struct SpacelyzerApp: App {
                         model.removalMessage = nil
                         model.filterText = "zzzqqq"; model.selected = model.outlineRows.first?.node ?? 1
                         await settle(); mark(11)
+                        // Step 12: Right/Left expand and collapse, Return drills (real key events).
+                        try? await Task.sleep(nanoseconds: 4_000_000_000)
+                        model.filterText = ""; await settle()
+                        model.displayedRoot = 0; model.expanded = []; model.refreshOutline(); model.tab = .treemap; await settle()
+                        DemoInput.click(fromTop: 96, x: 168)
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        let k = model.selected
+                        DemoInput.key(124, chars: String(UnicodeScalar(NSRightArrowFunctionKey)!)); await settle()
+                        Check.expect("right-arrow-expands-selected-folder", k != nil && model.expanded.contains(k!), "node=\(k.map(String.init) ?? "nil")")
+                        DemoInput.key(123, chars: String(UnicodeScalar(NSLeftArrowFunctionKey)!)); await settle()
+                        Check.expect("left-arrow-collapses-it", k != nil && !model.expanded.contains(k!))
+                        DemoInput.key(36, chars: "\r"); await settle()
+                        Check.expect("return-drills-into-the-folder", k != nil && model.displayedRoot == k!, "root=\(model.displayedRoot)")
+                        mark(12)
+                        // Step 13: a real Trash round trip on a disposable synthetic folder, restricted to that folder by construction.
+                        try? await Task.sleep(nanoseconds: 4_000_000_000)
+                        let fx = "/tmp/spz-trash-fixture"
+                        try? FileManager.default.removeItem(atPath: fx)
+                        try? FileManager.default.createDirectory(atPath: fx, withIntermediateDirectories: true)
+                        let victimPath = fx + "/victim-\(ProcessInfo.processInfo.processIdentifier).bin", keepPath = fx + "/keep.bin"
+                        try? Data(repeating: 7, count: 300_000).write(to: URL(fileURLWithPath: victimPath))
+                        try? Data(repeating: 8, count: 200_000).write(to: URL(fileURLWithPath: keepPath))
+                        model.trashItem = { url in
+                            guard url.path.hasPrefix(fx + "/") || url.path.hasPrefix("/private" + fx + "/") else { throw CocoaError(.fileWriteNoPermission) }
+                            return try realTrash(url)
+                        }
+                        model.filterText = ""; model.displayedRoot = 0; model.expanded = []
+                        model.scan(fx)
+                        while model.scanning { try? await Task.sleep(nanoseconds: 200_000_000) }
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        if let t = model.tree, let id = (0..<UInt32(t.nodeCount)).first(where: { t.path($0).hasSuffix("/" + (victimPath as NSString).lastPathComponent) }) {
+                            model.selected = id
+                            model.proposeRemoval(of: id)
+                            model.confirmRemoval()
+                            let fm = FileManager.default
+                            let trashed = model.lastRemoved.first?.trashed
+                            Check.expect("real-trash-moves-only-the-selected-fixture", !fm.fileExists(atPath: victimPath) && fm.fileExists(atPath: keepPath) && model.lastRemoved.count == 1 && (trashed.map { fm.fileExists(atPath: $0.path) } ?? false), "message=\(model.removalMessage ?? "nil")")
+                            try? await Task.sleep(nanoseconds: 1_000_000_000); mark(13)
+                            model.undoRemoval()
+                            Check.expect("undo-restores-the-fixture", fm.fileExists(atPath: victimPath) && !(trashed.map { fm.fileExists(atPath: $0.path) } ?? true))
+                        } else {
+                            Check.expect("real-trash-moves-only-the-selected-fixture", false, "fixture node not found")
+                            Check.expect("undo-restores-the-fixture", false, "fixture node not found")
+                            mark(13)
+                        }
+                        try? FileManager.default.removeItem(atPath: fx)
+                        mark(14)
                     }
                 }
         }
