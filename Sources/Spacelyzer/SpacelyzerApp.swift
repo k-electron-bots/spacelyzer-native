@@ -651,7 +651,7 @@ private actor PublicationBarrier {
         let swapRows = m.outlineRows.map { $0.node }, swapRevision = m.outlineRevision
         await swapped.release()
         let swapCompleted = await wait { await swapped.completed() }
-        Check.expect("race-old-outline-after-tree-swap-rejected", swapParked && swapNewer && swapCompleted && m.outlineRows.map { $0.node } == swapRows && m.outlineRevision == swapRevision && m.selected == nil)
+        Check.expect("race-old-outline-after-tree-swap-rejected", swapParked && swapNewer && swapCompleted && (m.outlineRows.map { $0.node }) == swapRows && m.outlineRevision == swapRevision && m.selected == nil)
         try? FileManager.default.removeItem(at: root)
 
         m.tree = tree
