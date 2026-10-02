@@ -80,21 +80,25 @@ final class AppModel {
         }
     }
     var outlineRows: [SpzRow] = []
+    /// node -> row index, built off the main thread with the rows so selection lookups are O(1).
+    var outlineIndex: [UInt32: Int] = [:]
     var outlineMillis: Double = 0
     private var outlineTask: Task<Void, Never>?
 
     /// Recompute the flattened outline in Rust off the main thread. Selection and the expanded
     /// set live here, so they survive re-projection.
     func refreshOutline() {
-        guard let tree else { outlineRows = []; return }
+        guard let tree else { outlineRows = []; outlineIndex = [:]; return }
         let root = displayedRoot, ex = expanded, flt = activeFilter
         outlineTask?.cancel()
         outlineTask = Task.detached(priority: .userInitiated) { [weak self] in
             let t0 = DispatchTime.now().uptimeNanoseconds
             let rows = tree.outlineRows(root: root, expanded: ex, filter: flt)
             let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+            var index = [UInt32: Int](minimumCapacity: rows.count)
+            for (i, r) in rows.enumerated() { index[r.node] = i }
             if Task.isCancelled { return }
-            await MainActor.run { self?.outlineRows = rows; self?.outlineMillis = ms }
+            await MainActor.run { self?.outlineRows = rows; self?.outlineIndex = index; self?.outlineMillis = ms }
         }
     }
 

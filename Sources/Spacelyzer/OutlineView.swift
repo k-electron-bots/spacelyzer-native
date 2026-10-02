@@ -38,7 +38,7 @@ struct OutlineView: View {
                 .onKeyPress(.leftArrow) { expand(false, tree) }
                 .onChange(of: model.selected) { _, n in
                     // Any selection change (treemap, Largest list, keys) scrolls the outline to the row if it is present.
-                    if let n, rows.contains(where: { $0.node == n }) { proxy.scrollTo(n) }
+                    if let n, model.outlineIndex[n] != nil { proxy.scrollTo(n) }
                 }
                 .onKeyPress(.return) { if let s = model.selected { model.drill(into: s) }; return .handled }
             }
@@ -52,7 +52,7 @@ struct OutlineView: View {
             .onAppear { model.refreshOutline() }
             .onChange(of: model.selected) { _, n in
                 guard Perf.on else { return }
-                let idx = n.flatMap { s in rows.firstIndex(where: { $0.node == s }) }
+                let idx = n.flatMap { model.outlineIndex[$0] }
                 Perf.log("selection changed: node=\(n.map(String.init) ?? "nil") rowIndex=\(idx.map(String.init) ?? "none") of \(rows.count)")
             }
         } else {
@@ -62,7 +62,7 @@ struct OutlineView: View {
 
     private func move(_ d: Int, _ rows: [SpzRow], _ proxy: ScrollViewProxy) -> KeyPress.Result {
         guard !rows.isEmpty else { return .ignored }
-        let cur = model.selected.flatMap { s in rows.firstIndex(where: { $0.node == s }) }
+        let cur = model.selected.flatMap { model.outlineIndex[$0] }
         let next = max(0, min(rows.count - 1, (cur ?? (d > 0 ? -1 : rows.count)) + d))
         model.selected = rows[next].node
         proxy.scrollTo(rows[next].node)
