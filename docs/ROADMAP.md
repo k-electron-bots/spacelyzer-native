@@ -50,3 +50,5 @@ Status: v0.1.48 had a crash when a second folder was scanned after a large tree 
 - Run37043128105 at c892613 passed all30 checks and captured22 images. Pixel review confirms399/401pt empty/five-digit counts and real date/sort/reset effects. Depth12 evidence is not yet accepted: /tmp vs /private/tmp path mismatch left the large folder expanded. Canonical-path fixture exclusion and explicit visible-depth12 check repaired; independent signoff remains pending.
 
 - Final E1 evidence run also requires actual date, maximum-size and sort choice submenu images23-25, plus an explicitly visible depth12 cell below and above400pt. No separate menu-only run.
+
+- Run37046851306 failed strengthened depth checks at correct399/401 widths: b-large still expanded; choice-menu images23-25 were blank. Do not accept those pixels. Depth fixture now selects nodes by root-child identity instead of path. Menu visual automation remains unresolved; no new checkpoint before that review decision.
