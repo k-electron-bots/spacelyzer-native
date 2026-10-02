@@ -164,10 +164,14 @@ struct SpacelyzerApp: App {
                         try? await Task.sleep(nanoseconds: 4_000_000_000)
                         model.filterText = ""; await settle()
                         model.displayedRoot = 0; model.expanded = []; model.refreshOutline(); model.tab = .treemap; await settle()
-                        let c2Before = model.selected, c2T0 = Perf.now()
                         DemoInput.click(fromTop: 96, x: 168)
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        let c2Before = model.selected, c2T0 = Perf.now()
+                        DemoInput.click(fromTop: 180, x: 168)   // a different row, so a selection change is expected
                         while model.selected == c2Before && Perf.ms(since: c2T0) < 5000 { try? await Task.sleep(nanoseconds: 1_000_000) }
                         Perf.log("click-latency-later (a second, warm click; post -> selection changed): \(String(format: "%.1f", Perf.ms(since: c2T0))) ms")
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        DemoInput.click(fromTop: 96, x: 168)
                         try? await Task.sleep(nanoseconds: 1_000_000_000)
                         let k = model.selected
                         DemoInput.key(124, chars: String(UnicodeScalar(NSRightArrowFunctionKey)!)); await settle()
