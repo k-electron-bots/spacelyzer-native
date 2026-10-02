@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         @Bindable var model = model
@@ -25,11 +26,13 @@ struct ContentView: View {
                 }
             }
         }
+        .transaction { if reduceMotion { $0.animation = nil } }
         .safeAreaInset(edge: .bottom, spacing: 0) { StatusBar() }
         .toolbar {
             ToolbarItemGroup {
                 Button { model.up() } label: { Label("Up", systemImage: "arrow.up") }
                     .disabled(model.tree == nil || model.displayedRoot == 0)
+                    .accessibilityLabel("Go to parent folder").help("Go to parent folder")
                 Menu {
                     Button("Choose Folder…") { model.chooseFolder() }
                     Button("Startup Disk") { model.scanStartupVolume() }
@@ -37,6 +40,7 @@ struct ContentView: View {
                 } label: { Label("Scan", systemImage: "externaldrive") }
                 if model.scanning {
                     Button { model.cancel() } label: { Label("Stop", systemImage: "stop.circle") }
+                        .accessibilityLabel("Stop scan").help("Stop the current scan")
                 }
             }
             ToolbarItem(placement: .principal) {
@@ -181,8 +185,23 @@ struct FilterBar: View {
             .accessibilityLabel("Sort order")
         }
         .padding(.horizontal, 8).padding(.vertical, 5)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+        .modifier(AdaptiveControlSurface())
         .padding(.horizontal, 10).padding(.bottom, 4)
         .disabled(model.tree == nil)
+    }
+}
+
+/// One functional control surface. System controls keep their native appearance;
+/// opaque fallback follows the live accessibility preference, not a startup snapshot.
+private struct AdaptiveControlSurface: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    func body(content: Content) -> some View {
+        if reduceTransparency {
+            content.background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+        } else if #available(macOS 26, *) {
+            content.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 6))
+        } else {
+            content.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+        }
     }
 }
