@@ -144,8 +144,7 @@ struct FilterBar: View {
         @Bindable var model = model
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Filter by name", text: $model.filterText).textFieldStyle(.plain)
-                .accessibilityLabel("Filter by name")
+            NameFilterField(model: model)
             TextField("ext", text: $model.filterExt).textFieldStyle(.plain).frame(width: 38)
                 .help("File extension, for example pdf or mp4")
                 .accessibilityLabel("Extension filter")
@@ -230,3 +229,34 @@ extension EnvironmentValues {
 }
 
 @MainActor enum DemoRootLayout { static var size: CGSize = .zero }
+
+/// Native text entry keeps the key-view loop continuous with the AppKit outline.
+private struct NameFilterField: NSViewRepresentable {
+    let model: AppModel
+    func makeCoordinator() -> Coordinator { Coordinator(model) }
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField()
+        field.isBordered = false; field.drawsBackground = false
+        field.focusRingType = .default
+        field.placeholderString = "Filter by name"
+        field.setAccessibilityLabel("Filter by name")
+        field.delegate = context.coordinator
+        field.font = .systemFont(ofSize: NSFont.systemFontSize)
+        field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        model.nameFilterKeyView = field
+        return field
+    }
+    func updateNSView(_ field: NSTextField, context: Context) {
+        if field.stringValue != model.filterText { field.stringValue = model.filterText }
+        model.nameFilterKeyView = field
+        model.connectOutlineFocusLoop()
+    }
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        let model: AppModel
+        init(_ model: AppModel) { self.model = model }
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else { return }
+            model.filterText = field.stringValue
+        }
+    }
+}
