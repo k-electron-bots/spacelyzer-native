@@ -114,7 +114,7 @@ private final class OutlineCell: NSTableCellView {
         count.frame = NSRect(x: size.frame.minX - 6 - countW, y: (h - 14) / 2, width: countW, height: 14)
         let nx = x0 + 40
         let nameRight = showCount ? count.frame.minX : size.frame.minX
-        name.frame = NSRect(x: nx, y: (h - 16) / 2, width: max(60, nameRight - 8 - nx), height: 16)
+        name.frame = NSRect(x: nx, y: (h - 16) / 2, width: max(0, nameRight - 8 - nx), height: 16)
     }
 }
 
@@ -285,6 +285,30 @@ struct ShareBar: View {
                 Capsule().fill(.quaternary)
                 Capsule().fill(Color.accentColor.opacity(0.7)).frame(width: max(2, g.size.width * min(1, fraction)))
             }
+        }
+    }
+}
+
+/// CI inspection uses the same live cells and width threshold as the outline, not a containing hosting table.
+@MainActor enum OutlineDemoEvidence {
+    static var table: NSTableView? {
+        DemoInput.allViews(of: NSTableView.self).first { $0.tableColumns.first?.identifier.rawValue == "outline" }
+    }
+    static var width: CGFloat { table?.view(atColumn: 0, row: 0, makeIfNecessary: true)?.bounds.width ?? 0 }
+    static func countsVisible(_ visible: Bool) -> Bool {
+        guard let table, table.numberOfRows > 0 else { return false }
+        let cells = (0..<min(table.numberOfRows, 40)).compactMap { table.view(atColumn: 0, row: $0, makeIfNecessary: true) as? OutlineCell }
+        cells.forEach { $0.layoutSubtreeIfNeeded() }
+        let folders = cells.filter { !$0.count.stringValue.isEmpty }
+        return !folders.isEmpty && folders.allSatisfy {
+            $0.count.isHidden == !visible && $0.name.frame.maxX + 4 <= (visible ? $0.count.frame.minX : $0.size.frame.minX)
+        }
+    }
+    static func hasCount(_ text: String) -> Bool {
+        guard let table else { return false }
+        return (0..<min(table.numberOfRows, 40)).contains {
+            guard let cell = table.view(atColumn: 0, row: $0, makeIfNecessary: true) as? OutlineCell else { return false }
+            return cell.count.stringValue == text && !cell.count.isHidden
         }
     }
 }
