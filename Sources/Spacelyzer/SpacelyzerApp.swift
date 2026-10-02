@@ -192,6 +192,31 @@ struct SpacelyzerApp: App {
                         }
                         try? FileManager.default.removeItem(atPath: fx)
                         mark(15)
+                        // Step 15b: rescan soak. Alternate a large and a tiny scan, expand, cancel mid-scan, and track footprint.
+                        model.trashItem = { _ in throw CocoaError(.fileWriteNoPermission) }
+                        var foot: [Double] = []
+                        var alive = true
+                        for i in 0..<8 {
+                            model.filterText = ""; model.displayedRoot = 0
+                            model.scan(i % 2 == 0 ? "/Library" : "/usr/share")
+                            if i == 3 {   // cancel a scan in flight, then expect a usable state
+                                try? await Task.sleep(nanoseconds: 300_000_000)
+                                model.cancel()
+                            }
+                            var w = 0
+                            while model.scanning && w < 300 { try? await Task.sleep(nanoseconds: 200_000_000); w += 1 }
+                            try? await Task.sleep(nanoseconds: 500_000_000)
+                            if let t = model.tree, let first = model.outlineRows.first?.node { _ = t; model.toggle(first) }
+                            try? await Task.sleep(nanoseconds: 500_000_000)
+                            let mb = Footprint.megabytes()
+                            foot.append(mb)
+                            Perf.log("soak cycle=\(i) footprint_mb=\(String(format: "%.0f", mb)) nodes=\(model.tree.map { String($0.nodeCount) } ?? "nil") scanning=\(model.scanning)")
+                            alive = alive && !model.scanning
+                        }
+                        // Plateau check: the last two large-scan cycles must not exceed the first two by more than 25%.
+                        let early = max(foot[0], foot[2]), late = max(foot[4], foot[6])
+                        Check.expect("rescan-memory-plateaus-over-8-cycles", late <= early * 1.25 && alive, "early_max_mb=\(String(format: "%.0f", early)) late_max_mb=\(String(format: "%.0f", late)) all_mb=\(foot.map { String(format: "%.0f", $0) }.joined(separator: ","))")
+                        mark(16)
                     }
                 }
         }
@@ -240,5 +265,18 @@ struct SpacelyzerApp: App {
         let url = URL(fileURLWithPath: "/tmp/spz-assertions.txt")
         if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); try? h.close() } else { try? line.write(to: url, atomically: true, encoding: .utf8) }
         Perf.log("check \(line.trimmingCharacters(in: .whitespacesAndNewlines))")
+    }
+}
+
+
+/// Physical memory footprint of this process (what Activity Monitor calls Memory), in MB.
+enum Footprint {
+    static func megabytes() -> Double {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let kr = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count) }
+        }
+        return kr == KERN_SUCCESS ? Double(info.phys_footprint) / 1_048_576 : -1
     }
 }
