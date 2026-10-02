@@ -99,3 +99,5 @@ Karim's standing requirement: long-range stability, memory management and resili
 - Runner-owned screenshots acknowledge a CI-only state hold before progression. This test-only hold must never enter normal app operation. Do not change screen-capture permissions to rescue an in-app test subprocess.
 
 - Fixture path comparisons resolve symlinks (macOS /tmp is /private/tmp). Deep-count evidence checks actual visible rows with depth>=12, never just a broadly named passing assertion.
+
+- E1 final evidence includes actual date/maximum-size/sort choice submenus, not only root menus, in the same consolidated run as deep-row399/401 images.
