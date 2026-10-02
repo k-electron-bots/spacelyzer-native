@@ -106,6 +106,8 @@ jobs:
             echo "::notice title=crash::$c"
           done
       - name: UI assertions (fail the build on any failure)
+        id: asserts
+        continue-on-error: true
         run: |
           cp /tmp/spz-assertions.txt dist/ui-assertions.txt 2>/dev/null || true
           cat /tmp/spz-assertions.txt || true
@@ -133,4 +135,7 @@ jobs:
         run: |
           V=v${{ steps.ver.outputs.version }}
           gh release create "$V" dist/*.dmg dist/*.sha256 dist/screenshot*.png dist/ui-assertions.txt dist/main-thread-sample.txt --title "Spacelyzer $V" --prerelease \
-            --notes "Self-signed development build (not notarized). Not Apple-verified: after the first blocked open, use System Settings > Privacy & Security > Open Anyway. Screenshots attached are from the CI runner, not a real Mac. Built from ${{ github.sha }}."
+            --notes "UI assertions: ${{ steps.asserts.outcome }}. Self-signed development build (not notarized). Not Apple-verified: after the first blocked open, use System Settings > Privacy & Security > Open Anyway. Screenshots attached are from the CI runner, not a real Mac. Built from ${{ github.sha }}."
+      - name: Fail the build if UI assertions failed (after artifacts and release are published)
+        if: steps.asserts.outcome == 'failure'
+        run: exit 1

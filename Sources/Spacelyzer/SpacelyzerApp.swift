@@ -310,7 +310,7 @@ struct SpacelyzerApp: App {
                         let split = DemoInput.allViews(of: NSSplitView.self).first
                         split?.setPosition(460, ofDividerAt: 0)
                         try? await Task.sleep(nanoseconds: 1_500_000_000)
-                        let sideW = split?.subviews.first?.frame.width ?? 0
+                        let sideW = DemoInput.allViews(of: NSTableView.self).first?.enclosingScrollView?.frame.width ?? 0
                         Check.expect("sidebar-widened-for-counts-no-modal", sideW >= 400 && model.removalMessage == nil, "sidebar=\(Int(sideW))")
                         mark(17)
                         try? await Task.sleep(nanoseconds: 3_000_000_000)
@@ -325,7 +325,12 @@ struct SpacelyzerApp: App {
                             Check.expect("typing-in-ext-field-applies-extension-filter", model.filterExt == "pdf" && model.filterIsActive, "ext=\(model.filterExt)")
                             w.makeFirstResponder(nil)
                         } else { Check.expect("typing-in-ext-field-applies-extension-filter", false, "ext field not found") }
-                        func pick(_ title: String, in b: NSPopUpButton) -> Bool {
+                        // SwiftUI fills a Menu's NSMenu when it opens, so items are picked while it is tracking.
+                        // Menu 0 = filters (pick "Last 7 days", then "Clear all filters"); menu 1 = sort (pick "Name").
+                        final class Picks: @unchecked Sendable { var done: [String: Bool] = [:]; var titles: [String] = [] }
+                        let picks = Picks()
+                        @MainActor func titles(_ m: NSMenu, _ out: inout [String]) { for it in m.items { out.append(it.title); if let sub = it.submenu { titles(sub, &out) } } }
+                        @MainActor func pick(_ title: String, _ m: NSMenu) -> Bool {
                             func find(_ m: NSMenu) -> (NSMenu, Int)? {
                                 for (i, it) in m.items.enumerated() {
                                     if it.title == title { return (m, i) }
@@ -333,26 +338,30 @@ struct SpacelyzerApp: App {
                                 }
                                 return nil
                             }
-                            guard let m = b.menu, let (mm, i) = find(m) else { return false }
+                            guard let (mm, i) = find(m) else { return false }
                             mm.performActionForItem(at: i); return true
-                        }
-                        if pops.count >= 2 {
-                            let okDate = pick("Last 7 days", in: pops[0])
-                            let okSort = pick("Name", in: pops[1])
-                            try? await Task.sleep(nanoseconds: 1_500_000_000)
-                            Check.expect("menu-items-change-date-filter-and-sort", okDate && okSort && model.filterModifiedDays == 7 && model.outlineSort == .name, "date=\(okDate) sort=\(okSort) days=\(model.filterModifiedDays) sortMode=\(model.outlineSort)")
-                            let okClear = pick("Clear all filters", in: pops[0])
-                            try? await Task.sleep(nanoseconds: 1_500_000_000)
-                            Check.expect("clear-all-filters-menu-item-resets", okClear && !model.filterIsActive, "clear=\(okClear) active=\(model.filterIsActive)")
-                            model.filterExt = "pdf"; model.filterModifiedDays = 30; model.outlineSort = .items   // leave filters applied for the menu screenshots
                         }
                         for (k, step) in [(0, 18), (1, 19)] where pops.count > k {
                             let b = pops[k]
-                            Timer.scheduledTimer(withTimeInterval: 6, repeats: false) { _ in MainActor.assumeIsolated { b.menu?.cancelTracking() } }
+                            if k == 1 { model.filterExt = "pdf"; model.filterModifiedDays = 30; model.outlineSort = .items; try? await Task.sleep(nanoseconds: 1_500_000_000) }
+                            Timer.scheduledTimer(withTimeInterval: 4, repeats: false) { _ in MainActor.assumeIsolated {
+                                guard let m = b.menu else { return }
+                                var t: [String] = []; titles(m, &t); picks.titles += t
+                                if k == 0 { picks.done["date"] = pick("Last 7 days", m) } else { picks.done["sort"] = pick("Name", m) }
+                            } }
+                            if k == 0 {
+                                Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { _ in MainActor.assumeIsolated {
+                                    if let m = b.menu { picks.done["clear"] = pick("Clear all filters", m) }
+                                } }
+                            }
+                            Timer.scheduledTimer(withTimeInterval: 7, repeats: false) { _ in MainActor.assumeIsolated { b.menu?.cancelTracking() } }
                             Task { @MainActor in try? await Task.sleep(nanoseconds: 300_000_000); mark(step) }
                             b.performClick(nil)   // blocks in menu tracking until the timer cancels it
                             try? await Task.sleep(nanoseconds: 1_500_000_000)
                         }
+                        Perf.log("menu titles seen: \(picks.titles.joined(separator: " | "))")
+                        Check.expect("menu-items-change-date-filter-and-sort", picks.done["date"] == true && picks.done["sort"] == true && model.outlineSort == .name, "date=\(String(describing: picks.done["date"])) sort=\(String(describing: picks.done["sort"])) sortMode=\(model.outlineSort)")
+                        Check.expect("clear-all-filters-menu-item-resets", picks.done["clear"] == true, "clear=\(String(describing: picks.done["clear"]))")
                         mark(20)
                     }
                 }
