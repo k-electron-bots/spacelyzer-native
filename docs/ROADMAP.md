@@ -39,3 +39,6 @@ Status: v0.1.48 had a crash when a second folder was scanned after a large tree 
 - [ ] Cancellation and failure recovery checks.
 - [ ] FFI bounds checks for node ids; leak check for Rust allocations.
 - [ ] CI fails if the app is not running at the end of the demo.
+
+## Evaluated, not scheduled
+- E8 Incremental rescan (persisted tree + FSEvents): see docs/EVAL-incremental-scan.md. Not implemented. Spotlight is not used for totals.
