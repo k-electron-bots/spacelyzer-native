@@ -385,3 +385,23 @@ fn ffi_rejects_stale_ids_and_foreign_filters_without_panicking() {
         assert_eq!(spz_tree_node_count(std::ptr::null()), 0);
     }
 }
+
+#[test]
+fn outline_sort_modes_order_siblings_and_keep_every_row() {
+    use spacelyzer_engine::outline::{visible_rows, visible_rows_sorted, SortMode};
+    use std::collections::HashSet;
+    let tree = spacelyzer_engine::Tree::synthetic(5_000);
+    let all: HashSet<u32> = (0..tree.len() as u32).collect();
+    let base = visible_rows(&tree, 0, &all, None);
+    for mode in [SortMode::SizeDesc, SortMode::SizeAsc, SortMode::NameAsc, SortMode::ItemsDesc, SortMode::ModifiedDesc] {
+        let rows = visible_rows_sorted(&tree, 0, &all, None, mode);
+        assert_eq!(rows.len(), base.len(), "{mode:?} must not drop or add rows");
+        let a: HashSet<u32> = rows.iter().map(|r| r.node).collect();
+        assert_eq!(a.len(), rows.len());
+    }
+    assert_eq!(visible_rows_sorted(&tree, 0, &all, None, SortMode::SizeDesc), base);
+    let top: Vec<u32> = visible_rows_sorted(&tree, 0, &HashSet::new(), None, SortMode::SizeAsc).iter().map(|r| r.node).collect();
+    assert!(top.windows(2).all(|w| tree.size(w[0]) <= tree.size(w[1])));
+    let names: Vec<String> = visible_rows_sorted(&tree, 0, &HashSet::new(), None, SortMode::NameAsc).iter().map(|r| tree.name(r.node).to_lowercase()).collect();
+    assert!(names.windows(2).all(|w| w[0] <= w[1]));
+}

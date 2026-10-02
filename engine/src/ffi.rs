@@ -389,3 +389,20 @@ pub unsafe extern "C" fn spz_filter_category_totals(t: *const Tree, h: *const Fi
         *out.add(i * 2 + 1) = *n;
     }
 }
+
+/// Outline rows with a sibling sort (0 size desc, 1 size asc, 2 name, 3 items desc, 4 modified desc).
+/// `h` may be null for no filter. Invalid or foreign handles return 0 rows.
+#[no_mangle]
+pub unsafe extern "C" fn spz_outline_rows_sorted(
+    t: *const Tree, root: NodeId, expanded: *const NodeId, n_expanded: u32, h: *const FilterHandle, sort: u32,
+    out: *mut crate::outline::Row, cap: u32,
+) -> u32 {
+    if !valid(t, root) || (!h.is_null() && !handle_ok(t, h)) { return 0; }
+    let set = expanded_set(t, expanded, n_expanded);
+    let sizes = if h.is_null() { None } else { Some((*h).0.sizes.as_slice()) };
+    let rows = crate::outline::visible_rows_sorted(&*t, root, &set, sizes, crate::outline::SortMode::from_u32(sort));
+    if !out.is_null() {
+        std::ptr::copy_nonoverlapping(rows.as_ptr(), out, rows.len().min(cap as usize));
+    }
+    rows.len() as u32
+}
