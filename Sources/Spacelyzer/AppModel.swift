@@ -44,8 +44,8 @@ final class AppModel {
     private var derivedGeneration: UInt64 = 0
     private var scanGeneration: UInt64 = 0
     /// Test seam called after detached computation, before the main-actor publication gate.
-    var afterPublish: (@Sendable (String, UInt64) async -> Void)?
-    var beforePublish: (@Sendable (String, UInt64) async -> Void)?
+    var afterPublish: (@Sendable (String, UInt64, UUID) async -> Void)?
+    var beforePublish: (@Sendable (String, UInt64, UUID) async -> Void)?
 
     var filterIsActive: Bool { !filterText.isEmpty || filterKind != nil || filterMinMB > 0 || filterMaxMB > 0 || filterModifiedDays > 0 || !filterExt.trimmingCharacters(in: .whitespaces).isEmpty }
 
@@ -70,7 +70,8 @@ final class AppModel {
             let r = active ? tree.applyFilter(text: text, kind: kind, minBytes: minB, maxBytes: maxB, modifiedFrom: from, ext: ext) : nil
             let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
             if Task.isCancelled { return }
-            await barrier?("filter", generation)
+            let publication = UUID()
+            await barrier?("filter", generation, publication)
             await MainActor.run {
                 guard let self, !Task.isCancelled, self.filterGeneration == generation, self.tree === tree else { return }
                 self.activeFilter = r
@@ -80,7 +81,7 @@ final class AppModel {
                 self.refreshOutline()
                 self.refreshDerived()
             }
-            await completed?("filter", generation)
+            await completed?("filter", generation, publication)
         }
     }
     /// Largest-files and per-kind lists are computed in Rust off the main thread, never inside a view body.
@@ -99,12 +100,13 @@ final class AppModel {
             let kinds = tree.categoryTotals(filter: flt).filter { $0.items > 0 }.sorted { $0.bytes > $1.bytes }.map { KindRow(category: $0.category, bytes: $0.bytes, items: $0.items) }
             if Task.isCancelled { return }
             Perf.log("derived largest=\(ids.count) kinds=\(kinds.count) filtered=\(flt != nil) rust_ms=\(String(format: "%.2f", Perf.ms(since: t0)))")
-            await barrier?("derived", generation)
+            let publication = UUID()
+            await barrier?("derived", generation, publication)
             await MainActor.run {
                 guard let self, !Task.isCancelled, self.derivedGeneration == generation, self.tree === tree else { return }
                 self.largestIDs = ids; self.kindRows = kinds
             }
-            await completed?("derived", generation)
+            await completed?("derived", generation, publication)
         }
     }
     var outlineRows: [SpzRow] = []
@@ -131,12 +133,13 @@ final class AppModel {
             var index = [UInt32: Int](minimumCapacity: rows.count)
             for (i, r) in rows.enumerated() { index[r.node] = i }
             if Task.isCancelled { return }
-            await barrier?("outline", generation)
+            let publication = UUID()
+            await barrier?("outline", generation, publication)
             await MainActor.run {
                 guard let self, !Task.isCancelled, self.outlineGeneration == generation, self.tree === tree else { return }
                 self.outlineRows = rows; self.outlineIndex = index; self.outlineRevision += 1; self.outlineMillis = ms
             }
-            await completed?("outline", generation)
+            await completed?("outline", generation, publication)
         }
     }
 
@@ -206,18 +209,20 @@ final class AppModel {
         session = s
         Task {
             let t = await s.run { [weak self] snap in
+                let publication = UUID()
                 Task { @MainActor in
-                    await barrier?("scan-progress", generation)
+                    await barrier?("scan-progress", generation, publication)
                     if let self, self.scanGeneration == generation, self.session === s {
                         self.progress = snap
                         self.elapsed = Date().timeIntervalSince(start)
                     }
-                    await completed?("scan-progress", generation)
+                    await completed?("scan-progress", generation, publication)
                 }
             }
-            await barrier?("scan-completion", generation)
+            let publication = UUID()
+            await barrier?("scan-completion", generation, publication)
             guard scanGeneration == generation, session === s else {
-                await completed?("scan-completion", generation)
+                await completed?("scan-completion", generation, publication)
                 return
             }
             scanning = false
@@ -238,7 +243,7 @@ final class AppModel {
             } else {
                 error = "The scan failed. Check that the folder exists and you can read it."
             }
-            await completed?("scan-completion", generation)
+            await completed?("scan-completion", generation, publication)
         }
     }
 
