@@ -525,25 +525,36 @@ struct SpacelyzerApp: App {
                             try? await Task.sleep(nanoseconds: 500_000_000)
                             Check.expect("e2-inactive-count-color-policy", OutlineDemoEvidence.inactiveSelectedCountPolicy && selectedBeforeInactive != nil && model.selected == selectedBeforeInactive && OutlineDemoEvidence.table?.selectedRow == tableRowBeforeInactive && selectedBeforeInactive.flatMap { model.outlineIndex[$0] } == tableRowBeforeInactive)
                             mark(35)
+                            NSApp.activate()
                             DemoInput.window?.makeKeyAndOrderFront(nil)
+                            let activationDeadline = Date().addingTimeInterval(5)
+                            while (!NSApp.isActive || !(DemoInput.window?.isKeyWindow ?? false)) && Date() < activationDeadline { try? await Task.sleep(nanoseconds: 20_000_000) }
+                            let activeSetup = NSApp.isActive && (DemoInput.window?.isKeyWindow ?? false)
+                            var responderSetup = false
                             if let table = OutlineDemoEvidence.table {
+                                responderSetup = table.window?.makeFirstResponder(table) == true
+                                model.connectOutlineFocusLoop()
                                 table.reloadData()
                                 if let node = model.selected, let row = model.outlineIndex[node] { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
                             }
                             try? await Task.sleep(nanoseconds: 500_000_000)
-                            Check.expect("e2-count-visible-reload-color-policy", OutlineDemoEvidence.countColorContract(increased: true) && model.selected == selectedBeforeInactive && OutlineDemoEvidence.table?.selectedRow == tableRowBeforeInactive && selectedBeforeInactive.flatMap { model.outlineIndex[$0] } == tableRowBeforeInactive, "style=\(OutlineDemoEvidence.selectionDiagnostic) key=\(DemoInput.window?.isKeyWindow ?? false) responder=\(String(describing: DemoInput.window?.firstResponder)) node=\(String(describing: model.selected)) row=\(OutlineDemoEvidence.table?.selectedRow ?? -1) expectedRow=\(tableRowBeforeInactive ?? -1)")
+                            Check.expect("e2-count-visible-reload-color-policy", activeSetup && responderSetup && OutlineDemoEvidence.countColorContract(increased: true) && model.selected == selectedBeforeInactive && OutlineDemoEvidence.table?.selectedRow == tableRowBeforeInactive && selectedBeforeInactive.flatMap { model.outlineIndex[$0] } == tableRowBeforeInactive, "style=\(OutlineDemoEvidence.selectionDiagnostic) key=\(DemoInput.window?.isKeyWindow ?? false) responder=\(String(describing: DemoInput.window?.firstResponder)) node=\(String(describing: model.selected)) row=\(OutlineDemoEvidence.table?.selectedRow ?? -1) expectedRow=\(tableRowBeforeInactive ?? -1)")
                             mark(36)
                             model.demoIncreaseContrast = nil; NSApp.appearance = savedAppearance
                             if let table = OutlineDemoEvidence.table, let window = table.window {
                                 let selectedBefore = model.selected
-                                window.makeFirstResponder(table)
-                                let intendedControl = table.nextValidKeyView
+                                let tableSetup = window.makeFirstResponder(table)
+                                model.connectOutlineFocusLoop()
+                                let intendedControl = model.nameFilterKeyView
                                 DemoInput.key(48, chars: "\t")
                                 try? await Task.sleep(nanoseconds: 500_000_000)
                                 let responder = window.firstResponder
-                                let focusMoved = intendedControl != nil && intendedControl !== table && !intendedControl!.isHidden && intendedControl!.window === window && ((intendedControl as? NSControl)?.isEnabled ?? true)
+                                let focusMoved = activeSetup && tableSetup && NSApp.isActive && window.isKeyWindow && intendedControl != nil && intendedControl !== table && !intendedControl!.isHidden && intendedControl!.window === window && ((intendedControl as? NSControl)?.isEnabled ?? true)
                                     && (responder === intendedControl || (responder as? NSTextView)?.delegate === intendedControl)
                                 Check.expect("e2-tab-leaves-outline-without-selection-change", focusMoved && model.selected == selectedBefore, "key=\(window.isKeyWindow) intended=\(String(describing: intendedControl)) responder=\(String(describing: responder)) delegate=\(String(describing: (responder as? NSTextView)?.delegate)) selectedBefore=\(String(describing: selectedBefore)) selectedAfter=\(String(describing: model.selected))")
+                                DemoInput.key(48, chars: "\t", modifiers: .shift)
+                                try? await Task.sleep(nanoseconds: 500_000_000)
+                                Check.expect("e2-shift-tab-returns-to-outline", activeSetup && NSApp.isActive && window.isKeyWindow && window.firstResponder === table && model.selected == selectedBefore)
                                 // Escape must not invoke a destructive action or clear the current tree.
                                 let treeBefore = model.tree, removedBefore = model.lastRemoved.count
                                 let pendingBefore = model.pendingRemoval, messageBefore = model.removalMessage
@@ -554,9 +565,28 @@ struct SpacelyzerApp: App {
                                 Check.expect("e2-outline-single-selection-policy", !table.allowsMultipleSelection && table.selectedRowIndexes.count <= 1)
                             } else {
                                 Check.expect("e2-tab-leaves-outline-without-selection-change", false, "table missing")
+                                Check.expect("e2-shift-tab-returns-to-outline", false, "table missing")
                                 Check.expect("e2-escape-preserves-tree-and-removal-state", false, "table missing")
                                 Check.expect("e2-outline-single-selection-policy", false, "table missing")
                             }
+                            // Actual SwiftUI zero-area and no-match screens on a disposable root.
+                            let zeroRoot = FileManager.default.temporaryDirectory.appendingPathComponent("spz-zero-view-\(UUID().uuidString)")
+                            try? FileManager.default.createDirectory(at: zeroRoot, withIntermediateDirectories: true)
+                            FileManager.default.createFile(atPath: zeroRoot.appendingPathComponent("visible-zero.pdf").path, contents: Data())
+                            model.clearFilters(); model.scan(zeroRoot.path)
+                            let zeroDeadline = Date().addingTimeInterval(10)
+                            while model.scanning && Date() < zeroDeadline { try? await Task.sleep(nanoseconds: 20_000_000) }
+                            model.filterExt = "pdf"; model.tab = .treemap
+                            while model.filterPending && Date() < zeroDeadline { try? await Task.sleep(nanoseconds: 20_000_000) }
+                            try? await Task.sleep(nanoseconds: 700_000_000)
+                            Check.expect("zero-area-view-fixture-ready", !model.scanning && !model.filterPending && model.activeFilter?.count(model.displayedRoot) == 1 && model.activeFilter?.size(model.displayedRoot) == 0, "pixels37 required")
+                            mark(37)
+                            model.filterExt = "no-extension-match"
+                            while model.filterPending && Date() < zeroDeadline { try? await Task.sleep(nanoseconds: 20_000_000) }
+                            try? await Task.sleep(nanoseconds: 700_000_000)
+                            Check.expect("no-match-view-fixture-ready", !model.filterPending && model.activeFilter?.count(model.displayedRoot) == 0, "pixels38 required")
+                            mark(38)
+                            try? FileManager.default.removeItem(at: zeroRoot)
                             try? Data().write(to: URL(fileURLWithPath: "/tmp/spz-demo-finished"))
 
                         } catch {
@@ -600,11 +630,11 @@ struct SpacelyzerApp: App {
         if let e = NSEvent.mouseEvent(with: .mouseMoved, location: p, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                       windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0) { NSApp.postEvent(e, atStart: false) }
     }
-    static func key(_ code: UInt16, chars: String? = nil) {
+    static func key(_ code: UInt16, chars: String? = nil, modifiers: NSEvent.ModifierFlags = []) {
         guard let w = window else { return }
         let ch = chars ?? (code == 125 ? String(UnicodeScalar(NSDownArrowFunctionKey)!) : "")
         for t in [NSEvent.EventType.keyDown, .keyUp] {
-            if let e = NSEvent.keyEvent(with: t, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            if let e = NSEvent.keyEvent(with: t, location: .zero, modifierFlags: modifiers, timestamp: ProcessInfo.processInfo.systemUptime,
                                         windowNumber: w.windowNumber, context: nil, characters: ch, charactersIgnoringModifiers: ch,
                                         isARepeat: false, keyCode: code) { NSApp.postEvent(e, atStart: false) }
         }
