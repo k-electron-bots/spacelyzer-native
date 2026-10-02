@@ -106,6 +106,20 @@ struct SpacelyzerApp: App {
                         Perf.log("guardC control-no-filter-mocked trashCalls=\(calls) expect calls=1 proves-mock-wired")
                         Check.expect("control-unfiltered-confirm-reaches-mock-once", calls == 1, "calls=\(calls)")
                         model.removalMessage = nil
+                        // Typing-race checks: act in the same turn as the filter input changes, before its result lands.
+                        let calls0 = calls
+                        let victim2: UInt32 = 29554
+                        model.filterText = ""; await settle(); model.removalMessage = nil
+                        model.filterText = "zzzqqq"
+                        model.proposeRemoval(of: victim2)
+                        Check.expect("propose-right-after-typing-is-refused", model.filterPending && model.pendingRemoval == nil && calls == calls0, "pending=\(model.filterPending)")
+                        await settle(); model.filterText = ""; await settle(); model.removalMessage = nil
+                        model.proposeRemoval(of: victim2)
+                        let opened = model.pendingRemoval != nil
+                        model.filterText = "lib"
+                        model.confirmRemoval()
+                        Check.expect("confirm-right-after-typing-trashes-nothing", opened && model.filterPending && calls == calls0, "opened=\(opened)")
+                        model.removalMessage = nil
                         model.filterText = "zzzqqq"; model.selected = model.outlineRows.first?.node ?? 1
                         await settle(); mark(11)
                     }

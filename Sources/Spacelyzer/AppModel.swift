@@ -30,6 +30,8 @@ final class AppModel {
     var filterMinMB: Int = 0 { didSet { scheduleFilter() } }
     var activeFilter: FilterResult?
     var filterRevision = 0
+    /// True from the moment a filter input changes until its result lands. Views may be showing the previous filter.
+    var filterPending = false
     var filterMillis: Double = 0
     private var filterTask: Task<Void, Never>?
 
@@ -38,7 +40,8 @@ final class AppModel {
     /// Filtering runs in Rust off the main thread, debounced; the UI keeps the last result until the new one lands.
     func scheduleFilter() {
         filterTask?.cancel()
-        guard let tree else { return }
+        filterPending = true
+        guard let tree else { filterPending = false; return }
         let text = filterText, kind = filterKind, minB: UInt64? = filterMinMB > 0 ? UInt64(filterMinMB) * 1_000_000 : nil
         let active = filterIsActive
         filterTask = Task.detached(priority: .userInitiated) { [weak self] in
@@ -51,6 +54,7 @@ final class AppModel {
             await MainActor.run {
                 guard let self else { return }
                 self.activeFilter = r
+                self.filterPending = false
                 self.filterMillis = ms
                 self.filterRevision += 1
                 self.refreshOutline()
@@ -169,9 +173,17 @@ final class AppModel {
         return f.size(id) == 0
     }
 
+    /// Why removal is unavailable right now, or nil when it is allowed.
+    func removalBlockedReason(_ id: UInt32) -> String? {
+        if filterPending { return "The filter is still updating." }
+        if isOutsideFilter(id) { return "This item is outside the current filter. Clear the filter or select it again." }
+        return nil
+    }
+
     func proposeRemoval(of id: UInt32) {
         guard id != 0 else { return }
         // A selection the filter has hidden must not be removable from here: clear the filter or reselect first.
+        if filterPending { removalMessage = "The filter is still updating, so the list may be out of date. Try again in a moment."; return }
         if isOutsideFilter(id) { removalMessage = "That item is outside the current filter. Clear the filter or select it again to move it to the Trash."; return }
         pendingRemoval = id
     }
@@ -187,6 +199,7 @@ final class AppModel {
     func confirmRemoval() {
         guard let tree, let id = pendingRemoval else { return }
         pendingRemoval = nil
+        if filterPending { removalMessage = "The filter is still updating, so nothing was moved. Select the item again in a moment."; return }
         if isOutsideFilter(id) { removalMessage = "The filter changed and this item is no longer shown, so nothing was moved. Select it again to remove it."; return }
         let path = tree.path(id)
         if isProtected(path) {
