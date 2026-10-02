@@ -39,6 +39,13 @@ final class AppModel {
     var filterPending = false
     var filterMillis: Double = 0
     private var filterTask: Task<Void, Never>?
+    private var filterGeneration: UInt64 = 0
+    private var outlineGeneration: UInt64 = 0
+    private var derivedGeneration: UInt64 = 0
+    private var scanGeneration: UInt64 = 0
+    /// Test seam called after detached computation, before the main-actor publication gate.
+    var afterPublish: (@Sendable (String, UInt64) async -> Void)?
+    var beforePublish: (@Sendable (String, UInt64) async -> Void)?
 
     var filterIsActive: Bool { !filterText.isEmpty || filterKind != nil || filterMinMB > 0 || filterMaxMB > 0 || filterModifiedDays > 0 || !filterExt.trimmingCharacters(in: .whitespaces).isEmpty }
 
@@ -47,6 +54,8 @@ final class AppModel {
     /// Filtering runs in Rust off the main thread, debounced; the UI keeps the last result until the new one lands.
     func scheduleFilter() {
         filterTask?.cancel()
+        filterGeneration &+= 1
+        let generation = filterGeneration, barrier = beforePublish, completed = afterPublish
         filterPending = true
         guard let tree else { filterPending = false; return }
         let text = filterText, kind = filterKind, minB: UInt64? = filterMinMB > 0 ? UInt64(filterMinMB) * 1_000_000 : nil
@@ -61,8 +70,9 @@ final class AppModel {
             let r = active ? tree.applyFilter(text: text, kind: kind, minBytes: minB, maxBytes: maxB, modifiedFrom: from, ext: ext) : nil
             let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
             if Task.isCancelled { return }
+            await barrier?("filter", generation)
             await MainActor.run {
-                guard let self else { return }
+                guard let self, !Task.isCancelled, self.filterGeneration == generation, self.tree === tree else { return }
                 self.activeFilter = r
                 self.filterPending = false
                 self.filterMillis = ms
@@ -70,6 +80,7 @@ final class AppModel {
                 self.refreshOutline()
                 self.refreshDerived()
             }
+            await completed?("filter", generation)
         }
     }
     /// Largest-files and per-kind lists are computed in Rust off the main thread, never inside a view body.
@@ -78,15 +89,22 @@ final class AppModel {
     private var derivedTask: Task<Void, Never>?
     func refreshDerived() {
         derivedTask?.cancel()
+        derivedGeneration &+= 1
+        let generation = derivedGeneration, barrier = beforePublish, completed = afterPublish
         guard let tree else { largestIDs = []; kindRows = []; return }
         let flt = activeFilter
         derivedTask = Task.detached(priority: .userInitiated) { [weak self] in
             let t0 = Perf.now()
             let ids = tree.largestFiles(200, filter: flt)
-            let kinds = tree.categoryTotals(filter: flt).filter { $0.bytes > 0 }.sorted { $0.bytes > $1.bytes }.map { KindRow(category: $0.category, bytes: $0.bytes, items: $0.items) }
+            let kinds = tree.categoryTotals(filter: flt).filter { $0.items > 0 }.sorted { $0.bytes > $1.bytes }.map { KindRow(category: $0.category, bytes: $0.bytes, items: $0.items) }
             if Task.isCancelled { return }
             Perf.log("derived largest=\(ids.count) kinds=\(kinds.count) filtered=\(flt != nil) rust_ms=\(String(format: "%.2f", Perf.ms(since: t0)))")
-            await MainActor.run { self?.largestIDs = ids; self?.kindRows = kinds }
+            await barrier?("derived", generation)
+            await MainActor.run {
+                guard let self, !Task.isCancelled, self.derivedGeneration == generation, self.tree === tree else { return }
+                self.largestIDs = ids; self.kindRows = kinds
+            }
+            await completed?("derived", generation)
         }
     }
     var outlineRows: [SpzRow] = []
@@ -100,6 +118,9 @@ final class AppModel {
     /// Recompute the flattened outline in Rust off the main thread. Selection and the expanded
     /// set live here, so they survive re-projection.
     func refreshOutline() {
+        outlineTask?.cancel()
+        outlineGeneration &+= 1
+        let generation = outlineGeneration, barrier = beforePublish, completed = afterPublish
         guard let tree else { outlineRows = []; outlineIndex = [:]; outlineRevision += 1; return }
         let root = displayedRoot, ex = expanded, flt = activeFilter, sort = outlineSort
         outlineTask?.cancel()
@@ -110,7 +131,12 @@ final class AppModel {
             var index = [UInt32: Int](minimumCapacity: rows.count)
             for (i, r) in rows.enumerated() { index[r.node] = i }
             if Task.isCancelled { return }
-            await MainActor.run { self?.outlineRows = rows; self?.outlineIndex = index; self?.outlineRevision += 1; self?.outlineMillis = ms }
+            await barrier?("outline", generation)
+            await MainActor.run {
+                guard let self, !Task.isCancelled, self.outlineGeneration == generation, self.tree === tree else { return }
+                self.outlineRows = rows; self.outlineIndex = index; self.outlineRevision += 1; self.outlineMillis = ms
+            }
+            await completed?("outline", generation)
         }
     }
 
@@ -165,6 +191,8 @@ final class AppModel {
 
     func scan(_ path: String) {
         cancel()
+        scanGeneration &+= 1
+        let generation = scanGeneration
         scanning = true
         error = nil
         rootPath = path
@@ -179,10 +207,12 @@ final class AppModel {
         Task {
             let t = await s.run { [weak self] snap in
                 Task { @MainActor in
-                    self?.progress = snap
-                    self?.elapsed = Date().timeIntervalSince(start)
+                    guard let self, self.scanGeneration == generation, self.session === s else { return }
+                    self.progress = snap
+                    self.elapsed = Date().timeIntervalSince(start)
                 }
             }
+            guard scanGeneration == generation, session === s else { return }
             scanning = false
             lastScanSeconds = Date().timeIntervalSince(start)
             session = nil
