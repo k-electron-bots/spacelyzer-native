@@ -62,6 +62,8 @@ private final class OutlineCell: NSTableCellView {
     let icon = NSImageView()
     let name = NSTextField(labelWithString: "")
     let size = NSTextField(labelWithString: "")
+    /// Direct item count for folders; hidden when the sidebar is too narrow to keep names readable.
+    let count = NSTextField(labelWithString: "")
     fileprivate let bar = ShareBarView()
     var depth = 0
     var hasChildren = false
@@ -80,8 +82,11 @@ private final class OutlineCell: NSTableCellView {
         size.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
         size.textColor = .secondaryLabelColor
         size.alignment = .right
+        count.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        count.textColor = .tertiaryLabelColor
+        count.alignment = .right
         icon.imageScaling = .scaleProportionallyDown
-        for v in [chevron, icon, name, size, bar] as [NSView] { addSubview(v) }
+        for v in [chevron, icon, name, size, count, bar] as [NSView] { addSubview(v) }
         textField = name
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -103,8 +108,13 @@ private final class OutlineCell: NSTableCellView {
         bar.frame = NSRect(x: w - 8 - 44, y: (h - 6) / 2, width: 44, height: 6)
         let sizeW: CGFloat = 70
         size.frame = NSRect(x: bar.frame.minX - 8 - sizeW, y: (h - 16) / 2, width: sizeW, height: 16)
+        let showCount = w >= 400 && !count.stringValue.isEmpty
+        count.isHidden = !showCount
+        let countW: CGFloat = 56
+        count.frame = NSRect(x: size.frame.minX - 6 - countW, y: (h - 14) / 2, width: countW, height: 14)
         let nx = x0 + 40
-        name.frame = NSRect(x: nx, y: (h - 16) / 2, width: max(60, size.frame.minX - 8 - nx), height: 16)
+        let nameRight = showCount ? count.frame.minX : size.frame.minX
+        name.frame = NSRect(x: nx, y: (h - 16) / 2, width: max(60, nameRight - 8 - nx), height: 16)
     }
 }
 
@@ -185,10 +195,11 @@ private struct OutlineTable: NSViewRepresentable {
             let nm = tree.name(r.node)
             cell.name.stringValue = nm
             cell.size.stringValue = formatBytes(shown)
+            cell.count.stringValue = cell.hasChildren ? "\(info.childCount.formatted()) item\(info.childCount == 1 ? "" : "s")" : ""
             cell.bar.fraction = Double(shown) / Double(max(1, total))
             let node = r.node
             cell.onToggle = { [weak self] in self?.model.toggle(node) }
-            cell.setAccessibilityLabel("\(nm), \(isDir ? "folder" : "item"), \(formatBytes(shown))")
+            cell.setAccessibilityLabel("\(nm), \(isDir ? "folder" : "item"), \(formatBytes(shown))\(cell.hasChildren ? ", \(info.childCount) items" : "")")
             cell.setAccessibilityValue(cell.hasChildren ? (expanded ? "expanded" : "collapsed") : nil)
             cell.needsLayout = true
             return cell
