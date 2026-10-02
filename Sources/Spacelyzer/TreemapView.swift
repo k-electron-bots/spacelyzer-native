@@ -192,7 +192,7 @@ struct SelectionBar: View {
         let info = tree.info(id)
         HStack {
             VStack(alignment: .leading) {
-                Text(tree.name(id).isEmpty ? tree.path(id) : tree.name(id)).font(.headline).lineLimit(1)
+                Text(tree.name(id).isEmpty ? tree.path(id) : tree.name(id)).font(.headline).lineLimit(1).truncationMode(.middle)
                 Text("\(formatBytes(info.size))  ·  \(info.category.label)").font(.caption).foregroundStyle(.secondary)
                 if let f = model.activeFilter, f.size(id) == 0 {
                     Text("Not in the current filter (still selected). Move to Trash is off until you clear the filter or reselect.").font(.caption.weight(.semibold)).foregroundStyle(.orange)
@@ -201,9 +201,11 @@ struct SelectionBar: View {
             Spacer()
             Button("Show in Finder") { model.reveal(id) }
                 .help("Reveal the selected item in Finder")
+                .accessibilityLabel("Show selected item in Finder")
             Button("Move to Trash…", role: .destructive) { model.proposeRemoval(of: id) }
                 .disabled(model.removalBlockedReason(id) != nil)
                 .help(model.removalBlockedReason(id) ?? "")
+                .accessibilityLabel("Move selected item to Trash")
         }.padding(10).background(.bar)
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Selected item: \(tree.name(id).isEmpty ? tree.path(id) : tree.name(id)), \(formatBytes(info.size))")
