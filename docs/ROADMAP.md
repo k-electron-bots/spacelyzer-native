@@ -18,7 +18,7 @@ read by a person). Nothing here has been verified on a personal Mac yet.
 Features are grouped in epics. Tasks inside an epic are thin commits in dependency order, one concern each. CI, tags and releases run per epic (push tag `epic-<n>-<name>`), not per task, to save free-tier quota. Each epic ends with CI assertions plus inspected screenshots before it is called done.
 
 ## Epics
-1. Outline and filters (E1): reveal ancestors (done, CI 19), extension/size/date filters (done, CI 20-22), item counts (shown in rows wide enough, not visible at the 1024x768 CI window; unverified visually), sort options (Rust sort modes tested; UI check 23 PASS in epic-1 run 37022036702). E1 first run: epic-1-outline-filters (independent review found: zero-byte matches hidden, empty-folder counts missing, screenshots covered by a modal). Epic-1b run 37025735089 (16e7f46): 26 of 28 assertions passed, the two NSMenu item-pick checks failed (menus fill on open); real typing in the ext field passed. Re-driven in epic-1c-outline-filters; screenshots and independent signoff pending.
+1. Outline and filters (E1): reveal ancestors (done, CI 19), extension/size/date filters (done, CI 20-22), item counts (shown in rows wide enough, not visible at the 1024x768 CI window; unverified visually), sort options (Rust sort modes tested; UI check 23 PASS in epic-1 run 37022036702). E1 first run: epic-1-outline-filters (independent review found: zero-byte matches hidden, empty-folder counts missing, screenshots covered by a modal). Epic-1b run 37025735089 (16e7f46): 26 of 28 assertions passed, the two NSMenu item-pick checks failed (menus fill on open); real typing in the ext field passed. Epic-1c run 37030720991 failed: only 26/28 checks reached; the menu driver did not complete. Diagnostic v0.1.89 is not signed off. Common-mode menu driver, effect assertions and count fixtures are being repaired; consolidated CI and independent signoff pending.
 2. Glass and accessibility (E2): selection bar and buttons, filter field, Reduce Transparency/Motion, minimum window size, VoiceOver labels and tree check.
 3. Volume and space accounting (E3): used/free/purgeable, snapshots, unaccounted space.
 4. Inspect and remove (E4): details, Quick Look, then batch removal with history (depends on details).
@@ -42,3 +42,5 @@ Status: v0.1.48 had a crash when a second folder was scanned after a large tree 
 
 ## Evaluated, not scheduled
 - E8 Incremental rescan (persisted tree + FSEvents): see docs/EVAL-incremental-scan.md. Not implemented. Spotlight is not used for totals.
+
+- Index-assisted early results and dua-cli progressive traversal: see [evaluation](EVAL-index-accelerant.md). Evaluation only, distinct from persisted-tree/FSEvents repeat-scan work.
