@@ -769,7 +769,7 @@ private actor PublicationBarrier {
         guard let tree = m.tree, let zero = (0..<UInt32(tree.nodeCount)).first(where: { tree.name($0) == "empty.pdf" }),
               let hidden = (0..<UInt32(tree.nodeCount)).first(where: { tree.name($0) == "other.txt" }) else {
             Check.expect("zero-match-selection-removal-policy", false, "fixture missing")
-            Check.expect("zero-match-treemap-not-no-matches", false, "fixture missing")
+            Check.expect("zero-match-root-count-and-layout-data-contract", false, "fixture missing")
             return
         }
         m.filterExt = "pdf"
@@ -778,7 +778,7 @@ private actor PublicationBarrier {
         m.trashItem = { url in calls += 1; return url }
         let visible = m.activeFilter?.count(zero) == 1 && m.activeFilter?.size(zero) == 0 && !m.isOutsideFilter(zero) && m.removalBlockedReason(zero) == nil
         let emptyLayout = tree.layout(root: 0, size: CGSize(width: 400, height: 400), filter: m.activeFilter)
-        Check.expect("zero-match-treemap-not-no-matches", m.activeFilter?.count(0) == 1 && emptyLayout.rects.isEmpty && m.activeFilter?.count(hidden) == 0, "rootMatches=\(m.activeFilter?.count(0) ?? 0) rects=\(emptyLayout.rects.count)")
+        Check.expect("zero-match-root-count-and-layout-data-contract", m.activeFilter?.count(0) == 1 && emptyLayout.rects.isEmpty && m.activeFilter?.count(hidden) == 0, "rootMatches=\(m.activeFilter?.count(0) ?? 0) rects=\(emptyLayout.rects.count)")
         m.proposeRemoval(of: hidden)
         let hiddenBlocked = m.pendingRemoval == nil && calls == 0
         m.removalMessage = nil
