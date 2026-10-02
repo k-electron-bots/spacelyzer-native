@@ -20,6 +20,7 @@ struct OutlineView: View {
                 }
                 .onAppear { model.refreshOutline() }
                 .onChange(of: model.selected) { _, n in
+                    if let n { model.revealInOutline(n) }
                     guard Perf.on else { return }
                     let idx = n.flatMap { model.outlineIndex[$0] }
                     Perf.log("selection changed: node=\(n.map(String.init) ?? "nil") rowIndex=\(idx.map(String.init) ?? "none") of \(model.outlineRows.count)")

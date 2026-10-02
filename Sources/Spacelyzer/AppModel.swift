@@ -104,6 +104,23 @@ final class AppModel {
         }
     }
 
+    /// Expand every collapsed ancestor between the displayed root and `id`, so a selection made elsewhere
+    /// (treemap, Largest) becomes a visible outline row. No-op when the row is already present or not under the root.
+    func revealInOutline(_ id: UInt32) {
+        guard let tree, outlineIndex[id] == nil, UInt64(id) < tree.nodeCount else { return }
+        var chain: [UInt32] = []
+        var cur = tree.info(id).parent
+        while let p = cur {
+            chain.append(p)
+            if p == displayedRoot { break }
+            cur = tree.info(p).parent
+        }
+        guard chain.last == displayedRoot else { return }   // not under the displayed folder
+        let before = expanded.count
+        for p in chain { expanded.insert(p) }
+        if expanded.count != before { refreshOutline() }
+    }
+
     func toggle(_ id: UInt32) {
         if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
         refreshOutline()

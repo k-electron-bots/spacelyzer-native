@@ -251,6 +251,18 @@ struct SpacelyzerApp: App {
                         model.scan("/usr/share")
                         while model.scanning { try? await Task.sleep(nanoseconds: 200_000_000) }
                         Check.expect("rescan-after-cancel-works", (model.tree?.nodeCount ?? 0) > 1000 && !(model.tree?.wasCancelled ?? true), "nodes=\(model.tree.map { String($0.nodeCount) } ?? "nil")")
+                        // Reveal: select a deep file (as a Largest-list click would) while everything is collapsed.
+                        model.filterText = ""; model.displayedRoot = 0; model.expanded = []; model.refreshOutline(); model.tab = .largest
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                        if let t = model.tree, let deep = model.largestIDs.first {
+                            let rowsBefore = model.outlineRows.count
+                            model.selected = deep
+                            try? await Task.sleep(nanoseconds: 2_000_000_000)
+                            let shown = model.outlineIndex[deep] != nil
+                            Check.expect("selecting-a-hidden-file-reveals-its-folders", shown && model.outlineRows.count > rowsBefore, "rows \(rowsBefore)->\(model.outlineRows.count) path=\(t.path(deep))")
+                        } else {
+                            Check.expect("selecting-a-hidden-file-reveals-its-folders", false, "no largest file")
+                        }
                         mark(16)
                     }
                 }
