@@ -304,6 +304,14 @@ struct ShareBar: View {
             $0.count.isHidden == !visible && $0.name.frame.maxX + 4 <= (visible ? $0.count.frame.minX : $0.size.frame.minX)
         }
     }
+    static var hasVisibleDeepRow: Bool {
+        guard let table else { return false }
+        let range = table.rows(in: table.visibleRect)
+        guard range.location != NSNotFound else { return false }
+        return (range.location..<min(table.numberOfRows, NSMaxRange(range))).contains {
+            (table.view(atColumn: 0, row: $0, makeIfNecessary: false) as? OutlineCell)?.depth ?? 0 >= 12
+        }
+    }
     static var hasVisibleDeepCount: Bool {
         guard let table else { return false }
         let range = table.rows(in: table.visibleRect)
