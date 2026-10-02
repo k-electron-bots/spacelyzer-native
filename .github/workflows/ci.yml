@@ -109,7 +109,7 @@ jobs:
         run: |
           cp /tmp/spz-assertions.txt dist/ui-assertions.txt 2>/dev/null || true
           cat /tmp/spz-assertions.txt || true
-          expected=22
+          expected=23
           if grep -q 'APP NOT RUNNING' /tmp/spz-timing.txt 2>/dev/null; then echo "::error title=ui-assertions::app was not running at the end of the demo (crash or exit)"; exit 1; fi
           n=$(grep -c '^PASS\|^FAIL' /tmp/spz-assertions.txt 2>/dev/null || echo 0)
           if grep -q '^FAIL' /tmp/spz-assertions.txt 2>/dev/null || [ "$n" -ne "$expected" ]; then

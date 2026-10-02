@@ -92,13 +92,10 @@ final class Tree: @unchecked Sendable {
         return id == noNode ? nil : id
     }
     /// Visible outline rows (node, depth), flattened in Rust from the expanded set. No cap.
-    func outlineRows(root: UInt32, expanded: Set<UInt32>, filter: FilterResult? = nil) -> [SpzRow] {
+    func outlineRows(root: UInt32, expanded: Set<UInt32>, filter: FilterResult? = nil, sort: OutlineSort = .sizeDescending) -> [SpzRow] {
         let ex = Array(expanded)
         func call(_ out: UnsafeMutablePointer<SpzRow>?, _ cap: Int, _ e: UnsafeBufferPointer<UInt32>) -> UInt32 {
-            if let f = filter {
-                return spz_outline_rows_filtered(ptr, root, e.baseAddress, UInt32(e.count), f.ptr, out, UInt32(cap))
-            }
-            return spz_outline_rows(ptr, root, e.baseAddress, UInt32(e.count), out, UInt32(cap))
+            spz_outline_rows_sorted(ptr, root, e.baseAddress, UInt32(e.count), filter?.ptr, sort.rawValue, out, UInt32(cap))
         }
         let t0 = Perf.now()
         let n = Int(ex.withUnsafeBufferPointer { call(nil, 0, $0) })
@@ -267,5 +264,20 @@ final class MainStall: @unchecked Sendable {
     func summary(_ label: String) -> String {
         lock.lock(); defer { lock.unlock() }
         return "stall \(label): max=\(String(format: "%.1f", maxMs))ms pings=\(n) over16=\(over16) over50=\(over50) over100=\(over100)"
+    }
+}
+
+/// Sibling order of the outline. Raw values match the Rust engine's sort modes.
+enum OutlineSort: UInt32, CaseIterable, Identifiable {
+    case sizeDescending = 0, sizeAscending = 1, name = 2, items = 3, modified = 4
+    var id: UInt32 { rawValue }
+    var label: String {
+        switch self {
+        case .sizeDescending: "Size, largest first"
+        case .sizeAscending: "Size, smallest first"
+        case .name: "Name"
+        case .items: "Most items"
+        case .modified: "Recently modified"
+        }
     }
 }

@@ -33,6 +33,7 @@ final class AppModel {
     var filterModifiedDays: Int = 0 { didSet { scheduleFilter() } }
     var filterExt = "" { didSet { scheduleFilter() } }
     var activeFilter: FilterResult?
+    var outlineSort: OutlineSort = .sizeDescending { didSet { if oldValue != outlineSort { refreshOutline() } } }
     var filterRevision = 0
     /// True from the moment a filter input changes until its result lands. Views may be showing the previous filter.
     var filterPending = false
@@ -100,11 +101,11 @@ final class AppModel {
     /// set live here, so they survive re-projection.
     func refreshOutline() {
         guard let tree else { outlineRows = []; outlineIndex = [:]; outlineRevision += 1; return }
-        let root = displayedRoot, ex = expanded, flt = activeFilter
+        let root = displayedRoot, ex = expanded, flt = activeFilter, sort = outlineSort
         outlineTask?.cancel()
         outlineTask = Task.detached(priority: .userInitiated) { [weak self] in
             let t0 = DispatchTime.now().uptimeNanoseconds
-            let rows = tree.outlineRows(root: root, expanded: ex, filter: flt)
+            let rows = tree.outlineRows(root: root, expanded: ex, filter: flt, sort: sort)
             let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
             var index = [UInt32: Int](minimumCapacity: rows.count)
             for (i, r) in rows.enumerated() { index[r.node] = i }

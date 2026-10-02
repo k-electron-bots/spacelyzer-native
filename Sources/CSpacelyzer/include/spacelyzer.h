@@ -51,6 +51,7 @@ uint64_t spz_filter_size(const SpzFilterResult *h, uint32_t id);
 uint32_t spz_filter_largest_files(const SpzTree *t, const SpzFilterResult *h, uint32_t cap, uint32_t *out);
 void spz_filter_category_totals(const SpzTree *t, const SpzFilterResult *h, uint64_t *out);
 uint32_t spz_filter_count(const SpzFilterResult *h, uint32_t id);
+uint32_t spz_outline_rows_sorted(const SpzTree *t, uint32_t root, const uint32_t *expanded, uint32_t n_expanded, const SpzFilterResult *h, uint32_t sort, SpzRow *out, uint32_t cap);
 uint32_t spz_outline_rows_filtered(const SpzTree *t, uint32_t root, const uint32_t *expanded, uint32_t n_expanded, const SpzFilterResult *h, SpzRow *out, uint32_t cap);
 SpzLayout *spz_layout_new_filtered(const SpzTree *t, uint32_t root, float width, float height, const SpzFilterResult *h);
 

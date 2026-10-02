@@ -165,6 +165,16 @@ struct FilterBar: View {
                 Image(systemName: model.filterIsActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
             }
             .menuStyle(.borderlessButton).fixedSize()
+            Menu {
+                Picker("Sort folders by", selection: $model.outlineSort) {
+                    ForEach(OutlineSort.allCases) { Text($0.label).tag($0) }
+                }
+            } label: {
+                Image(systemName: "arrow.up.arrow.down.circle")
+            }
+            .menuStyle(.borderlessButton).fixedSize()
+            .help("Sort order of the outline")
+            .accessibilityLabel("Sort order")
         }
         .padding(.horizontal, 8).padding(.vertical, 5)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))

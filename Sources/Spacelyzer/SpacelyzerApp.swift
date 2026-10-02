@@ -289,6 +289,19 @@ struct SpacelyzerApp: App {
                         let narrow = model.activeFilter?.totalCount ?? UInt64.max
                         model.clearFilters()
                         Check.expect("date-filter-narrow-window-never-exceeds-wide", wide > 0 && narrow <= wide, "10y=\(wide) 1d=\(narrow)")
+                        // Outline sort through the UI model: name order is alphabetical among top-level rows; size-ascending is monotonic.
+                        if let t = model.tree {
+                            model.outlineSort = .name
+                            try? await Task.sleep(nanoseconds: 1_000_000_000)
+                            let top = model.outlineRows.filter { $0.depth == 0 }.map { t.name($0.node).lowercased() }
+                            let byName = top.count > 1 && zip(top, top.dropFirst()).allSatisfy { $0 <= $1 }
+                            model.outlineSort = .sizeAscending
+                            try? await Task.sleep(nanoseconds: 1_000_000_000)
+                            let sz = model.outlineRows.filter { $0.depth == 0 }.map { t.info($0.node).size }
+                            let bySize = sz.count > 1 && zip(sz, sz.dropFirst()).allSatisfy { $0 <= $1 }
+                            model.outlineSort = .sizeDescending
+                            Check.expect("outline-sort-name-and-size-order", byName && bySize, "top=\(top.count) name=\(byName) size=\(bySize)")
+                        }
                         mark(16)
                     }
                 }
