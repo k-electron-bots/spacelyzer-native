@@ -309,7 +309,7 @@ struct ShareBar: View {
         let range = table.rows(in: table.visibleRect)
         guard range.location != NSNotFound else { return false }
         return (range.location..<min(table.numberOfRows, NSMaxRange(range))).contains {
-            (table.view(atColumn: 0, row: $0, makeIfNecessary: false) as? OutlineCell)?.depth ?? 0 >= 12
+            ((table.view(atColumn: 0, row: $0, makeIfNecessary: false) as? OutlineCell)?.depth ?? 0) >= 12
         }
     }
     static var hasVisibleDeepCount: Bool {
