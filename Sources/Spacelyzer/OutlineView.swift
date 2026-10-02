@@ -199,6 +199,10 @@ private struct OutlineTable: NSViewRepresentable {
             cell.bar.fraction = Double(shown) / Double(max(1, total))
             let node = r.node
             cell.onToggle = { [weak self] in self?.model.toggle(node) }
+            cell.chevron.setAccessibilityLabel("\(expanded ? "Collapse" : "Expand") \(nm)")
+            cell.chevron.setAccessibilityHelp("Show or hide this folder's children")
+            cell.bar.setAccessibilityElement(false)
+            cell.icon.setAccessibilityElement(false)
             cell.setAccessibilityLabel("\(nm), \(isDir ? "folder" : "item"), \(formatBytes(shown))\(isDir ? ", \(info.childCount) items" : "")")
             cell.setAccessibilityValue(cell.hasChildren ? (expanded ? "expanded" : "collapsed") : nil)
             cell.needsLayout = true
