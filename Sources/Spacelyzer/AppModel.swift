@@ -39,7 +39,18 @@ final class AppModel {
     var displayedRoot: UInt32 = 0
     var selected: UInt32?
     var expanded: Set<UInt32> = []
-    var filterText = "" { didSet { scheduleFilter() } }
+    private var editorOrigin = false
+    var externalFilterTextRevision: UInt64 = 0
+    var filterResetRevision: UInt64 = 0
+    var filterText = "" { didSet {
+        if !editorOrigin && oldValue != filterText { externalFilterTextRevision &+= 1 }
+        scheduleFilter()
+    } }
+    func setFilterTextFromEditor(_ text: String) {
+        editorOrigin = true
+        filterText = text
+        editorOrigin = false
+    }
     var filterKind: FileCategory? { didSet { scheduleFilter() } }
     var filterMinMB: Int = 0 { didSet { scheduleFilter() } }
     var filterMaxMB: Int = 0 { didSet { scheduleFilter() } }
@@ -63,7 +74,7 @@ final class AppModel {
 
     var filterIsActive: Bool { !filterText.isEmpty || filterKind != nil || filterMinMB > 0 || filterMaxMB > 0 || filterModifiedDays > 0 || !filterExt.trimmingCharacters(in: .whitespaces).isEmpty }
 
-    func clearFilters() { filterText = ""; filterKind = nil; filterMinMB = 0; filterMaxMB = 0; filterModifiedDays = 0; filterExt = "" }
+    func clearFilters() { filterResetRevision &+= 1; filterText = ""; filterKind = nil; filterMinMB = 0; filterMaxMB = 0; filterModifiedDays = 0; filterExt = "" }
 
     /// Filtering runs in Rust off the main thread, debounced; the UI keeps the last result until the new one lands.
     func scheduleFilter() {
