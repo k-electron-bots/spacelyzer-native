@@ -60,14 +60,27 @@ struct SpacelyzerApp: App {
                         // Steps 8-9: in-process NSEvents through the window's responder chain (no OS input permission needed).
                         try? await Task.sleep(nanoseconds: 3_000_000_000)
                         MainStall.shared.reset()
+                        let clickBefore = model.selected, clickT0 = Perf.now()
                         DemoInput.click(fromTop: 124, x: 168)                       // a visible outline row
+                        while model.selected == clickBefore && Perf.ms(since: clickT0) < 5000 { try? await Task.sleep(nanoseconds: 1_000_000) }
+                        Perf.log("click-latency (post -> selection changed): \(String(format: "%.1f", Perf.ms(since: clickT0))) ms")
                         try? await Task.sleep(nanoseconds: 1_000_000_000)
                         Perf.log(MainStall.shared.summary("click-only"))
                         MainStall.shared.reset()
                         Perf.log("kbd: after click selected=\(model.selected.map(String.init) ?? "nil")")
                         let idx0 = model.selected.flatMap { n in model.outlineRows.firstIndex { $0.node == n } }
                         Check.expect("click-selects-a-row", idx0 != nil)
-                        for _ in 0..<40 { DemoInput.key(125); try? await Task.sleep(nanoseconds: 30_000_000) }
+                        // Per-key latency: post the key, wait (1 ms polls) until the selection actually changes.
+                        var lat: [Double] = []
+                        for _ in 0..<40 {
+                            let before = model.selected, t0 = Perf.now()
+                            DemoInput.key(125)
+                            while model.selected == before && Perf.ms(since: t0) < 3000 { try? await Task.sleep(nanoseconds: 1_000_000) }
+                            lat.append(Perf.ms(since: t0))
+                            try? await Task.sleep(nanoseconds: 30_000_000)
+                        }
+                        let sorted = lat.sorted()
+                        Perf.log("key-latency 40 down arrows (post -> selection changed, ms): p50=\(String(format: "%.1f", sorted[20])) p95=\(String(format: "%.1f", sorted[37])) max=\(String(format: "%.1f", sorted[39])) first=\(String(format: "%.1f", lat[0]))")
                         try? await Task.sleep(nanoseconds: 2_000_000_000)
                         Perf.log("kbd: after 40 down arrows selected=\(model.selected.map(String.init) ?? "nil")")
                         let idx1 = model.selected.flatMap { n in model.outlineRows.firstIndex { $0.node == n } }
