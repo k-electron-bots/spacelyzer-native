@@ -85,6 +85,15 @@ struct TreemapView: View {
     @State private var layout: TreemapLayout?
     @State private var hovered: TreemapRect?
     @State private var task: Task<Void, Never>?
+    @State private var generation: UInt64 = 0
+    @State private var layoutRoot: UInt32?
+    @State private var layoutFilter: FilterResult?
+    @State private var layoutSize: CGSize = .zero
+    private var currentLayout: TreemapLayout? {
+        guard let tree = model.tree, let layout, layout.treeID == ObjectIdentifier(tree),
+              layoutRoot == model.displayedRoot, layoutFilter === model.activeFilter, layoutSize == size else { return nil }
+        return layout
+    }
 
     var body: some View {
         Color.clear
@@ -117,18 +126,18 @@ struct TreemapView: View {
             .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0; relayout() }
             .onContinuousHover { phase in
                 switch phase {
-                case .active(let p): hovered = layout?.hit(p)
+                case .active(let p): hovered = currentLayout?.hit(p)
                 case .ended: hovered = nil
                 }
             }
             .gesture(
                 SpatialTapGesture(count: 2).onEnded { v in
-                    if let r = layout?.hit(v.location) { model.drill(into: r.isRemainder ? r.node : r.node) }
+                    if let r = currentLayout?.hit(v.location) { model.drill(into: r.isRemainder ? r.node : r.node) }
                 }
             )
             .simultaneousGesture(
                 SpatialTapGesture(count: 1).onEnded { v in
-                    if let r = layout?.hit(v.location) { model.selected = r.node }
+                    if let r = currentLayout?.hit(v.location) { model.selected = r.node }
                 }
             )
             .overlay(alignment: .bottom) { readout }
@@ -136,10 +145,11 @@ struct TreemapView: View {
             .onChange(of: model.revision) { hovered = nil; relayout() }
             .onChange(of: model.filterRevision) { relayout() }
             .onAppear { relayout() }
+            .onDisappear { task?.cancel(); generation &+= 1; hovered = nil }
     }
 
     @ViewBuilder private var readout: some View {
-        if let h = hovered, let tree = model.tree {
+        if let h = hovered, currentLayout != nil, let tree = model.tree {
             let name = h.isRemainder ? "Smaller items in \(tree.name(h.node))" : tree.name(h.node)
             Text("\(name)  ·  \(formatBytes(h.size))")
                 .font(.caption).padding(.horizontal, 8).padding(.vertical, 4)
@@ -149,14 +159,23 @@ struct TreemapView: View {
 
     /// Layout runs in Rust off the main thread; the previous picture stays up until the new one lands.
     private func relayout() {
-        guard let tree = model.tree, size.width > 1, size.height > 1 else { return }
+        task?.cancel()
+        generation &+= 1
+        let request = generation
+        hovered = nil
+        guard let tree = model.tree, size.width > 1, size.height > 1 else { layout = nil; return }
         let root = model.displayedRoot
         let s = size, flt = model.activeFilter
-        task?.cancel()
         task = Task.detached(priority: .userInitiated) {
             let l = tree.layout(root: root, size: s, filter: flt)
             if Task.isCancelled { return }
-            await MainActor.run { layout = l }
+            await MainActor.run {
+                guard !Task.isCancelled, generation == request, model.tree === tree,
+                      model.displayedRoot == root, model.activeFilter === flt, size == s else { return }
+                layout = l
+                layoutRoot = root; layoutFilter = flt; layoutSize = s
+                hovered = nil
+            }
         }
     }
 }
@@ -194,7 +213,7 @@ struct SelectionBar: View {
             VStack(alignment: .leading) {
                 Text(tree.name(id).isEmpty ? tree.path(id) : tree.name(id)).font(.headline).lineLimit(1).truncationMode(.middle)
                 Text("\(formatBytes(info.size))  ·  \(info.category.label)").font(.caption).foregroundStyle(.secondary)
-                if let f = model.activeFilter, f.size(id) == 0 {
+                if model.isOutsideFilter(id) {
                     Text("Not in the current filter (still selected). Move to Trash is off until you clear the filter or reselect.").font(.caption.weight(.semibold)).foregroundStyle(.orange)
                 }
             }
