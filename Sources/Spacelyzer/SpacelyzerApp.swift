@@ -52,13 +52,18 @@ struct SpacelyzerApp: App {
                         try? await Task.sleep(nanoseconds: 3_000_000_000); mark(6)
                         // Step 7: selection set from outside the outline (as a treemap click would) must scroll into view.
                         try? await Task.sleep(nanoseconds: 4_000_000_000)
+                        MainStall.shared.reset()
                         if model.outlineRows.count > 5000 { model.selected = model.outlineRows[5000].node }
-                        try? await Task.sleep(nanoseconds: 3_000_000_000); mark(7)
+                        try? await Task.sleep(nanoseconds: 3_000_000_000)
+                        Perf.log(MainStall.shared.summary("far-jump-to-row-5000"))
+                        mark(7)
                         // Steps 8-9: in-process NSEvents through the window's responder chain (no OS input permission needed).
                         try? await Task.sleep(nanoseconds: 3_000_000_000)
                         MainStall.shared.reset()
                         DemoInput.click(fromTop: 124, x: 168)                       // a visible outline row
                         try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        Perf.log(MainStall.shared.summary("click-only"))
+                        MainStall.shared.reset()
                         Perf.log("kbd: after click selected=\(model.selected.map(String.init) ?? "nil")")
                         let idx0 = model.selected.flatMap { n in model.outlineRows.firstIndex { $0.node == n } }
                         Check.expect("click-selects-a-row", idx0 != nil)
@@ -67,7 +72,7 @@ struct SpacelyzerApp: App {
                         Perf.log("kbd: after 40 down arrows selected=\(model.selected.map(String.init) ?? "nil")")
                         let idx1 = model.selected.flatMap { n in model.outlineRows.firstIndex { $0.node == n } }
                         Check.expect("40-down-arrows-move-40-rows", idx0 != nil && idx1 == idx0.map { $0 + 40 }, "from=\(idx0 ?? -1) to=\(idx1 ?? -1)")
-                        Perf.log(MainStall.shared.summary("click+40-arrows"))
+                        Perf.log(MainStall.shared.summary("40-arrows-only"))
                         mark(8)
                         try? await Task.sleep(nanoseconds: 4_000_000_000)
                         let before = model.selected
