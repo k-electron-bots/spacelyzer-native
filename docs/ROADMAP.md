@@ -55,3 +55,12 @@ Status: v0.1.48 had a crash when a second folder was scanned after a large tree 
 
 ## E2 underway, not verified
 - First product slice: filter control surface uses macOS26 system glass with macOS14 material fallback and live Reduce Transparency opaque fallback; Reduce Motion disables implicit content animations. Parent/Stop/selection actions and folder chevrons have explicit accessible labels; decorative outline icons/bars are excluded. Awaiting macOS compile, pixels in accessibility modes and VoiceOver/keyboard evidence. E1 submenu/depth evidence remains open and will share E2 consolidated verification, not another immediate harness-only run.
+
+
+## E2 and E1 consolidated edge checkpoint
+
+Unicode-lowercase name and extension matching now agrees with name sorting (no Unicode normalization or full case folding promised). Filtered Largest and Kinds keep zero-byte matches by item count; zero-area treemap regions remain absent by design. Engine coverage adds empty/missing/file roots, unusual names, sparse and zero-byte hardlinks, inverted/extreme filters, depth and exact parent/name identity, inclusive dates, mixed-case extensions, invalid FFI buffers/IDs and independent reproducers.32 engine tests pass locally on Linux; native macOS execution is pending.
+
+Async filter, outline and derived publication checks cancellation, generation and tree identity inside the main actor. Scan progress/completion checks scan generation and session identity. CI adds token-specific barriers that hold old computed work across newer-filter completion, tree clearing and a different arena with reused node IDs, then verify completion did not replace current state. This is uncompiled and unexecuted until the macOS checkpoint, not race signoff.
+
+The consolidated checkpoint expects44 assertions and30 captured states, including actual submenu attachment, exact large-folder exclusion and depth12 projection, light/dark minimum960x600, injected live Reduce Transparency/Motion toggles, keyboard selection and restoration. Pixels still decide: prior E1 submenu/deep images failed. Injected environments are not OS preference or VoiceOver proof. No E1/E2 completion or release-readiness claim before independent review. Permission-denied/mount/volume races, leak accounting, real VoiceOver, accent normalization and real hardware performance remain open; no exhaustive-edge claim.
