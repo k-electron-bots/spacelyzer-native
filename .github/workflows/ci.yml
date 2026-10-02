@@ -87,6 +87,7 @@ jobs:
           for step in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
             for i in $(seq 1 240); do [ "$(cat /tmp/spz-demo-step 2>/dev/null)" = "$step" ] && break; sleep 1; done
             sleep 1
+            if [ "$step" = 7 ]; then (sample Spacelyzer 12 5 -file /tmp/spz-sample.txt >/dev/null 2>&1 &) ; fi
             screencapture -x dist/screenshot-demo-$step.png || true
           done
           pgrep -x Spacelyzer >/dev/null && echo 'app still running at end' >> /tmp/spz-timing.txt || echo 'APP NOT RUNNING at end (crashed or exited)' >> /tmp/spz-timing.txt
@@ -96,6 +97,7 @@ jobs:
           fi
           pkill Spacelyzer || true
           sleep 3
+          if [ -f /tmp/spz-sample.txt ]; then cp /tmp/spz-sample.txt dist/main-thread-sample.txt; body=$(python3 scripts/sample-summary.py /tmp/spz-sample.txt | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}' | head -c 12000); echo "::notice title=sample::$body"; fi
           for f in $(ls -t ~/Library/Logs/DiagnosticReports/Spacelyzer*.ips 2>/dev/null | head -1); do
             cp "$f" dist/crash-report.ips
             c=$(python3 scripts/crash-summary.py "$f")
@@ -121,11 +123,12 @@ jobs:
             dist/*.sha256
             dist/screenshot*.png
             dist/ui-assertions.txt
+            dist/main-thread-sample.txt
       - name: Publish release (main only)
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           V=v${{ steps.ver.outputs.version }}
-          gh release create "$V" dist/*.dmg dist/*.sha256 dist/screenshot*.png dist/ui-assertions.txt --title "Spacelyzer $V" --prerelease \
+          gh release create "$V" dist/*.dmg dist/*.sha256 dist/screenshot*.png dist/ui-assertions.txt dist/main-thread-sample.txt --title "Spacelyzer $V" --prerelease \
             --notes "Self-signed development build (not notarized). Not Apple-verified: after the first blocked open, use System Settings > Privacy & Security > Open Anyway. Screenshots attached are from the CI runner, not a real Mac. Built from ${{ github.sha }}."
