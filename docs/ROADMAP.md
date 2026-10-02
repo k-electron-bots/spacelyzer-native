@@ -44,3 +44,5 @@ Status: v0.1.48 had a crash when a second folder was scanned after a large tree 
 - E8 Incremental rescan (persisted tree + FSEvents): see docs/EVAL-incremental-scan.md. Not implemented. Spotlight is not used for totals.
 
 - Index-assisted early results and dua-cli progressive traversal: see [evaluation](EVAL-index-accelerant.md). Evaluation only, distinct from persisted-tree/FSEvents repeat-scan work.
+
+- Run37040037876 failed capture1: app-launched screencapture did not create images. Replaced with CI-only state/capture acknowledgement: runner captures using its existing permission, then acknowledges before app state advances. No permission bypass. New consolidated check pending.
