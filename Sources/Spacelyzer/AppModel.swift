@@ -42,6 +42,9 @@ final class AppModel {
     private var editorOrigin = false
     var externalFilterTextRevision: UInt64 = 0
     var filterResetRevision: UInt64 = 0
+    @ObservationIgnored var nameEditorUpdateCount: UInt64 = 0
+    @ObservationIgnored var nameEditorConsumedReset: UInt64 = 0
+    var nameEditorRefreshRevision: UInt64 = 0
     var filterText = "" { didSet {
         if !editorOrigin && oldValue != filterText { externalFilterTextRevision &+= 1 }
         scheduleFilter()
