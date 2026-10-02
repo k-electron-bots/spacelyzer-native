@@ -308,6 +308,15 @@ struct ShareBar: View {
             $0.count.isHidden == !visible && $0.name.frame.maxX + 4 <= (visible ? $0.count.frame.minX : $0.size.frame.minX)
         }
     }
+    static var accessibleFolderLabels: Bool {
+        guard let table else { return false }
+        let cells = (0..<min(table.numberOfRows, 20)).compactMap { table.view(atColumn: 0, row: $0, makeIfNecessary: true) as? OutlineCell }
+        let folders = cells.filter { !$0.count.stringValue.isEmpty }
+        return !folders.isEmpty && folders.allSatisfy {
+            ($0.accessibilityLabel() ?? "").contains("folder") && (!$0.hasChildren || !($0.chevron.accessibilityLabel() ?? "").isEmpty)
+                && !$0.bar.isAccessibilityElement() && !$0.icon.isAccessibilityElement()
+        }
+    }
     static var hasVisibleDeepRow: Bool {
         guard let table else { return false }
         let range = table.rows(in: table.visibleRect)
