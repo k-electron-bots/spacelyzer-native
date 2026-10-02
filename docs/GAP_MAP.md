@@ -21,17 +21,17 @@ Implication: the original's scan is not obviously the bottleneck. The measured m
 | Volume accounting, purgeable, snapshots, unaccounted space (014-017) | Missing |
 | Full Disk Access guidance and detect-grant (002,018,019) | Text tip only |
 | Size units decimal/binary (020,021) | Decimal only, no toggle |
-| Outline: name, size, share, item count, sort, keyboard (022-025) | Partial: name, size, share bar; no item count, sort order fixed (size desc), capped to 2000 children |
+| Outline: name, size, share, item count, sort, keyboard (022-025) | Partial: name, size, share bar, windowed rows with no cap, arrow/Right/Left/Return keys (CI-checked on a runner). No item count, sort order fixed (size desc) |
 | Side by side layout (026) | Done |
 | Treemap, nesting, colours (3 modes), hover readout, drill, remainder (027-032) | Done in code; completed-scan pixels not yet verified (pending CI screenshot) |
-| Cross-view selection sync, reveal ancestors in outline (033-036) | Partial: selection shared; outline does not auto-expand to treemap selection; no drill-reconcile logic |
-| Filters: text, category, extension, size, date, combine, counts (037-043) | Missing |
+| Cross-view selection sync, reveal ancestors in outline (033-036) | Partial: selection shared and the outline scrolls to it when the row is present; does not yet expand collapsed ancestors; no drill-reconcile logic |
+| Filters: text, category, extension, size, date, combine, counts (037-043) | Partial: name, kind, minimum size, combined, one filter for all views (outline, treemap, Kinds, Largest), match count and total. Engine also supports extension, max size and date, but the UI does not expose them yet |
 | Category breakdown (044) | Done (Kinds tab); ranking only |
 | Quick Look preview, open in default app, item details (045,047,048,050) | Missing (Reveal in Finder only) |
-| Removal to Trash with confirm, protected paths, undo last (051-053,055,059) | Partial: single item, confirm, protected list, undo of last. Missing: batch, permanent delete option, history (061), per-item failure handling (056), guard parity with original RemovalGuard (not compared) |
+| Removal to Trash with confirm, protected paths, undo last (051-053,055,059) | Partial: single item, confirm with full path, protected list, undo of last; refused while the selection is hidden by the filter or a filter result is pending (CI checks with Trash mocked, plus a real Trash round trip on a disposable fixture). Missing: batch, permanent delete option, history (061), per-item failure handling (056), guard parity with original RemovalGuard (not compared) |
 | Duplicates (062-066) | Missing (also unbuilt in the original: open PR #5 / tasks T112-T120) |
 | No network (067,068) | No networking code written; not machine-verified |
-| 150 ms activity indication, non-blocking UI (069-071) | Scan is async; not measured |
+| 150 ms activity indication, non-blocking UI (069-071) | Scan, filter, layout, outline and Largest/Kinds run off the main thread; a CI main-thread stall monitor logs hitches (runner numbers only). No 150 ms indicator for filter/layout yet |
 | Accessibility/VoiceOver (T122), icon (PR #3), Developer ID signing (T129) | Missing / self-signed only |
 
 ## Known original bugs/gaps found in its own records
@@ -43,10 +43,10 @@ Implication: the original's scan is not obviously the bottleneck. The measured m
 ## Rebuild risks (hypotheses, not measured)
 - getattrlistbulk record parsing is only validated by CI equality with the portable backend on a runner, not on varied volumes (APFS firmlinks, network mounts, iCloud placeholders).
 - Treemap layout is my own squarified implementation, not a port; visual parity with the original is not verified.
-- Layout cap (30,000 rects) and 2,000-row outline cap are choices, not measured limits.
+- The treemap layout cap (30,000 rects, remainder shown explicitly) is a choice, not a measured limit. The outline has no cap.
 
 ## Suggested order
-1. Filters in Rust (text, kind, extension, size, date; count + total) to attack the measured miss; benchmark at 1M items.
+1. (Done: filters in Rust for name, kind, size; date and extension UI still open.)
 2. Exclusions + persistence + stale state; skipped list; volume accounting.
 3. Outline parity (counts, sort, reveal ancestors), details/Quick Look, batch removal and history, permanent delete.
 4. Duplicates; accessibility; icon.
