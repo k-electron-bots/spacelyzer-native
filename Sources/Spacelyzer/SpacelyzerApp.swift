@@ -173,7 +173,7 @@ struct SpacelyzerApp: App {
                         model.scan(fx)
                         var waited = 0
                         while model.scanning && waited < 100 { try? await Task.sleep(nanoseconds: 200_000_000); waited += 1 }
-                        Perf.log("fixture: scan done scanning=\(model.scanning) waited=\(waited) nodes=\(model.tree?.nodeCount ?? -1) err=\(model.error ?? "nil")")
+                        Perf.log("fixture: scan done scanning=\(model.scanning) waited=\(waited) nodes=\(model.tree.map { String($0.nodeCount) } ?? "nil") err=\(model.error ?? "nil")")
                         try? await Task.sleep(nanoseconds: 1_000_000_000)
                         if let t = model.tree, let id = (0..<UInt32(t.nodeCount)).first(where: { t.path($0).hasSuffix("/" + (victimPath as NSString).lastPathComponent) }) {
                             model.selected = id
