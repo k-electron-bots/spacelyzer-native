@@ -3,7 +3,9 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(\.demoReduceMotion) private var demoReduceMotion
+    private var reduceMotion: Bool { demoReduceMotion ?? systemReduceMotion }
 
     var body: some View {
         @Bindable var model = model
@@ -194,7 +196,9 @@ struct FilterBar: View {
 /// One functional control surface. System controls keep their native appearance;
 /// opaque fallback follows the live accessibility preference, not a startup snapshot.
 private struct AdaptiveControlSurface: ViewModifier {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.accessibilityReduceTransparency) private var systemReduceTransparency
+    @Environment(\.demoReduceTransparency) private var demoReduceTransparency
+    private var reduceTransparency: Bool { demoReduceTransparency ?? systemReduceTransparency }
     func body(content: Content) -> some View {
         if reduceTransparency {
             content.background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
@@ -203,5 +207,19 @@ private struct AdaptiveControlSurface: ViewModifier {
         } else {
             content.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
         }
+    }
+}
+
+// Optional overrides exist solely for SPZ_DEMO. nil always inherits live OS preferences.
+private struct DemoReduceTransparencyKey: EnvironmentKey { static let defaultValue: Bool? = nil }
+private struct DemoReduceMotionKey: EnvironmentKey { static let defaultValue: Bool? = nil }
+extension EnvironmentValues {
+    var demoReduceTransparency: Bool? {
+        get { self[DemoReduceTransparencyKey.self] }
+        set { self[DemoReduceTransparencyKey.self] = newValue }
+    }
+    var demoReduceMotion: Bool? {
+        get { self[DemoReduceMotionKey.self] }
+        set { self[DemoReduceMotionKey.self] = newValue }
     }
 }
