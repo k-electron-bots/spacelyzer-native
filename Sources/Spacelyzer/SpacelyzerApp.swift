@@ -18,7 +18,14 @@ struct SpacelyzerApp: App {
                         while model.scanning || model.tree == nil { try? await Task.sleep(nanoseconds: 500_000_000) }
                         try? await Task.sleep(nanoseconds: 3_000_000_000)
                         MainStall.shared.start()
-                        func mark(_ n: Int) { try? "\(n)".write(toFile: "/tmp/spz-demo-step", atomically: true, encoding: .utf8) }
+                        func mark(_ n: Int) {
+                            // Capture when this state exists; a fast later step must not overwrite its evidence.
+                            let shot = Process(); shot.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+                            shot.arguments = ["-x", "/tmp/spz-demo-\(n).png"]
+                            do { try shot.run(); shot.waitUntilExit(); Perf.log("snapshot step=\(n) status=\(shot.terminationStatus)") }
+                            catch { Perf.log("snapshot step=\(n) failed: \(error)") }
+                            try? "\(n)".write(toFile: "/tmp/spz-demo-step", atomically: true, encoding: .utf8)
+                        }
                         if let first = model.outlineRows.first?.node { model.toggle(first) }   // expand top folder
                         try? await Task.sleep(nanoseconds: 3_000_000_000); mark(1)               // CI shoots step 1
                         try? await Task.sleep(nanoseconds: 4_000_000_000)
@@ -361,6 +368,7 @@ struct SpacelyzerApp: App {
                             drive(pops[0], title: "Last 7 days", key: "date", step: 18)
                             try? await Task.sleep(nanoseconds: 1_500_000_000)
                             dateEffect = model.filterModifiedDays == 7 && model.filterExt == "pdf" && !model.filterPending
+                            Perf.log("date action effect: days=\(model.filterModifiedDays) ext=\(model.filterExt) pending=\(model.filterPending)")
                             drive(pops[1], title: "Name", key: "sort", step: 19)
                             try? await Task.sleep(nanoseconds: 1_500_000_000)
                             sortEffect = model.outlineSort == .name
@@ -406,17 +414,20 @@ struct SpacelyzerApp: App {
                             // Keep a top empty folder, large count and deep folders in the same visual frame.
                             model.outlineSort = .name
                             try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            var dividerPosition: CGFloat = 410
                             if let split {
-                                split.setPosition(410, ofDividerAt: 0)
+                                split.setPosition(dividerPosition, ofDividerAt: 0)
                                 try? await Task.sleep(nanoseconds: 500_000_000)
-                                split.setPosition(410 + 399 - OutlineDemoEvidence.width, ofDividerAt: 0)
+                                dividerPosition += 399 - OutlineDemoEvidence.width
+                                split.setPosition(dividerPosition, ofDividerAt: 0)
                                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                             }
                             Check.expect("counts-hidden-below-400", OutlineDemoEvidence.width > 397 && OutlineDemoEvidence.width < 400 && OutlineDemoEvidence.countsVisible(false), "cellWidth=\(OutlineDemoEvidence.width)")
                             mark(21)
                             try? await Task.sleep(nanoseconds: 4_000_000_000)
                             if let split {
-                                split.setPosition(split.subviews[0].frame.width + 401 - OutlineDemoEvidence.width, ofDividerAt: 0)
+                                dividerPosition += 401 - OutlineDemoEvidence.width
+                                split.setPosition(dividerPosition, ofDividerAt: 0)
                                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                             }
                             let largeText = "\(10001.formatted()) items"
