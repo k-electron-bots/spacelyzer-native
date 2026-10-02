@@ -101,23 +101,33 @@ struct StatusBar: View {
         HStack {
             if model.scanning {
                 ProgressView().controlSize(.small)
-                Text("Scanning \(model.rootPath)  ·  \(model.progress.items.formatted()) items  ·  \(formatBytes(model.progress.bytes))  ·  \(String(format: "%.1f", model.elapsed))s")
+                statusPath
+                Text("Scanning · \(itemCount(Int(model.progress.items))) · \(formatBytes(model.progress.bytes)) · \(String(format: "%.1f", model.elapsed))s").layoutPriority(1)
             } else if let t = model.tree {
                 let incomplete = t.wasCancelled ? " (stopped early, partial)" : ""
-                Text("\(model.rootPath)  ·  \(formatBytes(t.info(0).size)) in \(spz_items(t)) items\(incomplete)")
+                statusPath
+                Text("\(formatBytes(t.info(0).size)) in \(itemCount(Int(t.nodeCount - 1)))\(incomplete)").layoutPriority(1)
                 if let s = model.lastScanSeconds { Text("· scanned in \(String(format: "%.2f", s))s").foregroundStyle(.secondary) }
                 if let f = model.activeFilter {
-                    Text("· filter: \(formatBytes(f.totalBytes)) in \(f.totalCount.formatted()) files (\(String(format: "%.1f", model.filterMillis)) ms in Rust)").foregroundStyle(.blue)
+                    Text("· filter: \(formatBytes(f.totalBytes)) in \(f.totalCount.formatted()) \(f.totalCount == 1 ? "file" : "files") (\(String(format: "%.1f", model.filterMillis)) ms in Rust)").foregroundStyle(.blue).layoutPriority(1)
                 }
                 let skipped = t.skipped.count
                 if skipped > 0 { Text("· \(skipped) locations not readable").foregroundStyle(.orange) }
             }
-            Spacer()
         }
-        .font(.caption).padding(.horizontal, 10).padding(.vertical, 5)
+        .font(.caption).lineLimit(1).padding(.horizontal, 10)
+        .frame(height: Self.height)
         .background(.bar)
     }
-    private func spz_items(_ t: Tree) -> String { (t.nodeCount - 1).formatted() }
+    private var statusPath: some View {
+        Text(model.rootPath).truncationMode(.middle)
+            .frame(minWidth: 60, maxWidth: .infinity, alignment: .leading)
+            .help(model.rootPath)
+            .accessibilityLabel("Scanned folder: \(model.rootPath)")
+    }
+    private func itemCount(_ count: Int) -> String {
+        "\(count.formatted()) \(count == 1 ? "item" : "items")"
+    }
 }
 
 
