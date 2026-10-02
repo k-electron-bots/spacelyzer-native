@@ -3,11 +3,14 @@ import SwiftUI
 @main
 struct SpacelyzerApp: App {
     @State private var model = AppModel()
+    @State private var demoReduceTransparency = false
+    @State private var demoReduceMotion = false
 
     var body: some Scene {
         WindowGroup("Spacelyzer") {
             ContentView()
                 .environment(model)
+                .modifier(DemoAccessibilityModes(reduceTransparency: demoReduceTransparency, reduceMotion: demoReduceMotion))
                 .frame(minWidth: 960, minHeight: 600)
                 .task {
                     // CI uses this to launch with a scan already running and take a screenshot.
@@ -355,18 +358,6 @@ struct SpacelyzerApp: App {
                                     }
                                     return nil
                                 }
-                                if key == "date", let item = menu.items.first(where: { $0.title == "Modified" }), let sub = item.submenu {
-                                    schedule(0.4) { mark(23) }; schedule(2) { sub.cancelTracking() }
-                                    sub.popUp(positioning: sub.items.first, at: NSPoint(x: 15, y: 15), in: button)
-                                }
-                                if key == "date", let item = menu.items.first(where: { $0.title == "Maximum size" }), let sub = item.submenu {
-                                    schedule(0.4) { mark(24) }; schedule(2) { sub.cancelTracking() }
-                                    sub.popUp(positioning: sub.items.first, at: NSPoint(x: 15, y: 15), in: button)
-                                }
-                                if key == "sort", let item = menu.items.first(where: { $0.title == "Sort folders by" }), let sub = item.submenu {
-                                    schedule(0.4) { mark(25) }; schedule(2) { sub.cancelTracking() }
-                                    sub.popUp(positioning: sub.items.first, at: NSPoint(x: 15, y: 15), in: button)
-                                }
                                 if let (m, i) = find(menu) {
                                     picks.done[key] = true
                                     m.performActionForItem(at: i)
@@ -377,15 +368,34 @@ struct SpacelyzerApp: App {
                             if let step { schedule(0.4) { mark(step) } }
                             button.performClick(nil)
                         }
+                        @MainActor func captureChoices(_ button: NSPopUpButton, parentTitle: String, step: Int) {
+                            schedule(1) {
+                                guard let menu = button.menu, let i = menu.items.firstIndex(where: { $0.title == parentTitle }), let sub = menu.items[i].submenu else {
+                                    Check.expect("submenu-visible-\(step)", false, "missing parent menu"); mark(step); button.menu?.cancelTracking(); return
+                                }
+                                // Invoke the native item's action through its menu. Never call submenuAction directly.
+                                menu.performActionForItem(at: i)
+                                schedule(0.5) {
+                                    Check.expect("submenu-visible-\(step)", sub.isAttached, "parent=\(parentTitle) attached=\(sub.isAttached) items=\(sub.items.count)")
+                                    mark(step)
+                                    menu.cancelTracking()
+                                }
+                            }
+                            schedule(45) { button.menu?.cancelTracking() }
+                            button.performClick(nil)
+                        }
                         var dateEffect = false, sortEffect = false, resetEffect = false
                         if pops.count >= 2 {
                             drive(pops[0], title: "Last 7 days", key: "date", step: 18)
                             try? await Task.sleep(nanoseconds: 1_500_000_000)
                             dateEffect = model.filterModifiedDays == 7 && model.filterExt == "pdf" && !model.filterPending
                             Perf.log("date action effect: days=\(model.filterModifiedDays) ext=\(model.filterExt) pending=\(model.filterPending)")
+                            captureChoices(pops[0], parentTitle: "Modified", step: 23)
+                            captureChoices(pops[0], parentTitle: "Maximum size", step: 24)
                             drive(pops[1], title: "Name", key: "sort", step: 19)
                             try? await Task.sleep(nanoseconds: 1_500_000_000)
                             sortEffect = model.outlineSort == .name
+                            captureChoices(pops[1], parentTitle: "Sort folders by", step: 25)
                             // Seed every independent filter, then reset through the actual menu action.
                             model.filterText = "doc"; model.filterExt = "pdf"; model.filterKind = .document
                             model.filterMinMB = 1; model.filterMaxMB = 100; model.filterModifiedDays = 7
@@ -421,7 +431,10 @@ struct SpacelyzerApp: App {
                             model.scan(countRoot.path)
                             while model.scanning { try? await Task.sleep(nanoseconds: 100_000_000) }
                             if let t = model.tree {
-                                model.expanded = Set((0..<UInt32(t.nodeCount)).filter { t.info($0).childCount > 0 && !(t.name($0) == "b-large" && t.info($0).parent == 0) })
+                                let largeID = (0..<UInt32(t.nodeCount)).first { t.name($0) == "b-large" && t.info($0).parent == 0 }
+                                model.selected = nil
+                                model.expanded = Set((0..<UInt32(t.nodeCount)).filter { t.info($0).childCount > 0 && $0 != largeID })
+                                Perf.log("fixture largeID=\(String(describing: largeID)) excluded=\(largeID.map { !model.expanded.contains($0) } ?? false)")
                                 model.refreshOutline()
                                 Perf.log("count fixture expanded=\(model.expanded.count) rootRows=\(t.info(0).childCount)")
                             }
@@ -450,6 +463,33 @@ struct SpacelyzerApp: App {
                                          && OutlineDemoEvidence.hasCount("0 items") && OutlineDemoEvidence.hasCount(largeText) && OutlineDemoEvidence.hasVisibleDeepCount, "cellWidth=\(OutlineDemoEvidence.width) large=\(largeText)")
                             mark(22)
                             try? await Task.sleep(nanoseconds: 4_000_000_000)
+                            // E2 mode matrix changes only the CI view environment, never system preferences.
+                            let savedAppearance = NSApp.appearance
+                            NSApp.appearance = NSAppearance(named: .aqua)
+                            DemoInput.window?.setContentSize(NSSize(width: 960, height: 600))
+                            try? await Task.sleep(nanoseconds: 1_000_000_000)
+                            Check.expect("e2-minimum-window-fits", DemoInput.window?.contentView?.bounds.width == 960, "width=\(DemoInput.window?.contentView?.bounds.width ?? 0)")
+                            mark(26)
+                            NSApp.appearance = NSAppearance(named: .darkAqua)
+                            try? await Task.sleep(nanoseconds: 1_000_000_000); mark(27)
+                            demoReduceTransparency = true; demoReduceMotion = true
+                            try? await Task.sleep(nanoseconds: 1_000_000_000); mark(28)
+                            NSApp.appearance = NSAppearance(named: .aqua)
+                            try? await Task.sleep(nanoseconds: 1_000_000_000); mark(29)
+                            Check.expect("e2-live-mode-toggle", demoReduceTransparency && demoReduceMotion)
+                            Check.expect("e2-outline-accessible-labels", OutlineDemoEvidence.accessibleFolderLabels)
+                            if let table = OutlineDemoEvidence.table, let w = table.window {
+                                w.makeFirstResponder(table)
+                                let before = model.selected
+                                DemoInput.key(125)
+                                try? await Task.sleep(nanoseconds: 700_000_000)
+                                Check.expect("e2-keyboard-in-reduced-mode", model.selected != nil && model.selected != before)
+                            } else { Check.expect("e2-keyboard-in-reduced-mode", false, "outline missing") }
+                            demoReduceTransparency = false; demoReduceMotion = false; NSApp.appearance = savedAppearance
+                            try? await Task.sleep(nanoseconds: 500_000_000)
+                            Check.expect("e2-mode-restored", !demoReduceTransparency && !demoReduceMotion)
+                            mark(30)
+
                         } catch {
                             Check.expect("counts-hidden-below-400", false, "fixture error: \(error)")
                             Check.expect("counts-visible-above-400-empty-large-deep", false, "fixture error: \(error)")
@@ -522,5 +562,17 @@ enum Footprint {
             $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count) }
         }
         return kr == KERN_SUCCESS ? Double(info.phys_footprint) / 1_048_576 : -1
+    }
+}
+
+/// Injects test preferences only for the scripted demo. Normal app inherits live system environments.
+private struct DemoAccessibilityModes: ViewModifier {
+    let reduceTransparency: Bool
+    let reduceMotion: Bool
+    @ViewBuilder func body(content: Content) -> some View {
+        if Perf.on {
+            content.environment(\.accessibilityReduceTransparency, reduceTransparency)
+                .environment(\.accessibilityReduceMotion, reduceMotion)
+        } else { content }
     }
 }
