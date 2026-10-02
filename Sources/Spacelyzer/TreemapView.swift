@@ -86,12 +86,13 @@ struct TreemapView: View {
     @State private var hovered: TreemapRect?
     @State private var task: Task<Void, Never>?
     @State private var generation: UInt64 = 0
+    @State private var layoutRevision: Int = -1
     @State private var layoutRoot: UInt32?
     @State private var layoutFilter: FilterResult?
     @State private var layoutSize: CGSize = .zero
     private var currentLayout: TreemapLayout? {
         guard let tree = model.tree, let layout, layout.treeID == ObjectIdentifier(tree),
-              layoutRoot == model.displayedRoot, layoutFilter === model.activeFilter, layoutSize == size else { return nil }
+              layoutRevision == model.revision, layoutRoot == model.displayedRoot, layoutFilter === model.activeFilter, layoutSize == size else { return nil }
         return layout
     }
 
@@ -118,7 +119,7 @@ struct TreemapView: View {
             }
             .clipped()
             .overlay {
-                if model.activeFilter != nil && (layout?.rects.isEmpty ?? false) {
+                if !model.filterPending, model.activeFilter != nil, let currentLayout, currentLayout.rects.isEmpty {
                     ContentUnavailableView("No matches", systemImage: "line.3.horizontal.decrease.circle")
                 }
             }
@@ -164,16 +165,16 @@ struct TreemapView: View {
         let request = generation
         hovered = nil
         guard let tree = model.tree, size.width > 1, size.height > 1 else { layout = nil; return }
-        let root = model.displayedRoot
+        let root = model.displayedRoot, revision = model.revision
         let s = size, flt = model.activeFilter
         task = Task.detached(priority: .userInitiated) {
             let l = tree.layout(root: root, size: s, filter: flt)
             if Task.isCancelled { return }
             await MainActor.run {
                 guard !Task.isCancelled, generation == request, model.tree === tree,
-                      model.displayedRoot == root, model.activeFilter === flt, size == s else { return }
+                      model.revision == revision, model.displayedRoot == root, model.activeFilter === flt, size == s else { return }
                 layout = l
-                layoutRoot = root; layoutFilter = flt; layoutSize = s
+                layoutRevision = revision; layoutRoot = root; layoutFilter = flt; layoutSize = s
                 hovered = nil
             }
         }
