@@ -582,16 +582,22 @@ struct SpacelyzerApp: App {
                                     field.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: field))
                                     try? await Task.sleep(nanoseconds: 100_000_000)
                                     Check.expect("name-editor-marked-text-commit-simulation", marked && !editor.hasMarkedText() && model.filterText == editor.string && model.filterText == "日本")
+                                    editor.setMarkedText("未完", selectedRange: NSRange(location: 2, length: 0), replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+                                    let markedBeforeClear = editor.hasMarkedText()
                                     model.clearFilters()
+                                    try? await Task.sleep(nanoseconds: 150_000_000)
+                                    let cancelled = !editor.hasMarkedText() && editor.string.isEmpty && field.stringValue.isEmpty && model.filterText.isEmpty
+                                    field.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: field))
+                                    Check.expect("name-editor-external-clear-cancels-marked-text", markedBeforeClear && cancelled && model.filterText.isEmpty, "manual delegate simulation, not actual IME notifications")
                                 } else {
-                                    for name in ["name-editor-typing-model-sync", "name-editor-external-sync-preserves-cursor", "name-editor-clear-all-while-editing", "name-editor-marked-text-commit-simulation"] { Check.expect(name, false, "active native editor unavailable") }
+                                    for name in ["name-editor-external-clear-cancels-marked-text", "name-editor-typing-model-sync", "name-editor-external-sync-preserves-cursor", "name-editor-clear-all-while-editing", "name-editor-marked-text-commit-simulation"] { Check.expect(name, false, "active native editor unavailable") }
                                 }
                             } else {
                                 Check.expect("e2-tab-leaves-outline-without-selection-change", false, "table missing")
                                 Check.expect("e2-shift-tab-returns-to-outline", false, "table missing")
                                 Check.expect("e2-escape-preserves-tree-and-removal-state", false, "table missing")
                                 Check.expect("e2-outline-single-selection-policy", false, "table missing")
-                                for name in ["name-editor-typing-model-sync", "name-editor-external-sync-preserves-cursor", "name-editor-clear-all-while-editing", "name-editor-marked-text-commit-simulation"] { Check.expect(name, false, "table missing") }
+                                for name in ["name-editor-external-clear-cancels-marked-text", "name-editor-typing-model-sync", "name-editor-external-sync-preserves-cursor", "name-editor-clear-all-while-editing", "name-editor-marked-text-commit-simulation"] { Check.expect(name, false, "table missing") }
                             }
                             // Actual SwiftUI zero-area and no-match screens on a disposable root.
                             let zeroRoot = FileManager.default.temporaryDirectory.appendingPathComponent("spz-zero-view-\(UUID().uuidString)")
