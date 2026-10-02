@@ -280,6 +280,15 @@ struct SpacelyzerApp: App {
                             Check.expect("extension-filter-keeps-only-that-extension", false, "no probe file with an extension")
                             Check.expect("max-size-filter-keeps-only-small-files", false, "no probe file")
                         }
+                        // Modified-date filter through the UI model: a narrower window can never match more than a wider one.
+                        model.clearFilters(); model.filterModifiedDays = 3650
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                        let wide = model.activeFilter?.totalCount ?? 0
+                        model.filterModifiedDays = 1
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                        let narrow = model.activeFilter?.totalCount ?? UInt64.max
+                        model.clearFilters()
+                        Check.expect("date-filter-narrow-window-never-exceeds-wide", wide > 0 && narrow <= wide, "10y=\(wide) 1d=\(narrow)")
                         mark(16)
                     }
                 }
