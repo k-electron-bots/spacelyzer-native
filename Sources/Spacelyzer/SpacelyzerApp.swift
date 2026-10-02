@@ -377,7 +377,7 @@ struct SpacelyzerApp: App {
                                 // Invoke the native item's action through its menu. Never call submenuAction directly.
                                 menu.performActionForItem(at: i)
                                 schedule(0.5) {
-                                    Check.expect("submenu-visible-\(step)", sub.isAttached, "parent=\(parentTitle) attached=\(sub.isAttached) items=\(sub.items.count)")
+                                    Check.expect("submenu-visible-\(step)", sub.isAttached(), "parent=\(parentTitle) attached=\(sub.isAttached()) items=\(sub.items.count)")
                                     mark(step)
                                     menu.cancelTracking()
                                 }
@@ -574,8 +574,8 @@ private struct DemoAccessibilityModes: ViewModifier {
     let reduceMotion: Bool
     @ViewBuilder func body(content: Content) -> some View {
         if Perf.on {
-            content.environment(\.accessibilityReduceTransparency, reduceTransparency)
-                .environment(\.accessibilityReduceMotion, reduceMotion)
+            content.environment(\.demoReduceTransparency, reduceTransparency)
+                .environment(\.demoReduceMotion, reduceMotion)
         } else { content }
     }
 }
