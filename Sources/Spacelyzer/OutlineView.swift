@@ -376,6 +376,11 @@ struct ShareBar: View {
         }
         return policy
     }
+    static var selectionDiagnostic: String {
+        guard let table else { return "table missing" }
+        let cell = table.selectedRow >= 0 ? table.view(atColumn: 0, row: table.selectedRow, makeIfNecessary: false) as? OutlineCell : nil
+        return "key=\(table.window?.isKeyWindow ?? false) firstResponder=\(String(describing: table.window?.firstResponder)) selectedRow=\(table.selectedRow) backgroundStyle=\(String(describing: cell?.backgroundStyle)) countColor=\(String(describing: cell?.count.textColor))"
+    }
     static var inactiveSelectedCountPolicy: Bool {
         guard let table, let window = table.window, !window.isKeyWindow, table.selectedRow >= 0,
               let cell = table.view(atColumn: 0, row: table.selectedRow, makeIfNecessary: false) as? OutlineCell else { return false }
