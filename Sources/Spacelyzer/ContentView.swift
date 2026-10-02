@@ -276,7 +276,7 @@ private struct NameFilterField: NSViewRepresentable {
             model.nameEditorUpdateCount &+= 1
         }
     }
-    final class Coordinator: NSObject, NSTextFieldDelegate {
+    @MainActor final class Coordinator: NSObject, NSTextFieldDelegate {
         let model: AppModel
         var programmaticChange = false
         var externalRevision: UInt64
