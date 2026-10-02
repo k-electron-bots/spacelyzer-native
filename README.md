@@ -187,3 +187,6 @@ Independent reset robustness correction: capture external target before unmarkTe
 
 
 Independent source blocker found marked-state-only overwrite cancelled ordinary composition on any redraw. Repair separates editor-origin updates from external text changes and explicit clear/reset revisions. Only actual external intent cancels composition; marked ordinary updates preserve editor text. Captured target/programmatic delegate suppression retained. Equal-value clear bumps reset revision; regression asserts field==model==empty before marked reset, plus ordinary marked/unrelated update preservation.67 contracts38 states pending source recheck, noCI/runtime/IME/E2 claim.
+
+
+Independent origin/revision source blocker closed; composition fixture now waits explicit coordinator-consumed reset revision before creating marked text. Ordinary update uses a refresh token read in updateNSView and checks actual update count advanced with unchanged external/reset revisions, marked text preserved; not sleep/contrast redraw inference. Evidence counters are observation-ignored to avoid redraw feedback. Equal-before-clear assertion retained.67 contracts38 states still pending runtime/source fixture recheck, no automatic notifications/actual IME/full E2 claim.
