@@ -343,3 +343,45 @@ fn filtered_largest_and_kinds_honor_the_filter() {
     assert!(spacelyzer_engine::filter::largest_files(&tree, &none, 10).is_empty());
     assert!(spacelyzer_engine::filter::category_totals(&tree, &none).iter().all(|c| c.0 == 0 && c.1 == 0));
 }
+
+#[test]
+fn ffi_rejects_stale_ids_and_foreign_filters_without_panicking() {
+    use spacelyzer_engine::ffi::*;
+    let t = fixture();
+    let mut big = Box::new(scan(t.path(), &ScanOptions::default(), &ScanProgress::default()).unwrap());
+    big.uid = 1;
+    let mut small = Box::new(scan(t.path(), &ScanOptions::default(), &ScanProgress::default()).unwrap());
+    small.uid = 2;
+    // Pretend `big` had many more nodes than `small` by using ids far past the end of either.
+    let (bp, sp): (*const spacelyzer_engine::Tree, *const spacelyzer_engine::Tree) = (&*big, &*small);
+    let stale = small.len() as u32 + 1_000_000;
+    let f = SpzFilter { category_mask: 0, has_min: 0, has_max: 0, has_from: 0, has_to: 0, min_size: 0, max_size: 0, modified_from: 0, modified_to: 0 };
+    unsafe {
+        // Out-of-range ids: zero/empty results, no panic.
+        let n = spz_tree_node(sp, stale);
+        assert_eq!((n.size, n.child_count), (0, 0));
+        let s = spz_tree_name(sp, stale); assert_eq!(std::ffi::CStr::from_ptr(s).to_bytes().len(), 0); spz_string_free(s);
+        let s = spz_tree_path(sp, stale); assert_eq!(std::ffi::CStr::from_ptr(s).to_bytes().len(), 0); spz_string_free(s);
+        spz_tree_forget(sp as *mut _, stale);
+        let l = spz_layout_new(sp, stale, 100.0, 100.0); assert_eq!(spz_layout_count(l), 0); spz_layout_free(l);
+        let stale_expanded = [stale, 0];
+        let rows = spz_outline_rows(sp, 0, stale_expanded.as_ptr(), 2, std::ptr::null_mut(), 0);
+        assert!(rows > 0);
+        assert_eq!(spz_outline_rows(sp, stale, std::ptr::null(), 0, std::ptr::null_mut(), 0), 0);
+        // A filter made for one tree must not be applied to another.
+        let h = spz_filter_apply(bp, std::ptr::null(), std::ptr::null(), f);
+        assert!(spz_filter_size(h, 0) > 0);
+        assert_eq!(spz_filter_size(h, stale), 0);
+        assert_eq!(spz_filter_count(h, stale), 0);
+        assert_eq!(spz_outline_rows_filtered(sp, 0, std::ptr::null(), 0, h, std::ptr::null_mut(), 0), 0);
+        let l = spz_layout_new_filtered(sp, 0, 100.0, 100.0, h); assert_eq!(spz_layout_count(l), 0); spz_layout_free(l);
+        let mut out = [0u32; 4];
+        assert_eq!(spz_filter_largest_files(sp, h, 4, out.as_mut_ptr()), 0);
+        let mut tot = [9u64; spacelyzer_engine::category::CATEGORY_COUNT * 2];
+        spz_filter_category_totals(sp, h, tot.as_mut_ptr());
+        assert!(tot.iter().all(|&x| x == 0));
+        spz_filter_free(h);
+        // Null handles are safe too.
+        assert_eq!(spz_tree_node_count(std::ptr::null()), 0);
+    }
+}

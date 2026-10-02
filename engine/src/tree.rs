@@ -41,6 +41,8 @@ pub struct Tree {
     pub skipped: Vec<Skipped>,
     pub items: u64,
     pub cancelled: bool,
+    /// Process-unique generation id, assigned when the tree is handed across the FFI. Filters and layouts are bound to it.
+    pub uid: u64,
 }
 
 #[derive(Clone, Debug)]
