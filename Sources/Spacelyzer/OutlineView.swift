@@ -15,17 +15,20 @@ struct OutlineView: View {
                     LazyVStack(spacing: 0) {
                         ForEach(0..<rows.count, id: \.self) { i in
                             let row = rows[i]
-                            OutlineLine(tree: tree, node: row.node, depth: Int(row.depth), parentTotal: total)
+                            let info = tree.info(row.node)
+                            // Inputs are plain values and the row is Equatable, so a selection change re-evaluates
+                            // two rows (old and new), not every realized row with its context menu.
+                            OutlineLine(tree: tree, node: row.node, depth: Int(row.depth), parentTotal: total,
+                                        shown: model.activeFilter?.size(row.node) ?? info.size,
+                                        expanded: model.expanded.contains(row.node),
+                                        selected: model.selected == row.node, model: model)
+                                .equatable()
                                 .frame(height: Self.rowHeight)
                                 .padding(.horizontal, 8)
                                 .background(model.selected == row.node ? Color.accentColor.opacity(0.22) : .clear, in: RoundedRectangle(cornerRadius: 6))
                                 .contentShape(Rectangle())
                                 .onTapGesture { model.selected = row.node }
                                 .id(row.node)
-                                .contextMenu {
-                                    Button("Show in Finder") { model.reveal(row.node) }
-                                    Button("Move to Trash…", role: .destructive) { model.proposeRemoval(of: row.node) }
-                                }
                         }
                     }
                     .padding(.horizontal, 4)
@@ -77,21 +80,28 @@ struct OutlineView: View {
     }
 }
 
-struct OutlineLine: View {
-    @Environment(AppModel.self) private var model
+struct OutlineLine: View, Equatable {
     let tree: Tree
     let node: UInt32
     let depth: Int
     let parentTotal: UInt64
+    let shown: UInt64
+    let expanded: Bool
+    let selected: Bool
+    let model: AppModel
+
+    static func == (a: Self, b: Self) -> Bool {
+        a.tree === b.tree && a.node == b.node && a.depth == b.depth && a.parentTotal == b.parentTotal
+            && a.shown == b.shown && a.expanded == b.expanded && a.selected == b.selected
+    }
 
     var body: some View {
         let info = tree.info(node)
-        let shown = model.activeFilter?.size(node) ?? info.size
         HStack(spacing: 6) {
             Color.clear.frame(width: CGFloat(depth) * 10, height: 1)
             if info.kind == .directory && info.childCount > 0 {
                 Button { model.toggle(node) } label: {
-                    Image(systemName: model.expanded.contains(node) ? "chevron.down" : "chevron.right").font(.caption2)
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.caption2)
                 }.buttonStyle(.plain).frame(width: 12)
             } else { Color.clear.frame(width: 12, height: 1) }
             Image(systemName: icon(info))
@@ -100,12 +110,16 @@ struct OutlineLine: View {
             Text(tree.name(node)).lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 8)
             Text(formatBytes(shown)).monospacedDigit().foregroundStyle(.secondary)
-            ShareBar(fraction: Double(shown) / Double(parentTotal))
+            ShareBar(fraction: Double(shown) / Double(max(1, parentTotal)))
                 .frame(width: 44, height: 6)
+        }
+        .contextMenu {
+            Button("Show in Finder") { model.reveal(node) }
+            Button("Move to Trash…", role: .destructive) { model.proposeRemoval(of: node) }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(tree.name(node)), \(info.kind == .directory ? "folder" : "item"), \(formatBytes(shown))")
-        .accessibilityValue(info.kind == .directory && info.childCount > 0 ? (model.expanded.contains(node) ? "expanded" : "collapsed") : "")
+        .accessibilityValue(info.kind == .directory && info.childCount > 0 ? (expanded ? "expanded" : "collapsed") : "")
     }
 
     private func icon(_ i: NodeInfo) -> String {
