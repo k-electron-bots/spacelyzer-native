@@ -1,8 +1,7 @@
 # Spacelyzer Native
 
 See what is using your disk. A native macOS disk space analyzer: a SwiftUI interface on top of a Rust engine
-built for speed. It follows the intent and visual design of
-[k-electron/spacelyzer](https://github.com/k-electron/spacelyzer), which stays read-only and untouched.
+built for speed.
 
 ![Spacelyzer scanning /Library: outline on the left, treemap on the right](docs/images/overview.png)
 
@@ -51,8 +50,8 @@ Rust engine
 
 ## Measured so far
 
-All from a shared GitHub Actions Mac, one folder (`/Library`, 153k items). Informational, not a benchmark, and there
-is **no baseline of the original app on the same folder yet, so no speedup claim is made.**
+All from a shared GitHub Actions Mac, one folder (`/Library`, 153k items). Informational, not a benchmark. No comparison
+with any other disk analyzer has been run, so no speed-up claim is made.
 
 | What | Rust engine | Notes |
 |---|---|---|
@@ -62,8 +61,7 @@ is **no baseline of the original app on the same folder yet, so no speedup claim
 | Outline projection, 153k rows (everything expanded) | 18 ms | rows reach the UI in 40-106 ms after the windowed outline; 16.9 s before it |
 
 The last row is how long until the rows arrived on the main thread, not a full redraw measurement.
-The original's own recorded miss is filtering at 1M items (0.65 s against a 200 ms budget). Engine timings are
-reported separately from UI and copy timings.
+Engine timings are reported separately from UI and copy timings.
 
 ## Get it
 
@@ -79,7 +77,7 @@ scan of protected folders; the app reports how many locations it could not read.
 Duplicate detection, exclusions UI and persistence, a reviewable skipped-items list, volume accounting (purgeable
 space, snapshots), Quick Look and item details, batch removal and history, size-unit toggle, Full Disk Access detection,
 app icon, VoiceOver pass. Not yet tested: real Mac behaviour at other window sizes and multi-volume setups. See
-[docs/GAP_MAP.md](docs/GAP_MAP.md) for the full comparison with the original.
+[docs/ROADMAP.md](docs/ROADMAP.md) for the ordered plan.
 
 ## Develop
 

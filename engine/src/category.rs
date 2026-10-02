@@ -1,5 +1,5 @@
 /// Coarse grouping used for treemap colour and the "Kinds" breakdown. Mirrors the
-/// original Spacelyzer categories.
+/// Spacelyzer categories.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Category {

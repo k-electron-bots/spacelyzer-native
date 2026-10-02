@@ -4,8 +4,7 @@ Working agreement for anyone (human or agent) changing Spacelyzer Native. Read i
 
 ## What this is
 A native macOS disk analyzer. SwiftUI draws the interface. A Rust engine owns every computation over the dataset:
-scan, filter, sort, aggregate, layout, hit-testing. The reference design is
-[k-electron/spacelyzer](https://github.com/k-electron/spacelyzer), which is read-only here.
+scan, filter, sort, aggregate, layout, hit-testing.
 
 ## The bar (from the owner, Karim)
 1. Performance is real and perceived. Make the work fast, and never block the UI thread.
@@ -72,4 +71,4 @@ flags or disabling Gatekeeper.
 - `Sources/CSpacelyzer/include/spacelyzer.h`: the C ABI. Keep it in step with `engine/src/ffi.rs`.
 - `Sources/Spacelyzer`: `AppModel` (state), `OutlineView`, `TreemapView`, `ContentView` (split view, toolbar, filter bar,
   status bar), `Engine.swift` (Swift wrappers, `Perf`, `MainStall`), `SpacelyzerApp.swift` (CI demo and `DemoInput`).
-- `docs/GAP_MAP.md`: what the original has that this does not. Keep it current.
+- `docs/ROADMAP.md`: what is done, underway and next. Keep it current.

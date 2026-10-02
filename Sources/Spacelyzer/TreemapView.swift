@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Hues spaced by the golden angle keep neighbouring branches far apart in colour, as in the
-/// original Spacelyzer.
+/// Spacelyzer.
 func branchColor(_ branch: Int) -> Color {
     let hue = (Double(branch) * 0.618_033_988_75).truncatingRemainder(dividingBy: 1)
     return Color(hue: hue, saturation: 0.55, brightness: 0.85)
