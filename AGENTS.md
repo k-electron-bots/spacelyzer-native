@@ -95,3 +95,5 @@ Karim's standing requirement: long-range stability, memory management and resili
 - Spotlight first-results and dua-inspired streaming remain evaluation only. No preview contributes to authoritative totals or authorizes removal. Preserve MIT notices for any copied upstream code.
 
 - CI captures each demo state before advancing, then collects named images rather than polling a transient latest-step value. Assert all evidence exists; distinguish timeout from app exit in failures.
+
+- Runner-owned screenshots acknowledge a CI-only state hold before progression. This test-only hold must never enter normal app operation. Do not change screen-capture permissions to rescue an in-app test subprocess.
