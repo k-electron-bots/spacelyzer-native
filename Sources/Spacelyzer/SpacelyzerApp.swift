@@ -518,9 +518,11 @@ struct SpacelyzerApp: App {
                                 mark(step)
                             }
                             // Inactive selection must not leave stale emphasized white text on neutral background.
+                            let selectedBeforeInactive = model.selected
+                            let tableRowBeforeInactive = OutlineDemoEvidence.table?.selectedRow
                             DemoInput.window?.resignKey()
                             try? await Task.sleep(nanoseconds: 500_000_000)
-                            Check.expect("e2-inactive-count-color-policy", OutlineDemoEvidence.inactiveSelectedCountPolicy)
+                            Check.expect("e2-inactive-count-color-policy", OutlineDemoEvidence.inactiveSelectedCountPolicy && selectedBeforeInactive != nil && model.selected == selectedBeforeInactive && OutlineDemoEvidence.table?.selectedRow == tableRowBeforeInactive && selectedBeforeInactive.flatMap { model.outlineIndex[$0] } == tableRowBeforeInactive)
                             mark(35)
                             DemoInput.window?.makeKeyAndOrderFront(nil)
                             if let table = OutlineDemoEvidence.table {
@@ -528,7 +530,7 @@ struct SpacelyzerApp: App {
                                 if let node = model.selected, let row = model.outlineIndex[node] { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
                             }
                             try? await Task.sleep(nanoseconds: 500_000_000)
-                            Check.expect("e2-count-reuse-color-policy", OutlineDemoEvidence.countColorContract(increased: true))
+                            Check.expect("e2-count-visible-reload-color-policy", OutlineDemoEvidence.countColorContract(increased: true) && model.selected == selectedBeforeInactive && OutlineDemoEvidence.table?.selectedRow == tableRowBeforeInactive && selectedBeforeInactive.flatMap { model.outlineIndex[$0] } == tableRowBeforeInactive)
                             mark(36)
                             model.demoIncreaseContrast = nil; NSApp.appearance = savedAppearance
                             if let table = OutlineDemoEvidence.table, let window = table.window {
