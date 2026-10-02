@@ -65,6 +65,11 @@ struct ContentView: View {
             if !model.lastRemoved.isEmpty { Button("Undo") { model.undoRemoval() } }
             Button("OK", role: .cancel) {}
         } message: { Text(model.removalMessage ?? "") }
+        .background(GeometryReader { geometry in
+            Color.clear.onChange(of: geometry.size, initial: true) { _, size in
+                if Perf.on { DemoRootLayout.size = size }
+            }
+        })
     }
 }
 
@@ -223,3 +228,5 @@ extension EnvironmentValues {
         set { self[DemoReduceMotionKey.self] = newValue }
     }
 }
+
+@MainActor enum DemoRootLayout { static var size: CGSize = .zero }
