@@ -43,29 +43,21 @@ pub struct FilterResult {
     pub total_count: u64,
 }
 
-fn contains_ci(hay: &str, needle_lower: &[u8]) -> bool {
-    if needle_lower.is_empty() {
-        return true;
+// Preserve the allocation-free ASCII hot path; use the same Unicode lowercase semantics
+// as outline name sorting when either side contains non-ASCII letters. No normalization.
+fn contains_ci(hay: &str, needle_lower: &str) -> bool {
+    if hay.is_ascii() && needle_lower.is_ascii() {
+        let needle = needle_lower.as_bytes();
+        return needle.is_empty() || hay.as_bytes().windows(needle.len()).any(|w|
+            w.iter().zip(needle).all(|(h, n)| h.to_ascii_lowercase() == *n));
     }
-    let h = hay.as_bytes();
-    if h.len() < needle_lower.len() {
-        return false;
-    }
-    'outer: for i in 0..=h.len() - needle_lower.len() {
-        for (j, &n) in needle_lower.iter().enumerate() {
-            if h[i + j].to_ascii_lowercase() != n {
-                continue 'outer;
-            }
-        }
-        return true;
-    }
-    false
+    hay.to_lowercase().contains(needle_lower)
 }
 
 pub fn apply(tree: &Tree, f: &Filter) -> FilterResult {
     let n = tree.len();
-    let text = f.text.to_ascii_lowercase().into_bytes();
-    let ext = f.extension.trim_start_matches('.').to_ascii_lowercase();
+    let text = f.text.to_lowercase();
+    let ext = f.extension.trim_start_matches('.').to_lowercase();
     let min = f.min_size.unwrap_or(0);
     let max = f.max_size.unwrap_or(u64::MAX);
     let (mf, mt) = (f.modified_from.unwrap_or(i64::MIN), f.modified_to.unwrap_or(i64::MAX));
@@ -96,7 +88,7 @@ pub fn apply(tree: &Tree, f: &Filter) -> FilterResult {
                     Some(p) if p > 0 => &name[p + 1..],
                     _ => "",
                 };
-                if !e.eq_ignore_ascii_case(&ext) {
+                if !(if e.is_ascii() && ext.is_ascii() { e.eq_ignore_ascii_case(&ext) } else { e.to_lowercase() == ext }) {
                     return (0, 0);
                 }
             }
@@ -128,7 +120,7 @@ pub fn mask(cats: &[Category]) -> u32 {
 /// The `n` largest matching regular files, largest first. Mirrors `Tree::largest_files` over the filtered set.
 pub fn largest_files(tree: &Tree, r: &FilterResult, n: usize) -> Vec<NodeId> {
     let mut v: Vec<NodeId> = (0..tree.len() as NodeId)
-        .filter(|&i| tree.kind[i as usize] == Kind::File as u8 && r.sizes[i as usize] > 0)
+        .filter(|&i| tree.kind[i as usize] == Kind::File as u8 && r.counts[i as usize] > 0)
         .collect();
     let n = n.min(v.len());
     if n == 0 {
