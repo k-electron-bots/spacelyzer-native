@@ -32,6 +32,8 @@ struct OutlineView: View {
 }
 
 private final class KeyTable: NSTableView {
+    var onAttachment: (() -> Void)?
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); onAttachment?() }
     var onKey: ((UInt16) -> Bool)?
     var contextRow: ((Int) -> NSMenu?)?
     override func keyDown(with event: NSEvent) {
@@ -164,6 +166,8 @@ private struct OutlineTable: NSViewRepresentable {
         table.onKey = { [weak c = context.coordinator] code in c?.key(code) ?? false }
         table.contextRow = { [weak c = context.coordinator] r in c?.menu(for: r) }
         context.coordinator.table = table
+        model.outlineKeyView = table
+        table.onAttachment = { [weak model] in model?.connectOutlineFocusLoop() }
         let scroll = NSScrollView()
         scroll.documentView = table
         scroll.hasVerticalScroller = true
