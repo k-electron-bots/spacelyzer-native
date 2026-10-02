@@ -55,6 +55,8 @@ final class FilterResult: @unchecked Sendable {
     var totalBytes: UInt64 { spz_filter_total_bytes(ptr) }
     var totalCount: UInt64 { spz_filter_total_count(ptr) }
     func size(_ id: UInt32) -> UInt64 { spz_filter_size(ptr, id) }
+    /// Match presence is independent of allocated size (empty and sparse files can be zero).
+    func count(_ id: UInt32) -> UInt32 { spz_filter_count(ptr, id) }
 }
 
 final class Tree: @unchecked Sendable {
