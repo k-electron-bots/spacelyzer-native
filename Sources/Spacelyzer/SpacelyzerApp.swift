@@ -19,12 +19,14 @@ struct SpacelyzerApp: App {
                         try? await Task.sleep(nanoseconds: 3_000_000_000)
                         MainStall.shared.start()
                         func mark(_ n: Int) {
-                            // Capture when this state exists; a fast later step must not overwrite its evidence.
-                            let shot = Process(); shot.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-                            shot.arguments = ["-x", "/tmp/spz-demo-\(n).png"]
-                            do { try shot.run(); shot.waitUntilExit(); Perf.log("snapshot step=\(n) status=\(shot.terminationStatus)") }
-                            catch { Perf.log("snapshot step=\(n) failed: \(error)") }
+                            // CI-only handshake: the runner owns screen-capture permission.
+                            // State cannot advance until that exact state was captured (or failed).
+                            let ready = "/tmp/spz-demo-ready-\(n)", ack = "/tmp/spz-demo-ack-\(n)"
                             try? "\(n)".write(toFile: "/tmp/spz-demo-step", atomically: true, encoding: .utf8)
+                            try? Data().write(to: URL(fileURLWithPath: ready))
+                            let deadline = Date().addingTimeInterval(30)
+                            while !FileManager.default.fileExists(atPath: ack) && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+                            if !FileManager.default.fileExists(atPath: ack) { Perf.log("DEMO CAPTURE ACK TIMEOUT step=\(n)") }
                         }
                         if let first = model.outlineRows.first?.node { model.toggle(first) }   // expand top folder
                         try? await Task.sleep(nanoseconds: 3_000_000_000); mark(1)               // CI shoots step 1
