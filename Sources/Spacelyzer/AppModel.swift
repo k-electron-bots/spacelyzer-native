@@ -16,6 +16,14 @@ struct RemovedItem { var original: URL; var trashed: URL; var size: UInt64 }
 final class AppModel {
     /// CI-only contrast branch injection. Product cells ignore it unless SPZ_DEMO is enabled.
     var demoIncreaseContrast: Bool?
+    @ObservationIgnored weak var outlineKeyView: NSTableView?
+    @ObservationIgnored weak var nameFilterKeyView: NSTextField?
+    /// Explicit bridge across the AppKit outline and SwiftUI control hosting boundary.
+    func connectOutlineFocusLoop() {
+        guard let table = outlineKeyView, let field = nameFilterKeyView,
+              table.window != nil, table.window === field.window else { return }
+        table.nextKeyView = field
+    }
     var tree: Tree?
     var rootPath: String = ""
     var scanning = false
