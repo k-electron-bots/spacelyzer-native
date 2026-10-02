@@ -541,6 +541,7 @@ struct SpacelyzerApp: App {
                                 Check.expect("e2-escape-preserves-tree-and-removal-state", false, "table missing")
                                 Check.expect("e2-outline-single-selection-policy", false, "table missing")
                             }
+                            try? Data().write(to: URL(fileURLWithPath: "/tmp/spz-demo-finished"))
 
                         } catch {
                             Check.expect("counts-hidden-below-400", false, "fixture error: \(error)")
