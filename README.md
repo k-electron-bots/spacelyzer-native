@@ -63,6 +63,10 @@ with any other disk analyzer has been run, so no speed-up claim is made.
 The last row is how long until the rows arrived on the main thread, not a full redraw measurement.
 Engine timings are reported separately from UI and copy timings.
 
+## In development
+
+E2 adaptive filter surface and action accessibility labels are committed but not yet compiled or visually verified. No VoiceOver or accessibility-mode pass is claimed.
+
 ## Verification status
 
 E1 is not signed off. Diagnostic v0.1.89 failed its UI gate (26 of 28 checks reached); it is not a recommended delivery. Zero-byte filtering fixes passed independent engine review. Run37036910990 compiled and passed date/sort/reset effect checks, but failed one count-threshold check and missed later screenshots. Run37040037876 also failed image capture; runner-owned state/capture acknowledgement is under verification. Run37043128105 passed30 checks and produced22 images, but pixel review found missing visible depth12 count evidence. E1 still needs the corrected deep-row fixture and independent signoff.
