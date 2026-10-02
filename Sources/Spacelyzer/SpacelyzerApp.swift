@@ -17,6 +17,7 @@ struct SpacelyzerApp: App {
                     if env["SPZ_AUTOSCAN"] != nil, env["SPZ_DEMO"] != nil {
                         while model.scanning || model.tree == nil { try? await Task.sleep(nanoseconds: 500_000_000) }
                         try? await Task.sleep(nanoseconds: 3_000_000_000)
+                        MainStall.shared.start()
                         func mark(_ n: Int) { try? "\(n)".write(toFile: "/tmp/spz-demo-step", atomically: true, encoding: .utf8) }
                         if let first = model.outlineRows.first?.node { model.toggle(first) }   // expand top folder
                         try? await Task.sleep(nanoseconds: 3_000_000_000); mark(1)               // CI shoots step 1
@@ -41,9 +42,11 @@ struct SpacelyzerApp: App {
                             for i in 0..<UInt32(t.nodeCount) where t.info(i).childCount > 0 { all.insert(i) }
                             Perf.log("expand-all: collect \(all.count) dirs via per-node FFI = \(String(format: "%.1f", Perf.ms(since: t0))) ms")
                             let t1 = Perf.now()
+                            MainStall.shared.reset()
                             model.expanded = all
                             model.refreshOutline()
                             while model.outlineRows.count < 100_000 && Perf.ms(since: t1) < 20_000 { try? await Task.sleep(nanoseconds: 20_000_000) }
+                            Perf.log(MainStall.shared.summary("expand-all"))
                             Perf.log("expand-all: rows=\(model.outlineRows.count) set-to-rows-on-main = \(String(format: "%.1f", Perf.ms(since: t1))) ms")
                         }
                         try? await Task.sleep(nanoseconds: 3_000_000_000); mark(6)
@@ -53,6 +56,7 @@ struct SpacelyzerApp: App {
                         try? await Task.sleep(nanoseconds: 3_000_000_000); mark(7)
                         // Steps 8-9: in-process NSEvents through the window's responder chain (no OS input permission needed).
                         try? await Task.sleep(nanoseconds: 3_000_000_000)
+                        MainStall.shared.reset()
                         DemoInput.click(fromTop: 124, x: 168)                       // a visible outline row
                         try? await Task.sleep(nanoseconds: 1_000_000_000)
                         Perf.log("kbd: after click selected=\(model.selected.map(String.init) ?? "nil")")
@@ -63,9 +67,11 @@ struct SpacelyzerApp: App {
                         Perf.log("kbd: after 40 down arrows selected=\(model.selected.map(String.init) ?? "nil")")
                         let idx1 = model.selected.flatMap { n in model.outlineRows.firstIndex { $0.node == n } }
                         Check.expect("40-down-arrows-move-40-rows", idx0 != nil && idx1 == idx0.map { $0 + 40 }, "from=\(idx0 ?? -1) to=\(idx1 ?? -1)")
+                        Perf.log(MainStall.shared.summary("click+40-arrows"))
                         mark(8)
                         try? await Task.sleep(nanoseconds: 4_000_000_000)
                         let before = model.selected
+                        MainStall.shared.reset()
                         Perf.log("kbd: step 9 begin, clicking filter field")
                         DemoInput.click(fromTop: 65, x: 148)                        // filter field
                         try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -74,6 +80,7 @@ struct SpacelyzerApp: App {
                         try? await Task.sleep(nanoseconds: 1_000_000_000)
                         for _ in 0..<5 { DemoInput.key(125); try? await Task.sleep(nanoseconds: 50_000_000) }
                         try? await Task.sleep(nanoseconds: 2_500_000_000)
+                        Perf.log(MainStall.shared.summary("typing+arrows-in-filter"))
                         Check.expect("arrows-in-filter-field-do-not-move-selection", model.filterText == "lib" && model.selected == before, "text=\(model.filterText)")
                         Perf.log("kbd: filterText='\(model.filterText)' selection before=\(before.map(String.init) ?? "nil") after5arrows=\(model.selected.map(String.init) ?? "nil")")
                         mark(9)
@@ -123,6 +130,18 @@ struct SpacelyzerApp: App {
                         model.removalMessage = nil
                         model.filterText = "zzzqqq"; model.selected = model.outlineRows.first?.node ?? 1
                         await settle(); mark(11)
+                        // Step 12: pointer sweep across the treemap (synthetic mouseMoved events), measuring main-thread stalls.
+                        try? await Task.sleep(nanoseconds: 4_000_000_000)
+                        model.filterText = ""; model.displayedRoot = 0; model.tab = .treemap; await settle()
+                        MainStall.shared.reset()
+                        for i in 0..<300 {
+                            DemoInput.move(fromTop: 140 + CGFloat(i % 60) * 6, x: 460 + CGFloat(i) * 1.6)
+                            try? await Task.sleep(nanoseconds: 10_000_000)
+                        }
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                        Perf.log(MainStall.shared.summary("hover-sweep-300-moves"))
+                        Check.expect("hover-sweep-main-stall-under-250ms", MainStall.shared.max < 250, "max=\(String(format: "%.1f", MainStall.shared.max))ms")
+                        mark(12)
                         // Step 12: Right/Left expand and collapse, Return drills (real key events).
                         try? await Task.sleep(nanoseconds: 4_000_000_000)
                         model.filterText = ""; await settle()
@@ -136,7 +155,7 @@ struct SpacelyzerApp: App {
                         Check.expect("left-arrow-collapses-it", k != nil && !model.expanded.contains(k!))
                         DemoInput.key(36, chars: "\r"); await settle()
                         Check.expect("return-drills-into-the-folder", k != nil && model.displayedRoot == k!, "root=\(model.displayedRoot)")
-                        mark(12)
+                        mark(13)
                         // Step 13: a real Trash round trip on a disposable synthetic folder, restricted to that folder by construction.
                         try? await Task.sleep(nanoseconds: 4_000_000_000)
                         let fx = "/tmp/spz-trash-fixture"
@@ -160,16 +179,16 @@ struct SpacelyzerApp: App {
                             let fm = FileManager.default
                             let trashed = model.lastRemoved.first?.trashed
                             Check.expect("real-trash-moves-only-the-selected-fixture", !fm.fileExists(atPath: victimPath) && fm.fileExists(atPath: keepPath) && model.lastRemoved.count == 1 && (trashed.map { fm.fileExists(atPath: $0.path) } ?? false), "message=\(model.removalMessage ?? "nil")")
-                            try? await Task.sleep(nanoseconds: 1_000_000_000); mark(13)
+                            try? await Task.sleep(nanoseconds: 1_000_000_000); mark(14)
                             model.undoRemoval()
                             Check.expect("undo-restores-the-fixture", fm.fileExists(atPath: victimPath) && !(trashed.map { fm.fileExists(atPath: $0.path) } ?? true))
                         } else {
                             Check.expect("real-trash-moves-only-the-selected-fixture", false, "fixture node not found")
                             Check.expect("undo-restores-the-fixture", false, "fixture node not found")
-                            mark(13)
+                            mark(14)
                         }
                         try? FileManager.default.removeItem(atPath: fx)
-                        mark(14)
+                        mark(15)
                     }
                 }
         }
@@ -193,6 +212,12 @@ struct SpacelyzerApp: App {
             if let e = NSEvent.mouseEvent(with: t, location: p, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                           windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) { NSApp.postEvent(e, atStart: false) }
         }
+    }
+    static func move(fromTop y: CGFloat, x: CGFloat) {
+        guard let w = window else { return }
+        let p = NSPoint(x: x, y: w.frame.height - y)
+        if let e = NSEvent.mouseEvent(with: .mouseMoved, location: p, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                      windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0) { NSApp.postEvent(e, atStart: false) }
     }
     static func key(_ code: UInt16, chars: String? = nil) {
         guard let w = window else { return }

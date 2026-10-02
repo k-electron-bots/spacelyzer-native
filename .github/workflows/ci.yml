@@ -27,6 +27,7 @@ jobs:
       - name: Toolchain versions
         run: |
           sw_vers; xcodebuild -version; swift --version; rustc --version || true
+          echo "::notice title=toolchain::$(sw_vers -productVersion) | $(xcodebuild -version | tr '\n' ' ') | sdk $(xcrun --show-sdk-version) | $(swift --version 2>&1 | head -1)"
       - name: Rust engine tests (native macOS, includes getattrlistbulk backend)
         run: |
           rustup update stable --no-self-update
@@ -81,7 +82,7 @@ jobs:
           # Scripted interaction run: the app writes /tmp/spz-demo-step after each state settles.
           rm -f /tmp/spz-demo-step /tmp/spz-geom.txt /tmp/spz-timing.txt /tmp/spz-assertions.txt
           open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Library --env SPZ_DEMO=1
-          for step in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
+          for step in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
             for i in $(seq 1 90); do [ "$(cat /tmp/spz-demo-step 2>/dev/null)" = "$step" ] && break; sleep 1; done
             sleep 1
             screencapture -x dist/screenshot-demo-$step.png || true
@@ -96,7 +97,7 @@ jobs:
         run: |
           cp /tmp/spz-assertions.txt dist/ui-assertions.txt 2>/dev/null || true
           cat /tmp/spz-assertions.txt || true
-          expected=14
+          expected=15
           n=$(grep -c '^PASS\|^FAIL' /tmp/spz-assertions.txt 2>/dev/null || echo 0)
           if grep -q '^FAIL' /tmp/spz-assertions.txt 2>/dev/null || [ "$n" -ne "$expected" ]; then
             echo "::error title=ui-assertions::expected $expected results, got $n; $(tr '\n' ';' < /tmp/spz-assertions.txt 2>/dev/null)"

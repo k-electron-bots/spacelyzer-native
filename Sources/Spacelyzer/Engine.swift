@@ -226,3 +226,38 @@ final class ScanSession: @unchecked Sendable {
 extension Tree {
     var nodeCount: UInt64 { spz_tree_node_count(ptr) }
 }
+
+
+/// CI-only (SPZ_DEMO): pings the main queue every 5 ms from a background thread and records how late each ping runs.
+/// A late ping means the main thread was busy, which is exactly what the user sees as a hitch.
+final class MainStall: @unchecked Sendable {
+    static let shared = MainStall()
+    private let lock = NSLock()
+    private var maxMs = 0.0, over16 = 0, over50 = 0, over100 = 0, n = 0
+    private var started = false
+
+    func start() {
+        guard !started else { return }
+        started = true
+        let t = Thread { [self] in
+            while true {
+                let t0 = DispatchTime.now().uptimeNanoseconds
+                DispatchQueue.main.async { [self] in
+                    let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+                    lock.lock(); n += 1; maxMs = max(maxMs, ms)
+                    if ms > 16 { over16 += 1 }; if ms > 50 { over50 += 1 }; if ms > 100 { over100 += 1 }
+                    lock.unlock()
+                }
+                Thread.sleep(forTimeInterval: 0.005)
+            }
+        }
+        t.qualityOfService = .userInteractive
+        t.start()
+    }
+    func reset() { lock.lock(); maxMs = 0; over16 = 0; over50 = 0; over100 = 0; n = 0; lock.unlock() }
+    var max: Double { lock.lock(); defer { lock.unlock() }; return maxMs }
+    func summary(_ label: String) -> String {
+        lock.lock(); defer { lock.unlock() }
+        return "stall \(label): max=\(String(format: "%.1f", maxMs))ms pings=\(n) over16=\(over16) over50=\(over50) over100=\(over100)"
+    }
+}
