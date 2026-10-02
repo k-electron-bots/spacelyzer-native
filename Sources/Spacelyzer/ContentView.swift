@@ -14,18 +14,18 @@ struct ContentView: View {
                     OutlineView()
                         .safeAreaInset(edge: .top, spacing: 0) { FilterBar() }
                         .navigationSplitViewColumnWidth(min: 280, ideal: 340, max: 700)
-                        .padding(.bottom, StatusBar.height)
+                        .modifier(LegacyBottomPad())
                 } detail: {
                     TrailingPane()
                         .frame(minWidth: 380)
-                        .padding(.bottom, StatusBar.height)
+                        .modifier(LegacyBottomPad())
                         .background(GeometryReader { g in
                             Color.clear.onChange(of: g.size, initial: true) { _, _ in LayoutProbe.log("detail", g) }
                         })
                 }
             }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) { StatusBar() }
+        .modifier(BottomStatus())
         .toolbar {
             ToolbarItemGroup {
                 Button { model.up() } label: { Label("Up", systemImage: "arrow.up") }
@@ -82,6 +82,24 @@ struct WelcomeView: View {
     }
 }
 
+/// macOS 26+: the system scroll-edge bar (Liquid Glass) with no custom background. macOS 14-15: a plain bar inset.
+struct BottomStatus: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 26, *) {
+            content.safeAreaBar(edge: .bottom, spacing: 0) { StatusBar() }
+        } else {
+            content.safeAreaInset(edge: .bottom, spacing: 0) { StatusBar().background(.bar) }
+        }
+    }
+}
+
+/// Only the pre-26 layout needs the manual bottom padding (measured on CI: split-view columns extend under the bar).
+struct LegacyBottomPad: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 26, *) { content } else { content.padding(.bottom, StatusBar.height) }
+    }
+}
+
 struct StatusBar: View {
     /// Measured on CI: NavigationSplitView columns extend to the window bottom (frame bottom = 612 = window height), under this bar.
     static let height: CGFloat = 26
@@ -104,7 +122,6 @@ struct StatusBar: View {
             Spacer()
         }
         .font(.caption).padding(.horizontal, 10).padding(.vertical, 5)
-        .background(.bar)
     }
     private func spz_items(_ t: Tree) -> String { (t.nodeCount - 1).formatted() }
 }
