@@ -354,7 +354,7 @@ pub unsafe extern "C" fn spz_outline_rows_filtered(
 ) -> u32 {
     if !valid(t, root) || !handle_ok(t, h) { return 0; }
     let set = expanded_set(t, expanded, n_expanded);
-    let rows = crate::outline::visible_rows(&*t, root, &set, Some(&(*h).0.sizes));
+    let rows = crate::outline::visible_rows(&*t, root, &set, Some(&(*h).0));
     if !out.is_null() {
         std::ptr::copy_nonoverlapping(rows.as_ptr(), out, rows.len().min(cap as usize));
     }
@@ -399,8 +399,8 @@ pub unsafe extern "C" fn spz_outline_rows_sorted(
 ) -> u32 {
     if !valid(t, root) || (!h.is_null() && !handle_ok(t, h)) { return 0; }
     let set = expanded_set(t, expanded, n_expanded);
-    let sizes = if h.is_null() { None } else { Some((*h).0.sizes.as_slice()) };
-    let rows = crate::outline::visible_rows_sorted(&*t, root, &set, sizes, crate::outline::SortMode::from_u32(sort));
+    let filter = if h.is_null() { None } else { Some(&(*h).0) };
+    let rows = crate::outline::visible_rows_sorted(&*t, root, &set, filter, crate::outline::SortMode::from_u32(sort));
     if !out.is_null() {
         std::ptr::copy_nonoverlapping(rows.as_ptr(), out, rows.len().min(cap as usize));
     }

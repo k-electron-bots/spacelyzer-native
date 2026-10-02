@@ -405,3 +405,26 @@ fn outline_sort_modes_order_siblings_and_keep_every_row() {
     let names: Vec<String> = visible_rows_sorted(&tree, 0, &HashSet::new(), None, SortMode::NameAsc).iter().map(|r| tree.name(r.node).to_lowercase()).collect();
     assert!(names.windows(2).all(|w| w[0] <= w[1]));
 }
+
+#[test]
+fn filtered_outline_shows_zero_byte_matches_and_their_folders() {
+    use spacelyzer_engine::filter::{apply, Filter};
+    use spacelyzer_engine::outline::{visible_rows_sorted, SortMode};
+    use std::collections::HashSet;
+    let t = tempdir::T::new();
+    let r = t.path();
+    fs::create_dir_all(r.join("only_empty_files")).unwrap();
+    fs::write(r.join("only_empty_files/zero.pdf"), b"").unwrap();
+    fs::write(r.join("top_zero.pdf"), b"").unwrap();
+    fs::write(r.join("other.bin"), vec![1u8; 4096]).unwrap();
+    let tree = scan(r, &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    let f = apply(&tree, &Filter { extension: "pdf".into(), ..Default::default() });
+    assert_eq!(f.total_count, 2);
+    let all: HashSet<u32> = (0..tree.len() as u32).collect();
+    for mode in [SortMode::SizeDesc, SortMode::NameAsc] {
+        let rows = visible_rows_sorted(&tree, 0, &all, Some(&f), mode);
+        let names: HashSet<&str> = rows.iter().map(|x| tree.name(x.node)).collect();
+        assert!(names.contains("zero.pdf") && names.contains("top_zero.pdf") && names.contains("only_empty_files"), "{names:?}");
+        assert!(!names.contains("other.bin"));
+    }
+}
