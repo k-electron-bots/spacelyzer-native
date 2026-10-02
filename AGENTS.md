@@ -72,3 +72,14 @@ flags or disabling Gatekeeper.
 - `Sources/Spacelyzer`: `AppModel` (state), `OutlineView`, `TreemapView`, `ContentView` (split view, toolbar, filter bar,
   status bar), `Engine.swift` (Swift wrappers, `Perf`, `MainStall`), `SpacelyzerApp.swift` (CI demo and `DemoInput`).
 - `docs/ROADMAP.md`: what is done, underway and next. Keep it current.
+
+## Stability, memory and resilience (release criteria)
+
+Karim's standing requirement: long-range stability, memory management and resilience. A build is not release-ready until each item below has measured evidence, stated with its limits. Nothing here counts as passed until a CI artifact shows it.
+
+- Node ids are only valid for the tree that produced them. Replacing the tree must clear every id-keyed cache (outline rows and index, expansion, selection, filter result, derived lists, pending removal) in the same main-actor turn, and cancel in-flight tasks that hold old ids. Cross-tree safety must also be bounds-checked at the FFI edge, not only in Swift.
+- Repeated rescan soak: scan, swap, rescan many times (including a large tree then a small one, and cancel mid-scan). Record resident memory after each cycle; it must return to a plateau, not climb. Report the numbers and the runner it ran on.
+- Long-session soak: scripted browsing, filtering and expansion for a fixed duration with memory sampled at intervals. Report growth per hour as measured, not extrapolated.
+- Cancellation and failure: cancelling a scan, scanning an unreadable or vanished folder, and a scan error must leave the previous view usable or a clear empty state, never a crash or stale rows.
+- Every Rust allocation behind the FFI has one owner and one free path; trees are freed when the last Swift reference drops. Check with a leak check or allocation counters, and say which.
+- Every UI check that exercises these paths must fail CI, and a crash during the demo run must fail the build (the app not running at the end is a failure).

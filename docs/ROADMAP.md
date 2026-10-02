@@ -27,3 +27,14 @@ read by a person). Nothing here has been verified on a personal Mac yet.
 
 ## Not verified
 Real-Mac behaviour, other window sizes, multiple volumes, APFS clones, purgeable space, VoiceOver.
+
+## Cross-cutting: stability and memory (required before any release is called ready)
+
+Status: v0.1.48 had a crash when a second folder was scanned after a large tree (stale node ids). Fixed in source; regression not yet confirmed by CI.
+
+- [ ] Rescan and tree-swap regression in CI (large then small, cancel mid-scan).
+- [ ] Memory plateau across repeated rescans, with measured resident size.
+- [ ] Long-session soak with sampled memory.
+- [ ] Cancellation and failure recovery checks.
+- [ ] FFI bounds checks for node ids; leak check for Rust allocations.
+- [ ] CI fails if the app is not running at the end of the demo.
