@@ -94,7 +94,8 @@ private final class OutlineCell: NSTableCellView {
     override func layout() {
         super.layout()
         let h = bounds.height, w = bounds.width
-        let x0 = 8 + CGFloat(depth) * 10
+        // Indent is capped so deep rows keep a readable name in a narrow sidebar.
+        let x0 = 8 + CGFloat(min(depth, 8)) * 10
         chevron.frame = NSRect(x: x0, y: (h - 14) / 2, width: 14, height: 14)
         chevron.isHidden = !hasChildren
         icon.frame = NSRect(x: x0 + 18, y: (h - 16) / 2, width: 16, height: 16)
@@ -102,7 +103,7 @@ private final class OutlineCell: NSTableCellView {
         let sizeW: CGFloat = 70
         size.frame = NSRect(x: bar.frame.minX - 8 - sizeW, y: (h - 16) / 2, width: sizeW, height: 16)
         let nx = x0 + 40
-        name.frame = NSRect(x: nx, y: (h - 16) / 2, width: max(20, size.frame.minX - 8 - nx), height: 16)
+        name.frame = NSRect(x: nx, y: (h - 16) / 2, width: max(60, size.frame.minX - 8 - nx), height: 16)
     }
 }
 
