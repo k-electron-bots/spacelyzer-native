@@ -303,6 +303,57 @@ struct SpacelyzerApp: App {
                             Check.expect("outline-sort-name-and-size-order", byName && bySize, "top=\(top.count) name=\(byName) size=\(bySize)")
                         }
                         mark(16)
+                        // Steps 17-19: visual evidence without a modal in the way. Step 15's "Moved ... to the Trash" alert
+                        // covered the earlier screenshots, so dismiss it, widen the sidebar so folder item counts show, and open the menus.
+                        model.removalMessage = nil; model.pendingRemoval = nil; model.clearFilters(); model.selected = nil
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        let split = DemoInput.allViews(of: NSSplitView.self).first
+                        split?.setPosition(460, ofDividerAt: 0)
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                        let sideW = split?.subviews.first?.frame.width ?? 0
+                        Check.expect("sidebar-widened-for-counts-no-modal", sideW >= 400 && model.removalMessage == nil, "sidebar=\(Int(sideW))")
+                        mark(17)
+                        try? await Task.sleep(nanoseconds: 3_000_000_000)
+                        let pops = DemoInput.allViews(of: NSPopUpButton.self).filter { $0.convert($0.bounds, to: nil).minX < 700 }
+                            .sorted { $0.convert($0.bounds, to: nil).minX < $1.convert($0.bounds, to: nil).minX }
+                        Check.expect("filter-and-sort-menu-buttons-found", pops.count >= 2, "popups=\(pops.count)")
+                        // Real control interactions (not model mutation): type in the ext field, pick menu items through NSMenu.
+                        if let field = DemoInput.allViews(of: NSTextField.self).first(where: { ($0.placeholderString ?? "") == "ext" }), let w = field.window {
+                            w.makeFirstResponder(field)
+                            field.currentEditor()?.insertText("pdf")
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            Check.expect("typing-in-ext-field-applies-extension-filter", model.filterExt == "pdf" && model.filterIsActive, "ext=\(model.filterExt)")
+                            w.makeFirstResponder(nil)
+                        } else { Check.expect("typing-in-ext-field-applies-extension-filter", false, "ext field not found") }
+                        func pick(_ title: String, in b: NSPopUpButton) -> Bool {
+                            func find(_ m: NSMenu) -> (NSMenu, Int)? {
+                                for (i, it) in m.items.enumerated() {
+                                    if it.title == title { return (m, i) }
+                                    if let sub = it.submenu, let r = find(sub) { return r }
+                                }
+                                return nil
+                            }
+                            guard let m = b.menu, let (mm, i) = find(m) else { return false }
+                            mm.performActionForItem(at: i); return true
+                        }
+                        if pops.count >= 2 {
+                            let okDate = pick("Last 7 days", in: pops[0])
+                            let okSort = pick("Name", in: pops[1])
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            Check.expect("menu-items-change-date-filter-and-sort", okDate && okSort && model.filterModifiedDays == 7 && model.outlineSort == .name, "date=\(okDate) sort=\(okSort) days=\(model.filterModifiedDays) sortMode=\(model.outlineSort)")
+                            let okClear = pick("Clear all filters", in: pops[0])
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            Check.expect("clear-all-filters-menu-item-resets", okClear && !model.filterIsActive, "clear=\(okClear) active=\(model.filterIsActive)")
+                            model.filterExt = "pdf"; model.filterModifiedDays = 30; model.outlineSort = .items   // leave filters applied for the menu screenshots
+                        }
+                        for (k, step) in [(0, 18), (1, 19)] where pops.count > k {
+                            let b = pops[k]
+                            Timer.scheduledTimer(withTimeInterval: 6, repeats: false) { _ in MainActor.assumeIsolated { b.menu?.cancelTracking() } }
+                            Task { @MainActor in try? await Task.sleep(nanoseconds: 300_000_000); mark(step) }
+                            b.performClick(nil)   // blocks in menu tracking until the timer cancels it
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                        }
+                        mark(20)
                     }
                 }
         }
@@ -318,6 +369,12 @@ struct SpacelyzerApp: App {
 
 /// CI-only: posts NSEvents straight to the app's key window so the real responder chain and SwiftUI focus handle them.
 @MainActor enum DemoInput {
+    static func allViews<T: NSView>(of type: T.Type) -> [T] {
+        var out: [T] = []
+        func walk(_ v: NSView) { if let t = v as? T { out.append(t) }; v.subviews.forEach(walk) }
+        for w in NSApp.windows where w.isVisible { if let c = w.contentView?.superview ?? w.contentView { walk(c) } }
+        return out
+    }
     static var window: NSWindow? { NSApp.keyWindow ?? NSApp.windows.first { $0.isVisible } }
     static func click(fromTop y: CGFloat, x: CGFloat) {
         guard let w = window else { Perf.log("kbd: no window"); return }

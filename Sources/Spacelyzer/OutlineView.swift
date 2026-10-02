@@ -110,7 +110,7 @@ private final class OutlineCell: NSTableCellView {
         size.frame = NSRect(x: bar.frame.minX - 8 - sizeW, y: (h - 16) / 2, width: sizeW, height: 16)
         let showCount = w >= 400 && !count.stringValue.isEmpty
         count.isHidden = !showCount
-        let countW: CGFloat = 56
+        let countW: CGFloat = 84
         count.frame = NSRect(x: size.frame.minX - 6 - countW, y: (h - 14) / 2, width: countW, height: 14)
         let nx = x0 + 40
         let nameRight = showCount ? count.frame.minX : size.frame.minX
@@ -195,11 +195,11 @@ private struct OutlineTable: NSViewRepresentable {
             let nm = tree.name(r.node)
             cell.name.stringValue = nm
             cell.size.stringValue = formatBytes(shown)
-            cell.count.stringValue = cell.hasChildren ? "\(info.childCount.formatted()) item\(info.childCount == 1 ? "" : "s")" : ""
+            cell.count.stringValue = isDir ? "\(info.childCount.formatted()) item\(info.childCount == 1 ? "" : "s")" : ""
             cell.bar.fraction = Double(shown) / Double(max(1, total))
             let node = r.node
             cell.onToggle = { [weak self] in self?.model.toggle(node) }
-            cell.setAccessibilityLabel("\(nm), \(isDir ? "folder" : "item"), \(formatBytes(shown))\(cell.hasChildren ? ", \(info.childCount) items" : "")")
+            cell.setAccessibilityLabel("\(nm), \(isDir ? "folder" : "item"), \(formatBytes(shown))\(isDir ? ", \(info.childCount) items" : "")")
             cell.setAccessibilityValue(cell.hasChildren ? (expanded ? "expanded" : "collapsed") : nil)
             cell.needsLayout = true
             return cell
