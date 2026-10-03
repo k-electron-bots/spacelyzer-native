@@ -203,11 +203,18 @@ struct TreemapView: View {
             // Status API: a stale filter or BUSY is never drawn as an empty picture. The previous layout stays up.
             let result = tree.layoutChecked(root: root, size: s, filter: flt)
             guard case .success(let l) = result else {
-                // STALE: the filter is being recomputed after a removal and relayout runs when it lands.
-                // BUSY: another read holds the engine's admission slots; try again shortly.
-                if case .failure(.busy) = result, !Task.isCancelled {
-                    try? await Task.sleep(nanoseconds: 100_000_000)
-                    await MainActor.run { if !Task.isCancelled, generation == request { relayout() } }
+                await MainActor.run {
+                    guard !Task.isCancelled, generation == request, model.tree === tree else { return }
+                    switch result.failureStatus {
+                    case .busy:
+                        // bounded and keyed by the model; the retry runs relayout(), which re-reads the CURRENT inputs
+                        model.retryBusy("layout") { relayout() }
+                    case .stale:
+                        // STALE: the filter handle is from an older table. If no recompute is pending, start one (bounded).
+                        if !model.filterPending { model.retryBusy("layout-stale") { model.scheduleFilter(immediate: true) } }
+                    default:
+                        model.markOutOfDate("The treemap could not be updated. Rescan.")
+                    }
                 }
                 return
             }
@@ -216,8 +223,10 @@ struct TreemapView: View {
             if let token { await barrier?(token, request, s, ObjectIdentifier(tree), flt.map(ObjectIdentifier.init)) }
             await MainActor.run {
                 let accepted: Bool
-                if !Task.isCancelled, generation == request, model.tree === tree,
+                if !Task.isCancelled, generation == request, model.tree === tree, l.version == tree.version,
+                   flt == nil || flt!.version == l.version,
                    model.revision == revision, model.displayedRoot == root, model.activeFilter === flt, size == s {
+                    model.retryDone("layout"); model.retryDone("layout-stale")
                     layout = l
                     layoutRevision = revision; layoutRoot = root; layoutFilter = flt; layoutSize = s
                     hovered = nil
@@ -234,6 +243,9 @@ struct TrailingPane: View {
     var body: some View {
         @Bindable var model = model
         VStack(spacing: 0) {
+            if let notice = model.coherenceNotice {
+                Text(notice).font(.caption).foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 8).padding(.vertical, 4)
+            }
             switch model.tab {
             case .treemap:
                 HStack {

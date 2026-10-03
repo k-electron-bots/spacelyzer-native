@@ -77,4 +77,7 @@ uint32_t spz_largest_status(const SpzTree *t, const SpzFilterResult *h, uint32_t
 void spz_category_totals_status(const SpzTree *t, const SpzFilterResult *h, uint64_t *out, uint64_t expected, uint64_t *version, int32_t *status);
 void spz_tree_node_status(const SpzTree *t, uint32_t id, SpzNode *out, uint64_t expected, uint64_t *version, int32_t *status);
 
+uint64_t spz_filter_version(const SpzFilterResult *h);
+uint64_t spz_layout_version(const SpzLayout *l);
+
 #endif
