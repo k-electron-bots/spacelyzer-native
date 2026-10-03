@@ -35,6 +35,20 @@ struct NodeInfo {
 
 let noNode = UInt32.max
 
+/// Outline rows with their details, all from one engine table version. `version` is the engine's stamp, never a re-read.
+struct OutlineSnapshot {
+    var rows: [SpzRow]
+    var infos: [NodeInfo]
+    var version: UInt64
+    var rootSize: UInt64
+    var totalBytes: UInt64
+}
+struct DerivedSnapshot {
+    var ids: [UInt32]
+    var kinds: [(category: FileCategory, bytes: UInt64, items: UInt64)]
+    var version: UInt64
+}
+
 /// Engine status codes (spacelyzer.h). A non-ok status is never turned into an empty or zero value.
 enum EngineStatus: Int32, Error {
     case ok = 0, stale, mutationFailed, invalid, busy, internalError
@@ -56,7 +70,9 @@ enum Perf {
 
 final class FilterResult: @unchecked Sendable {
     let ptr: OpaquePointer
-    init(_ p: OpaquePointer) { ptr = p }
+    /// Table version this result was computed on (stamped by the engine from the same capture as the data).
+    let version: UInt64
+    init(_ p: OpaquePointer) { ptr = p; version = spz_filter_version(p) }
     deinit { spz_filter_free(ptr) }
     var totalBytes: UInt64 { spz_filter_total_bytes(ptr) }
     var totalCount: UInt64 { spz_filter_total_count(ptr) }
@@ -160,6 +176,67 @@ final class Tree: @unchecked Sendable {
         return .success(l)
     }
 
+    /// One node read from one engine snapshot. `expected` = a version the caller holds, or nil for any.
+    func nodeChecked(_ id: UInt32, expected: UInt64? = nil) -> Result<(info: NodeInfo, version: UInt64), EngineStatus> {
+        var n = SpzNode(size: 0, own_bytes: 0, parent: noNode, child_count: 0, first_child: noNode, kind: 0, category: 0)
+        var v: UInt64 = 0, st: Int32 = -1
+        spz_tree_node_status(ptr, id, &n, expected ?? UInt64.max, &v, &st)
+        guard st == 0 else { return .failure(EngineStatus(raw: st)) }
+        return .success((NodeInfo(size: n.size, ownBytes: n.own_bytes, parent: n.parent == noNode ? nil : n.parent,
+                                  childCount: Int(n.child_count), firstChild: n.first_child,
+                                  kind: NodeKind(rawValue: n.kind) ?? .file, category: FileCategory(rawValue: Int(n.category)) ?? .other), v))
+    }
+
+    /// Outline rows plus the per-row node details, root size and tree total, all read at ONE table version.
+    /// A commit landing between the calls restarts the read (bounded). STALE with a filter means the filter result is old.
+    func outlineSnapshot(root: UInt32, expanded: Set<UInt32>, filter: FilterResult?, sort: OutlineSort) -> Result<OutlineSnapshot, EngineStatus> {
+        let ex = Array(expanded)
+        for _ in 0..<3 {
+            var v: UInt64 = 0, st: Int32 = -1
+            let n = Int(ex.withUnsafeBufferPointer { e in spz_outline_rows_status(ptr, root, e.baseAddress, UInt32(e.count), filter?.ptr, sort.rawValue, nil, 0, UInt64.max, &v, &st) })
+            guard st == 0 else { return .failure(EngineStatus(raw: st)) }
+            var rows = [SpzRow](repeating: SpzRow(node: 0, depth: 0), count: n)
+            var v2: UInt64 = 0, st2: Int32 = -1
+            let got = Int(ex.withUnsafeBufferPointer { e in rows.withUnsafeMutableBufferPointer { b in
+                spz_outline_rows_status(ptr, root, e.baseAddress, UInt32(e.count), filter?.ptr, sort.rawValue, b.baseAddress, UInt32(n), v, &v2, &st2) } })
+            if st2 == 1 && filter == nil { continue }          // a commit landed between count and fill: read again
+            guard st2 == 0, got == n else { return .failure(st2 == 0 ? .internalError : EngineStatus(raw: st2)) }
+            var infos: [NodeInfo] = []; infos.reserveCapacity(n)
+            var restart = false
+            for r in rows {
+                switch nodeChecked(r.node, expected: v) {
+                case .success(let x): infos.append(x.info)
+                case .failure(.stale) where filter == nil: restart = true
+                case .failure(let e): return .failure(e)
+                }
+                if restart { break }
+            }
+            if restart { continue }
+            guard case .success(let rootInfo) = nodeChecked(root, expected: v), case .success(let top) = nodeChecked(0, expected: v) else { continue }
+            return .success(OutlineSnapshot(rows: rows, infos: infos, version: v,
+                                            rootSize: filter?.size(root) ?? rootInfo.info.size, totalBytes: top.info.size))
+        }
+        return .failure(.stale)
+    }
+
+    /// Largest files and per-kind totals read at one table version.
+    func derivedSnapshot(filter: FilterResult?, count: Int) -> Result<DerivedSnapshot, EngineStatus> {
+        for _ in 0..<3 {
+            var ids = [UInt32](repeating: 0, count: count)
+            var v: UInt64 = 0, st: Int32 = -1
+            let c = ids.withUnsafeMutableBufferPointer { b in spz_largest_status(ptr, filter?.ptr, UInt32(count), b.baseAddress, UInt64.max, &v, &st) }
+            guard st == 0 else { return .failure(EngineStatus(raw: st)) }
+            var out = [UInt64](repeating: 0, count: 22)
+            var v2: UInt64 = 0, st2: Int32 = -1
+            out.withUnsafeMutableBufferPointer { b in spz_category_totals_status(ptr, filter?.ptr, b.baseAddress, v, &v2, &st2) }
+            if st2 == 1 && filter == nil { continue }
+            guard st2 == 0 else { return .failure(EngineStatus(raw: st2)) }
+            let kinds = FileCategory.allCases.map { (category: $0, bytes: out[$0.rawValue * 2], items: out[$0.rawValue * 2 + 1]) }
+            return .success(DerivedSnapshot(ids: Array(ids.prefix(Int(c))), kinds: kinds, version: v))
+        }
+        return .failure(.stale)
+    }
+
     /// True when `node` is `ancestor` or lies inside its subtree. Parent links are never changed by a removal.
     func isInside(_ node: UInt32, subtreeOf ancestor: UInt32) -> Bool {
         var cur: UInt32? = node
@@ -230,10 +307,13 @@ final class TreemapLayout: @unchecked Sendable {
     let rects: [TreemapRect]
     /// Identity of the tree these rects (and their node ids) belong to.
     var treeID: ObjectIdentifier?
+    /// Table version these rects were computed on (stamped by the engine from the same capture as the data).
+    let version: UInt64
 
     init(_ p: OpaquePointer?, size: CGSize) {
         ptr = p
         self.size = size
+        version = p.map { spz_layout_version($0) } ?? 0
         guard let p else { rects = []; return }
         let n = Int(spz_layout_count(p))
         let base = spz_layout_rects(p)

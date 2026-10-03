@@ -21,6 +21,7 @@ struct SpacelyzerApp: App {
                         while model.scanning || model.tree == nil { try? await Task.sleep(nanoseconds: 500_000_000) }
                         try? await Task.sleep(nanoseconds: 3_000_000_000)
                         await PublicationRegression.run(tree: model.tree!)
+                        await CommitOrderingRegression.run()
                         await ZeroMatchRegression.run()
                         MainStall.shared.start()
                         func mark(_ n: Int) {
@@ -1015,6 +1016,100 @@ private actor PublicationBarrier {
     }
 }
 
+
+/// Forced-order checks for removal commits. Source-only until a Mac build runs them (not compiled in the Linux sandbox).
+@MainActor private enum CommitOrderingRegression {
+    private static func fixture() -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("spz-commit-\(UUID().uuidString)")
+        let fm = FileManager.default
+        try? fm.createDirectory(at: root.appendingPathComponent("dirA/sub"), withIntermediateDirectories: true)
+        try? fm.createDirectory(at: root.appendingPathComponent("dirB"), withIntermediateDirectories: true)
+        for (n, k) in [("dirA/sub/deep.txt", 40_000), ("dirA/a.txt", 20_000), ("dirB/b.txt", 30_000), ("c.txt", 10_000)] {
+            fm.createFile(atPath: root.appendingPathComponent(n).path, contents: Data(repeating: 1, count: k))
+        }
+        return root
+    }
+    private static func scanned(_ root: URL) async -> AppModel? {
+        let m = AppModel(); m.scan(root.path)
+        _ = await PublicationRegression.wait { !m.scanning && m.tree != nil && !m.filterPending }
+        m.trashItem = { $0 }   // no real file is touched
+        return m.tree == nil ? nil : m
+    }
+    private static func node(_ m: AppModel, _ name: String) -> UInt32? {
+        guard let t = m.tree else { return nil }
+        return (0..<UInt32(t.nodeCount)).first { t.name($0) == name }
+    }
+    private static func remove(_ m: AppModel, _ id: UInt32) { m.pendingRemoval = id; m.confirmRemoval() }
+
+    static func run() async {
+        let root = fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        // 1. A filter publication parked BEFORE a removal commit must not publish old numbers afterwards.
+        if let m = await scanned(root), let big = node(m, "dirA") {
+            let barrier = PublicationBarrier("filter")
+            m.beforePublish = { await barrier.before($0, $1, $2) }
+            m.afterPublish = { await barrier.after($0, $1, $2) }
+            m.filterExt = "txt"
+            let parked = await PublicationRegression.wait { await barrier.parked() }
+            remove(m, big)
+            _ = await PublicationRegression.wait { m.commitsInFlight == 0 }
+            await barrier.release()
+            _ = await PublicationRegression.wait { await barrier.completed() }
+            _ = await PublicationRegression.wait { !m.actionsBlocked && !m.filterPending }
+            let ok = parked && m.tree.map { t in m.activeFilter.map { $0.version == t.version } ?? true } == true
+            Check.expect("commit-order-filter-parked-before-forget-late-publish-rejected", ok, "parked=\(parked) filterVersion=\(m.activeFilter?.version ?? 0) tree=\(m.tree?.version ?? 0)")
+        } else { Check.expect("commit-order-filter-parked-before-forget-late-publish-rejected", false, "fixture") }
+
+        // 2. A scan that started before a removal and publishes after it is marked out of date.
+        if let m = await scanned(root), let id = node(m, "dirB") {
+            let barrier = PublicationBarrier("scan-completion")
+            m.beforePublish = { await barrier.before($0, $1, $2) }
+            m.afterPublish = { await barrier.after($0, $1, $2) }
+            m.scan(root.path)
+            let parked = await PublicationRegression.wait { await barrier.parked() }
+            remove(m, id)
+            await barrier.release()
+            _ = await PublicationRegression.wait { await barrier.completed() }
+            Check.expect("commit-order-scan-started-before-fs-change-marked-out-of-date", parked && m.viewOutOfDate && m.actionsBlocked, "parked=\(parked) outOfDate=\(m.viewOutOfDate)")
+        } else { Check.expect("commit-order-scan-started-before-fs-change-marked-out-of-date", false, "fixture") }
+
+        // 3. The tree is replaced while a commit is in flight: the outcome is marked, not dropped.
+        // 4. Undo during a commit is refused and leaves the journal.
+        if let m = await scanned(root), let id = node(m, "dirB") {
+            let gate = PublicationBarrier("commit")
+            m.beforeCommit = { await gate.before("commit", 0, UUID()) }
+            remove(m, id)
+            let held = await PublicationRegression.wait { await gate.parked() }
+            m.undoRemoval()
+            let refused = (m.removalMessage ?? "").contains("still being applied") && !m.lastRemoved.isEmpty
+            let other = await ScanSession(root: root.path, excludes: [])?.run { _ in }
+            let old = m.tree
+            m.tree = other
+            await gate.release()
+            _ = await PublicationRegression.wait { m.commitsInFlight == 0 }
+            Check.expect("commit-order-undo-during-commit-refused", held && refused)
+            Check.expect("commit-order-replaced-tree-outcome-marked-not-dropped", old !== other && m.viewOutOfDate && (m.removalMessage ?? "").contains("Rescan"), "outOfDate=\(m.viewOutOfDate)")
+        } else { Check.expect("commit-order-undo-during-commit-refused", false, "fixture"); Check.expect("commit-order-replaced-tree-outcome-marked-not-dropped", false, "fixture") }
+
+        // 5. Selected, expanded and displayed root inside a removed subtree are reset with the new numbers.
+        if let m = await scanned(root), let dir = node(m, "dirA"), let sub = node(m, "sub"), let deep = node(m, "deep.txt") {
+            m.expanded = [dir, sub]; m.selected = deep; m.displayedRoot = sub
+            remove(m, dir)
+            _ = await PublicationRegression.wait { m.commitsInFlight == 0 && !m.actionsBlocked }
+            Check.expect("commit-order-subtree-state-reset", m.selected == nil && !m.expanded.contains(dir) && !m.expanded.contains(sub) && m.displayedRoot == 0, "selected=\(String(describing: m.selected)) root=\(m.displayedRoot)")
+        } else { Check.expect("commit-order-subtree-state-reset", false, "fixture") }
+
+        // 6. An engine failure after a successful filesystem move marks the view out of date and blocks further removals.
+        if let m = await scanned(root), let id = node(m, "c.txt") {
+            m.commitOverride = { _, _ in .mutationFailed }
+            remove(m, id)
+            _ = await PublicationRegression.wait { m.commitsInFlight == 0 }
+            let blocked = m.actionsBlocked
+            m.removalMessage = nil
+            if let other = node(m, "b.txt") { remove(m, other) }
+            Check.expect("commit-order-failure-after-fs-success-persistent-out-of-date", m.viewOutOfDate && blocked && !(m.lastRemoved.isEmpty), "outOfDate=\(m.viewOutOfDate)")
+        } else { Check.expect("commit-order-failure-after-fs-success-persistent-out-of-date", false, "fixture") }
+    }
+}
 
 /// Isolated native API guards, not actual keyboard-shortcut or IME proof.
 @MainActor private enum BoundaryGuardRegression {

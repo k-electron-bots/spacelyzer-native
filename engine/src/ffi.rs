@@ -577,3 +577,11 @@ pub unsafe extern "C" fn spz_tree_node_status(t: *const Tree, id: NodeId, out: *
         };
     })
 }
+
+/// Table version a filter result was computed on (0 for null).
+#[no_mangle]
+pub unsafe extern "C" fn spz_filter_version(h: *const FilterHandle) -> u64 { if h.is_null() { 0 } else { (*h).2 } }
+
+/// Table version a layout was computed on (0 for null).
+#[no_mangle]
+pub unsafe extern "C" fn spz_layout_version(l: *const Layout) -> u64 { if l.is_null() { 0 } else { (*l).version } }

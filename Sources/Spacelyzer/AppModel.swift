@@ -121,7 +121,7 @@ final class AppModel {
     func clearFilters() { filterResetRevision &+= 1; filterText = ""; filterKind = nil; filterMinMB = 0; filterMaxMB = 0; filterModifiedDays = 0; filterExt = "" }
 
     /// Filtering runs in Rust off the main thread, debounced; the UI keeps the last result until the new one lands.
-    func scheduleFilter() {
+    func scheduleFilter(immediate: Bool = false) {
         filterTask?.cancel()
         filterGeneration &+= 1
         let generation = filterGeneration, barrier = beforePublish, completed = afterPublish
@@ -133,7 +133,7 @@ final class AppModel {
         let ext = filterExt.trimmingCharacters(in: .whitespaces)
         let active = filterIsActive
         filterTask = Task.detached(priority: .userInitiated) { [weak self] in
-            try? await Task.sleep(nanoseconds: 150_000_000)
+            if !immediate { try? await Task.sleep(nanoseconds: 150_000_000) }
             if Task.isCancelled { return }
             let t0 = DispatchTime.now().uptimeNanoseconds
             var r: FilterResult? = nil
@@ -151,10 +151,11 @@ final class AppModel {
                 await MainActor.run {
                     guard let self, self.filterGeneration == generation, self.tree === tree else { return }
                     if failure == .busy {
-                        Task { @MainActor [weak self] in try? await Task.sleep(nanoseconds: 100_000_000); if let self, self.filterGeneration == generation { self.scheduleFilter() } }
+                        // Pending stays true (visible), retries are bounded and keyed; the retry re-reads the current filter inputs.
+                        self.retryBusy("filter") { [weak self] in self?.scheduleFilter(immediate: true) }
                     } else {
                         self.filterPending = false
-                        self.removalMessage = "The filter could not run (\(failure)). The list may be out of date. Try again, or rescan."
+                        self.markOutOfDate("The filter could not run (\(failure)). The list may be out of date. Rescan, or try again.")
                     }
                 }
                 return
@@ -162,7 +163,13 @@ final class AppModel {
             let publication = UUID()
             await barrier?("filter", generation, publication)
             await MainActor.run {
-                guard let self, !Task.isCancelled, self.filterGeneration == generation, self.tree === tree else { return }
+                guard let self, !Task.isCancelled, self.filterGeneration == generation, self.tree === tree,
+                      (r == nil || r!.version == tree.version) else {
+                    // computed on a table that a commit has since replaced: a newer filter run is queued by that commit
+                    if let self, self.filterGeneration == generation, self.tree === tree { self.scheduleFilter(immediate: true) }
+                    return
+                }
+                self.retryDone("filter")
                 self.activeFilter = r
                 self.filterPending = false
                 self.filterMillis = ms
@@ -185,20 +192,34 @@ final class AppModel {
         let flt = activeFilter
         derivedTask = Task.detached(priority: .userInitiated) { [weak self] in
             let t0 = Perf.now()
-            let ids = tree.largestFiles(200, filter: flt)
-            let kinds = tree.categoryTotals(filter: flt).filter { $0.items > 0 }.sorted { $0.bytes > $1.bytes }.map { KindRow(category: $0.category, bytes: $0.bytes, items: $0.items) }
+            let result = tree.derivedSnapshot(filter: flt, count: 200)
             if Task.isCancelled { return }
-            Perf.log("derived largest=\(ids.count) kinds=\(kinds.count) filtered=\(flt != nil) rust_ms=\(String(format: "%.2f", Perf.ms(since: t0)))")
+            guard case .success(let snap) = result else {
+                await MainActor.run {
+                    guard let self, self.derivedGeneration == generation, self.tree === tree else { return }
+                    self.handleReadFailure(result.failureStatus, key: "derived") { [weak self] in self?.refreshDerived() }
+                }
+                return
+            }
+            Perf.log("derived largest=\(snap.ids.count) kinds=\(snap.kinds.count) filtered=\(flt != nil) rust_ms=\(String(format: "%.2f", Perf.ms(since: t0)))")
             let publication = UUID()
             await barrier?("derived", generation, publication)
             await MainActor.run {
-                guard let self, !Task.isCancelled, self.derivedGeneration == generation, self.tree === tree else { return }
-                self.largestIDs = ids; self.kindRows = kinds
+                // Full key: tree identity, generation, and the table version the data was read at (the engine's stamp).
+                guard let self, !Task.isCancelled, self.derivedGeneration == generation, self.tree === tree, snap.version == tree.version, flt == nil || flt!.version == snap.version else { return }
+                self.retryDone("derived")
+                self.largestIDs = snap.ids
+                self.kindRows = snap.kinds.filter { $0.items > 0 }.sorted { $0.bytes > $1.bytes }.map { KindRow(category: $0.category, bytes: $0.bytes, items: $0.items) }
             }
             await completed?("derived", generation, publication)
         }
     }
     var outlineRows: [SpzRow] = []
+    /// Node details for each row, same index and same table version as outlineRows.
+    var outlineInfos: [NodeInfo] = []
+    var outlineRootSize: UInt64 = 0
+    var publishedTotalBytes: UInt64 = 0
+    var publishedVersion: UInt64 = 0
     /// node -> row index, built off the main thread with the rows so selection lookups are O(1).
     var outlineIndex: [UInt32: Int] = [:]
     /// Bumps whenever outlineRows is replaced, so the table reloads exactly once per change.
@@ -217,16 +238,30 @@ final class AppModel {
         outlineTask?.cancel()
         outlineTask = Task.detached(priority: .userInitiated) { [weak self] in
             let t0 = DispatchTime.now().uptimeNanoseconds
-            let rows = tree.outlineRows(root: root, expanded: ex, filter: flt, sort: sort)
+            let result = tree.outlineSnapshot(root: root, expanded: ex, filter: flt, sort: sort)
             let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
-            var index = [UInt32: Int](minimumCapacity: rows.count)
-            for (i, r) in rows.enumerated() { index[r.node] = i }
             if Task.isCancelled { return }
+            guard case .success(let snap) = result else {
+                await MainActor.run {
+                    guard let self, self.outlineGeneration == generation, self.tree === tree else { return }
+                    self.handleReadFailure(result.failureStatus, key: "outline") { [weak self] in self?.refreshOutline() }
+                }
+                return
+            }
+            var index = [UInt32: Int](minimumCapacity: snap.rows.count)
+            for (i, r) in snap.rows.enumerated() { index[r.node] = i }
             let publication = UUID()
             await barrier?("outline", generation, publication)
             await MainActor.run {
-                guard let self, !Task.isCancelled, self.outlineGeneration == generation, self.tree === tree else { return }
-                self.outlineRows = rows; self.outlineIndex = index; self.outlineRevision += 1; self.outlineMillis = ms
+                // Full key: tree identity, generation, table version of the read, and the filter's own version.
+                guard let self, !Task.isCancelled, self.outlineGeneration == generation, self.tree === tree, snap.version == tree.version, flt == nil || flt!.version == snap.version else { return }
+                self.retryDone("outline")
+                // Rows, per-row details, root size and total are published in ONE main-actor turn from ONE table version,
+                // so cells never mix rows from one version with sizes from another.
+                self.outlineRows = snap.rows; self.outlineInfos = snap.infos; self.outlineRootSize = snap.rootSize
+                self.publishedTotalBytes = snap.totalBytes; self.publishedVersion = snap.version
+                self.outlineIndex = index; self.outlineRevision += 1; self.outlineMillis = ms
+                if self.refreshAfterCommit && !self.filterPending { self.refreshAfterCommit = false }
             }
             await completed?("outline", generation, publication)
         }
@@ -268,6 +303,51 @@ final class AppModel {
     var lastRemoved: [RemovedItem] = []
     var removalMessage: String?
 
+    // MARK: coherence state (filesystem vs engine numbers)
+    /// Counts every filesystem change this app made (successful Trash move, successful undo). A scan that started
+    /// before a change and finishes after it cannot be trusted to include it.
+    var fsEpoch = 0
+    /// Reserved BEFORE the Trash move is attempted, cleared when its engine commit has been published or has failed.
+    var mutationPending = false
+    /// Removals whose filesystem move finished but whose engine commit has not been published yet.
+    var commitsInFlight = 0
+    /// The on-screen numbers may not match the disk. Persistent until a scan that provably started after the last change lands.
+    var viewOutOfDate = false
+    var outOfDateReason: String?
+    /// After a commit, outline, lists and layout are being recomputed on the new table. Rows shown meanwhile are the
+    /// previous publication, so reveal, drill and removal are disabled until it lands.
+    var refreshAfterCommit = false
+    /// Every action that reads or acts on shown rows is disabled unless this is false.
+    var actionsBlocked: Bool { viewOutOfDate || mutationPending || commitsInFlight > 0 || refreshAfterCommit }
+    /// Text for a persistent banner (nil when coherent).
+    var coherenceNotice: String? {
+        if viewOutOfDate { return outOfDateReason ?? "The numbers on screen may be out of date. Rescan." }
+        if mutationPending || commitsInFlight > 0 || refreshAfterCommit { return "Updating after a change. Selecting, opening and removing are paused for a moment." }
+        return nil
+    }
+    func markOutOfDate(_ reason: String) { viewOutOfDate = true; outOfDateReason = reason; refreshAfterCommit = false }
+
+    // MARK: bounded, keyed retry for BUSY (one slot per key; the action re-reads CURRENT inputs, never captured old ones)
+    private var retryTasks: [String: Task<Void, Never>] = [:]
+    private var retryAttempts: [String: Int] = [:]
+    func retryBusy(_ key: String, _ action: @escaping @MainActor () -> Void) {
+        let n = (retryAttempts[key] ?? 0) + 1
+        retryTasks[key]?.cancel()
+        guard n <= 5 else {
+            retryAttempts[key] = nil; retryTasks[key] = nil
+            markOutOfDate("The engine stayed busy and the list could not be refreshed. Rescan, or try again.")
+            return
+        }
+        retryAttempts[key] = n
+        retryTasks[key] = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(100_000_000 * n))
+            if Task.isCancelled { return }
+            self?.retryTasks[key] = nil
+            action()
+        }
+    }
+    func retryDone(_ key: String) { retryAttempts[key] = nil; retryTasks[key]?.cancel(); retryTasks[key] = nil }
+
     private var session: ScanSession?
 
     func chooseFolder() {
@@ -288,6 +368,8 @@ final class AppModel {
         scanning = true
         error = nil
         rootPath = path
+        // A scan that overlaps a filesystem change cannot prove it includes that change.
+        let epochAtStart = fsEpoch, mutatingAtStart = mutationPending || commitsInFlight > 0
         progress = ScanSnapshot(items: 0, bytes: 0)
         let start = Date()
         guard let s = ScanSession(root: path, excludes: exclusions) else {
@@ -321,9 +403,12 @@ final class AppModel {
                 // Node ids are only valid for one tree: drop every id-keyed cache in the same main-actor turn
                 // so no view can index the new tree with ids from the old one.
                 filterTask?.cancel(); derivedTask?.cancel(); outlineTask?.cancel()
-                outlineRows = []; outlineIndex = [:]; outlineRevision += 1; expanded = []; largestIDs = []; kindRows = []; activeFilter = nil
+                outlineRows = []; outlineInfos = []; outlineIndex = [:]; outlineRevision += 1; expanded = []; largestIDs = []; kindRows = []; activeFilter = nil
                 pendingRemoval = nil
-                viewOutOfDate = false
+                if fsEpoch != epochAtStart || mutatingAtStart || mutationPending || commitsInFlight > 0 {
+                    markOutOfDate("Files were moved while this scan ran, so it may not match the disk. Rescan.")
+                } else { viewOutOfDate = false; outOfDateReason = nil }
+                refreshAfterCommit = false
                 tree = t
                 displayedRoot = 0
                 selected = nil
@@ -340,7 +425,7 @@ final class AppModel {
     func cancel() { session?.cancel() }
 
     func drill(into id: UInt32) {
-        guard let tree else { return }
+        guard let tree, !actionsBlocked else { return }
         let n = tree.info(id)
         guard n.kind == .directory, n.childCount > 0 else { return }
         displayedRoot = id
@@ -395,37 +480,58 @@ final class AppModel {
             removalMessage = "\(path) is protected and cannot be removed from here."
             return
         }
-        if commitsInFlight > 0 { removalMessage = "The previous change is still being applied. Try again in a moment."; return }
-        if viewOutOfDate { removalMessage = "The numbers on screen are out of date after an earlier change. Rescan before removing more."; return }
+        if actionsBlocked { removalMessage = coherenceNotice ?? "Please wait for the previous change to finish."; return }
         let url = URL(fileURLWithPath: path)
         let size = tree.info(id).size
+        mutationPending = true      // reserved before the write, so no scan or undo can slip in between
         do {
             // 1. Filesystem outcome first (the real event). It is journaled in lastRemoved immediately.
             let trashed = try trashItem(url)
+            fsEpoch += 1
             lastRemoved = [RemovedItem(original: url, trashed: trashed, size: size)]
             // 2. Engine commit on the serial commit lane, off the main actor. Table copy is O(nodes).
             commitsInFlight += 1
             Task { [weak self] in
-                let status = await Self.commitLane.forget(tree, id)
+                if let hook = self?.beforeCommit { await hook() }     // test seam: park between the FS move and the commit
+                let status: EngineStatus
+                if let o = self?.commitOverride { status = await o(tree, id) } else { status = await Self.commitLane.forget(tree, id) }
                 await MainActor.run { self?.finishCommit(tree: tree, removed: id, status: status, name: url.lastPathComponent) }
             }
         } catch {
+            mutationPending = false
             removalMessage = "Could not move it to the Trash: \(error.localizedDescription)"
         }
     }
 
-    /// Serial lane for engine mutations. One removal is one commit and one version; nothing runs on the main actor.
+    /// Serial lane for engine mutations. Ordering does not rely on actor FIFO: confirmRemoval admits one removal at a
+    /// time (commitsInFlight/mutationPending), and the engine's single writer mutex serializes the rest.
     static let commitLane = CommitLane()
-    /// Removals whose filesystem move finished but whose engine commit has not been published yet.
-    var commitsInFlight = 0
-    /// Set when the filesystem changed but the engine numbers could not be updated. Only a rescan clears it.
-    var viewOutOfDate = false
+    /// Test seams only (nil in the app).
+    var beforeCommit: (() async -> Void)?
+    var commitOverride: ((Tree, UInt32) async -> EngineStatus)?
 
     /// Publishes one removal on the main actor. Ordered after the filesystem outcome; every outcome is reported.
+    /// One place for non-OK read statuses: BUSY is retried (bounded, keyed); STALE with a filter means the filter is old and
+    /// is recomputed; anything else marks the view out of date. Nothing is shown as empty.
+    private func handleReadFailure(_ status: EngineStatus?, key: String, retry: @escaping @MainActor () -> Void) {
+        switch status {
+        case .busy: retryBusy(key, retry)
+        case .stale:
+            if !filterPending { if filterIsActive { scheduleFilter(immediate: true) } else { retryBusy(key, retry) } }
+        default: markOutOfDate("The list could not be refreshed (\(status.map { "\($0)" } ?? "unknown")). Rescan.")
+        }
+    }
+
     private func finishCommit(tree: Tree, removed id: UInt32, status: EngineStatus, name: String) {
         commitsInFlight = max(0, commitsInFlight - 1)
-        // The tree was replaced by a rescan while the commit ran: the rescan already reflects the filesystem.
-        guard self.tree === tree else { return }
+        mutationPending = commitsInFlight > 0
+        // The tree was replaced while the commit ran. The filesystem change is real and not necessarily in the new
+        // tree (the scan may have read the folder before the move). Mark it explicitly instead of dropping the outcome.
+        guard self.tree === tree else {
+            markOutOfDate("\(name) was moved to the Trash while a scan was replacing the results, so they may still include it. Rescan.")
+            removalMessage = "Moved \(name) to the Trash. The new results may not reflect it. Rescan to refresh."
+            return
+        }
         switch status {
         case .ok:
             // Clear every id-keyed piece of state inside the removed subtree in the same turn as the new numbers.
@@ -433,10 +539,14 @@ final class AppModel {
             expanded = expanded.filter { !tree.isInside($0, subtreeOf: id) }
             if tree.isInside(displayedRoot, subtreeOf: id) { displayedRoot = tree.info(id).parent ?? 0 }
             revision += 1
+            // Rows and the layout on screen are the PREVIOUS publication until the recomputed ones land (no old row is
+            // erased early), so actions that read them stay disabled (actionsBlocked via refreshAfterCommit).
+            refreshAfterCommit = true
             if filterIsActive {
-                // The active filter result belongs to the old table (STALE). Recompute; its landing refreshes
-                // outline, derived lists and layout, so nothing is drawn from the old filter in between.
-                scheduleFilter()
+                // The active filter result belongs to the old table (STALE). Recompute without the typing debounce;
+                // its landing refreshes outline, derived lists and layout.
+                filterPending = true
+                scheduleFilter(immediate: true)
             } else {
                 refreshOutline()
                 refreshDerived()
@@ -444,16 +554,23 @@ final class AppModel {
             removalMessage = "Moved \(name) to the Trash."
         case .mutationFailed, .invalid, .internalError, .stale, .busy:
             // The file is in the Trash, but the numbers on screen could not be updated. Say so; never report success.
-            viewOutOfDate = true
+            markOutOfDate("\(name) is in the Trash but the numbers on screen could not be updated (\(status)). Rescan to refresh.")
             removalMessage = "Moved \(name) to the Trash, but the numbers on screen could not be updated (\(status)). Rescan to refresh. You can still put it back."
         }
     }
 
     func undoRemoval() {
+        // Undo is a filesystem change too. It is refused while a removal is mid-flight, and afterwards the view is
+        // persistently out of date: the engine cannot add a subtree back, only a rescan can.
+        if mutationPending || commitsInFlight > 0 { removalMessage = "The previous change is still being applied. Try again in a moment."; return }
+        mutationPending = true
+        defer { mutationPending = false }
         for item in lastRemoved {
             do {
                 try FileManager.default.moveItem(at: item.trashed, to: item.original)
-                removalMessage = "Put \(item.original.lastPathComponent) back. Rescan to refresh sizes."
+                fsEpoch += 1
+                markOutOfDate("Restored on disk. Rescan to bring it back.")
+                removalMessage = "Put \(item.original.lastPathComponent) back. Restored on disk. Rescan to bring it back."
             } catch {
                 removalMessage = "Could not put it back: \(error.localizedDescription)"
             }
@@ -462,7 +579,7 @@ final class AppModel {
     }
 
     func reveal(_ id: UInt32) {
-        guard let tree else { return }
+        guard let tree, !actionsBlocked else { return }
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: tree.path(id))])
     }
 }
@@ -480,6 +597,8 @@ struct KindRow: Identifiable, Sendable {
 }
 
 /// Serializes engine mutations off the main actor. A removal's filesystem move happens before it is enqueued.
+extension Result { var failureStatus: EngineStatus? { if case .failure(let e) = self { return e as? EngineStatus } else { return nil } } }
+
 actor CommitLane {
     func forget(_ tree: Tree, _ id: UInt32) -> EngineStatus { tree.forget(id) }
 }

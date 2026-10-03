@@ -130,7 +130,7 @@ struct OutlineView: View {
 
     var body: some View {
         if let tree = model.tree {
-            let total = max(1, model.activeFilter?.size(model.displayedRoot) ?? tree.info(model.displayedRoot).size)
+            let total = max(1, model.outlineRootSize)   // same publication and table version as the rows
             OutlineTable(model: model, tree: tree, total: total, revision: model.outlineRevision, selected: model.selected)
                 .overlay {
                     if model.activeFilter != nil && model.outlineRows.isEmpty {
@@ -375,11 +375,11 @@ private struct OutlineTable: NSViewRepresentable {
         func numberOfRows(in tableView: NSTableView) -> Int { model.outlineRows.count }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-            guard let tree, row < model.outlineRows.count else { return nil }
+            guard let tree, row < model.outlineRows.count, row < model.outlineInfos.count else { return nil }
             let id = NSUserInterfaceItemIdentifier("cell")
             let cell = (tableView.makeView(withIdentifier: id, owner: nil) as? OutlineCell) ?? { let c = OutlineCell(frame: .zero); c.identifier = id; return c }()
             let r = model.outlineRows[row]
-            let info = tree.info(r.node)
+            let info = model.outlineInfos[row]   // published with the rows, never read live from the engine
             let shown = model.activeFilter?.size(r.node) ?? info.size
             let isDir = info.kind == .directory
             let expanded = model.expanded.contains(r.node)
