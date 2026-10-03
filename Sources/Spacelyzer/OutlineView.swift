@@ -63,7 +63,7 @@ import SwiftUI
         guard records.count < 8192 else { dropped += 1; return }
         records.append(("event=\(attribution ?? label) \(stage)", stamp ?? Perf.now()))
     }
-    private static func timestampBin(_ timestamp: TimeInterval) -> Int64? {
+    nonisolated private static func timestampBin(_ timestamp: TimeInterval) -> Int64? {
         guard timestamp.isFinite, timestamp >= 0 else { return nil }
         let microseconds = (timestamp * 1_000_000).rounded()
         guard microseconds.isFinite, microseconds >= 0, microseconds < Double(Int64.max) else { return nil }
