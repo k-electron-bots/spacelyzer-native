@@ -338,8 +338,13 @@ final class TreemapLayout: @unchecked Sendable {
 
 struct ScanSnapshot { var items: UInt64; var bytes: UInt64 }
 
+/// Sticky count of panics the engine caught at its FFI boundary. A legacy read that returns 0/empty after a caught panic
+/// looks like valid data, so the app compares this against a per-loaded-tree baseline before trusting or acting on it.
+enum EnginePanics { static var count: UInt64 { spz_engine_panic_count() } }
+
 final class ScanSession: @unchecked Sendable {
     private let handle: OpaquePointer
+    private let panicsAtStart = EnginePanics.count
     init?(root: String, excludes: [String]) {
         guard let h = spz_scan_start(root, excludes.joined(separator: "\n")) else { return nil }
         handle = h
@@ -356,6 +361,8 @@ final class ScanSession: @unchecked Sendable {
             if p.finished != 0 { break }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
+        // A panic caught anywhere while this scan ran means its result cannot be trusted: report it as a failed scan.
+        if EnginePanics.count != panicsAtStart { if let t = spz_scan_take_tree(handle) { spz_tree_free(t) }; return nil }
         guard let t = spz_scan_take_tree(handle) else { return nil }
         return Tree(t)
     }
