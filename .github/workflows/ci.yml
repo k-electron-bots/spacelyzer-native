@@ -73,7 +73,7 @@ jobs:
       - name: Package signed DMG
         run: ./scripts/package-dmg.sh "${{ steps.ver.outputs.version }}" "${{ steps.sign.outputs.hash }}"
       - name: Build TEST-ONLY app with SPZ_CI_TESTS (never packaged or released; the DMG above is built without the flag)
-        run: ./scripts/build-test-app.sh dist-test "${{ steps.sign.outputs.hash }}"
+        run: bash ./scripts/build-test-app.sh dist-test "${{ steps.sign.outputs.hash }}"
       - name: Launch app and screenshot (informational)
         continue-on-error: true
         run: |
