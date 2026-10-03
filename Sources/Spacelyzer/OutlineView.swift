@@ -15,7 +15,7 @@ import SwiftUI
     static func finish() {
         guard let start = began else { return }
         began = nil
-        Perf.log("interaction-clock pid=\(ProcessInfo.processInfo.processIdentifier) uptime_ns=\(start) wall_before_unix=\(wallBefore) wall_after_unix=\(wallAfter) arm=sampled-requested; profiler/log perturbation retained")
+        Perf.log("interaction-clock pid=\(ProcessInfo.processInfo.processIdentifier) uptime_ns=\(start) wall_before_unix=\(wallBefore) wall_after_unix=\(wallAfter) arm=sampled-requested-settle-1s; altered-idle=true no-cold-comparability; profiler/log perturbation retained")
         for (stage, stamp) in records { Perf.log("interaction-stage \(stage) uptime_ns=\(stamp) elapsed_ms=\(Double(stamp - start) / 1e6)") }
         records = []
     }
