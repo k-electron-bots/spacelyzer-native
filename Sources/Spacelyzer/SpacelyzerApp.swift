@@ -88,23 +88,28 @@ struct SpacelyzerApp: App {
                         let clickBefore = model.selected, clickT0 = Perf.now()
                         DemoInput.click(fromTop: 124, x: 168)                       // a visible outline row
                         while model.selected == clickBefore && Perf.ms(since: clickT0) < 5000 { try? await Task.sleep(nanoseconds: 1_000_000) }
-                        Perf.log("click-latency (post -> selection changed): \(String(format: "%.1f", Perf.ms(since: clickT0))) ms")
+                        let clickLatency = Perf.ms(since: clickT0)
+                        InteractionTrace.driverResumed(clickLatency, selectionChanged: model.selected != clickBefore)
                         try? await Task.sleep(nanoseconds: 1_000_000_000)
                         InteractionTrace.finish()
+                        Perf.log("click-latency (post -> selection changed): \(String(format: "%.1f", clickLatency)) ms")
                         Perf.log(MainStall.shared.summary("click-only"))
                         MainStall.shared.reset()
                         Perf.log("kbd: after click selected=\(model.selected.map(String.init) ?? "nil")")
                         let idx0 = model.selected.flatMap { n in model.outlineRows.firstIndex { $0.node == n } }
                         Check.expect("click-selects-a-row", idx0 != nil)
                         // Per-key latency: post the key, wait (1 ms polls) until the selection actually changes.
+                        InteractionTrace.begin("arrows")
                         var lat: [Double] = []
                         for _ in 0..<40 {
                             let before = model.selected, t0 = Perf.now()
                             DemoInput.key(125)
                             while model.selected == before && Perf.ms(since: t0) < 3000 { try? await Task.sleep(nanoseconds: 1_000_000) }
                             lat.append(Perf.ms(since: t0))
+                            InteractionTrace.driverResumed(lat.last!, selectionChanged: model.selected != before)
                             try? await Task.sleep(nanoseconds: 30_000_000)
                         }
+                        InteractionTrace.finish()
                         let sorted = lat.sorted()
                         Perf.log("key-latency 40 down arrows (post -> selection changed, ms): p50=\(String(format: "%.1f", sorted[20])) p95=\(String(format: "%.1f", sorted[37])) max=\(String(format: "%.1f", sorted[39])) first=\(String(format: "%.1f", lat[0]))")
                         try? await Task.sleep(nanoseconds: 2_000_000_000)
@@ -799,7 +804,7 @@ struct SpacelyzerApp: App {
         for t in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
             if let e = NSEvent.mouseEvent(with: t, location: p, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                           windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) {
-                if t == .leftMouseDown { InteractionTrace.record("leftMouseDown-post-before") }
+                if t == .leftMouseDown { InteractionTrace.willPost(e) }
                 NSApp.postEvent(e, atStart: false)
                 if t == .leftMouseDown { InteractionTrace.record("leftMouseDown-post-after") }
             }
@@ -821,7 +826,11 @@ struct SpacelyzerApp: App {
         for t in [NSEvent.EventType.keyDown, .keyUp] {
             if let e = NSEvent.keyEvent(with: t, location: .zero, modifierFlags: modifiers, timestamp: ProcessInfo.processInfo.systemUptime,
                                         windowNumber: w.windowNumber, context: nil, characters: ch, charactersIgnoringModifiers: ignoring,
-                                        isARepeat: false, keyCode: code) { NSApp.postEvent(e, atStart: false) }
+                                        isARepeat: false, keyCode: code) {
+                if t == .keyDown { InteractionTrace.willPost(e) }
+                NSApp.postEvent(e, atStart: false)
+                if t == .keyDown { InteractionTrace.record("keyDown-post-after") }
+            }
         }
     }
 }
