@@ -1161,6 +1161,16 @@ private actor PublicationBarrier {
             m.layoutNotRenderable()
             Check.expect("commit-order-layout-not-renderable-releases", held && m.requiredVersion == nil && !m.navigationBlocked, "held=\(held) req=\(String(describing: m.requiredVersion))")
         } else { Check.expect("commit-order-layout-not-renderable-releases", false, "fixture") }
+        // 8c. Selection/alert numbers come from one capture and are withheld (nil) while rows are pending; removal is blocked then.
+        if let m = await scanned(root), let id = node(m, "dirA") {
+            let before = m.nodeSnapshot(id)
+            m.requiredVersion = m.tree?.version          // simulate "rows pending"
+            let during = m.nodeSnapshot(id)
+            let blocked = m.removalBlockedReason(id) != nil
+            m.requiredVersion = nil
+            let after = m.nodeSnapshot(id)
+            Check.expect("commit-order-node-snapshot-withheld-while-pending", before != nil && during == nil && blocked && after != nil && after?.version == m.tree?.version, "before=\(before != nil) during=\(during == nil) blocked=\(blocked) after=\(after != nil)")
+        } else { Check.expect("commit-order-node-snapshot-withheld-while-pending", false, "fixture") }
         // 8b. Deadline must not livelock: repeated publishes of an already-current surface do not reset it; a layout that
         // never lands ends in an explicit out-of-date error after the forced refresh and one extension.
         if let m = await scanned(root), let id = node(m, "dirB") {

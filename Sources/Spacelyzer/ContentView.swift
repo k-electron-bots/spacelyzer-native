@@ -58,7 +58,11 @@ struct ContentView: View {
             Button("Cancel", role: .cancel) { model.pendingRemoval = nil }
         } message: {
             if let id = model.pendingRemoval, let t = model.tree {
-                Text("\(t.path(id))\n\(formatBytes(t.info(id).size)). You can put it back right after.")
+                if let snap = model.nodeSnapshot(id) {
+                    Text("\(snap.path)\n\(formatBytes(snap.info.size)). You can put it back right after.")
+                } else {
+                    Text("\(t.path(id))\nThe size is updating. You can put it back right after.")
+                }
             }
         }
         .alert("Spacelyzer", isPresented: Binding(get: { model.removalMessage != nil }, set: { if !$0 { model.removalMessage = nil } })) {
