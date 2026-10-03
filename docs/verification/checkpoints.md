@@ -268,3 +268,13 @@ Two new actual mounted filter checks independently accepted. Held old UUID0563E0
 Diagnosticselection708.9/stall708.3,warm57.9; arrowp50/p95/max37.6/109.2/575.3ms/stall569.1,typing211.1,hover0.2. Alteredidle arm,mixed sharedrunner/profiler perturbation,no original-cold comparison or overall win. Clock/sample remains coarse,not causal stack chronology.
 
 [Run118](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37111144701) · [Artifact](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37111144701/artifacts/11269359238). Historical native failures retained; no broader AX/VoiceOver/tooltip/compliance claim.
+
+## Run119: actual first-pending treemap unmount
+
+October3,source `d4a6f0a`: Swift/Linux/client compiled; strict UI gate failed,90PASS/1FAIL of91,48states,release skipped. Sole failure remains in-process footer full-label retrieval; separate external exact-details regression passed.
+
+Two new first-pending unmount checks independently accepted. Actual conditional hosting removal fired onDisappear and advanced privategeneration3/currentLayoutnil while old real Rust publication was held. Exact oldUUIDE3E049EF/requestgeneration2/computedtree0x75f734380 main-actor callback ran after release and rejected with currentLayoutnil/treenil/zerosize. Actual pixels47/48 inspected: only readable centered placeholder on520x300, no old-pending.txt or returned layout, unchanged after release. First pending layout only, not raw stored-layout inspection, already-published cleanup, remount, gesture or universal protection. Previous resize/tree/filter/external exact checks passed within their previous narrow scopes.
+
+Diagnosticselection1575.4/stall1570.3,warm45.4; arrowp50/p95/max28.2/104.9/1451.1ms/stall1455.3,typing278.5,hover0.9. These substantial stalls remain unresolved. Alteredidle arm/sharedrunner/profiler perturbation,no original-cold comparison or overall win. Next work is focused causal diagnostics before optimization, not more green fixtures.
+
+[Run119](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37115126519) · [Artifact](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37115126519/artifacts/11271710264). Historical native failures retained; no broader AX/VoiceOver/tooltip/compliance claim.
