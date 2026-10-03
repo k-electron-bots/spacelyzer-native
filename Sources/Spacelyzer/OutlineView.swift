@@ -37,11 +37,35 @@ private final class KeyTable: NSTableView {
     var onTab: (() -> Void)?
     var onKey: ((UInt16) -> Bool)?
     var contextRow: ((Int) -> NSMenu?)?
+    private func tabDiagnostic(_ stage: String, _ event: NSEvent? = nil) {
+        guard Perf.on else { return }
+        Perf.log("native-tab \(stage) code=\(event.map { String($0.keyCode) } ?? "none") modifiers=\(event.map { String($0.modifierFlags.rawValue) } ?? "none") nextRaw=\(String(describing: nextKeyView)) responder=\(String(describing: window?.firstResponder))")
+    }
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.keyCode == 48 { tabDiagnostic("keyEquivalent-entry", event) }
+        let handled = super.performKeyEquivalent(with: event)
+        if event.keyCode == 48 { tabDiagnostic("keyEquivalent-exit-handled=\(handled)", event) }
+        return handled
+    }
+    override func insertTab(_ sender: Any?) {
+        tabDiagnostic("insertTab-entry")
+        super.insertTab(sender)
+        tabDiagnostic("insertTab-exit")
+    }
+    override func insertBacktab(_ sender: Any?) {
+        tabDiagnostic("insertBacktab-entry")
+        super.insertBacktab(sender)
+        tabDiagnostic("insertBacktab-exit")
+    }
     override func keyDown(with event: NSEvent) {
+        if event.keyCode == 48 { tabDiagnostic("keyDown-entry", event) }
         if event.keyCode == 48 && event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
+            tabDiagnostic("before-reconnect", event)
             onTab?()
+            tabDiagnostic("after-reconnect", event)
             if event.modifierFlags.contains(.shift) { window?.selectPreviousKeyView(self) }
             else { window?.selectNextKeyView(self) }
+            tabDiagnostic("after-select", event)
             return
         }
         if let h = onKey, h(event.keyCode) { return }
