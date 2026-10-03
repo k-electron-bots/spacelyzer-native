@@ -94,6 +94,7 @@ struct WelcomeView: View {
 }
 
 struct StatusBar: View {
+    var demoDetailsCaptured: ((String) -> Void)? = nil
     /// Measured on CI: NavigationSplitView columns extend to the window bottom (frame bottom = 612 = window height), under this bar.
     static let height: CGFloat = 26
     @Environment(AppModel.self) private var model
@@ -115,6 +116,7 @@ struct StatusBar: View {
         }
         .font(.caption).lineLimit(1).padding(.horizontal, 10)
         .frame(height: Self.height).background(.bar)
+        .onAppear { if Perf.on { demoDetailsCaptured?(fullDetails) } }
     }
     @ViewBuilder private func summary(compact: Bool) -> some View {
         HStack(spacing: compact ? 5 : 8) {
