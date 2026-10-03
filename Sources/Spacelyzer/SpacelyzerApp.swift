@@ -20,6 +20,7 @@ struct SpacelyzerApp: App {
                     if env["SPZ_AUTOSCAN"] != nil, env["SPZ_DEMO"] != nil {
                         while model.scanning || model.tree == nil { try? await Task.sleep(nanoseconds: 500_000_000) }
                         try? await Task.sleep(nanoseconds: 3_000_000_000)
+                        if env["SPZ_CHECKS"] == "ordering" { await OrderingDriver.run(tree: model.tree!) }   // never returns
                         await PublicationRegression.run(tree: model.tree!)
                         await CommitOrderingRegression.run()
                         await ZeroMatchRegression.run()
@@ -839,7 +840,10 @@ struct SpacelyzerApp: App {
 
 /// CI-only: pass/fail assertions, written to their own file so evidence never depends on log truncation.
 @MainActor enum Check {
+    /// In-memory copy of every result, used by the CI ordering driver to verify the run itself (not only the file).
+    static var results: [(name: String, ok: Bool)] = []
     static func expect(_ name: String, _ ok: Bool, _ detail: String = "") {
+        results.append((name, ok))
         let line = "\(ok ? "PASS" : "FAIL") \(name) \(detail)\n"
         let url = URL(fileURLWithPath: "/tmp/spz-assertions.txt")
         if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); try? h.close() } else { try? line.write(to: url, atomically: true, encoding: .utf8) }
@@ -1857,4 +1861,84 @@ final class BusyFlag: @unchecked Sendable {
     private let lock = NSLock(); private var b: Bool
     init(_ v: Bool) { b = v }
     var value: Bool { get { lock.lock(); defer { lock.unlock() }; return b } set { lock.lock(); b = newValue; lock.unlock() } }
+}
+
+/// CI-only driver (SPZ_DEMO + SPZ_AUTOSCAN + SPZ_CHECKS=ordering): runs ONLY the model-level ordering/coherence checks, verifies
+/// the result set fails closed, writes /tmp/spz-ordering-result.txt and exits. Not compiled behavior in release use: the
+/// entry is gated by the same env vars as the other CI-only scripts.
+@MainActor enum OrderingDriver {
+    /// Every check name that must appear exactly once as PASS. A check that silently does not run, runs twice, or is
+    /// not listed here fails the run. Add a name here in the same change that adds a check.
+    static let required: [String] = [
+        "async-removal-cancel-is-harmless-and-does-not-stop-the-move",
+        "async-removal-failure-leaves-tree-untouched",
+        "async-removal-forgets-after-success",
+        "async-removal-main-actor-stays-responsive",
+        "async-removal-tree-swapped-mid-move-skips-forget",
+        "async-removal-vanished-original-reported-and-marked-out-of-date",
+        "async-undo-after-rescan-restores-and-marks-out-of-date",
+        "async-undo-attempted-after-commit-lands",
+        "async-undo-collision-keeps-entry-and-overwrites-nothing",
+        "async-undo-refused-while-commit-parked",
+        "async-undo-restores-and-clears-entry",
+        "commit-order-all-surfaces-required-before-unblock",
+        "commit-order-busy-retry-bounded",
+        "commit-order-busy-retry-new-inputs-reset",
+        "commit-order-cell-values-published-with-rows",
+        "commit-order-deadline-terminal-when-layout-missing",
+        "commit-order-failure-after-fs-success-persistent-out-of-date",
+        "commit-order-filter-parked-before-forget-late-publish-rejected",
+        "commit-order-layout-not-renderable-releases",
+        "commit-order-node-snapshot-withheld-while-pending",
+        "commit-order-replaced-tree-outcome-marked-not-dropped",
+        "commit-order-retry-keys-change-with-version",
+        "commit-order-scan-replacement-clears-published-totals",
+        "commit-order-scan-started-before-fs-change-marked-out-of-date",
+        "commit-order-subtree-state-reset",
+        "commit-order-undo-during-commit-refused",
+        "node-busy-6plus-placeholder-recovers-and-cancels-on-selection-change",
+        "poison-idle-counter-move-observed-by-watch",
+        "poison-latches-refuses-and-clears-spinner",
+        "poison-refuses-parked-derived-publication",
+        "race-old-derived-after-clear-rejected",
+        "race-old-filter-after-newer-rejected",
+        "race-old-outline-after-tree-clear-rejected",
+        "race-old-outline-after-tree-swap-rejected",
+        "race-old-scan-completion-after-new-scan-rejected",
+        "race-old-scan-progress-after-new-scan-rejected",
+        "retry-new-inputs-replace-pending-action",
+        "retry-same-inputs-dedupes-to-one-fire",
+        "zero-match-root-count-and-layout-data-contract",
+        "zero-match-selection-removal-policy"
+    ]
+    static func run(tree: Tree) async -> Never {
+        // Hard timeout: a hang or deadlock is a failure, never a pass.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 300) {
+            try? "FAIL timeout\n".write(toFile: "/tmp/spz-ordering-result.txt", atomically: true, encoding: .utf8); exit(2)
+        }
+        try? FileManager.default.removeItem(atPath: "/tmp/spz-assertions.txt")
+        try? FileManager.default.removeItem(atPath: "/tmp/spz-ordering-result.txt")
+        Check.results.removeAll()
+        await PublicationRegression.run(tree: tree)
+        await CommitOrderingRegression.run()
+        await ZeroMatchRegression.run()
+        await AsyncRemovalRegression.run()
+        var problems: [String] = []
+        if Check.results.isEmpty { problems.append("no results recorded") }
+        let fileOK = (try? String(contentsOfFile: "/tmp/spz-assertions.txt", encoding: .utf8))?.isEmpty == false
+        if !fileOK { problems.append("assertion file missing or empty") }
+        let counts = Dictionary(grouping: Check.results, by: { $0.name })
+        for r in required {
+            let rs = counts[r] ?? []
+            if rs.isEmpty { problems.append("missing: \(r)") }
+            else if rs.count != 1 { problems.append("duplicate (\(rs.count)): \(r)") }
+            else if !rs[0].ok { problems.append("FAIL: \(r)") }
+        }
+        let allowed = Set(required)
+        for (n, rs) in counts where !allowed.contains(n) { problems.append("unlisted result \(n) ok=\(rs.map { $0.ok })") }
+        for r in Check.results where !r.ok && allowed.contains(r.name) == false { problems.append("FAIL (unlisted): \(r.name)") }
+        let body = problems.isEmpty ? "PASS \(required.count) required checks, each exactly once\n" : "FAIL\n" + problems.joined(separator: "\n") + "\n"
+        try? body.write(toFile: "/tmp/spz-ordering-result.txt", atomically: true, encoding: .utf8)
+        exit(problems.isEmpty ? 0 : 1)
+    }
 }
