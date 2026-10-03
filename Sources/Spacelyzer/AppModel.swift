@@ -78,7 +78,7 @@ final class AppModel {
     var error: String?
 
     var displayedRoot: UInt32 = 0
-    var selected: UInt32?
+    var selected: UInt32? { didSet { if selected != oldValue { retryDone("node") } } }   // a retry for the old selection must not outlive it
     var expanded: Set<UInt32> = []
     private var editorOrigin = false
     var externalFilterTextRevision: UInt64 = 0
@@ -577,12 +577,15 @@ final class AppModel {
     struct NodeSnapshot { let id: UInt32; let version: UInt64; let info: NodeInfo; let name: String; let path: String }
     @ObservationIgnored private var nodeCache: NodeSnapshot?
     @ObservationIgnored private var nodeCacheTree: ObjectIdentifier?
+    /// Test seam: replaces the engine read for the selected-node snapshot (nil in the app).
+    @ObservationIgnored var nodeCheckedOverride: ((Tree, UInt32) -> Result<(info: NodeInfo, version: UInt64), EngineStatus>)?
+    func retryPending(_ key: String) -> Bool { retryTasks[key] != nil }
     /// Views read this so a bounded retry re-renders them (a view body must not mutate state itself).
     var nodeRetryToken = 0
     func nodeSnapshot(_ id: UInt32) -> NodeSnapshot? {
         guard let tree, !rowsPending, !enginePoisoned, UInt64(id) < tree.nodeCount else { return nil }
         _ = nodeRetryToken
-        switch tree.nodeChecked(id) {
+        switch nodeCheckedOverride?(tree, id) ?? tree.nodeChecked(id) {
         case .success(let r):
             let snap = NodeSnapshot(id: id, version: r.version, info: r.info, name: tree.name(id), path: tree.path(id))
             nodeCache = snap; nodeCacheTree = ObjectIdentifier(tree)
