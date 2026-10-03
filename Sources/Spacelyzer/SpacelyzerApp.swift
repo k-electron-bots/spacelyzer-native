@@ -1069,16 +1069,23 @@ private actor PublicationBarrier {
         if let b2 = node(m2, "b.bin") {
             let gate = OpenGate()
             m2.trashItem = { url in url }   // pretend moved; the file stays, so this exercises ordering only
+            defer { gate.open() }   // never leave the commit parked if a check below fails early
             m2.beforeCommit = { while !gate.isOpen { try? await Task.sleep(nanoseconds: 5_000_000) } }
             m2.proposeRemoval(of: b2); m2.confirmRemoval()
             let parkedOK = await PublicationRegression.wait { m2.commitsInFlight == 1 && !m2.removalInFlight }
             let journaled = m2.lastRemoved.count == 1
             let items0 = m2.lastRemoved
             m2.undoRemoval()
-            let refused = (m2.removalMessage ?? "").contains("still being applied") && m2.lastRemoved.count == items0.count && !m2.removalInFlight
+            let refused = (m2.removalMessage ?? "").contains("still being applied") && m2.lastRemoved.map(\.original) == items0.map(\.original) && m2.lastRemoved.map(\.trashed) == items0.map(\.trashed) && items0.first?.original.lastPathComponent == "b.bin" && !m2.removalInFlight
             gate.open()
             let settled = await m2.settleRemoval()
             Check.expect("async-undo-refused-while-commit-parked", parkedOK && journaled && refused && settled && m2.commitsInFlight == 0, "parked=\(parkedOK) journaled=\(journaled) refused=\(refused) settled=\(settled)")
+            // After the commit has landed, undo is ATTEMPTED (not refused as in-progress). The mock left the file in place,
+            // so the attempt ends as a collision and the journal entry is kept.
+            m2.removalMessage = nil
+            m2.undoRemoval(); await m2.settleRemoval()
+            let msg = m2.removalMessage ?? ""
+            Check.expect("async-undo-attempted-after-commit-lands", !msg.contains("still being applied") && msg.contains("already exists") && m2.lastRemoved.count == 1, "message=\(msg)")
         } else { Check.expect("async-undo-refused-while-commit-parked", false, "fixture") }
     }
 }
