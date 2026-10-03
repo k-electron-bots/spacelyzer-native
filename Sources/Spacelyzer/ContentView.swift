@@ -323,11 +323,10 @@ private struct NameFilterField: NSViewRepresentable {
         }
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
             if Perf.on { Perf.log("native-tab field-command=\(NSStringFromSelector(commandSelector)) responder=\(String(describing: control.window?.firstResponder))") }
-            guard commandSelector == #selector(NSResponder.insertBacktab(_:)) else { return false }
-            model.prepareOutlineFocusTraversal()
-            control.window?.selectPreviousKeyView(control)
-            if Perf.on { Perf.log("native-tab field-backtab-postselect responder=\(String(describing: control.window?.firstResponder))") }
-            return true
+            guard commandSelector == #selector(NSResponder.insertBacktab(_:)), !textView.hasMarkedText() else { return false }
+            // Do not intercept modified shortcuts, or IME composition commands.
+            if let event = NSApp.currentEvent, !event.modifierFlags.intersection([.command, .control, .option]).isEmpty { return false }
+            return model.focusOutlineFromName(control, editor: textView, modifiers: NSApp.currentEvent?.modifierFlags ?? []).consumesCommand
         }
         func controlTextDidChange(_ notification: Notification) {
             guard !programmaticChange, let field = notification.object as? NSTextField else { return }
