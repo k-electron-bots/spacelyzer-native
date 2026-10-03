@@ -81,13 +81,14 @@ func fill(_ r: TreemapRect, tree: Tree, coloring: TreemapColoring) -> Color {
 
 /// Optional CI hook. With nil (normal app), no waits or evidence callbacks occur.
 @MainActor final class TreemapPublicationProbe {
-    var before: (@Sendable (UUID, UInt64, CGSize, ObjectIdentifier) async -> Void)?
-    var after: ((UUID, UInt64, CGSize, ObjectIdentifier, Bool, TreemapPublicationEvidence) -> Void)?
+    var before: (@Sendable (UUID, UInt64, CGSize, ObjectIdentifier, ObjectIdentifier?) async -> Void)?
+    var after: ((UUID, UInt64, CGSize, ObjectIdentifier, ObjectIdentifier?, Bool, TreemapPublicationEvidence) -> Void)?
     var readEvidence: (() -> TreemapPublicationEvidence)?
 }
 struct TreemapPublicationEvidence {
     let layoutID: ObjectIdentifier?
     let treeID: ObjectIdentifier?
+    let filterID: ObjectIdentifier?
     let size: CGSize
     let hitValid: Bool
 }
@@ -183,7 +184,7 @@ struct TreemapView: View {
         let rect = current?.rects.first { !$0.isDirectoryFrame && $0.rect.width > 1 && $0.rect.height > 1 }
         let hit = rect.flatMap { current?.hit(CGPoint(x: $0.rect.midX, y: $0.rect.midY)) }
         let valid = hit.map { h in model.tree.map { UInt64(h.node) < $0.nodeCount && h.node == rect?.node } ?? false } ?? false
-        return TreemapPublicationEvidence(layoutID: current.map(ObjectIdentifier.init), treeID: current?.treeID, size: current?.size ?? .zero, hitValid: valid)
+        return TreemapPublicationEvidence(layoutID: current.map(ObjectIdentifier.init), treeID: current?.treeID, filterID: current != nil ? layoutFilter.map(ObjectIdentifier.init) : nil, size: current?.size ?? .zero, hitValid: valid)
     }
 
     /// Layout runs in Rust off the main thread; the previous picture stays up until the new one lands.
@@ -201,7 +202,7 @@ struct TreemapView: View {
             let l = tree.layout(root: root, size: s, filter: flt)
             if Task.isCancelled { return }
             let token = (barrier != nil || completed != nil) ? UUID() : nil
-            if let token { await barrier?(token, request, s, ObjectIdentifier(tree)) }
+            if let token { await barrier?(token, request, s, ObjectIdentifier(tree), flt.map(ObjectIdentifier.init)) }
             await MainActor.run {
                 let accepted: Bool
                 if !Task.isCancelled, generation == request, model.tree === tree,
@@ -211,7 +212,7 @@ struct TreemapView: View {
                     hovered = nil
                     accepted = true
                 } else { accepted = false }
-                if let token { completed?(token, request, s, ObjectIdentifier(tree), accepted, publicationEvidence()) }
+                if let token { completed?(token, request, s, ObjectIdentifier(tree), flt.map(ObjectIdentifier.init), accepted, publicationEvidence()) }
             }
         }
     }
