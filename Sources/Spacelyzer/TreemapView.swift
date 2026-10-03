@@ -84,6 +84,7 @@ func fill(_ r: TreemapRect, tree: Tree, coloring: TreemapColoring) -> Color {
     var before: (@Sendable (UUID, UInt64, CGSize, ObjectIdentifier, ObjectIdentifier?) async -> Void)?
     var after: ((UUID, UInt64, CGSize, ObjectIdentifier, ObjectIdentifier?, Bool, TreemapPublicationEvidence) -> Void)?
     var readEvidence: (() -> TreemapPublicationEvidence)?
+    var disappeared: ((UInt64, TreemapPublicationEvidence) -> Void)?
 }
 struct TreemapPublicationEvidence {
     let layoutID: ObjectIdentifier?
@@ -166,7 +167,7 @@ struct TreemapView: View {
             .onChange(of: model.revision) { hovered = nil; relayout() }
             .onChange(of: model.filterRevision) { relayout() }
             .onAppear { relayout() }
-            .onDisappear { task?.cancel(); generation &+= 1; hovered = nil }
+            .onDisappear { task?.cancel(); generation &+= 1; hovered = nil; publicationProbe?.disappeared?(generation, publicationEvidence()) }
     }
 
     @ViewBuilder private var readout: some View {
