@@ -79,7 +79,21 @@ func fill(_ r: TreemapRect, tree: Tree, coloring: TreemapColoring) -> Color {
 }
 
 
+/// Optional CI hook. With nil (normal app), no waits or evidence callbacks occur.
+@MainActor final class TreemapPublicationProbe {
+    var before: (@Sendable (UUID, UInt64, CGSize) async -> Void)?
+    var after: ((UUID, UInt64, CGSize, Bool, TreemapPublicationEvidence) -> Void)?
+    var readEvidence: (() -> TreemapPublicationEvidence)?
+}
+struct TreemapPublicationEvidence {
+    let layoutID: ObjectIdentifier?
+    let treeID: ObjectIdentifier?
+    let size: CGSize
+    let hitValid: Bool
+}
+
 struct TreemapView: View {
+    var publicationProbe: TreemapPublicationProbe? = nil
     @Environment(AppModel.self) private var model
     @State private var size: CGSize = .zero
     @State private var layout: TreemapLayout?
@@ -163,8 +177,18 @@ struct TreemapView: View {
         }
     }
 
+    /// Reads private published state and the production currentLayout/hit path, not a copied gate.
+    private func publicationEvidence() -> TreemapPublicationEvidence {
+        let current = currentLayout
+        let rect = current?.rects.first { !$0.isDirectoryFrame && $0.rect.width > 1 && $0.rect.height > 1 }
+        let hit = rect.flatMap { current?.hit(CGPoint(x: $0.rect.midX, y: $0.rect.midY)) }
+        let valid = hit.map { h in model.tree.map { UInt64(h.node) < $0.nodeCount && h.node == rect?.node } ?? false } ?? false
+        return TreemapPublicationEvidence(layoutID: current.map(ObjectIdentifier.init), treeID: current?.treeID, size: current?.size ?? .zero, hitValid: valid)
+    }
+
     /// Layout runs in Rust off the main thread; the previous picture stays up until the new one lands.
     private func relayout() {
+        if let publicationProbe { publicationProbe.readEvidence = { publicationEvidence() } }
         task?.cancel()
         generation &+= 1
         let request = generation
@@ -172,15 +196,22 @@ struct TreemapView: View {
         guard let tree = model.tree, size.width > 1, size.height > 1 else { layout = nil; return }
         let root = model.displayedRoot, revision = model.revision
         let s = size, flt = model.activeFilter
+        let barrier = publicationProbe?.before, completed = publicationProbe?.after
         task = Task.detached(priority: .userInitiated) {
             let l = tree.layout(root: root, size: s, filter: flt)
             if Task.isCancelled { return }
+            let token = (barrier != nil || completed != nil) ? UUID() : nil
+            if let token { await barrier?(token, request, s) }
             await MainActor.run {
-                guard !Task.isCancelled, generation == request, model.tree === tree,
-                      model.revision == revision, model.displayedRoot == root, model.activeFilter === flt, size == s else { return }
-                layout = l
-                layoutRevision = revision; layoutRoot = root; layoutFilter = flt; layoutSize = s
-                hovered = nil
+                let accepted: Bool
+                if !Task.isCancelled, generation == request, model.tree === tree,
+                   model.revision == revision, model.displayedRoot == root, model.activeFilter === flt, size == s {
+                    layout = l
+                    layoutRevision = revision; layoutRoot = root; layoutFilter = flt; layoutSize = s
+                    hovered = nil
+                    accepted = true
+                } else { accepted = false }
+                if let token { completed?(token, request, s, accepted, publicationEvidence()) }
             }
         }
     }
