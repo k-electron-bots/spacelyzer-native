@@ -993,6 +993,7 @@ private actor PublicationBarrier {
         for d in [root, other] { try? fm.createDirectory(at: d, withIntermediateDirectories: true) }
         fm.createFile(atPath: root.appendingPathComponent("a.bin").path, contents: Data(repeating: 1, count: 100_000))
         fm.createFile(atPath: root.appendingPathComponent("b.bin").path, contents: Data(repeating: 2, count: 100_000))
+        fm.createFile(atPath: root.appendingPathComponent("restore-me.bin").path, contents: Data(repeating: 4, count: 80_000))
         fm.createFile(atPath: other.appendingPathComponent("c.bin").path, contents: Data(repeating: 3, count: 50_000))
         defer { try? fm.removeItem(at: root); try? fm.removeItem(at: other) }
         func scan(_ m: AppModel, _ dir: URL) async {
@@ -1087,6 +1088,32 @@ private actor PublicationBarrier {
             let msg = m2.removalMessage ?? ""
             Check.expect("async-undo-attempted-after-commit-lands", !msg.contains("still being applied") && msg.contains("already exists") && m2.lastRemoved.count == 1, "message=\(msg)")
         } else { Check.expect("async-undo-refused-while-commit-parked", false, "fixture") }
+
+        // 6. A real (temp-dir) move, then a rescan replaces the tree, then undo: the file comes back on disk, the journal
+        // is cleared, and the view stays marked out of date (the engine cannot add a subtree back).
+        let m3 = AppModel(); await scan(m3, root)
+        if let c3 = node(m3, "restore-me.bin") {
+            let bin = fm.temporaryDirectory.appendingPathComponent("spz-fake-trash-\(UUID().uuidString)"); try? fm.createDirectory(at: bin, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: bin) }
+            m3.trashItem = { url in let dest = bin.appendingPathComponent(url.lastPathComponent); try FileManager.default.moveItem(at: url, to: dest); return dest }
+            m3.proposeRemoval(of: c3); m3.confirmRemoval(); _ = await m3.settleRemoval()
+            let moved = !fm.fileExists(atPath: root.appendingPathComponent("restore-me.bin").path) && m3.lastRemoved.count == 1
+            await scan(m3, root)   // tree replaced after the move
+            m3.undoRemoval(); _ = await m3.settleRemoval()
+            let back = fm.fileExists(atPath: root.appendingPathComponent("restore-me.bin").path)
+            Check.expect("async-undo-after-rescan-restores-and-marks-out-of-date", moved && back && m3.lastRemoved.isEmpty && m3.viewOutOfDate, "moved=\(moved) back=\(back) journal=\(m3.lastRemoved.count) outOfDate=\(m3.viewOutOfDate)")
+        } else { Check.expect("async-undo-after-rescan-restores-and-marks-out-of-date", false, "fixture") }
+
+        // 7. Cancelling the removal task mid-move cannot undo the filesystem change: the outcome is still journaled and
+        // the flags clear (the move runs in a detached task that cancellation does not stop).
+        let m4 = AppModel(); await scan(m4, root)
+        if let a4 = node(m4, "a.bin") {
+            m4.trashItem = { url in Thread.sleep(forTimeInterval: 0.3); return url }
+            m4.proposeRemoval(of: a4); m4.confirmRemoval()
+            m4.removalTask?.cancel()
+            let settled = await m4.settleRemoval()
+            Check.expect("async-removal-cancelled-task-still-journals-and-clears-flags", settled && m4.lastRemoved.count == 1 && !m4.removalInFlight && !m4.mutationPending && m4.commitsInFlight == 0, "settled=\(settled) journal=\(m4.lastRemoved.count) inFlight=\(m4.removalInFlight) pending=\(m4.mutationPending)")
+        } else { Check.expect("async-removal-cancelled-task-still-journals-and-clears-flags", false, "fixture") }
     }
 }
 
