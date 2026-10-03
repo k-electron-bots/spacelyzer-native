@@ -4,7 +4,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 use crate::category::CATEGORY_COUNT;
-use crate::layout::{hit_test, layout, LayoutOptions, Rect};
+use crate::layout::{hit_test, LayoutOptions, Rect};
 use crate::scan::{scan, ScanOptions, ScanProgress};
 use crate::tree::{NodeId, Tree};
 use std::ffi::{c_char, CStr, CString};
