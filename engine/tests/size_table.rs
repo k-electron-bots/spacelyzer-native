@@ -320,3 +320,36 @@ fn snapshot_reads_carry_version_and_reject_stale_between_count_and_fill() {
         spz_filter_free(h);
     }
 }
+
+#[test]
+fn outline_snapshot_is_one_capture_with_rows_infos_root_and_total_at_one_version() {
+    use spacelyzer_engine::ffi::*;
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut t0 = Tree::synthetic(20_000); t0.uid = 9;
+    let tp = &t0 as *const Tree;
+    unsafe {
+        let (mut v, mut st, mut rs, mut tot) = (0u64, -1i32, 0u64, 0u64);
+        let n = spz_outline_snapshot_status(tp, 0, std::ptr::null(), 0, std::ptr::null(), 0, std::ptr::null_mut(), std::ptr::null_mut(), 0, u64::MAX, &mut v, &mut rs, &mut tot, &mut st);
+        assert!(st == 0 && n > 0);
+        let mut rows = vec![std::mem::zeroed::<spacelyzer_engine::outline::Row>(); n as usize];
+        let mut infos = (0..n).map(|_| std::mem::zeroed::<SpzRowInfo>()).collect::<Vec<_>>();
+        let (mut v2, mut st2, mut rs2, mut tot2) = (0u64, -1i32, 0u64, 0u64);
+        let c0 = spacelyzer_engine::tree::reserved_bytes();
+        let got = spz_outline_snapshot_status(tp, 0, std::ptr::null(), 0, std::ptr::null(), 0, rows.as_mut_ptr(), infos.as_mut_ptr(), n, v, &mut v2, &mut rs2, &mut tot2, &mut st2);
+        assert_eq!((got, st2, v2), (n, 0, v));
+        assert_eq!(spacelyzer_engine::tree::reserved_bytes(), c0, "slot released after the single capture");
+        let tab = t0.table();
+        assert!(infos.iter().zip(rows.iter()).all(|(i, r)| i.node.size == tab.sizes[r.node as usize] && i.shown == i.node.size));
+        assert_eq!((rs2, tot2), (tab.sizes[0], tab.sizes[0]));
+        // a commit between count and fill: STALE, nothing written
+        t0.forget(some_dirs(&t0, 1)[0]).unwrap();
+        let mut infos2 = (0..n).map(|_| std::mem::zeroed::<SpzRowInfo>()).collect::<Vec<_>>();
+        let n2 = spz_outline_snapshot_status(tp, 0, std::ptr::null(), 0, std::ptr::null(), 0, rows.as_mut_ptr(), infos2.as_mut_ptr(), n, v, &mut v2, &mut rs2, &mut tot2, &mut st2);
+        assert_eq!((n2, st2), (0, 1));
+        // BUSY is a status, never an empty OK
+        let held: Vec<_> = (0..admission_cap(t0.len())).map(|_| t0.capture().unwrap()).collect();
+        let nb = spz_outline_snapshot_status(tp, 0, std::ptr::null(), 0, std::ptr::null(), 0, std::ptr::null_mut(), std::ptr::null_mut(), 0, u64::MAX, &mut v2, &mut rs2, &mut tot2, &mut st2);
+        assert_eq!((nb, st2), (0, 4));
+        drop(held);
+    }
+}

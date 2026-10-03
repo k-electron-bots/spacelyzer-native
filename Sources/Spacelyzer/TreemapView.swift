@@ -166,6 +166,7 @@ struct TreemapView: View {
             .onChange(of: model.displayedRoot) { relayout() }
             .onChange(of: model.revision) { hovered = nil; relayout() }
             .onChange(of: model.filterRevision) { relayout() }
+            .onChange(of: model.layoutRetryToken) { relayout() }
             .onAppear { relayout() }
             .onDisappear { task?.cancel(); generation &+= 1; hovered = nil; publicationProbe?.disappeared?(generation, publicationEvidence()) }
     }
@@ -208,10 +209,10 @@ struct TreemapView: View {
                     switch result.failureStatus {
                     case .busy:
                         // bounded and keyed by the model; the retry runs relayout(), which re-reads the CURRENT inputs
-                        model.retryBusy("layout") { relayout() }
+                        model.retryBusy("layout", inputs: model.layoutInputKey(root: root, size: s)) { model.layoutRetryToken &+= 1 }
                     case .stale:
                         // STALE: the filter handle is from an older table. If no recompute is pending, start one (bounded).
-                        if !model.filterPending { model.retryBusy("layout-stale") { model.scheduleFilter(immediate: true) } }
+                        if !model.filterPending { model.retryBusy("layout-stale", inputs: model.layoutInputKey(root: root, size: s)) { model.scheduleFilter(immediate: true) } }
                     default:
                         model.markOutOfDate("The treemap could not be updated. Rescan.")
                     }
@@ -226,7 +227,7 @@ struct TreemapView: View {
                 if !Task.isCancelled, generation == request, model.tree === tree, l.version == tree.version,
                    flt == nil || flt!.version == l.version,
                    model.revision == revision, model.displayedRoot == root, model.activeFilter === flt, size == s {
-                    model.retryDone("layout"); model.retryDone("layout-stale")
+                    model.retryDone("layout"); model.retryDone("layout-stale"); model.layoutPublished(l.version)
                     layout = l
                     layoutRevision = revision; layoutRoot = root; layoutFilter = flt; layoutSize = s
                     hovered = nil

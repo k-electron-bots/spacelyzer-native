@@ -541,6 +541,7 @@ pub unsafe extern "C" fn spz_outline_rows_status(
 #[no_mangle]
 pub unsafe extern "C" fn spz_largest_status(t: *const Tree, h: *const FilterHandle, cap: u32, out: *mut NodeId, expected: u64, version: *mut u64, status: *mut i32) -> u32 {
     guarded(status, 0, || {
+        if out.is_null() && cap > 0 { if !status.is_null() { *status = 3; } return 0; }
         let Some(c) = snapshot(t, h, expected, status, version) else { return 0 };
         let v = if h.is_null() { (*t).largest_files_in(&c.table, cap as usize) } else { crate::filter::largest_files(&*t, &(*h).0, cap as usize) };
         for (i, id) in v.iter().enumerate() { *out.add(i) = *id; }
@@ -552,6 +553,7 @@ pub unsafe extern "C" fn spz_largest_status(t: *const Tree, h: *const FilterHand
 #[no_mangle]
 pub unsafe extern "C" fn spz_category_totals_status(t: *const Tree, h: *const FilterHandle, out: *mut u64, expected: u64, version: *mut u64, status: *mut i32) {
     guarded(status, (), || {
+        if out.is_null() { if !status.is_null() { *status = 3; } return; }
         let Some(c) = snapshot(t, h, expected, status, version) else { return };
         let totals = if h.is_null() { (*t).category_totals_in(&c.table) } else { crate::filter::category_totals(&*t, &(*h).0) };
         for (i, (b, n)) in totals.iter().enumerate().take(CATEGORY_COUNT) { *out.add(i * 2) = *b; *out.add(i * 2 + 1) = *n; }
@@ -585,3 +587,49 @@ pub unsafe extern "C" fn spz_filter_version(h: *const FilterHandle) -> u64 { if 
 /// Table version a layout was computed on (0 for null).
 #[no_mangle]
 pub unsafe extern "C" fn spz_layout_version(l: *const Layout) -> u64 { if l.is_null() { 0 } else { (*l).version } }
+
+/// Per-row details for an outline snapshot: node fields plus the size shown for the row (the filter's size when a filter
+/// is active, otherwise the node size), all read from the same captured table as the rows.
+#[repr(C)]
+pub struct SpzRowInfo {
+    pub node: SpzNode,
+    pub shown: u64,
+}
+
+/// Rows, per-row details, the displayed root's shown size and the whole tree's total in ONE capture. Returns the row
+/// count; writes rows and infos (up to `cap`) when both outputs are non-null. Non-OK status writes nothing.
+#[no_mangle]
+pub unsafe extern "C" fn spz_outline_snapshot_status(
+    t: *const Tree, root: NodeId, expanded: *const NodeId, n_expanded: u32, h: *const FilterHandle, sort: u32,
+    rows_out: *mut crate::outline::Row, infos_out: *mut SpzRowInfo, cap: u32,
+    expected: u64, version: *mut u64, root_shown: *mut u64, total_bytes: *mut u64, status: *mut i32,
+) -> u32 {
+    guarded(status, 0, || {
+        if t.is_null() || !valid(t, root) { if !status.is_null() { *status = 3; } return 0; }
+        let Some(c) = snapshot(t, h, expected, status, version) else { return 0 };
+        let tr = &*t;
+        let set = expanded_set(t, expanded, n_expanded);
+        let filter = if h.is_null() { None } else { Some(&(*h).0) };
+        let rows = crate::outline::visible_rows_sorted_in(tr, &c.table, root, &set, filter, crate::outline::SortMode::from_u32(sort));
+        let sizes = &c.table.sizes;
+        let shown = |n: NodeId| -> u64 { filter.map(|f| f.sizes[n as usize]).unwrap_or(sizes[n as usize]) };
+        if !root_shown.is_null() { *root_shown = shown(root); }
+        if !total_bytes.is_null() { *total_bytes = sizes[0]; }
+        if !rows_out.is_null() && !infos_out.is_null() {
+            for (i, r) in rows.iter().enumerate().take(cap as usize) {
+                *rows_out.add(i) = *r;
+                let ch = tr.children(r.node);
+                *infos_out.add(i) = SpzRowInfo {
+                    node: SpzNode {
+                        size: sizes[r.node as usize], own_bytes: tr.own_bytes_in(sizes, r.node),
+                        parent: tr.parent(r.node).unwrap_or(u32::MAX), child_count: tr.child_count(r.node),
+                        first_child: if ch.is_empty() { u32::MAX } else { ch.start },
+                        kind: tr.kind(r.node) as u8, category: tr.category(r.node) as u8,
+                    },
+                    shown: shown(r.node),
+                };
+            }
+        }
+        rows.len() as u32
+    })
+}
