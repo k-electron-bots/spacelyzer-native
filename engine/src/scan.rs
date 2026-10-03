@@ -250,7 +250,7 @@ fn flatten(root_path: String, root: DirNode, ctx: Ctx, progress: &ScanProgress) 
     t.items = t.len() as u64 - 1;
     t.cancelled = progress.cancel.load(Ordering::Relaxed);
     t.skipped = ctx.skipped.into_inner().unwrap();
-    t
+    t.seal()
 }
 
 #[cfg(target_os = "macos")]

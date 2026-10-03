@@ -29,7 +29,8 @@ SpzNode spz_tree_node(const SpzTree *t, uint32_t id);
 char *spz_tree_name(const SpzTree *t, uint32_t id);
 char *spz_tree_path(const SpzTree *t, uint32_t id);
 uint32_t spz_tree_find(const SpzTree *t, const char *path);
-void spz_tree_forget(SpzTree *t, uint32_t id);
+int32_t spz_tree_forget(SpzTree *t, uint32_t id);
+uint64_t spz_tree_version(const SpzTree *t);
 void spz_tree_category_totals(const SpzTree *t, uint64_t *out /* 11 * 2 */);
 uint32_t spz_tree_largest_files(const SpzTree *t, uint32_t cap, uint32_t *out);
 uint32_t spz_tree_skipped_count(const SpzTree *t);
@@ -62,4 +63,11 @@ const SpzRect *spz_layout_rects(const SpzLayout *l);
 uint32_t spz_layout_hit(const SpzLayout *l, float x, float y);
 
 void spz_string_free(char *s);
+
+/* Statuses: 0 OK, 1 STALE, 2 MUTATION_FAILED, 3 INVALID, 4 BUSY, 5 INTERNAL. Null results always come with a status. */
+SpzFilterResult *spz_filter_apply_status(const SpzTree *t, const char *text, const char *ext, SpzFilter f, int32_t *status);
+int32_t spz_filter_status(const SpzTree *t, const SpzFilterResult *h);
+SpzLayout *spz_layout_new_status(const SpzTree *t, uint32_t root, float width, float height, const SpzFilterResult *h, int32_t *status);
+int32_t spz_layout_status(const SpzTree *t, const SpzLayout *l);
+
 #endif

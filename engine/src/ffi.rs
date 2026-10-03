@@ -29,6 +29,8 @@ fn valid(t: *const Tree, id: NodeId) -> bool {
 
 pub struct Layout {
     rects: Vec<Rect>,
+    uid: u64,
+    version: u64,
 }
 
 #[repr(C)]
@@ -153,9 +155,10 @@ pub unsafe extern "C" fn spz_tree_node(t: *const Tree, id: NodeId) -> SpzNode {
     }
     let t = &*t;
     let r = t.children(id);
+    let tab = t.table(); // one snapshot for both numbers
     SpzNode {
-        size: t.size(id),
-        own_bytes: t.own_bytes(id),
+        size: tab.sizes[id as usize],
+        own_bytes: t.own_bytes_in(&tab.sizes, id),
         parent: t.parent(id).unwrap_or(u32::MAX),
         child_count: t.child_count(id),
         first_child: if r.is_empty() { u32::MAX } else { r.start },
@@ -185,9 +188,21 @@ pub unsafe extern "C" fn spz_tree_find(t: *const Tree, path: *const c_char) -> N
 
 /// Remove a subtree from the result after it was moved to the Trash.
 #[no_mangle]
-pub unsafe extern "C" fn spz_tree_forget(t: *mut Tree, id: NodeId) {
-    if !valid(t, id) { return; }
-    (*t).forget(id);
+/// Returns 0 OK, 2 MUTATION_FAILED (tree unchanged), 3 INVALID. Never panics across the ABI.
+pub unsafe extern "C" fn spz_tree_forget(t: *mut Tree, id: NodeId) -> i32 {
+    if !valid(t, id) { return 3; }
+    match (*t).forget(id) {
+        Ok(_) => 0,
+        Err(crate::tree::MutationError::Invalid) => 3,
+        Err(_) => 2,
+    }
+}
+
+/// Version of the currently published size table (increments on every successful mutation).
+#[no_mangle]
+pub unsafe extern "C" fn spz_tree_version(t: *const Tree) -> u64 {
+    if t.is_null() { return 0; }
+    (*t).table().version
 }
 
 /// Writes (bytes, items) pairs for each category into `out` (CATEGORY_COUNT * 2 u64s).
@@ -229,8 +244,8 @@ pub unsafe extern "C" fn spz_tree_skipped_reason(t: *const Tree, i: u32) -> u8 {
 #[no_mangle]
 pub unsafe extern "C" fn spz_layout_new(t: *const Tree, root: NodeId, width: f32, height: f32) -> *mut Layout {
     let opts = LayoutOptions { width, height, ..Default::default() };
-    if !valid(t, root) { return Box::into_raw(Box::new(Layout { rects: Vec::new() })); }
-    Box::into_raw(Box::new(Layout { rects: layout(&*t, root, &opts) }))
+    if !valid(t, root) { return Box::into_raw(Box::new(Layout { rects: Vec::new(), uid: 0, version: 0 })); }
+    Box::into_raw(Box::new({ let tab = (*t).table(); Layout { rects: crate::layout::layout_in(&*t, &tab, root, &opts, None), uid: (*t).uid, version: tab.version } }))
 }
 
 #[no_mangle]
@@ -294,7 +309,7 @@ pub struct SpzFilter {
     pub modified_to: i64,
 }
 
-pub struct FilterHandle(crate::filter::FilterResult, u64);
+pub struct FilterHandle(crate::filter::FilterResult, u64, u64);
 
 /// A filter result is sized for one tree; it must never be applied to another.
 fn handle_ok(t: *const Tree, h: *const FilterHandle) -> bool {
@@ -322,7 +337,8 @@ pub unsafe extern "C" fn spz_filter_apply(t: *const Tree, text: *const c_char, e
         modified_from: (f.has_from != 0).then_some(f.modified_from),
         modified_to: (f.has_to != 0).then_some(f.modified_to),
     };
-    Box::into_raw(Box::new(FilterHandle(crate::filter::apply(&*t, &flt), (*t).uid)))
+    let tab = (*t).table(); // one snapshot: result and stamp share it
+    Box::into_raw(Box::new(FilterHandle(crate::filter::apply_in(&*t, &tab, &flt), (*t).uid, tab.version)))
 }
 
 #[no_mangle]
@@ -364,8 +380,10 @@ pub unsafe extern "C" fn spz_outline_rows_filtered(
 #[no_mangle]
 pub unsafe extern "C" fn spz_layout_new_filtered(t: *const Tree, root: NodeId, width: f32, height: f32, h: *const FilterHandle) -> *mut Layout {
     let opts = LayoutOptions { width, height, ..Default::default() };
-    if !valid(t, root) || !handle_ok(t, h) { return Box::into_raw(Box::new(Layout { rects: Vec::new() })); }
-    Box::into_raw(Box::new(Layout { rects: crate::layout::layout_with(&*t, root, &opts, Some(&(*h).0.sizes)) }))
+    if !valid(t, root) || !handle_ok(t, h) { return Box::into_raw(Box::new(Layout { rects: Vec::new(), uid: 0, version: 0 })); }
+    // every size used comes from the handle's own sizes, so the layout is stamped with the handle's version:
+    // a handle computed on an old table gives a layout stamped old (STALE on status check), never old data under a new stamp
+    Box::into_raw(Box::new(Layout { rects: crate::layout::layout_in(&*t, &(*t).table(), root, &opts, Some(&(*h).0.sizes)), uid: (*t).uid, version: (*h).2 }))
 }
 
 /// Largest matching files under a filter; returns the count written (up to `cap`).
@@ -405,4 +423,74 @@ pub unsafe extern "C" fn spz_outline_rows_sorted(
         std::ptr::copy_nonoverlapping(rows.as_ptr(), out, rows.len().min(cap as usize));
     }
     rows.len() as u32
+}
+
+// ---- Status-returning entry points. Statuses: 0 OK, 1 STALE, 2 MUTATION_FAILED, 3 INVALID, 4 BUSY. ----
+// BUSY and INVALID never come back as a valid empty result: the handle is null and the status says why.
+
+fn filter_from(f: &SpzFilter, text: *const c_char, ext: *const c_char) -> crate::filter::Filter {
+    crate::filter::Filter {
+        text: unsafe { cstr(text) },
+        category_mask: f.category_mask,
+        extension: unsafe { cstr(ext) },
+        min_size: (f.has_min != 0).then_some(f.min_size),
+        max_size: (f.has_max != 0).then_some(f.max_size),
+        modified_from: (f.has_from != 0).then_some(f.modified_from),
+        modified_to: (f.has_to != 0).then_some(f.modified_to),
+    }
+}
+
+/// Filter on one captured snapshot; the handle is stamped with that snapshot's (uid, version).
+unsafe fn filter_apply_status_inner(t: *const Tree, text: *const c_char, ext: *const c_char, f: SpzFilter, status: *mut i32) -> *mut FilterHandle {
+    let set = |s: i32| if !status.is_null() { *status = s };
+    if t.is_null() { set(3); return std::ptr::null_mut(); }
+    let Some(c) = (*t).capture() else { set(4); return std::ptr::null_mut() };
+    let flt = filter_from(&f, text, ext);
+    let r = crate::filter::apply_in(&*t, &c.table, &flt);
+    set(0);
+    Box::into_raw(Box::new(FilterHandle(r, (*t).uid, c.table.version)))
+}
+
+/// 0 OK (same tree, same version), 1 STALE (same tree, table changed), 3 INVALID (null or other tree).
+#[no_mangle]
+pub unsafe extern "C" fn spz_filter_status(t: *const Tree, h: *const FilterHandle) -> i32 {
+    if t.is_null() || h.is_null() || (*h).1 != (*t).uid { return 3; }
+    if (*h).2 != (*t).table().version || (*h).0.sizes.len() != (*t).len() { 1 } else { 0 }
+}
+
+/// Layout on one captured snapshot (optionally filtered). Null plus status on STALE/INVALID/BUSY.
+unsafe fn layout_new_status_inner(t: *const Tree, root: NodeId, width: f32, height: f32, h: *const FilterHandle, status: *mut i32) -> *mut Layout {
+    let set = |s: i32| if !status.is_null() { *status = s };
+    if !valid(t, root) { set(3); return std::ptr::null_mut(); }
+    if !h.is_null() {
+        let st = spz_filter_status(t, h);
+        if st != 0 { set(st); return std::ptr::null_mut(); }
+    }
+    let Some(c) = (*t).capture() else { set(4); return std::ptr::null_mut() };
+    if !h.is_null() && (*h).2 != c.table.version { set(1); return std::ptr::null_mut(); }
+    let opts = LayoutOptions { width, height, ..Default::default() };
+    let sizes = if h.is_null() { None } else { Some((*h).0.sizes.as_slice()) };
+    let rects = crate::layout::layout_in(&*t, &c.table, root, &opts, sizes);
+    set(0);
+    Box::into_raw(Box::new(Layout { rects, uid: (*t).uid, version: c.table.version }))
+}
+
+/// 0 OK, 1 STALE, 3 INVALID.
+#[no_mangle]
+pub unsafe extern "C" fn spz_layout_status(t: *const Tree, l: *const Layout) -> i32 {
+    if t.is_null() || l.is_null() || (*l).uid != (*t).uid { return 3; }
+    if (*l).version != (*t).table().version { 1 } else { 0 }
+}
+
+/// Panics inside the status entry points never cross the ABI: they come back as null plus status 5 (INTERNAL).
+#[no_mangle]
+pub unsafe extern "C" fn spz_filter_apply_status(t: *const Tree, text: *const c_char, ext: *const c_char, f: SpzFilter, status: *mut i32) -> *mut FilterHandle {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| filter_apply_status_inner(t, text, ext, f, status)))
+        .unwrap_or_else(|_| { if !status.is_null() { *status = 5; } std::ptr::null_mut() })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn spz_layout_new_status(t: *const Tree, root: NodeId, width: f32, height: f32, h: *const FilterHandle, status: *mut i32) -> *mut Layout {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| layout_new_status_inner(t, root, width, height, h, status)))
+        .unwrap_or_else(|_| { if !status.is_null() { *status = 5; } std::ptr::null_mut() })
 }
