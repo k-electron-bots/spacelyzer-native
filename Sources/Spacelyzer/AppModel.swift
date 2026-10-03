@@ -136,9 +136,29 @@ final class AppModel {
             try? await Task.sleep(nanoseconds: 150_000_000)
             if Task.isCancelled { return }
             let t0 = DispatchTime.now().uptimeNanoseconds
-            let r = active ? tree.applyFilter(text: text, kind: kind, minBytes: minB, maxBytes: maxB, modifiedFrom: from, ext: ext) : nil
+            var r: FilterResult? = nil
+            var failure: EngineStatus? = nil
+            if active {
+                switch tree.applyFilterChecked(text: text, kind: kind, minBytes: minB, maxBytes: maxB, modifiedFrom: from, ext: ext) {
+                case .success(let f): r = f
+                case .failure(let st): failure = st
+                }
+            }
             let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
             if Task.isCancelled { return }
+            if let failure {
+                // BUSY (admission) or any other status: keep the previous result, never publish an empty one.
+                await MainActor.run {
+                    guard let self, self.filterGeneration == generation, self.tree === tree else { return }
+                    if failure == .busy {
+                        Task { @MainActor [weak self] in try? await Task.sleep(nanoseconds: 100_000_000); if let self, self.filterGeneration == generation { self.scheduleFilter() } }
+                    } else {
+                        self.filterPending = false
+                        self.removalMessage = "The filter could not run (\(failure)). The list may be out of date. Try again, or rescan."
+                    }
+                }
+                return
+            }
             let publication = UUID()
             await barrier?("filter", generation, publication)
             await MainActor.run {
@@ -303,6 +323,7 @@ final class AppModel {
                 filterTask?.cancel(); derivedTask?.cancel(); outlineTask?.cancel()
                 outlineRows = []; outlineIndex = [:]; outlineRevision += 1; expanded = []; largestIDs = []; kindRows = []; activeFilter = nil
                 pendingRemoval = nil
+                viewOutOfDate = false
                 tree = t
                 displayedRoot = 0
                 selected = nil
@@ -374,19 +395,57 @@ final class AppModel {
             removalMessage = "\(path) is protected and cannot be removed from here."
             return
         }
+        if commitsInFlight > 0 { removalMessage = "The previous change is still being applied. Try again in a moment."; return }
+        if viewOutOfDate { removalMessage = "The numbers on screen are out of date after an earlier change. Rescan before removing more."; return }
         let url = URL(fileURLWithPath: path)
         let size = tree.info(id).size
         do {
+            // 1. Filesystem outcome first (the real event). It is journaled in lastRemoved immediately.
             let trashed = try trashItem(url)
             lastRemoved = [RemovedItem(original: url, trashed: trashed, size: size)]
-            tree.forget(id)
-            if selected == id { selected = nil }
-            revision += 1
-            refreshOutline()
-            refreshDerived()
-            removalMessage = "Moved \(url.lastPathComponent) to the Trash."
+            // 2. Engine commit on the serial commit lane, off the main actor. Table copy is O(nodes).
+            commitsInFlight += 1
+            Task { [weak self] in
+                let status = await Self.commitLane.forget(tree, id)
+                await MainActor.run { self?.finishCommit(tree: tree, removed: id, status: status, name: url.lastPathComponent) }
+            }
         } catch {
             removalMessage = "Could not move it to the Trash: \(error.localizedDescription)"
+        }
+    }
+
+    /// Serial lane for engine mutations. One removal is one commit and one version; nothing runs on the main actor.
+    static let commitLane = CommitLane()
+    /// Removals whose filesystem move finished but whose engine commit has not been published yet.
+    var commitsInFlight = 0
+    /// Set when the filesystem changed but the engine numbers could not be updated. Only a rescan clears it.
+    var viewOutOfDate = false
+
+    /// Publishes one removal on the main actor. Ordered after the filesystem outcome; every outcome is reported.
+    private func finishCommit(tree: Tree, removed id: UInt32, status: EngineStatus, name: String) {
+        commitsInFlight = max(0, commitsInFlight - 1)
+        // The tree was replaced by a rescan while the commit ran: the rescan already reflects the filesystem.
+        guard self.tree === tree else { return }
+        switch status {
+        case .ok:
+            // Clear every id-keyed piece of state inside the removed subtree in the same turn as the new numbers.
+            if let s = selected, tree.isInside(s, subtreeOf: id) { selected = nil }
+            expanded = expanded.filter { !tree.isInside($0, subtreeOf: id) }
+            if tree.isInside(displayedRoot, subtreeOf: id) { displayedRoot = tree.info(id).parent ?? 0 }
+            revision += 1
+            if filterIsActive {
+                // The active filter result belongs to the old table (STALE). Recompute; its landing refreshes
+                // outline, derived lists and layout, so nothing is drawn from the old filter in between.
+                scheduleFilter()
+            } else {
+                refreshOutline()
+                refreshDerived()
+            }
+            removalMessage = "Moved \(name) to the Trash."
+        case .mutationFailed, .invalid, .internalError, .stale, .busy:
+            // The file is in the Trash, but the numbers on screen could not be updated. Say so; never report success.
+            viewOutOfDate = true
+            removalMessage = "Moved \(name) to the Trash, but the numbers on screen could not be updated (\(status)). Rescan to refresh. You can still put it back."
         }
     }
 
@@ -418,4 +477,9 @@ struct KindRow: Identifiable, Sendable {
     var bytes: UInt64
     var items: UInt64
     var id: FileCategory { category }
+}
+
+/// Serializes engine mutations off the main actor. A removal's filesystem move happens before it is enqueued.
+actor CommitLane {
+    func forget(_ tree: Tree, _ id: UInt32) -> EngineStatus { tree.forget(id) }
 }
