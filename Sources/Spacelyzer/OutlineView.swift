@@ -34,9 +34,16 @@ struct OutlineView: View {
 private final class KeyTable: NSTableView {
     var onAttachment: (() -> Void)?
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); onAttachment?() }
+    var onTab: (() -> Void)?
     var onKey: ((UInt16) -> Bool)?
     var contextRow: ((Int) -> NSMenu?)?
     override func keyDown(with event: NSEvent) {
+        if event.keyCode == 48 && event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
+            onTab?()
+            if event.modifierFlags.contains(.shift) { window?.selectPreviousKeyView(self) }
+            else { window?.selectNextKeyView(self) }
+            return
+        }
         if let h = onKey, h(event.keyCode) { return }
         super.keyDown(with: event)
     }
@@ -163,6 +170,7 @@ private struct OutlineTable: NSViewRepresentable {
         table.target = context.coordinator
         table.doubleAction = #selector(Coordinator.doubleClicked)
         table.setAccessibilityLabel("Folder outline")
+        table.onTab = { [weak model] in model?.prepareOutlineFocusTraversal() }
         table.onKey = { [weak c = context.coordinator] code in c?.key(code) ?? false }
         table.contextRow = { [weak c = context.coordinator] r in c?.menu(for: r) }
         context.coordinator.table = table
