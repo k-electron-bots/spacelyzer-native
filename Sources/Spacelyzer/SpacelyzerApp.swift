@@ -745,10 +745,12 @@ struct SpacelyzerApp: App {
     }
     static func key(_ code: UInt16, chars: String? = nil, modifiers: NSEvent.ModifierFlags = []) {
         guard let w = window else { return }
-        let ch = chars ?? (code == 125 ? String(UnicodeScalar(NSDownArrowFunctionKey)!) : "")
+        let plain = chars ?? (code == 125 ? String(UnicodeScalar(NSDownArrowFunctionKey)!) : "")
+        let ch = code == 48 && modifiers.contains(.shift) ? String(UnicodeScalar(NSBackTabCharacter)!) : plain
+        if code == 48 { Perf.log("native-tab injected code=\(code) modifiers=\(modifiers.rawValue) chars=\(ch.debugDescription) ignoring=\(plain.debugDescription)") }
         for t in [NSEvent.EventType.keyDown, .keyUp] {
             if let e = NSEvent.keyEvent(with: t, location: .zero, modifierFlags: modifiers, timestamp: ProcessInfo.processInfo.systemUptime,
-                                        windowNumber: w.windowNumber, context: nil, characters: ch, charactersIgnoringModifiers: ch,
+                                        windowNumber: w.windowNumber, context: nil, characters: ch, charactersIgnoringModifiers: plain,
                                         isARepeat: false, keyCode: code) { NSApp.postEvent(e, atStart: false) }
         }
     }
@@ -970,49 +972,59 @@ private actor PublicationBarrier {
         window.contentView?.addSubview(source); window.contentView?.addSubview(target)
         model.outlineKeyView = source; model.nameFilterKeyView = target
         window.makeKeyAndOrderFront(nil)
-        let setup = window.makeFirstResponder(source) && window.firstResponder === source && window.isKeyWindow && NSApp.isActive
+        let initialResponderAccepted = window.makeFirstResponder(source)
+        let setupDeadline = Date().addingTimeInterval(3)
+        while (!window.isKeyWindow || !NSApp.isActive) && Date() < setupDeadline { try? await Task.sleep(nanoseconds: 20_000_000) }
+        let setup = initialResponderAccepted && window.firstResponder === source && window.isKeyWindow && NSApp.isActive
+        @MainActor func guardDiagnostic(_ name: String) -> String {
+            "\(name) initialAccepted=\(initialResponderAccepted) setup=\(setup) sourceAccepts=\(source.acceptsFirstResponder) key=\(window.isKeyWindow) active=\(NSApp.isActive) visible=\(window.isVisible) sourceVisible=\(!source.isHiddenOrHasHiddenAncestor) sourceEnabled=\(source.isEnabled) responder=\(String(describing: window.firstResponder)) target=\(String(describing: model.nameFilterKeyView))"
+        }
+        Perf.log("boundary-setup \(guardDiagnostic("initial"))")
         @MainActor func currentSource() -> Bool { window.isKeyWindow && NSApp.isActive && window.firstResponder === source }
         @MainActor func resetSource() -> Bool { window.makeFirstResponder(source) && currentSource() }
         @MainActor func refuses() -> Bool { model.focusNameFromOutline(source, modifiers: []) == .unavailable && window.firstResponder === source }
+        @MainActor func guardCheck(_ name: String, _ condition: Bool, _ detail: String = "") {
+            Check.expect(name, condition, "\(guardDiagnostic(name)) \(detail)")
+        }
         model.nameFilterKeyView = nil
-        Check.expect("boundary-helper-missing-target", setup && currentSource() && refuses())
+        guardCheck("boundary-helper-missing-target", setup && currentSource() && refuses())
         model.nameFilterKeyView = target; target.isHidden = true
-        Check.expect("boundary-helper-hidden-target", setup && currentSource() && refuses()); target.isHidden = false
+        guardCheck("boundary-helper-hidden-target", setup && currentSource() && refuses()); target.isHidden = false
         target.isEnabled = false
-        Check.expect("boundary-helper-disabled-target", setup && currentSource() && refuses()); target.isEnabled = true
+        guardCheck("boundary-helper-disabled-target", setup && currentSource() && refuses()); target.isEnabled = true
         let foreign = NSWindow(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: false)
         foreign.isReleasedWhenClosed = false
         defer { foreign.close() }
         target.removeFromSuperview(); foreign.contentView?.addSubview(target)
-        Check.expect("boundary-helper-other-window", setup && currentSource() && refuses())
+        guardCheck("boundary-helper-other-window", setup && currentSource() && refuses())
         target.removeFromSuperview(); window.contentView?.addSubview(target)
         let beforeHiddenSource = currentSource()
         source.isHidden = true
-        Check.expect("boundary-helper-hidden-source", setup && beforeHiddenSource && model.focusNameFromOutline(source, modifiers: []) == .unavailable && window.firstResponder === source); source.isHidden = false
+        guardCheck("boundary-helper-hidden-source", setup && beforeHiddenSource && model.focusNameFromOutline(source, modifiers: []) == .unavailable && window.firstResponder === source); source.isHidden = false
         let unrelatedSetup = window.makeFirstResponder(target)
         let unrelated = window.firstResponder
-        Check.expect("boundary-helper-source-not-current", setup && unrelatedSetup && unrelated !== source && model.focusNameFromOutline(source, modifiers: []) == .unavailable && window.firstResponder === unrelated)
+        guardCheck("boundary-helper-source-not-current", setup && unrelatedSetup && unrelated !== source && model.focusNameFromOutline(source, modifiers: []) == .unavailable && window.firstResponder === unrelated)
         let modifierSetup = resetSource()
         let modified = [NSEvent.ModifierFlags.command, .control, .option, .shift].allSatisfy { model.focusNameFromOutline(source, modifiers: $0) == .unavailable && window.firstResponder === source }
-        Check.expect("boundary-helper-modified-tab-refused", setup && modifierSetup && modified, "helper only, not actual shortcut handling")
+        guardCheck("boundary-helper-modified-tab-refused", setup && modifierSetup && modified, "helper only, not actual shortcut handling")
         let refusal = RefusingField(frame: target.frame); window.contentView?.addSubview(refusal); model.nameFilterKeyView = refusal
-        Check.expect("boundary-helper-focus-refusal", setup && currentSource() && refuses(), "makeFirstResponder refusal/native caller fallback source only")
+        guardCheck("boundary-helper-focus-refusal", setup && currentSource() && refuses(), "makeFirstResponder refusal/native caller fallback source only")
         let decoy = NSTextField(frame: NSRect(x: 0, y: 90, width: 70, height: 24)); window.contentView?.addSubview(decoy)
         model.nameFilterKeyView = target
         let restoreCaseSetup = resetSource()
         window.challengedTarget = target; window.restoreSource = source; window.decoy = decoy
         window.fakeRefusalWithLanding = true
         let restored = model.focusNameFromOutline(source, modifiers: [])
-        Check.expect("boundary-helper-refusal-changed-restored", setup && restoreCaseSetup && window.decoyLandingVerified && restored == .restoredUnexpectedLanding && window.firstResponder === source, "simulated API false with changed landing")
+        guardCheck("boundary-helper-refusal-changed-restored", setup && restoreCaseSetup && window.decoyLandingVerified && restored == .restoredUnexpectedLanding && window.firstResponder === source, "simulated API false with changed landing")
         let failureCaseSetup = currentSource()
         window.decoyLandingVerified = false
         window.fakeRestoreFailure = true
         let failedRestore = model.focusNameFromOutline(source, modifiers: [])
-        Check.expect("boundary-helper-restore-failure-consumes", setup && failureCaseSetup && window.decoyLandingVerified && window.restoreRefusalObserved && failedRestore == .restoreFailed && failedRestore.consumesCommand && (window.firstResponder === decoy || (window.firstResponder as? NSTextView)?.delegate === decoy), "simulated API refusal+restore failure")
+        guardCheck("boundary-helper-restore-failure-consumes", setup && failureCaseSetup && window.decoyLandingVerified && window.restoreRefusalObserved && failedRestore == .restoreFailed && failedRestore.consumesCommand && (window.firstResponder === decoy || (window.firstResponder as? NSTextView)?.delegate === decoy), "simulated API refusal+restore failure")
         window.fakeRefusalWithLanding = false; window.fakeRestoreFailure = false
         let beforeInactive = resetSource()
         product.makeKeyAndOrderFront(nil)
-        Check.expect("boundary-helper-inactive-source-window", setup && beforeInactive && !window.isKeyWindow && model.focusNameFromOutline(source, modifiers: []) == .unavailable && window.firstResponder === source)
+        guardCheck("boundary-helper-inactive-source-window", setup && beforeInactive && !window.isKeyWindow && model.focusNameFromOutline(source, modifiers: []) == .unavailable && window.firstResponder === source)
         window.close(); foreign.close(); product.makeKeyAndOrderFront(nil)
     }
 }
