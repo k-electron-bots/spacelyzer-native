@@ -1,0 +1,67 @@
+name: Compile check
+
+# Compile-only verification of a branch stack. No calibration, bench, signing, DMG, UI run or release.
+# Runs once when THIS file is committed to the compile-check-stack branch (path filter), so the one run covers the
+# final source tree already on that branch. Source-only pushes do not trigger it. Read-only token. No tag, PR or main trigger.
+on:
+  push:
+    branches: [compile-check-stack]
+    paths: ['.github/workflows/compile-check.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compile-check
+  cancel-in-progress: false
+
+jobs:
+  compile:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Update Rust stable (same as ci.yml macos job)
+        run: rustup update stable --no-self-update
+      - name: Record revision and toolchain
+        run: |
+          mkdir -p logs
+          { git rev-parse HEAD; git log --oneline -3; echo '--- parent (HEAD~1):'; git rev-parse HEAD~1; echo '--- diffstat HEAD~1..HEAD (must be only the workflow):'; git diff --stat HEAD~1 HEAD; sw_vers; xcodebuild -version; swift --version; rustc --version; cargo --version; } 2>&1 | tee logs/toolchain.log
+      - name: Dependency allowlist
+        run: set -o pipefail; ./scripts/check-deps.sh 2>&1 | tee logs/check-deps.log
+      - name: Rust tests (locked)
+        run: |
+          set -o pipefail
+          cargo test --release --locked -p spacelyzer-engine 2>&1 | tee logs/cargo-test.log
+      - name: Rust tests with failpoints (locked)
+        run: |
+          set -o pipefail
+          cargo test --release --locked -p spacelyzer-engine --features failpoints 2>&1 | tee logs/cargo-test-failpoints.log
+      - name: Test counts
+        if: always()
+        run: |
+          for f in logs/cargo-test.log logs/cargo-test-failpoints.log; do
+            echo "== $f"; grep -E "^test result:" "$f" || true
+          done | tee logs/test-counts.log
+      - name: Build universal engine
+        if: always()
+        run: set -o pipefail; ./scripts/build-engine.sh 2>&1 | tee logs/build-engine.log
+      - name: Build Swift app (release, normal flags)
+        if: always()
+        run: |
+          set -o pipefail
+          swift build -c release --arch arm64 --arch x86_64 2>&1 | tee logs/swift-build.log
+      - name: Swift diagnostics summary
+        if: always()
+        run: |
+          { echo "errors: $(grep -c 'error:' logs/swift-build.log 2>/dev/null || true)"
+            echo "warnings: $(grep -c 'warning:' logs/swift-build.log 2>/dev/null || true)"
+            grep -E 'error:|warning:' logs/swift-build.log 2>/dev/null | sort -u | head -200; } | tee logs/swift-diagnostics.log
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compile-check-logs
+          path: logs/
