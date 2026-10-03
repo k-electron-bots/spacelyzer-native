@@ -397,7 +397,7 @@ impl Tree {
             rng ^= rng << 17;
             rng
         };
-        let mut push = |t: &mut Tree, name: String, parent: u32, kind: Kind, size: u64, mtime: i64| -> u32 {
+        let push = |t: &mut Tree, name: String, parent: u32, kind: Kind, size: u64, mtime: i64| -> u32 {
             let id = t.names.len() as u32;
             let cat = if kind == Kind::Directory { Category::Folder as u8 } else { Category::classify(&name) as u8 };
             t.names.push(name.into());

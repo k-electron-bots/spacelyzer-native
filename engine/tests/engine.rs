@@ -119,11 +119,11 @@ fn cancel_returns_partial_flagged() {
 #[test]
 fn forget_updates_ancestors() {
     let t = fixture();
-    let mut tree = scan(t.path(), &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    let tree = scan(t.path(), &ScanOptions::default(), &ScanProgress::default()).unwrap();
     let before = tree.size(0);
     let n = tree.find(&format!("{}/d3", tree.root_path())).unwrap();
     let sz = tree.size(n);
-    tree.forget(n);
+    assert!(tree.forget(n).is_ok());
     assert_eq!(tree.size(0), before - sz);
 }
 

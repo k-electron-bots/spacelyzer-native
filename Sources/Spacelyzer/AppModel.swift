@@ -162,17 +162,18 @@ final class AppModel {
                 return
             }
             let publication = UUID()
+            let rFinal = r   // frozen copy: the main-actor closure must not capture the mutable var
             await barrier?("filter", generation, publication)
             await MainActor.run {
                 guard let self, !Task.isCancelled, self.filterGeneration == generation, self.tree === tree,
-                      (r == nil || r!.version == tree.version) else {
+                      (rFinal == nil || rFinal!.version == tree.version) else {
                     // computed on a table that a commit has since replaced: a newer filter run is queued by that commit
                     if let self, self.filterGeneration == generation, self.tree === tree { self.scheduleFilter(immediate: true) }
                     return
                 }
                 self.retryDone("filter")
-                self.acceptedFilterVersions.append(r?.version ?? 0); if self.acceptedFilterVersions.count > 64 { self.acceptedFilterVersions.removeFirst() }
-                self.activeFilter = r
+                self.acceptedFilterVersions.append(rFinal?.version ?? 0); if self.acceptedFilterVersions.count > 64 { self.acceptedFilterVersions.removeFirst() }
+                self.activeFilter = rFinal
                 self.filterPending = false
                 self.filterMillis = ms
                 self.filterRevision += 1

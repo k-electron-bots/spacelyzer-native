@@ -16,7 +16,7 @@ fn paired() {
         // forget: fresh identical tree each iteration; only the forget call is timed
         let id = (1..t.len() as u32).filter(|&i| t.children(i).len() > 3).nth(1000).unwrap();
         let mut fv = vec![];
-        for _ in 0..7 { let mut x = Tree::synthetic(n); let s = Instant::now(); x.forget(id); fv.push(s.elapsed().as_secs_f64() * 1e3); }
+        for _ in 0..7 { let x = Tree::synthetic(n); let s = Instant::now(); x.forget(id).expect("forget"); fv.push(s.elapsed().as_secs_f64() * 1e3); }
         let fmed = med(fv.clone());
         println!("n={n} filter {f:.1} layout {l:.2} largest200 {g:.1} forget(fresh each) median {fmed:.2} first {:.2} (ms, medians of 7)", fv[0]);
     }
