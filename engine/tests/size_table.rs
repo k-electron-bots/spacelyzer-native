@@ -352,4 +352,4 @@ fn outline_snapshot_is_one_capture_with_rows_infos_root_and_total_at_one_version
         assert_eq!((nb, st2), (0, 4));
         drop(held);
     }
-                }
+}
