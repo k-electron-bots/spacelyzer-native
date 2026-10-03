@@ -323,6 +323,8 @@ struct LargestView: View {
     var body: some View {
         if let t = model.tree {
             let ids = model.largestIDs
+            let sizes = model.largestSizes
+            let sizeOf = Dictionary(zip(ids, sizes), uniquingKeysWith: { a, _ in a })   // sizes come from the same capture as the ids
             List(ids, id: \.self, selection: Bindable(model).selected) { id in
                 HStack {
                     VStack(alignment: .leading) {
@@ -330,7 +332,7 @@ struct LargestView: View {
                         Text(t.path(id)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
                     }
                     Spacer()
-                    Text(formatBytes(t.info(id).size)).monospacedDigit()
+                    Text(formatBytes(sizeOf[id] ?? 0)).monospacedDigit()
                 }.tag(id)
             }
             .overlay {

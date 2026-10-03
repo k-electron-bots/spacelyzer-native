@@ -709,6 +709,22 @@ pub unsafe extern "C" fn spz_largest_status(t: *const Tree, h: *const FilterHand
     })
 }
 
+/// Like `spz_largest_status`, and also writes each file's size (the filter's size when `h` is not null, else the table
+/// size) into `sizes_out` from the SAME capture, so a list never mixes ids from one table with sizes from another.
+#[no_mangle]
+pub unsafe extern "C" fn spz_largest_sized_status(t: *const Tree, h: *const FilterHandle, cap: u32, out: *mut NodeId, sizes_out: *mut u64, expected: u64, version: *mut u64, status: *mut i32) -> u32 {
+    guarded(status, 0, || {
+        if (out.is_null() || sizes_out.is_null()) && cap > 0 { if !status.is_null() { *status = 3; } return 0; }
+        let Some(c) = snapshot(t, h, expected, status, version) else { return 0 };
+        let v = if h.is_null() { (*t).largest_files_in(&c.table, cap as usize) } else { crate::filter::largest_files(&*t, &(*h).0, cap as usize) };
+        for (i, id) in v.iter().enumerate() {
+            *out.add(i) = *id;
+            *sizes_out.add(i) = if h.is_null() { c.table.sizes[*id as usize] } else { let fs = &(*h).0.sizes; fs[*id as usize] };
+        }
+        v.len() as u32
+    })
+}
+
 /// Category totals into `out` (CATEGORY_COUNT * 2 u64s). Untouched on a non-OK status.
 #[no_mangle]
 pub unsafe extern "C" fn spz_category_totals_status(t: *const Tree, h: *const FilterHandle, out: *mut u64, expected: u64, version: *mut u64, status: *mut i32) {
