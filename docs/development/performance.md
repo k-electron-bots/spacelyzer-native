@@ -42,3 +42,7 @@ PID11681/version114 rawheader06:08:05.410UTC precedes pairedtrace06:08:06.966780
 ## Run115 diagnostic arm
 
 PID11509/header07:02:23.977UTC precedes trace07:02:24.8409882 by863.9882ms. Subprocessend07:02:33exit0 includes processing; requested8s5ms is not a first/last-sample chronology. Selection185.5/stall205.5,warm38; arrowp50/p95/max18.7/175.3/765.5ms/stall761.3,typing240.1,hover0.9. Same alteredidle arm/no cold comparison or overall performance claim. [Evidence](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37104425688/artifacts/11267976189).
+
+## Run116 diagnostic arm
+
+PID23733/rawheader08:05:03.198UTC precedes trace08:05:04.1193771/.119378 by921.3771ms. Subprocessend08:05:12 includesprocessing; requested8s5ms/coarse bracket only,not first/last-sample or causal stack chronology. Selection614.7/stall609.1,warm53; arrowp50/p95/max15.9/54.7/488ms/stall486.6,typing260.9,hover0.4. Alteredidle/no cold comparability or overall win. [Evidence](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37108069847/artifacts/11269385250).
