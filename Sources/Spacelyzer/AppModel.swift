@@ -432,9 +432,9 @@ final class AppModel {
     }
 
     // MARK: bounded, keyed retry for BUSY (one slot per key; the action re-reads CURRENT inputs, never captured old ones)
-    private var retryTasks: [String: Task<Void, Never>] = [:]
-    private var retryAttempts: [String: Int] = [:]
-    private var retryGeneration: [String: Int] = [:]
+    @ObservationIgnored private var retryTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var retryAttempts: [String: Int] = [:]
+    @ObservationIgnored private var retryGeneration: [String: Int] = [:]
     /// One slot per key. `inputs` identifies WHAT is being retried (a hash of the current inputs, not a request counter that
     /// every retry bumps): new inputs reset the attempt count, the same inputs keep counting toward the bound.
     func retryBusy(_ key: String, inputs generation: Int, _ action: @escaping @MainActor () -> Void) {
