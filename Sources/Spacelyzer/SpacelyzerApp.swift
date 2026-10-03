@@ -20,7 +20,9 @@ struct SpacelyzerApp: App {
                     if env["SPZ_AUTOSCAN"] != nil, env["SPZ_DEMO"] != nil {
                         while model.scanning || model.tree == nil { try? await Task.sleep(nanoseconds: 500_000_000) }
                         try? await Task.sleep(nanoseconds: 3_000_000_000)
+                        #if SPZ_ORDERING_CI
                         if env["SPZ_CHECKS"] == "ordering" { await OrderingDriver.run(tree: model.tree!) }   // never returns
+                        #endif
                         await PublicationRegression.run(tree: model.tree!)
                         await CommitOrderingRegression.run()
                         await ZeroMatchRegression.run()
@@ -1878,6 +1880,7 @@ final class BusyFlag: @unchecked Sendable {
     var value: Bool { get { lock.lock(); defer { lock.unlock() }; return b } set { lock.lock(); b = newValue; lock.unlock() } }
 }
 
+#if SPZ_ORDERING_CI   // compiled only when the build passes -Xswiftc -DSPZ_ORDERING_CI; absent from every normal/release build
 /// CI-only driver (SPZ_DEMO + SPZ_AUTOSCAN + SPZ_CHECKS=ordering): runs ONLY the model-level ordering/coherence checks, verifies
 /// the result set fails closed, writes /tmp/spz-ordering-result.txt and exits. Not compiled behavior in release use: the
 /// entry is gated by the same env vars as the other CI-only scripts.
@@ -1959,3 +1962,4 @@ final class BusyFlag: @unchecked Sendable {
         exit(problems.isEmpty ? 0 : 1)
     }
 }
+#endif
