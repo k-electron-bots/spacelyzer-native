@@ -97,37 +97,62 @@ struct StatusBar: View {
     /// Measured on CI: NavigationSplitView columns extend to the window bottom (frame bottom = 612 = window height), under this bar.
     static let height: CGFloat = 26
     @Environment(AppModel.self) private var model
+    private var unreadable: Int { Perf.on ? (model.demoFooterUnreadable ?? model.tree?.skipped.count ?? 0) : (model.tree?.skipped.count ?? 0) }
+    private var partial: Bool { Perf.on ? (model.demoFooterPartial ?? model.tree?.wasCancelled ?? false) : (model.tree?.wasCancelled ?? false) }
     var body: some View {
-        HStack {
-            if model.scanning {
-                ProgressView().controlSize(.small)
-                statusPath
-                Text("Scanning · \(itemCount(Int(model.progress.items))) · \(formatBytes(model.progress.bytes)) · \(String(format: "%.1f", model.elapsed))s").layoutPriority(1)
-            } else if let t = model.tree {
-                let incomplete = t.wasCancelled ? " (stopped early, partial)" : ""
-                statusPath
-                Text("\(formatBytes(t.info(0).size)) in \(itemCount(Int(t.nodeCount - 1)))\(incomplete)").layoutPriority(1)
-                if let s = model.lastScanSeconds { Text("· scanned in \(String(format: "%.2f", s))s").foregroundStyle(.secondary) }
-                if let f = model.activeFilter {
-                    Text("· filter: \(formatBytes(f.totalBytes)) in \(f.totalCount.formatted()) \(f.totalCount == 1 ? "file" : "files") (\(String(format: "%.1f", model.filterMillis)) ms in Rust)").foregroundStyle(.blue).layoutPriority(1)
-                }
-                let skipped = t.skipped.count
-                if skipped > 0 { Text("· \(skipped) locations not readable").foregroundStyle(.orange) }
+        HStack(spacing: 8) {
+            if model.scanning { ProgressView().controlSize(.small) }
+            Text(model.rootPath).truncationMode(.middle)
+                .frame(minWidth: 60, maxWidth: .infinity, alignment: .leading)
+                .help(model.rootPath).accessibilityLabel("Scanned folder: \(model.rootPath)")
+            ViewThatFits(in: .horizontal) {
+                summary(compact: false).fixedSize(horizontal: true, vertical: false)
+                summary(compact: true).fixedSize(horizontal: true, vertical: false)
             }
+            .help(fullDetails).accessibilityLabel(fullDetails)
+            .layoutPriority(1)
         }
         .font(.caption).lineLimit(1).padding(.horizontal, 10)
-        .frame(height: Self.height)
-        .background(.bar)
+        .frame(height: Self.height).background(.bar)
     }
-    private var statusPath: some View {
-        Text(model.rootPath).truncationMode(.middle)
-            .frame(minWidth: 60, maxWidth: .infinity, alignment: .leading)
-            .help(model.rootPath)
-            .accessibilityLabel("Scanned folder: \(model.rootPath)")
+    @ViewBuilder private func summary(compact: Bool) -> some View {
+        HStack(spacing: compact ? 5 : 8) {
+            if model.scanning {
+                Text("Scanning · \(itemCount(model.progress.items)) · \(formatBytes(model.progress.bytes))")
+            } else if let t = model.tree {
+                Text("\(formatBytes(t.info(0).size)) in \(itemCount(UInt64(t.nodeCount - 1)))")
+                if partial { Text(compact ? "Partial" : "Stopped early, partial").foregroundStyle(.orange) }
+                if let f = model.activeFilter {
+                    Text("Filter: \(formatBytes(f.totalBytes)) · \(fileCount(UInt64(f.totalCount)))").foregroundStyle(.blue)
+                }
+                if unreadable > 0 {
+                    Text("\(locationCount(unreadable)) \(compact ? "unreadable" : "not readable")").foregroundStyle(.orange)
+                }
+            }
+            if !compact {
+                if model.scanning { Text("\(String(format: "%.1f", model.elapsed))s").foregroundStyle(.secondary) }
+                else if let elapsed = model.lastScanSeconds { Text("Scanned in \(String(format: "%.2f", elapsed))s").foregroundStyle(.secondary) }
+                if model.activeFilter != nil { Text("Filter \(String(format: "%.1f", model.filterMillis))ms").foregroundStyle(.secondary) }
+            }
+        }
     }
-    private func itemCount(_ count: Int) -> String {
-        "\(count.formatted()) \(count == 1 ? "item" : "items")"
+    private var fullDetails: String {
+        var parts = [model.rootPath]
+        if model.scanning {
+            parts.append("Scanning: \(itemCount(model.progress.items)), \(formatBytes(model.progress.bytes)), \(String(format: "%.1f", model.elapsed)) seconds")
+        } else if let t = model.tree {
+            parts.append("\(formatBytes(t.info(0).size)) in \(itemCount(UInt64(t.nodeCount - 1)))")
+            if partial { parts.append("Stopped early, partial accounting") }
+            if let elapsed = model.lastScanSeconds { parts.append("Scanned in \(String(format: "%.2f", elapsed)) seconds") }
+            if let f = model.activeFilter { parts.append("Filter: \(formatBytes(f.totalBytes)), \(fileCount(UInt64(f.totalCount))), \(String(format: "%.1f", model.filterMillis)) milliseconds") }
+            if unreadable > 0 { parts.append("\(locationCount(unreadable)) not readable") }
+        }
+        return parts.joined(separator: "\n")
     }
+    private func itemCount(_ count: UInt64) -> String { "\(count.formatted()) \(count == 1 ? "item" : "items")" }
+    private func fileCount(_ count: UInt64) -> String { "\(count.formatted()) \(count == 1 ? "file" : "files")" }
+    private func locationCount(_ count: Int) -> String { "\(count.formatted()) \(count == 1 ? "location" : "locations")" }
+
 }
 
 
@@ -297,9 +322,11 @@ private struct NameFilterField: NSViewRepresentable {
             resetRevision = model.filterResetRevision
         }
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if Perf.on { Perf.log("native-tab field-command=\(NSStringFromSelector(commandSelector)) responder=\(String(describing: control.window?.firstResponder))") }
             guard commandSelector == #selector(NSResponder.insertBacktab(_:)) else { return false }
             model.prepareOutlineFocusTraversal()
             control.window?.selectPreviousKeyView(control)
+            if Perf.on { Perf.log("native-tab field-backtab-postselect responder=\(String(describing: control.window?.firstResponder))") }
             return true
         }
         func controlTextDidChange(_ notification: Notification) {
