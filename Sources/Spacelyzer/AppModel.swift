@@ -347,7 +347,15 @@ final class AppModel {
     func surfaceCheck() {
         guard let r = requiredVersion else { return }
         let layoutOK = tab != .treemap || layoutVersion == r || layoutNotRenderableVersion == r
-        if outlineVersion == r, derivedVersion == r, layoutOK { requiredVersion = nil; pendingTimeout?.cancel(); pendingTimeout = nil } else if outlineVersion == r || derivedVersion == r || layoutVersion == r { startPendingTimeout() }
+        if outlineVersion == r, derivedVersion == r, layoutOK { requiredVersion = nil; pendingTimeout?.cancel(); pendingTimeout = nil } else {
+            // Deadline restarts only on the FIRST time a surface reaches r for this requirement; repeated publishes of an
+            // already-current surface or tab changes do not reset it, so the bounded forced-refresh stage persists.
+            var fresh = false
+            if outlineVersion == r, progressedSurfaces.insert("outline").inserted { fresh = true }
+            if derivedVersion == r, progressedSurfaces.insert("derived").inserted { fresh = true }
+            if layoutVersion == r, progressedSurfaces.insert("layout").inserted { fresh = true }
+            if fresh { startPendingTimeout() }
+        }
     }
     /// The treemap reported (keyed by table version) that it cannot render (no tree, size <= 1, or view removed), so it
     /// does not hold the actions. Cleared when a layout publishes or a new tree arrives.
@@ -356,14 +364,18 @@ final class AppModel {
     /// True when the treemap tab is showing but its layout is not at the current table version (needs an explicit relayout).
     var layoutNeedsRelayout: Bool { tab == .treemap && tree != nil && layoutVersion != tree?.version }
     private var pendingTimeout: Task<Void, Never>?
+    private var progressedSurfaces: Set<String> = []
+    /// Deadline step (nanoseconds); a var so a test can shorten it. The 10 s default is an unvalidated guess.
+    var pendingStepNanos: UInt64 = 10_000_000_000
     /// Bounded wait: if a required surface never lands, surface an explicit error instead of blocking actions forever.
-    func startPendingTimeout(seconds: UInt64 = 10) {
+    func startPendingTimeout() {
         pendingTimeout?.cancel()
         pendingTimeout = Task { @MainActor [weak self] in
             // Deadline restarts on every surface publication (see surfaceCheck). On expiry: one forced refresh and one
             // extension, then an explicit error. The 10 s values are unvalidated guesses, not measured.
             for stage in 0..<2 {
-                try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+                guard let step = self?.pendingStepNanos else { return }
+                try? await Task.sleep(nanoseconds: step)
                 guard !Task.isCancelled, let self, self.requiredVersion != nil else { return }
                 if stage == 0 { self.refreshOutline(); if self.filterIsActive { self.scheduleFilter(immediate: true) }; self.layoutRetryToken &+= 1 }
             }
@@ -605,7 +617,7 @@ final class AppModel {
             revision += 1
             // Rows and the layout on screen are the PREVIOUS publication until the recomputed ones land (no old row is
             // erased early), so actions that read them stay disabled until every surface reaches requiredVersion.
-            requiredVersion = tree.version; layoutNotRenderableVersion = nil; startPendingTimeout()   // comparison target only; surfaces carry the engine's own stamps
+            requiredVersion = tree.version; layoutNotRenderableVersion = nil; progressedSurfaces = []; startPendingTimeout()   // comparison target only; surfaces carry the engine's own stamps
             if filterIsActive {
                 // The active filter result belongs to the old table (STALE). Recompute without the typing debounce;
                 // its landing refreshes outline, derived lists and layout.

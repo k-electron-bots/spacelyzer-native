@@ -1161,6 +1161,17 @@ private actor PublicationBarrier {
             m.layoutNotRenderable()
             Check.expect("commit-order-layout-not-renderable-releases", held && m.requiredVersion == nil && !m.navigationBlocked, "held=\(held) req=\(String(describing: m.requiredVersion))")
         } else { Check.expect("commit-order-layout-not-renderable-releases", false, "fixture") }
+        // 8b. Deadline must not livelock: repeated publishes of an already-current surface do not reset it; a layout that
+        // never lands ends in an explicit out-of-date error after the forced refresh and one extension.
+        if let m = await scanned(root), let id = node(m, "dirB") {
+            m.pendingStepNanos = 100_000_000
+            m.tab = .treemap
+            remove(m, id)
+            _ = await PublicationRegression.wait { m.outlineVersion == m.tree?.version && m.derivedVersion == m.tree?.version }
+            for _ in 0..<20 { m.surfaceCheck(); try? await Task.sleep(nanoseconds: 30_000_000) }   // same-surface repeats, ~600 ms > 2 steps
+            let ended = await PublicationRegression.wait { m.viewOutOfDate }
+            Check.expect("commit-order-deadline-terminal-when-layout-missing", ended && m.requiredVersion == nil, "outOfDate=\(m.viewOutOfDate)")
+        } else { Check.expect("commit-order-deadline-terminal-when-layout-missing", false, "fixture") }
         // 9. Retry keys include the table version: after a removal (new version) the keys change, so old retries do not eat the new budget.
         if let m = await scanned(root), let id = node(m, "dirB") {
             let k0 = (m.outlineInputKey, m.derivedInputKey, m.filterInputKey, m.layoutInputKey(root: 0, size: CGSize(width: 100, height: 100)))
