@@ -168,7 +168,8 @@ struct TreemapView: View {
             .onChange(of: model.filterRevision) { relayout() }
             .onChange(of: model.layoutRetryToken) { relayout() }
             .onAppear { relayout() }
-            .onDisappear { task?.cancel(); generation &+= 1; hovered = nil; publicationProbe?.disappeared?(generation, publicationEvidence()) }
+            .onChange(of: model.tab) { if model.layoutNeedsRelayout { relayout() } }
+            .onDisappear { task?.cancel(); generation &+= 1; hovered = nil; model.layoutNotRenderable(); publicationProbe?.disappeared?(generation, publicationEvidence()) }
     }
 
     @ViewBuilder private var readout: some View {
@@ -196,7 +197,7 @@ struct TreemapView: View {
         generation &+= 1
         let request = generation
         hovered = nil
-        guard let tree = model.tree, size.width > 1, size.height > 1 else { layout = nil; return }
+        guard let tree = model.tree, size.width > 1, size.height > 1 else { layout = nil; model.layoutNotRenderable(); return }
         let root = model.displayedRoot, revision = model.revision
         let s = size, flt = model.activeFilter
         let barrier = publicationProbe?.before, completed = publicationProbe?.after
