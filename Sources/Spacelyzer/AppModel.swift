@@ -171,6 +171,7 @@ final class AppModel {
                     if let self, self.filterGeneration == generation, self.tree === tree { self.scheduleFilter(immediate: true) }
                     return
                 }
+                if self.enginePoisoned { self.markPoisoned(); return }   // a caught panic makes this publication untrustworthy
                 self.retryDone("filter")
                 self.acceptedFilterVersions.append(rFinal?.version ?? 0); if self.acceptedFilterVersions.count > 64 { self.acceptedFilterVersions.removeFirst() }
                 self.activeFilter = rFinal
@@ -212,6 +213,7 @@ final class AppModel {
             await MainActor.run {
                 // Full key: tree identity, generation, and the table version the data was read at (the engine's stamp).
                 guard let self, !Task.isCancelled, self.derivedGeneration == generation, self.tree === tree, snap.version == tree.version, flt == nil || flt!.version == snap.version else { return }
+                if self.enginePoisoned { self.markPoisoned(); return }   // a caught panic makes this publication untrustworthy
                 self.retryDone("derived")
                 self.derivedVersion = snap.version
                 self.largestIDs = snap.ids; self.largestSizes = snap.sizes
@@ -272,6 +274,7 @@ final class AppModel {
             await MainActor.run {
                 // Full key: tree identity, generation, table version of the read, and the filter's own version.
                 guard let self, !Task.isCancelled, self.outlineGeneration == generation, self.tree === tree, snap.version == tree.version, flt == nil || flt!.version == snap.version else { return }
+                if self.enginePoisoned { self.markPoisoned(); return }   // a caught panic makes this publication untrustworthy
                 self.retryDone("outline")
                 // Rows, per-row details, root size and total are published in ONE main-actor turn from ONE table version,
                 // so cells never mix rows from one version with sizes from another.
@@ -350,6 +353,7 @@ final class AppModel {
         if viewOutOfDate { return (outOfDateReason ?? "The numbers on screen may be out of date.") + " Removal is disabled until you rescan." }
         return nil
     }
+    func markPoisoned() { markOutOfDate("The engine reported an internal error, so the numbers may be wrong. Rescan to continue.") }
     func markOutOfDate(_ reason: String) { viewOutOfDate = true; outOfDateReason = reason; requiredVersion = nil }
     /// Called after each surface publishes. Clears the pending requirement only when ALL live surfaces are current.
     func surfaceCheck() {
