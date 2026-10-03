@@ -33,5 +33,6 @@ for ind, n, name, img in frames:
     seen[(name, img)] = max(seen[(name, img)], n)
 for (name, img), n in seen.most_common(40):
     top.append(f'{n:6d}  {name} ({img})')
-print('main thread, highest inclusive sample counts (12 s window at 5 ms):')
+interval = next((l for l in lines if l.startswith("Analysis of sampling")), "sampling interval unavailable")
+print("main thread, highest inclusive sample counts; " + interval + "; window duration from command/status evidence")
 print('\n'.join(top))
