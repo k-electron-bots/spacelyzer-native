@@ -1,0 +1,71 @@
+name: Bounded external UI calibration
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  calibration:
+    runs-on: macos-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record exact helper and host context
+        run: |
+          mkdir -p calibration-context
+          sw_vers > calibration-context/swvers.txt
+          uname -a > calibration-context/uname.txt
+          swift --version > calibration-context/swift.txt
+          system_profiler SPDisplaysDataType -json > calibration-context/displays.json
+          ps -axo pid,ppid,user,comm > calibration-context/process-chain.txt
+          env | grep -E "^(ImageOS|ImageVersion|RUNNER_OS|RUNNER_ARCH)=" > calibration-context/runner-image.txt
+          echo "External helper launched by python3 from Actions run-shell; recorded process chain, not inferred trust ownership." > calibration-context/ax-host-scope.txt
+          shasum -a 256 scripts/ui-calibrate.swift scripts/ui-calibrate.py scripts/ui-launch-identity.swift > calibration-context/helper-source.sha256
+          swiftc -swift-version 5 scripts/ui-calibrate.swift -o /tmp/spz-calibrate
+          swiftc -swift-version 5 scripts/ui-launch-identity.swift -o /tmp/spz-launch-identity
+          shasum -a 256 /tmp/spz-launch-identity /tmp/spz-calibrate > calibration-context/helper-binary.sha256
+      - name: Import existing project self-signed identity
+        id: sign
+        env:
+          SIGNING_CERT_P12_BASE64: ${{ secrets.SIGNING_CERT_P12_BASE64 }}
+          SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+        run: |
+          HASH="$(./scripts/sign-setup.sh | tail -1)"
+          echo "hash=$HASH" >> "$GITHUB_OUTPUT"
+      - name: Build three exact release arms
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/spz-arms
+          for arm in baseline count path; do
+            case "$arm" in
+              baseline) sha=374af122073dce6461d3271ee3f79a1c8bf29bd0;;
+              count) sha=e3b30c2aac48fade14034e63a96a4cce99b54614;;
+              path) sha=d594cb64725cc9c6e76f3c49b7fe78a2cbc416b8;;
+            esac
+            git fetch origin "$sha"
+            git worktree add --detach "/tmp/spz-arms/$arm" "$sha"
+            (
+              cd "/tmp/spz-arms/$arm"
+              ./scripts/build-engine.sh
+              ./scripts/package-dmg.sh "0.0.calibration-$arm" "${{ steps.sign.outputs.hash }}"
+              shasum -a 256 dist/Spacelyzer.app/Contents/MacOS/Spacelyzer
+              git rev-parse HEAD
+            ) > "calibration-context/$arm-build.txt" 2>&1
+          done
+      - name: One calibration-only attempt
+        run: |
+          set -euo pipefail
+          unset SPZ_DEMO
+          # Job-level35-minute budget plus helper110s per child. No retry/capraise.
+          python3 scripts/ui-calibrate.py /tmp/spz-calibrate \
+            /tmp/spz-arms/baseline/dist/Spacelyzer.app \
+            /tmp/spz-arms/count/dist/Spacelyzer.app \
+            /tmp/spz-arms/path/dist/Spacelyzer.app
+      - name: Preserve results on success or failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: external-ui-calibration-only
+          path: |
+            calibration-context/**
+            spz-calibration-evidence-*/**
+          if-no-files-found: error
