@@ -258,3 +258,13 @@ Two new actual mounted tree-replacement checks independently accepted. Held old 
 Diagnostic selection1284/stall1278.4,warm54.7; arrowp50/p95/max17.1/35.1/332.6ms/stall280.8,typing161.6,hover0.5. Alteredidle arm,mixed shared-runner/profiler perturbation,no original-cold comparison or overall win. Clock/sample evidence remains coarse,not causal stack chronology.
 
 [Run117](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37109813090) · [Artifact](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37109813090/artifacts/11268988193). Historical native failures remain recorded; accepted external API retrieval is not broader VoiceOver/tooltip/compliance evidence.
+
+## Run118: mounted actual filter publication
+
+October3,source `1100ad6`: Swift/Linux/client compiled; strict UI gate failed,88PASS/1FAIL of89,46states,release skipped. Sole failure remains in-process footer full-label retrieval; separate external exact-details regression passed.
+
+Two new actual mounted filter checks independently accepted. Held old UUID0563E0B6,generation2,request520x300,same tree0x9fe020580,requestedFilterIDnil. New UUID8C86E22E,generation3,computed filter0x9fe020f60 acceptedlayout0x9f9fffd00/publishedsamefilter/tree/full520x300/Rust center-hit correspondence. The exact old main-actor callback ran and rejected without changing newer layout/tree/filter/size/hit. Actual pixels45/46 inspected: only readable keep-only.txt fills520x300,no excluded.bin,unchanged after release. This is combined filterrevision/generation/cancellation protection, not isolated filter predicate,gesture dispatch,unmount or universal proof. Previous mounted resize/tree swap and external exact regression passed within their narrow scopes; external203nodes/untruncated.
+
+Diagnosticselection708.9/stall708.3,warm57.9; arrowp50/p95/max37.6/109.2/575.3ms/stall569.1,typing211.1,hover0.2. Alteredidle arm,mixed sharedrunner/profiler perturbation,no original-cold comparison or overall win. Clock/sample remains coarse,not causal stack chronology.
+
+[Run118](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37111144701) · [Artifact](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37111144701/artifacts/11269359238). Historical native failures retained; no broader AX/VoiceOver/tooltip/compliance claim.
