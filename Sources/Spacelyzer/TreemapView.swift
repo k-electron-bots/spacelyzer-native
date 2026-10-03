@@ -135,7 +135,7 @@ struct TreemapView: View {
             }
             .clipped()
             .overlay {
-                if !model.filterPending, model.activeFilter != nil, let currentLayout, currentLayout.rects.isEmpty {
+                if !model.filterPending, !model.enginePoisoned, model.activeFilter != nil, let currentLayout, currentLayout.rects.isEmpty {
                     if model.activeFilter?.count(model.displayedRoot) == 0 {
                         ContentUnavailableView("No matches", systemImage: "line.3.horizontal.decrease.circle")
                     } else {
