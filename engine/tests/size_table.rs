@@ -353,3 +353,26 @@ fn outline_snapshot_is_one_capture_with_rows_infos_root_and_total_at_one_version
         drop(held);
     }
 }
+
+#[test]
+fn largest_sized_returns_sizes_from_the_same_capture_as_the_ids() {
+    use spacelyzer_engine::ffi::*;
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let t = Tree::synthetic(2000);
+    let tp: *const Tree = &t;
+    unsafe {
+        let (mut ids, mut sizes) = ([0u32; 20], [0u64; 20]);
+        let (mut v, mut st) = (0u64, -1i32);
+        let c = spz_largest_sized_status(tp, std::ptr::null(), 20, ids.as_mut_ptr(), sizes.as_mut_ptr(), u64::MAX, &mut v, &mut st);
+        assert!(st == 0 && c > 0);
+        let tab = t.table();
+        for i in 0..c as usize { assert_eq!(sizes[i], tab.sizes[ids[i] as usize]); }
+        // a stale expected version writes nothing and says STALE
+        let mut sizes2 = [7u64; 20];
+        let c2 = spz_largest_sized_status(tp, std::ptr::null(), 20, ids.as_mut_ptr(), sizes2.as_mut_ptr(), v + 5, &mut v, &mut st);
+        assert!(c2 == 0 && st == 1 && sizes2.iter().all(|&x| x == 7));
+        // null output buffers are INVALID, not a crash
+        let c3 = spz_largest_sized_status(tp, std::ptr::null(), 20, std::ptr::null_mut(), sizes2.as_mut_ptr(), u64::MAX, &mut v, &mut st);
+        assert!(c3 == 0 && st == 3);
+    }
+}

@@ -47,6 +47,8 @@ struct OutlineSnapshot {
 }
 struct DerivedSnapshot {
     var ids: [UInt32]
+    /// Size of each id, from the same capture as the ids (filter size when filtered).
+    var sizes: [UInt64]
     var kinds: [(category: FileCategory, bytes: UInt64, items: UInt64)]
     var version: UInt64
 }
@@ -218,8 +220,9 @@ final class Tree: @unchecked Sendable {
     func derivedSnapshot(filter: FilterResult?, count: Int) -> Result<DerivedSnapshot, EngineStatus> {
         for _ in 0..<3 {
             var ids = [UInt32](repeating: 0, count: count)
+            var sizes = [UInt64](repeating: 0, count: count)
             var v: UInt64 = 0, st: Int32 = -1
-            let c = ids.withUnsafeMutableBufferPointer { b in spz_largest_status(ptr, filter?.ptr, UInt32(count), b.baseAddress, UInt64.max, &v, &st) }
+            let c = ids.withUnsafeMutableBufferPointer { b in sizes.withUnsafeMutableBufferPointer { sb in spz_largest_sized_status(ptr, filter?.ptr, UInt32(count), b.baseAddress, sb.baseAddress, UInt64.max, &v, &st) } }
             guard st == 0 else { return .failure(EngineStatus(raw: st)) }
             var out = [UInt64](repeating: 0, count: 22)
             var v2: UInt64 = 0, st2: Int32 = -1
@@ -227,7 +230,7 @@ final class Tree: @unchecked Sendable {
             if st2 == 1 && filter == nil { continue }
             guard st2 == 0 else { return .failure(EngineStatus(raw: st2)) }
             let kinds = FileCategory.allCases.map { (category: $0, bytes: out[$0.rawValue * 2], items: out[$0.rawValue * 2 + 1]) }
-            return .success(DerivedSnapshot(ids: Array(ids.prefix(Int(c))), kinds: kinds, version: v))
+            return .success(DerivedSnapshot(ids: Array(ids.prefix(Int(c))), sizes: Array(sizes.prefix(Int(c))), kinds: kinds, version: v))
         }
         return .failure(.stale)
     }

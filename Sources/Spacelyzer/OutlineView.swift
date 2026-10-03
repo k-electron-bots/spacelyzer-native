@@ -445,8 +445,9 @@ private struct OutlineTable: NSViewRepresentable {
         }
 
         func key(_ code: UInt16) -> Bool {
-            guard let tree, let s = model.selected else { return false }
-            let info = tree.info(s)
+            // Node kind and child count come from the published outline snapshot (same capture as the rows), not a live read.
+            guard !model.navigationBlocked, let s = model.selected, let idx = model.outlineIndex[s], idx < model.outlineInfos.count else { return false }
+            let info = model.outlineInfos[idx]
             let isDir = info.kind == .directory && info.childCount > 0
             switch code {
             case 124: if isDir && !model.expanded.contains(s) { model.toggle(s) }; return isDir      // right
