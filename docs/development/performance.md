@@ -54,3 +54,7 @@ Selection1284/stall1278.4,warm54.7; arrowp50/p95/max17.1/35.1/332.6ms/stall280.8
 ## Run118 diagnostic arm
 
 Selection708.9/stall708.3,warm57.9; arrowp50/p95/max37.6/109.2/575.3ms/stall569.1,typing211.1,hover0.2. Altered1s idle settling arm/sharedrunner/profiler perturbation prevents original-cold comparison; no overall win or causal stack attribution. [Evidence](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37111144701/artifacts/11269359238).
+
+## Run119: substantial stalls still unresolved
+
+Selection1575.4/stall1570.3,warm45.4; arrowp50/p95/max28.2/104.9/1451.1ms/stall1455.3,typing278.5,hover0.9. Altered1s idle settling/sharedrunner/profiler perturbation prevents original-cold comparison. No overall win or causal stack attribution. Next work should ground event queue/native dispatch/model/view publication paths with focused causal evidence before optimization; green safety assertions do not clear these stalls. [Evidence](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37115126519/artifacts/11271710264).
