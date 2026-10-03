@@ -96,7 +96,7 @@ unsafe fn spz_scan_start_impl(root: *const c_char, excludes: *const c_char) -> *
     let h = std::thread::spawn(move || {
         // a panic in the scan becomes a failed scan, never a scan that stays 'running' forever
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scan(&root, &opts, &p2)))
-            .unwrap_or_else(|_| Err(std::io::Error::new(std::io::ErrorKind::Other, "internal error during scan")));
+            .unwrap_or_else(|_| { PANICS.fetch_add(1, Ordering::SeqCst); Err(std::io::Error::new(std::io::ErrorKind::Other, "internal error during scan")) });
         *r2.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
     });
     Box::into_raw(Box::new(Scan { progress, result, handle: Mutex::new(Some(h)) }))
