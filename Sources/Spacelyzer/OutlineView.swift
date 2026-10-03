@@ -391,8 +391,9 @@ private struct OutlineTable: NSViewRepresentable {
             cell.icon.contentTintColor = isDir ? .controlAccentColor : .secondaryLabelColor
             let nm = tree.name(r.node)
             cell.name.stringValue = nm
-            cell.name.toolTip = tree.path(r.node)
-            cell.toolTip = tree.path(r.node)
+            let path = tree.path(r.node)
+            cell.name.toolTip = path
+            cell.toolTip = path
             cell.contrastOverride = Perf.on ? model.demoIncreaseContrast : nil
             cell.size.stringValue = formatBytes(shown)
             cell.count.stringValue = isDir ? "\(info.childCount.formatted()) item\(info.childCount == 1 ? "" : "s")" : ""
