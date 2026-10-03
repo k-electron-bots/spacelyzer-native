@@ -76,6 +76,11 @@ pub fn set_failpoint(n: u8) { FAILPOINT.store(n, Ordering::SeqCst); }
 fn failpoint(n: u8) {
     if FAILPOINT.load(Ordering::Relaxed) == n { FAILPOINT.store(0, Ordering::SeqCst); panic!("injected failpoint {n}"); }
 }
+/// Failpoint 9: a panic inside an FFI entry body (used by the shipped-profile example).
+#[cfg(feature = "failpoints")]
+pub fn ffi_failpoint() { failpoint(9) }
+#[cfg(not(feature = "failpoints"))]
+pub fn ffi_failpoint() {}
 #[cfg(not(feature = "failpoints"))]
 #[inline(always)]
 fn failpoint(_n: u8) {}

@@ -1,6 +1,7 @@
 //! C ABI for the Swift app. All handles are opaque pointers owned by the caller and freed
 //! with the matching `spz_*_free`. Strings returned to the caller are freed with
-//! `spz_string_free`. Functions never panic across the boundary (panic = abort in release).
+//! `spz_string_free`. Every entry point catches panics inside its body (release profile uses panic = "unwind"; a panic
+//! can never unwind across the ABI). It comes back as a fallback value or status 5. Allocation failure (OOM) still aborts.
 #![allow(clippy::missing_safety_doc)]
 
 use crate::category::CATEGORY_COUNT;
@@ -59,6 +60,12 @@ fn cstr(p: *const c_char) -> String {
     unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
 }
 
+/// Panic guard for the legacy entry points (no status out-parameter): a panic comes back as the fallback value.
+/// Only effective with panic = "unwind" (set in the workspace release profile); with abort it could not catch.
+unsafe fn legacy<R>(fallback: R, f: impl FnOnce() -> R) -> R {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { crate::tree::ffi_failpoint(); f() })).unwrap_or(fallback)
+}
+
 fn to_c(s: String) -> *mut c_char {
     CString::new(s.replace('\0', "")).unwrap().into_raw()
 }
@@ -67,6 +74,10 @@ fn to_c(s: String) -> *mut c_char {
 /// absolute paths (may be null). Returns a handle immediately.
 #[no_mangle]
 pub unsafe extern "C" fn spz_scan_start(root: *const c_char, excludes: *const c_char) -> *mut Scan {
+    legacy(std::ptr::null_mut(), || spz_scan_start_impl(root, excludes))
+}
+
+unsafe fn spz_scan_start_impl(root: *const c_char, excludes: *const c_char) -> *mut Scan {
     let root = PathBuf::from(cstr(root));
     let opts = ScanOptions {
         exclude: cstr(excludes).lines().filter(|l| !l.is_empty()).map(PathBuf::from).collect(),
@@ -76,16 +87,23 @@ pub unsafe extern "C" fn spz_scan_start(root: *const c_char, excludes: *const c_
     let result = Arc::new(Mutex::new(None));
     let (p2, r2) = (progress.clone(), result.clone());
     let h = std::thread::spawn(move || {
-        let r = scan(&root, &opts, &p2);
-        *r2.lock().unwrap() = Some(r);
+        // a panic in the scan becomes a failed scan, never a scan that stays 'running' forever
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| scan(&root, &opts, &p2)))
+            .unwrap_or_else(|_| Err(std::io::Error::new(std::io::ErrorKind::Other, "internal error during scan")));
+        *r2.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
     });
     Box::into_raw(Box::new(Scan { progress, result, handle: Mutex::new(Some(h)) }))
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn spz_scan_progress(s: *const Scan) -> SpzProgress {
+    legacy(SpzProgress { items: 0, bytes: 0, finished: 0, failed: 0 }, || spz_scan_progress_impl(s))
+}
+
+unsafe fn spz_scan_progress_impl(s: *const Scan) -> SpzProgress {
+    if s.is_null() { return SpzProgress { items: 0, bytes: 0, finished: 0, failed: 1 }; }
     let s = &*s;
-    let guard = s.result.lock().unwrap();
+    let guard = s.result.lock().unwrap_or_else(|e| e.into_inner());
     SpzProgress {
         items: s.progress.items.load(Ordering::Relaxed),
         bytes: s.progress.bytes.load(Ordering::Relaxed),
@@ -96,18 +114,28 @@ pub unsafe extern "C" fn spz_scan_progress(s: *const Scan) -> SpzProgress {
 
 #[no_mangle]
 pub unsafe extern "C" fn spz_scan_cancel(s: *const Scan) {
+    legacy((), || spz_scan_cancel_impl(s))
+}
+
+unsafe fn spz_scan_cancel_impl(s: *const Scan) {
+    if s.is_null() { return; }
     (*s).progress.cancel();
 }
 
 /// Take the finished tree out of the scan handle. Null if not finished, failed, or already taken.
 #[no_mangle]
 pub unsafe extern "C" fn spz_scan_take_tree(s: *mut Scan) -> *mut Tree {
+    legacy(std::ptr::null_mut(), || spz_scan_take_tree_impl(s))
+}
+
+unsafe fn spz_scan_take_tree_impl(s: *mut Scan) -> *mut Tree {
+    if s.is_null() { return std::ptr::null_mut(); }
     let s = &*s;
-    let h = s.handle.lock().unwrap().take();
+    let h = s.handle.lock().unwrap_or_else(|e| e.into_inner()).take();
     if let Some(h) = h {
         let _ = h.join();
     }
-    let r = s.result.lock().unwrap().take();
+    let r = s.result.lock().unwrap_or_else(|e| e.into_inner()).take();
     match r {
         Some(Ok(mut t)) => {
             t.uid = NEXT_TREE_UID.fetch_add(1, Ordering::Relaxed);
@@ -124,7 +152,7 @@ pub unsafe extern "C" fn spz_scan_free(s: *mut Scan) {
     }
     let s = Box::from_raw(s);
     s.progress.cancel();
-    let h = s.handle.lock().unwrap().take();
+    let h = s.handle.lock().unwrap_or_else(|e| e.into_inner()).take();
     if let Some(h) = h {
         let _ = h.join();
     }
@@ -139,17 +167,30 @@ pub unsafe extern "C" fn spz_tree_free(t: *mut Tree) {
 
 #[no_mangle]
 pub unsafe extern "C" fn spz_tree_node_count(t: *const Tree) -> u64 {
+    legacy(0, || spz_tree_node_count_impl(t))
+}
+
+unsafe fn spz_tree_node_count_impl(t: *const Tree) -> u64 {
     if t.is_null() { return 0; }
     (*t).len() as u64
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn spz_tree_cancelled(t: *const Tree) -> u8 {
+    legacy(0, || spz_tree_cancelled_impl(t))
+}
+
+unsafe fn spz_tree_cancelled_impl(t: *const Tree) -> u8 {
+    if t.is_null() { return 0; }
     (*t).cancelled as u8
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn spz_tree_node(t: *const Tree, id: NodeId) -> SpzNode {
+    legacy(SpzNode { size: 0, own_bytes: 0, parent: u32::MAX, child_count: 0, first_child: u32::MAX, kind: 0, category: 0 }, || spz_tree_node_impl(t, id))
+}
+
+unsafe fn spz_tree_node_impl(t: *const Tree, id: NodeId) -> SpzNode {
     if !valid(t, id) {
         return SpzNode { size: 0, own_bytes: 0, parent: u32::MAX, child_count: 0, first_child: u32::MAX, kind: 0, category: 0 };
     }
@@ -169,6 +210,10 @@ pub unsafe extern "C" fn spz_tree_node(t: *const Tree, id: NodeId) -> SpzNode {
 
 #[no_mangle]
 pub unsafe extern "C" fn spz_tree_name(t: *const Tree, id: NodeId) -> *mut c_char {
+    legacy(std::ptr::null_mut(), || spz_tree_name_impl(t, id))
+}
+
+unsafe fn spz_tree_name_impl(t: *const Tree, id: NodeId) -> *mut c_char {
     if !valid(t, id) { return to_c(String::new()); }
     let t = &*t;
     to_c(if id == 0 { t.root_path().to_string() } else { t.name(id).to_string() })
@@ -176,6 +221,10 @@ pub unsafe extern "C" fn spz_tree_name(t: *const Tree, id: NodeId) -> *mut c_cha
 
 #[no_mangle]
 pub unsafe extern "C" fn spz_tree_path(t: *const Tree, id: NodeId) -> *mut c_char {
+    legacy(std::ptr::null_mut(), || spz_tree_path_impl(t, id))
+}
+
+unsafe fn spz_tree_path_impl(t: *const Tree, id: NodeId) -> *mut c_char {
     if !valid(t, id) { return to_c(String::new()); }
     to_c((*t).path(id))
 }
@@ -183,13 +232,22 @@ pub unsafe extern "C" fn spz_tree_path(t: *const Tree, id: NodeId) -> *mut c_cha
 /// Node for an absolute path under the scanned root, or u32::MAX.
 #[no_mangle]
 pub unsafe extern "C" fn spz_tree_find(t: *const Tree, path: *const c_char) -> NodeId {
+    legacy(u32::MAX, || spz_tree_find_impl(t, path))
+}
+
+unsafe fn spz_tree_find_impl(t: *const Tree, path: *const c_char) -> NodeId {
+    if t.is_null() { return u32::MAX; }
     (*t).find(&cstr(path)).unwrap_or(u32::MAX)
 }
 
 /// Remove a subtree from the result after it was moved to the Trash.
-#[no_mangle]
 /// Returns 0 OK, 2 MUTATION_FAILED (tree unchanged), 3 INVALID. Never panics across the ABI.
+#[no_mangle]
 pub unsafe extern "C" fn spz_tree_forget(t: *mut Tree, id: NodeId) -> i32 {
+    legacy(5, || spz_tree_forget_impl(t, id))
+}
+
+unsafe fn spz_tree_forget_impl(t: *mut Tree, id: NodeId) -> i32 {
     if !valid(t, id) { return 3; }
     match (*t).forget(id) {
         Ok(_) => 0,
@@ -201,6 +259,10 @@ pub unsafe extern "C" fn spz_tree_forget(t: *mut Tree, id: NodeId) -> i32 {
 /// Version of the currently published size table (increments on every successful mutation).
 #[no_mangle]
 pub unsafe extern "C" fn spz_tree_version(t: *const Tree) -> u64 {
+    legacy(0, || spz_tree_version_impl(t))
+}
+
+unsafe fn spz_tree_version_impl(t: *const Tree) -> u64 {
     if t.is_null() { return 0; }
     (*t).table().version
 }
@@ -208,6 +270,11 @@ pub unsafe extern "C" fn spz_tree_version(t: *const Tree) -> u64 {
 /// Writes (bytes, items) pairs for each category into `out` (CATEGORY_COUNT * 2 u64s).
 #[no_mangle]
 pub unsafe extern "C" fn spz_tree_category_totals(t: *const Tree, out: *mut u64) {
+    legacy((), || spz_tree_category_totals_impl(t, out))
+}
+
+unsafe fn spz_tree_category_totals_impl(t: *const Tree, out: *mut u64) {
+    if t.is_null() || out.is_null() { return; }
     let totals = (*t).category_totals();
     for (i, (b, n)) in totals.iter().enumerate().take(CATEGORY_COUNT) {
         *out.add(i * 2) = *b;
@@ -218,6 +285,11 @@ pub unsafe extern "C" fn spz_tree_category_totals(t: *const Tree, out: *mut u64)
 /// Fill `out` with up to `cap` ids of the largest files; returns the count written.
 #[no_mangle]
 pub unsafe extern "C" fn spz_tree_largest_files(t: *const Tree, cap: u32, out: *mut NodeId) -> u32 {
+    legacy(0, || spz_tree_largest_files_impl(t, cap, out))
+}
+
+unsafe fn spz_tree_largest_files_impl(t: *const Tree, cap: u32, out: *mut NodeId) -> u32 {
+    if t.is_null() || (out.is_null() && cap > 0) { return 0; }
     let v = (*t).largest_files(cap as usize);
     for (i, id) in v.iter().enumerate() {
         *out.add(i) = *id;
@@ -228,21 +300,40 @@ pub unsafe extern "C" fn spz_tree_largest_files(t: *const Tree, cap: u32, out: *
 /// Number of skipped locations, and accessors for them.
 #[no_mangle]
 pub unsafe extern "C" fn spz_tree_skipped_count(t: *const Tree) -> u32 {
+    legacy(0, || spz_tree_skipped_count_impl(t))
+}
+
+unsafe fn spz_tree_skipped_count_impl(t: *const Tree) -> u32 {
+    if t.is_null() { return 0; }
     (*t).skipped.len() as u32
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn spz_tree_skipped_path(t: *const Tree, i: u32) -> *mut c_char {
+    legacy(std::ptr::null_mut(), || spz_tree_skipped_path_impl(t, i))
+}
+
+unsafe fn spz_tree_skipped_path_impl(t: *const Tree, i: u32) -> *mut c_char {
+    if t.is_null() { return to_c(String::new()); }
     to_c((&*t).skipped.get(i as usize).map(|s| s.path.clone()).unwrap_or_default())
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn spz_tree_skipped_reason(t: *const Tree, i: u32) -> u8 {
+    legacy(0, || spz_tree_skipped_reason_impl(t, i))
+}
+
+unsafe fn spz_tree_skipped_reason_impl(t: *const Tree, i: u32) -> u8 {
+    if t.is_null() { return 1; }
     (&*t).skipped.get(i as usize).map(|s| s.reason as u8).unwrap_or(1)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn spz_layout_new(t: *const Tree, root: NodeId, width: f32, height: f32) -> *mut Layout {
+    legacy(std::ptr::null_mut(), || spz_layout_new_impl(t, root, width, height))
+}
+
+unsafe fn spz_layout_new_impl(t: *const Tree, root: NodeId, width: f32, height: f32) -> *mut Layout {
     let opts = LayoutOptions { width, height, ..Default::default() };
     if !valid(t, root) { return Box::into_raw(Box::new(Layout { rects: Vec::new(), uid: 0, version: 0 })); }
     Box::into_raw(Box::new({ let tab = (*t).table(); Layout { rects: crate::layout::layout_in(&*t, &tab, root, &opts, None), uid: (*t).uid, version: tab.version } }))
@@ -257,18 +348,32 @@ pub unsafe extern "C" fn spz_layout_free(l: *mut Layout) {
 
 #[no_mangle]
 pub unsafe extern "C" fn spz_layout_count(l: *const Layout) -> u32 {
+    legacy(0, || spz_layout_count_impl(l))
+}
+
+unsafe fn spz_layout_count_impl(l: *const Layout) -> u32 {
+    if l.is_null() { return 0; }
     (&*l).rects.len() as u32
 }
 
 /// Pointer to the contiguous `Rect` array (valid until `spz_layout_free`).
 #[no_mangle]
 pub unsafe extern "C" fn spz_layout_rects(l: *const Layout) -> *const Rect {
+    legacy(std::ptr::null(), || spz_layout_rects_impl(l))
+}
+
+unsafe fn spz_layout_rects_impl(l: *const Layout) -> *const Rect {
+    if l.is_null() { return std::ptr::null(); }
     (&*l).rects.as_ptr()
 }
 
 /// Index of the rect under the point, or u32::MAX.
 #[no_mangle]
 pub unsafe extern "C" fn spz_layout_hit(l: *const Layout, x: f32, y: f32) -> u32 {
+    legacy(0, || spz_layout_hit_impl(l, x, y))
+}
+
+unsafe fn spz_layout_hit_impl(l: *const Layout, x: f32, y: f32) -> u32 {
     if l.is_null() { return u32::MAX; }
     hit_test(&(&*l).rects, x, y).map(|i| i as u32).unwrap_or(u32::MAX)
 }
@@ -284,6 +389,12 @@ pub unsafe extern "C" fn spz_string_free(s: *mut c_char) {
 /// the count, then call again with a buffer of that many `Row`s (two u32s each).
 #[no_mangle]
 pub unsafe extern "C" fn spz_outline_rows(
+    t: *const Tree, root: NodeId, expanded: *const NodeId, n_expanded: u32, out: *mut crate::outline::Row, cap: u32,
+) -> u32 {
+    legacy(0, || spz_outline_rows_impl(t, root, expanded, n_expanded, out, cap))
+}
+
+unsafe fn spz_outline_rows_impl(
     t: *const Tree, root: NodeId, expanded: *const NodeId, n_expanded: u32, out: *mut crate::outline::Row, cap: u32,
 ) -> u32 {
     if !valid(t, root) { return 0; }
@@ -328,6 +439,11 @@ unsafe fn expanded_set(t: *const Tree, expanded: *const NodeId, n: u32) -> std::
 /// Run a filter over the whole tree in Rust. `text` and `ext` may be null.
 #[no_mangle]
 pub unsafe extern "C" fn spz_filter_apply(t: *const Tree, text: *const c_char, ext: *const c_char, f: SpzFilter) -> *mut FilterHandle {
+    legacy(std::ptr::null_mut(), || spz_filter_apply_impl(t, text, ext, f))
+}
+
+unsafe fn spz_filter_apply_impl(t: *const Tree, text: *const c_char, ext: *const c_char, f: SpzFilter) -> *mut FilterHandle {
+    if t.is_null() { return std::ptr::null_mut(); }
     let flt = crate::filter::Filter {
         text: cstr(text),
         category_mask: f.category_mask,
@@ -356,15 +472,30 @@ pub unsafe extern "C" fn spz_filter_total_count(h: *const FilterHandle) -> u64 {
 
 /// Filtered size of one node (sum of matching descendants).
 #[no_mangle]
-pub unsafe extern "C" fn spz_filter_size(h: *const FilterHandle, id: NodeId) -> u64 { if h.is_null() { return 0; } (&(*h).0.sizes).get(id as usize).copied().unwrap_or(0) }
+pub unsafe extern "C" fn spz_filter_size(h: *const FilterHandle, id: NodeId) -> u64 {
+    legacy(0, || spz_filter_size_impl(h, id))
+}
+
+unsafe fn spz_filter_size_impl(h: *const FilterHandle, id: NodeId) -> u64 { if h.is_null() { return 0; } (&(*h).0.sizes).get(id as usize).copied().unwrap_or(0) }
 
 /// Matching file count under one node.
 #[no_mangle]
-pub unsafe extern "C" fn spz_filter_count(h: *const FilterHandle, id: NodeId) -> u32 { if h.is_null() { return 0; } (&(*h).0.counts).get(id as usize).copied().unwrap_or(0) }
+pub unsafe extern "C" fn spz_filter_count(h: *const FilterHandle, id: NodeId) -> u32 {
+    legacy(0, || spz_filter_count_impl(h, id))
+}
+
+unsafe fn spz_filter_count_impl(h: *const FilterHandle, id: NodeId) -> u32 { if h.is_null() { return 0; } (&(*h).0.counts).get(id as usize).copied().unwrap_or(0) }
 
 /// Like `spz_outline_rows`, but hides nodes with no matching bytes. Pass the handle from `spz_filter_apply`.
 #[no_mangle]
 pub unsafe extern "C" fn spz_outline_rows_filtered(
+    t: *const Tree, root: NodeId, expanded: *const NodeId, n_expanded: u32, h: *const FilterHandle,
+    out: *mut crate::outline::Row, cap: u32,
+) -> u32 {
+    legacy(0, || spz_outline_rows_filtered_impl(t, root, expanded, n_expanded, h, out, cap))
+}
+
+unsafe fn spz_outline_rows_filtered_impl(
     t: *const Tree, root: NodeId, expanded: *const NodeId, n_expanded: u32, h: *const FilterHandle,
     out: *mut crate::outline::Row, cap: u32,
 ) -> u32 {
@@ -379,6 +510,10 @@ pub unsafe extern "C" fn spz_outline_rows_filtered(
 
 #[no_mangle]
 pub unsafe extern "C" fn spz_layout_new_filtered(t: *const Tree, root: NodeId, width: f32, height: f32, h: *const FilterHandle) -> *mut Layout {
+    legacy(std::ptr::null_mut(), || spz_layout_new_filtered_impl(t, root, width, height, h))
+}
+
+unsafe fn spz_layout_new_filtered_impl(t: *const Tree, root: NodeId, width: f32, height: f32, h: *const FilterHandle) -> *mut Layout {
     let opts = LayoutOptions { width, height, ..Default::default() };
     if !valid(t, root) || !handle_ok(t, h) { return Box::into_raw(Box::new(Layout { rects: Vec::new(), uid: 0, version: 0 })); }
     // every size used comes from the handle's own sizes, so the layout is stamped with the handle's version:
@@ -389,6 +524,11 @@ pub unsafe extern "C" fn spz_layout_new_filtered(t: *const Tree, root: NodeId, w
 /// Largest matching files under a filter; returns the count written (up to `cap`).
 #[no_mangle]
 pub unsafe extern "C" fn spz_filter_largest_files(t: *const Tree, h: *const FilterHandle, cap: u32, out: *mut NodeId) -> u32 {
+    legacy(0, || spz_filter_largest_files_impl(t, h, cap, out))
+}
+
+unsafe fn spz_filter_largest_files_impl(t: *const Tree, h: *const FilterHandle, cap: u32, out: *mut NodeId) -> u32 {
+    if out.is_null() && cap > 0 { return 0; }
     if !handle_ok(t, h) { return 0; }
     let v = crate::filter::largest_files(&*t, &(*h).0, cap as usize);
     for (i, id) in v.iter().enumerate() {
@@ -400,6 +540,11 @@ pub unsafe extern "C" fn spz_filter_largest_files(t: *const Tree, h: *const Filt
 /// Per-category (bytes, items) over the filtered set, CATEGORY_COUNT * 2 u64s.
 #[no_mangle]
 pub unsafe extern "C" fn spz_filter_category_totals(t: *const Tree, h: *const FilterHandle, out: *mut u64) {
+    legacy((), || spz_filter_category_totals_impl(t, h, out))
+}
+
+unsafe fn spz_filter_category_totals_impl(t: *const Tree, h: *const FilterHandle, out: *mut u64) {
+    if out.is_null() { return; }
     if !handle_ok(t, h) { for i in 0..CATEGORY_COUNT * 2 { *out.add(i) = 0; } return; }
     let totals = crate::filter::category_totals(&*t, &(*h).0);
     for (i, (b, n)) in totals.iter().enumerate().take(CATEGORY_COUNT) {
@@ -412,6 +557,13 @@ pub unsafe extern "C" fn spz_filter_category_totals(t: *const Tree, h: *const Fi
 /// `h` may be null for no filter. Invalid or foreign handles return 0 rows.
 #[no_mangle]
 pub unsafe extern "C" fn spz_outline_rows_sorted(
+    t: *const Tree, root: NodeId, expanded: *const NodeId, n_expanded: u32, h: *const FilterHandle, sort: u32,
+    out: *mut crate::outline::Row, cap: u32,
+) -> u32 {
+    legacy(0, || spz_outline_rows_sorted_impl(t, root, expanded, n_expanded, h, sort, out, cap))
+}
+
+unsafe fn spz_outline_rows_sorted_impl(
     t: *const Tree, root: NodeId, expanded: *const NodeId, n_expanded: u32, h: *const FilterHandle, sort: u32,
     out: *mut crate::outline::Row, cap: u32,
 ) -> u32 {
@@ -454,6 +606,10 @@ unsafe fn filter_apply_status_inner(t: *const Tree, text: *const c_char, ext: *c
 /// 0 OK (same tree, same version), 1 STALE (same tree, table changed), 3 INVALID (null or other tree).
 #[no_mangle]
 pub unsafe extern "C" fn spz_filter_status(t: *const Tree, h: *const FilterHandle) -> i32 {
+    legacy(5, || spz_filter_status_impl(t, h))
+}
+
+unsafe fn spz_filter_status_impl(t: *const Tree, h: *const FilterHandle) -> i32 {
     if t.is_null() || h.is_null() || (*h).1 != (*t).uid { return 3; }
     if (*h).2 != (*t).table().version || (*h).0.sizes.len() != (*t).len() { 1 } else { 0 }
 }
@@ -478,6 +634,10 @@ unsafe fn layout_new_status_inner(t: *const Tree, root: NodeId, width: f32, heig
 /// 0 OK, 1 STALE, 3 INVALID.
 #[no_mangle]
 pub unsafe extern "C" fn spz_layout_status(t: *const Tree, l: *const Layout) -> i32 {
+    legacy(5, || spz_layout_status_impl(t, l))
+}
+
+unsafe fn spz_layout_status_impl(t: *const Tree, l: *const Layout) -> i32 {
     if t.is_null() || l.is_null() || (*l).uid != (*t).uid { return 3; }
     if (*l).version != (*t).table().version { 1 } else { 0 }
 }
@@ -517,7 +677,7 @@ unsafe fn snapshot<'a>(t: *const Tree, h: *const FilterHandle, expected: u64, st
 }
 
 unsafe fn guarded<R>(status: *mut i32, fallback: R, f: impl FnOnce() -> R) -> R {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| { if !status.is_null() { *status = 5; } fallback })
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { crate::tree::ffi_failpoint(); f() })).unwrap_or_else(|_| { if !status.is_null() { *status = 5; } fallback })
 }
 
 /// Rows of the outline. Returns the total row count; writes up to `cap` rows when `out` is not null.
