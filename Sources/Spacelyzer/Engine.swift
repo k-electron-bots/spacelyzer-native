@@ -345,6 +345,9 @@ enum EnginePanics { static var count: UInt64 { spz_engine_panic_count() } }
 final class ScanSession: @unchecked Sendable {
     private let handle: OpaquePointer
     private let panicsAtStart = EnginePanics.count
+    /// The exact counter value this session validated against (read once, after the scan finished). The caller adopts THIS
+    /// value as its baseline; re-reading the global counter later could adopt a panic that happened after validation.
+    private(set) var validatedPanicCount: UInt64 = 0
     init?(root: String, excludes: [String]) {
         guard let h = spz_scan_start(root, excludes.joined(separator: "\n")) else { return nil }
         handle = h
@@ -362,7 +365,9 @@ final class ScanSession: @unchecked Sendable {
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
         // A panic caught anywhere while this scan ran means its result cannot be trusted: report it as a failed scan.
-        if EnginePanics.count != panicsAtStart { if let t = spz_scan_take_tree(handle) { spz_tree_free(t) }; return nil }
+        let now = EnginePanics.count
+        if now != panicsAtStart { if let t = spz_scan_take_tree(handle) { spz_tree_free(t) }; return nil }
+        validatedPanicCount = now
         guard let t = spz_scan_take_tree(handle) else { return nil }
         return Tree(t)
     }
