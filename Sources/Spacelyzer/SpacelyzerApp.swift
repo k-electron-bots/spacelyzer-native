@@ -722,7 +722,9 @@ struct SpacelyzerApp: App {
                             let footerHost = NSHostingView(rootView: VStack(spacing: 0) {
                                 Text("Production footer at 700 pt; simulated warnings").font(.caption).padding(12)
                                 Spacer(minLength: 0)
-                                StatusBar().environment(model)
+                                StatusBar(demoDetailsCaptured: { details in
+                                    try? details.write(toFile: "/tmp/spz-footer-ax-expected.txt", atomically: true, encoding: .utf8)
+                                }).environment(model)
                             }.frame(width: 700, height: 110))
                             footerWindow.contentView = footerHost
                             footerWindow.center(); footerWindow.makeKeyAndOrderFront(nil)
@@ -730,10 +732,27 @@ struct SpacelyzerApp: App {
                             let footerSurfaceValid = footerWindow.isVisible && footerWindow.isKeyWindow && abs(footerHost.bounds.width - 700) < 1
                             Check.expect("footer-constrained-production-surface-ready", footerSurfaceValid && model.activeFilter?.totalCount == 1 && model.demoFooterUnreadable == 1_234_567 && model.demoFooterPartial == true, "pixels40 decide natural ViewThatFits branch/accounting; separate700ptsurface not mainwindowbelowminimum; warning simulation")
                             Perf.log("footer-constrained surfaceWidth=\(footerHost.bounds.width) filterCount=\(model.activeFilter?.totalCount ?? 0) unreadable=\(model.demoFooterUnreadable ?? 0) partial=\(model.demoFooterPartial == true)")
-                            try? "\(ProcessInfo.processInfo.processIdentifier)".write(toFile: "/tmp/spz-footer-ax-ready", atomically: true, encoding: .utf8)
+                            let exportDeadline = Date().addingTimeInterval(3)
+                            var mountedExport: String? = nil
+                            while Date() < exportDeadline {
+                                mountedExport = try? String(contentsOfFile: "/tmp/spz-footer-ax-expected.txt", encoding: .utf8)
+                                if let mountedExport, !mountedExport.isEmpty { break }
+                                try? await Task.sleep(nanoseconds: 20_000_000)
+                            }
+                            if let mountedExport, !mountedExport.isEmpty {
+                                try? "\(ProcessInfo.processInfo.processIdentifier)".write(toFile: "/tmp/spz-footer-ax-ready", atomically: true, encoding: .utf8)
+                            }
                             let axDeadline = Date().addingTimeInterval(20)
                             while !FileManager.default.fileExists(atPath: "/tmp/spz-footer-ax-ack") && Date() < axDeadline { try? await Task.sleep(nanoseconds: 20_000_000) }
                             Perf.log("footer-ax external-diagnostic acknowledged=\(FileManager.default.fileExists(atPath: "/tmp/spz-footer-ax-ack"))")
+                            let externalResult = try? String(contentsOfFile: "/tmp/spz-footer-ax-result.txt", encoding: .utf8)
+                            let expectedDetails = try? String(contentsOfFile: "/tmp/spz-footer-ax-expected.txt", encoding: .utf8)
+                            let expectedScan = model.lastScanSeconds.map { "Scanned in \(String(format: "%.2f", $0)) seconds" }
+                            let expectedFilter = model.activeFilter.map { "Filter: \(formatBytes($0.totalBytes)), 1 file, \(String(format: "%.1f", model.filterMillis)) milliseconds" }
+                            let expectedFixture = expectedDetails?.components(separatedBy: "\n").first == model.rootPath && expectedDetails?.contains("Zero KB in 1 item") == true && expectedDetails?.contains("Stopped early, partial accounting") == true && expectedScan.map { expectedDetails?.contains($0) == true } == true && expectedFilter.map { expectedDetails?.contains($0) == true } == true && model.activeFilter?.totalBytes == 0 && model.activeFilter?.totalCount == 1 && expectedDetails?.contains("1,234,567 locations not readable") == true
+                            let clientStatus = try? String(contentsOfFile: "/tmp/spz-footer-ax-status.txt", encoding: .utf8)
+                            let freshAck = FileManager.default.fileExists(atPath: "/tmp/spz-footer-ax-ack")
+                            Check.expect("footer-external-same-node-help-value-exact-details", expectedFixture && freshAck && clientStatus == "EXIT_0" && externalResult == "VERIFIED", "external verified window/PID/role same-node exact UTF8 Help+Value; successful process exit required; denied/error/timeout/truncation is not a pass; native failed gate separate")
                             let footerAX = FooterAXEvidence.inspect(footerWindow)
                             let fullLabel = footerAX.entries.contains { $0.label.contains("Stopped early, partial accounting") && $0.label.contains("Filter:") && $0.label.contains("1 file") && $0.label.contains("1,234,567 locations not readable") && $0.label.contains("Scanned in") }
                             Check.expect("footer-native-accessibility-full-details", fullLabel, "native accessor from mixed AX/view discovery only; not external client reachability; truncated=\(footerAX.truncated); missing label inconclusive when truncated; not VoiceOver/client announcements or tooltip proof")
