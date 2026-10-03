@@ -85,7 +85,7 @@ jobs:
           sleep 2
           # Scripted interaction run: the app writes /tmp/spz-demo-step after each state settles.
           swiftc scripts/ax-client.swift -o /tmp/spz-ax-client
-          rm -f /tmp/spz-footer-ax-ready /tmp/spz-footer-ax-ack /tmp/spz-footer-ax-client.txt /tmp/spz-cold-click-subprocess-end.txt /tmp/spz-sample.txt /tmp/spz-cold-click-sample.txt /tmp/spz-cold-click-sample-command.txt /tmp/spz-cold-click-sample-status.txt /tmp/spz-cold-click-ready /tmp/spz-cold-click-ack /tmp/spz-demo-ready-* /tmp/spz-demo-ack-* /tmp/spz-demo-*.png /tmp/spz-demo-step /tmp/spz-demo-finished /tmp/spz-geom.txt /tmp/spz-timing.txt /tmp/spz-assertions.txt
+          rm -f /tmp/spz-footer-ax-status.txt /tmp/spz-footer-ax-result.txt /tmp/spz-footer-ax-expected.txt /tmp/spz-footer-ax-ready /tmp/spz-footer-ax-ack /tmp/spz-footer-ax-client.txt /tmp/spz-cold-click-subprocess-end.txt /tmp/spz-sample.txt /tmp/spz-cold-click-sample.txt /tmp/spz-cold-click-sample-command.txt /tmp/spz-cold-click-sample-status.txt /tmp/spz-cold-click-ready /tmp/spz-cold-click-ack /tmp/spz-demo-ready-* /tmp/spz-demo-ack-* /tmp/spz-demo-*.png /tmp/spz-demo-step /tmp/spz-demo-finished /tmp/spz-geom.txt /tmp/spz-timing.txt /tmp/spz-assertions.txt
           open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Library --env SPZ_DEMO=1
           for step in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 23 24 19 25 20 21 22 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42; do
             for i in $(seq 1 240); do
@@ -93,12 +93,21 @@ jobs:
                 target_pid=$(cat /tmp/spz-footer-ax-ready)
                 python3 - "$target_pid" >> /tmp/spz-footer-ax-client.txt 2>&1 <<'PY'
           import subprocess, sys
+          from pathlib import Path
+          result_path = Path("/tmp/spz-footer-ax-result.txt")
+          status_path = Path("/tmp/spz-footer-ax-status.txt")
           try:
-              result = subprocess.run(["/tmp/spz-ax-client", sys.argv[1]], timeout=12)
+              result = subprocess.run(["/tmp/spz-ax-client", sys.argv[1], "/tmp/spz-footer-ax-expected.txt", "/tmp/spz-footer-ax-result.txt"], timeout=12)
               print(f"ax-client process-exit code={result.returncode}; diagnostic not a pass", flush=True)
+              status_path.write_text(f"EXIT_{result.returncode}")
+              if result.returncode != 0: result_path.unlink(missing_ok=True)
           except subprocess.TimeoutExpired:
+              result_path.unlink(missing_ok=True)
+              status_path.write_text("TIMEOUT")
               print("ax-client process-timeout seconds=12 INCONCLUSIVE; partial flushed records retained", flush=True)
           except OSError as error:
+              result_path.unlink(missing_ok=True)
+              status_path.write_text("START_ERROR")
               print(f"ax-client process-start-error {error} INCONCLUSIVE", flush=True)
           PY
                 touch /tmp/spz-footer-ax-ack
@@ -132,6 +141,9 @@ jobs:
             echo "::notice title=timing::$body"
           fi
           cp /tmp/spz-footer-ax-client.txt dist/footer-ax-client.txt 2>/dev/null || true
+          cp /tmp/spz-footer-ax-expected.txt dist/footer-ax-expected.txt 2>/dev/null || true
+          cp /tmp/spz-footer-ax-result.txt dist/footer-ax-result.txt 2>/dev/null || true
+          cp /tmp/spz-footer-ax-status.txt dist/footer-ax-status.txt 2>/dev/null || true
           cp /tmp/spz-timing.txt dist/ui-timing.txt 2>/dev/null || true
           pkill Spacelyzer || true
           sleep 3
@@ -144,6 +156,9 @@ jobs:
             echo 'sample missing: cold-input capture inconclusive' | tee /tmp/spz-cold-click-sample-status.txt >> /tmp/spz-timing.txt
           fi
           cp /tmp/spz-footer-ax-client.txt dist/footer-ax-client.txt 2>/dev/null || true
+          cp /tmp/spz-footer-ax-expected.txt dist/footer-ax-expected.txt 2>/dev/null || true
+          cp /tmp/spz-footer-ax-result.txt dist/footer-ax-result.txt 2>/dev/null || true
+          cp /tmp/spz-footer-ax-status.txt dist/footer-ax-status.txt 2>/dev/null || true
           cp /tmp/spz-timing.txt dist/ui-timing.txt
           cp /tmp/spz-cold-click-sample-status.txt dist/cold-click-sample-status.txt
           cp /tmp/spz-cold-click-subprocess-end.txt dist/cold-click-subprocess-end.txt 2>/dev/null || true
@@ -164,7 +179,7 @@ jobs:
           echo 'Critical focus/reset evidence (strict assertions remain below):'
           grep -E '^(before-resign|after-direct-resign|after-fixture-key-window|before-activation|activation-wait-seconds=|reload-after-responder-wait|tab-chain |rest-chain-|native-tab |boundary-sim |boundary-setup |boundary-native |boundary-hidden |interaction-clock |interaction-stage |interaction-sample |footer-constrained |footer-ax |treemap-mounted |sample launched |sample completed |sample missing:|sample failed/missing report:|same-value-fixture-start |before-same-value-clear |check FAIL|app still running at end|APP NOT RUNNING|DEMO .*TIMEOUT)' /tmp/spz-timing.txt 2>/dev/null || true
           cat /tmp/spz-assertions.txt || true
-          expected=84
+          expected=85
           if grep -q 'APP NOT RUNNING' /tmp/spz-timing.txt 2>/dev/null; then echo "::error title=ui-assertions::app was not running at the end of the demo (crash or exit)"; exit 1; fi
           if grep -q 'DEMO .*TIMEOUT' /tmp/spz-timing.txt 2>/dev/null; then echo "::error title=ui-assertions::$(grep 'DEMO .*TIMEOUT' /tmp/spz-timing.txt)"; exit 1; fi
           for step in $(seq 1 42); do [ -s "dist/screenshot-demo-$step.png" ] || { echo "::error title=ui-assertions::missing screenshot step $step"; exit 1; }; done
@@ -190,6 +205,9 @@ jobs:
             dist/crash-report.ips
             dist/ui-timing.txt
             dist/footer-ax-client.txt
+            dist/footer-ax-expected.txt
+            dist/footer-ax-result.txt
+            dist/footer-ax-status.txt
       - name: Publish release (epic tags only)
         if: startsWith(github.ref, 'refs/tags/epic-')
         env:
