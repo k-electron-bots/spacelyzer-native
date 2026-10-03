@@ -236,3 +236,15 @@ Independent review accepted this bounded external API retrieval, not VoiceOver a
 DiagnosticPID11509/rawheader07:02:23.977UTC precedes trace07:02:24.8409882 by863.9882ms; subprocessend07:02:33exit0 includes processing. Coarse bracket only,not first/last samples or per-stack chronology. Selection185.5/stall205.5,warm38; arrowp50/p95/max18.7/175.3/765.5ms/stall761.3,typing240.1,hover0.9. Alteredidle prevents cold comparison, no performance win.
 
 [Run115](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37104425688) · [Artifact](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37104425688/artifacts/11267976189). Source `3a48eb6` prepares a separate same-node exact UTF8 Help+Value regression (85checks/42states) with mounted expected export, fresh ack, successful client exit and explicit result, while keeping the native failed check. Its runtime checkpoint is pending: GitHub workflow dropdown stayed Loading and no dispatch was submitted.
+
+## Run116: separate formal external regression passes, native gate stays failed
+
+October3, source `2f1ef6e` (reviewed code `3a48eb6` plus docs): Swift/Linux/client compiled; strict UI gate failed,84PASS/1FAIL of85,42states,release skipped. Run dispatched once through a verified existing bot REST route after the browser dropdown stayed Loading. No authentication change or epic release tag.
+
+New separately named external same-node Help+Value exact-details regression passed. Trusted clientPID31581 targetedPID23733; exact700pt AXWindow title/role/PID matched. AXStaticText node6 had successful Help and Value whose UTF8 data exactly matched the mounted StatusBar expected-file bytes. Expected fixture independently checked first-line root path,ZeroKB1item,partial accounting,scan0.03seconds,filterZeroKB1file0.3milliseconds and1,234,567not-readable locations. Freshack=true,statusEXIT_0,resultVERIFIED,202nodes/truncatedfalse. Independent bounded formal-regression acceptance confirmed.
+
+The old in-process native full-label check remained the sole failure with two nodes/truncatedfalse. This is not an external absence claim. Historical112-115 failures stay failures; no VoiceOver announcements, visible tooltips, real warning accounting, OS preference or combine-causality claim. Pixel40 compact simultaneous-warning presentation was inspected and readable; mounted resize checks passed within the existing narrow scope.
+
+DiagnosticPID23733/version116: rawheader08:05:03.198UTC precedes trace08:05:04.1193771/.119378 by921.3771ms; subprocessend08:05:12exit0 includesprocessing. Coarse requested8s5ms bracket,not first/last-sample chronology. Selection614.7/stall609.1,warm53; arrowp50/p95/max15.9/54.7/488ms/stall486.6,typing260.9,hover0.4. Alteredidle arm,no cold comparison or overall performance win.
+
+[Run116](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37108069847) · [Artifact](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37108069847/artifacts/11269385250). No unchanged rerun or native-gate removal follows from the external pass.
