@@ -528,11 +528,30 @@ final class AppModel {
     /// One node's details from ONE engine capture at the current table version, with its name and path. nil while rows are
     /// pending or the engine answers STALE/BUSY/INVALID: callers show a placeholder, never an old or zero size.
     struct NodeSnapshot { let id: UInt32; let version: UInt64; let info: NodeInfo; let name: String; let path: String }
+    @ObservationIgnored private var nodeCache: NodeSnapshot?
+    /// Views read this so a bounded retry re-renders them (a view body must not mutate state itself).
+    var nodeRetryToken = 0
     func nodeSnapshot(_ id: UInt32) -> NodeSnapshot? {
         guard let tree, !rowsPending, UInt64(id) < tree.nodeCount else { return nil }
-        guard case .success(let r) = tree.nodeChecked(id) else { return nil }
-        return NodeSnapshot(id: id, version: r.version, info: r.info, name: tree.name(id), path: tree.path(id))
+        _ = nodeRetryToken
+        switch tree.nodeChecked(id) {
+        case .success(let r):
+            let snap = NodeSnapshot(id: id, version: r.version, info: r.info, name: tree.name(id), path: tree.path(id))
+            nodeCache = snap
+            retryDone("node")
+            return snap
+        case .failure(let st):
+            // BUSY: reuse the last validated snapshot of THIS node only if it is still at the current table version, and
+            // retry (bounded, keyed by node and version) so the view re-renders; STALE/INVALID: nothing is shown as a number.
+            let cached = (nodeCache?.id == id && nodeCache?.version == tree.version) ? nodeCache : nil
+            if st == .busy || st == .stale {
+                let key = nodeRetryKey(id, tree)
+                Task { @MainActor [weak self] in self?.retryBusy("node", inputs: key) { [weak self] in self?.nodeRetryToken &+= 1 } }
+            }
+            return cached
+        }
     }
+    private func nodeRetryKey(_ id: UInt32, _ tree: Tree) -> Int { var h = Hasher(); h.combine(id); h.combine(ObjectIdentifier(tree)); h.combine(tree.version); return h.finalize() }
 
     func removalBlockedReason(_ id: UInt32) -> String? {
         if destructiveBlocked { return coherenceNotice ?? "Please wait for the previous change to finish." }
