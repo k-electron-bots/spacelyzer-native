@@ -525,7 +525,17 @@ final class AppModel {
     }
 
     /// Why removal is unavailable right now, or nil when it is allowed.
+    /// One node's details from ONE engine capture at the current table version, with its name and path. nil while rows are
+    /// pending or the engine answers STALE/BUSY/INVALID: callers show a placeholder, never an old or zero size.
+    struct NodeSnapshot { let id: UInt32; let version: UInt64; let info: NodeInfo; let name: String; let path: String }
+    func nodeSnapshot(_ id: UInt32) -> NodeSnapshot? {
+        guard let tree, !rowsPending, UInt64(id) < tree.nodeCount else { return nil }
+        guard case .success(let r) = tree.nodeChecked(id) else { return nil }
+        return NodeSnapshot(id: id, version: r.version, info: r.info, name: tree.name(id), path: tree.path(id))
+    }
+
     func removalBlockedReason(_ id: UInt32) -> String? {
+        if destructiveBlocked { return coherenceNotice ?? "Please wait for the previous change to finish." }
         if filterPending { return "The filter is still updating." }
         if isOutsideFilter(id) { return "This item is outside the current filter. Clear the filter or select it again." }
         return nil
@@ -533,6 +543,7 @@ final class AppModel {
 
     func proposeRemoval(of id: UInt32) {
         guard id != 0 else { return }
+        if destructiveBlocked { removalMessage = coherenceNotice ?? "Please wait for the previous change to finish."; return }
         // A selection the filter has hidden must not be removable from here: clear the filter or reselect first.
         if filterPending { removalMessage = "The filter is still updating, so the list may be out of date. Try again in a moment."; return }
         if isOutsideFilter(id) { removalMessage = "That item is outside the current filter. Clear the filter or select it again to move it to the Trash."; return }
@@ -559,7 +570,9 @@ final class AppModel {
         }
         if destructiveBlocked { removalMessage = coherenceNotice ?? "Please wait for the previous change to finish."; return }
         let url = URL(fileURLWithPath: path)
-        let size = tree.info(id).size
+        // The recorded size comes from one engine capture; if the engine cannot answer now, nothing is moved.
+        guard let snap = nodeSnapshot(id) else { removalMessage = "Sizes are still updating, so nothing was moved. Try again in a moment."; return }
+        let size = snap.info.size
         mutationPending = true      // reserved before the write, so no scan or undo can slip in between
         do {
             // 1. Filesystem outcome first (the real event). It is journaled in lastRemoved immediately.

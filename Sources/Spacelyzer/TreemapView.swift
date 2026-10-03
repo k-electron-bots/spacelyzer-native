@@ -173,7 +173,8 @@ struct TreemapView: View {
     }
 
     @ViewBuilder private var readout: some View {
-        if let h = hovered, currentLayout != nil, let tree = model.tree {
+        // Hover shows the published layout's own size (same snapshot as the picture); hidden while that layout is not the current table version.
+        if let h = hovered, let cl = currentLayout, cl.version == model.tree?.version, !model.rowsPending, let tree = model.tree {
             let name = h.isRemainder ? "Smaller items in \(tree.name(h.node))" : tree.name(h.node)
             Text("\(name)  ·  \(formatBytes(h.size))")
                 .font(.caption).padding(.horizontal, 8).padding(.vertical, 4)
@@ -271,11 +272,14 @@ struct SelectionBar: View {
     let tree: Tree
     let id: UInt32
     var body: some View {
-        let info = tree.info(id)
+        // One engine capture for the numbers; a placeholder (never an old or zero size) while rows are pending or the engine is busy.
+        let snap = model.nodeSnapshot(id)
+        let title = snap.map { $0.name.isEmpty ? $0.path : $0.name } ?? (tree.name(id).isEmpty ? tree.path(id) : tree.name(id))
+        let detail = snap.map { "\(formatBytes($0.info.size))  ·  \($0.info.category.label)" } ?? "Updating…"
         HStack {
             VStack(alignment: .leading) {
-                Text(tree.name(id).isEmpty ? tree.path(id) : tree.name(id)).font(.headline).lineLimit(1).truncationMode(.middle)
-                Text("\(formatBytes(info.size))  ·  \(info.category.label)").font(.caption).foregroundStyle(.secondary)
+                Text(title).font(.headline).lineLimit(1).truncationMode(.middle)
+                Text(detail).font(.caption).foregroundStyle(.secondary)
                 if model.isOutsideFilter(id) {
                     Text("Not in the current filter (still selected). Move to Trash is off until you clear the filter or reselect.").font(.caption.weight(.semibold)).foregroundStyle(.orange)
                 }
@@ -290,7 +294,7 @@ struct SelectionBar: View {
                 .accessibilityLabel("Move selected item to Trash")
         }.padding(10).background(.bar)
             .accessibilityElement(children: .contain)
-            .accessibilityLabel("Selected item: \(tree.name(id).isEmpty ? tree.path(id) : tree.name(id)), \(formatBytes(info.size))")
+            .accessibilityLabel("Selected item: \(title), \(detail)")
     }
 }
 
