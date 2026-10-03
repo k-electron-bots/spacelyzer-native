@@ -283,6 +283,9 @@ struct SelectionBar: View {
                 Text(detail).font(.caption).foregroundStyle(.secondary)
                 if model.isOutsideFilter(id) {
                     Text("Not in the current filter (still selected). Move to Trash is off until you clear the filter or reselect.").font(.caption.weight(.semibold)).foregroundStyle(.orange)
+                } else if let untrusted = model.filterUntrustedReason {
+                    // Pending or error is shown as such, never as "not in the filter".
+                    Text(untrusted).font(.caption).foregroundStyle(.secondary)
                 }
             }
             Spacer()
