@@ -70,4 +70,11 @@ int32_t spz_filter_status(const SpzTree *t, const SpzFilterResult *h);
 SpzLayout *spz_layout_new_status(const SpzTree *t, uint32_t root, float width, float height, const SpzFilterResult *h, int32_t *status);
 int32_t spz_layout_status(const SpzTree *t, const SpzLayout *l);
 
+/* Snapshot reads: one engine capture per call. `expected` is a table version the caller already holds, or UINT64_MAX for any.
+   `version` receives the version read. A non-OK status writes nothing (counts return 0). */
+uint32_t spz_outline_rows_status(const SpzTree *t, uint32_t root, const uint32_t *expanded, uint32_t n_expanded, const SpzFilterResult *h, uint32_t sort, SpzRow *out, uint32_t cap, uint64_t expected, uint64_t *version, int32_t *status);
+uint32_t spz_largest_status(const SpzTree *t, const SpzFilterResult *h, uint32_t cap, uint32_t *out, uint64_t expected, uint64_t *version, int32_t *status);
+void spz_category_totals_status(const SpzTree *t, const SpzFilterResult *h, uint64_t *out, uint64_t expected, uint64_t *version, int32_t *status);
+void spz_tree_node_status(const SpzTree *t, uint32_t id, SpzNode *out, uint64_t expected, uint64_t *version, int32_t *status);
+
 #endif

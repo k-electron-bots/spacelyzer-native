@@ -287,3 +287,36 @@ fn concurrent_captures_never_exceed_the_shared_budget_by_more_than_first_capture
     assert!(peak.load(Ordering::Relaxed) <= (256 << 20) + 4 * 3_000_000 * 8, "peak {}", peak.load(Ordering::Relaxed));
     assert_eq!(spacelyzer_engine::tree::reserved_bytes(), 0);
 }
+
+#[test]
+fn snapshot_reads_carry_version_and_reject_stale_between_count_and_fill() {
+    use spacelyzer_engine::ffi::*;
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut t0 = Tree::synthetic(20_000); t0.uid = 8;
+    let tp = &t0 as *const Tree;
+    unsafe {
+        let (mut v, mut st) = (0u64, -1i32);
+        let n = spz_outline_rows_status(tp, 0, std::ptr::null(), 0, std::ptr::null(), 0, std::ptr::null_mut(), 0, u64::MAX, &mut v, &mut st);
+        assert!(st == 0 && n > 0 && v == 0);
+        // a commit lands between the count call and the fill call
+        t0.forget(some_dirs(&t0, 1)[0]).unwrap();
+        let mut rows = vec![std::mem::zeroed::<spacelyzer_engine::outline::Row>(); n as usize];
+        let (mut v2, mut st2) = (0u64, -1i32);
+        let n2 = spz_outline_rows_status(tp, 0, std::ptr::null(), 0, std::ptr::null(), 0, rows.as_mut_ptr(), n, v, &mut v2, &mut st2);
+        assert_eq!((n2, st2), (0, 1), "fill with the old expected version must be STALE and write nothing");
+        // node status: same rule
+        let mut node: SpzNode = std::mem::zeroed();
+        let mut st3 = -1;
+        spz_tree_node_status(tp, 1, &mut node, v, &mut v2, &mut st3);
+        assert_eq!(st3, 1);
+        spz_tree_node_status(tp, 1, &mut node, u64::MAX, &mut v2, &mut st3);
+        assert!(st3 == 0 && v2 == 1);
+        // largest and categories with a stale filter handle
+        let h = spz_filter_apply(tp, std::ptr::null(), std::ptr::null(), std::mem::zeroed());
+        t0.forget(disjoint_dirs(&t0, 1)[0]).unwrap();
+        let mut ids = [0u32; 10]; let mut st4 = -1;
+        let c = spz_largest_status(tp, h, 10, ids.as_mut_ptr(), u64::MAX, &mut v2, &mut st4);
+        assert!(c == 0 && st4 == 1, "stale filter must be STALE, not an empty OK: status {st4}");
+        spz_filter_free(h);
+    }
+}

@@ -494,3 +494,86 @@ pub unsafe extern "C" fn spz_layout_new_status(t: *const Tree, root: NodeId, wid
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| layout_new_status_inner(t, root, width, height, h, status)))
         .unwrap_or_else(|_| { if !status.is_null() { *status = 5; } std::ptr::null_mut() })
 }
+
+// ---- Snapshot read entry points. One capture per call; the result carries the table version it was read from. ----
+// `expected` is a table version the caller already holds (for a count-then-fill pair, or to match a filter/outline it
+// published) or u64::MAX for "any". A different version returns STALE with nothing written. A filter handle must be
+// from the same version as the captured table, otherwise STALE. BUSY and INVALID are never an empty result.
+
+const ANY_VERSION: u64 = u64::MAX;
+
+unsafe fn snapshot<'a>(t: *const Tree, h: *const FilterHandle, expected: u64, status: *mut i32, version: *mut u64) -> Option<crate::tree::Captured<'a>> {
+    let set = |s: i32| if !status.is_null() { *status = s };
+    if t.is_null() { set(3); return None; }
+    let Some(c) = (*t).capture() else { set(4); return None };
+    if expected != ANY_VERSION && c.table.version != expected { set(1); return None; }
+    if !h.is_null() {
+        if (*h).1 != (*t).uid { set(3); return None; }
+        if (*h).2 != c.table.version || (*h).0.sizes.len() != (*t).len() { set(1); return None; }
+    }
+    if !version.is_null() { *version = c.table.version; }
+    set(0);
+    Some(c)
+}
+
+unsafe fn guarded<R>(status: *mut i32, fallback: R, f: impl FnOnce() -> R) -> R {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| { if !status.is_null() { *status = 5; } fallback })
+}
+
+/// Rows of the outline. Returns the total row count; writes up to `cap` rows when `out` is not null.
+#[no_mangle]
+pub unsafe extern "C" fn spz_outline_rows_status(
+    t: *const Tree, root: NodeId, expanded: *const NodeId, n_expanded: u32, h: *const FilterHandle, sort: u32,
+    out: *mut crate::outline::Row, cap: u32, expected: u64, version: *mut u64, status: *mut i32,
+) -> u32 {
+    guarded(status, 0, || {
+        if t.is_null() || !valid(t, root) { if !status.is_null() { *status = 3; } return 0; }
+        let Some(c) = snapshot(t, h, expected, status, version) else { return 0 };
+        let set = expanded_set(t, expanded, n_expanded);
+        let filter = if h.is_null() { None } else { Some(&(*h).0) };
+        let rows = crate::outline::visible_rows_sorted_in(&*t, &c.table, root, &set, filter, crate::outline::SortMode::from_u32(sort));
+        if !out.is_null() { std::ptr::copy_nonoverlapping(rows.as_ptr(), out, rows.len().min(cap as usize)); }
+        rows.len() as u32
+    })
+}
+
+/// Largest files (filtered when `h` is not null). Returns the count written.
+#[no_mangle]
+pub unsafe extern "C" fn spz_largest_status(t: *const Tree, h: *const FilterHandle, cap: u32, out: *mut NodeId, expected: u64, version: *mut u64, status: *mut i32) -> u32 {
+    guarded(status, 0, || {
+        let Some(c) = snapshot(t, h, expected, status, version) else { return 0 };
+        let v = if h.is_null() { (*t).largest_files_in(&c.table, cap as usize) } else { crate::filter::largest_files(&*t, &(*h).0, cap as usize) };
+        for (i, id) in v.iter().enumerate() { *out.add(i) = *id; }
+        v.len() as u32
+    })
+}
+
+/// Category totals into `out` (CATEGORY_COUNT * 2 u64s). Untouched on a non-OK status.
+#[no_mangle]
+pub unsafe extern "C" fn spz_category_totals_status(t: *const Tree, h: *const FilterHandle, out: *mut u64, expected: u64, version: *mut u64, status: *mut i32) {
+    guarded(status, (), || {
+        let Some(c) = snapshot(t, h, expected, status, version) else { return };
+        let totals = if h.is_null() { (*t).category_totals_in(&c.table) } else { crate::filter::category_totals(&*t, &(*h).0) };
+        for (i, (b, n)) in totals.iter().enumerate().take(CATEGORY_COUNT) { *out.add(i * 2) = *b; *out.add(i * 2 + 1) = *n; }
+    })
+}
+
+/// Node details read from one snapshot. Untouched on a non-OK status.
+#[no_mangle]
+pub unsafe extern "C" fn spz_tree_node_status(t: *const Tree, id: NodeId, out: *mut SpzNode, expected: u64, version: *mut u64, status: *mut i32) {
+    guarded(status, (), || {
+        if t.is_null() || out.is_null() || !valid(t, id) { if !status.is_null() { *status = 3; } return; }
+        let Some(c) = snapshot(t, std::ptr::null(), expected, status, version) else { return };
+        let tr = &*t;
+        let r = tr.children(id);
+        *out = SpzNode {
+            size: c.table.sizes[id as usize],
+            own_bytes: tr.own_bytes_in(&c.table.sizes, id),
+            parent: tr.parent(id).unwrap_or(u32::MAX),
+            child_count: tr.child_count(id),
+            first_child: if r.is_empty() { u32::MAX } else { r.start },
+            kind: tr.kind(id) as u8,
+            category: tr.category(id) as u8,
+        };
+    })
+}

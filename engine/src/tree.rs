@@ -222,8 +222,10 @@ impl Tree {
 
     /// Bytes and item counts per category over the whole tree (files only).
     pub fn category_totals(&self) -> [(u64, u64); CATEGORY_COUNT] {
+        self.category_totals_in(&self.table())
+    }
+    pub fn category_totals_in(&self, tab: &SizeTable) -> [(u64, u64); CATEGORY_COUNT] {
         let mut out = [(0u64, 0u64); CATEGORY_COUNT];
-        let tab = self.table();
         for i in 0..self.len() {
             let k = self.kind[i];
             if k == Kind::Directory as u8 {
@@ -296,7 +298,9 @@ impl Tree {
 
     /// The `n` largest regular files, largest first.
     pub fn largest_files(&self, n: usize) -> Vec<NodeId> {
-        let tab = self.table();
+        self.largest_files_in(&self.table(), n)
+    }
+    pub fn largest_files_in(&self, tab: &SizeTable, n: usize) -> Vec<NodeId> {
         let sizes = &tab.sizes;
         let mut v: Vec<NodeId> = (0..self.len() as NodeId)
             .filter(|&i| self.kind[i as usize] == Kind::File as u8)
