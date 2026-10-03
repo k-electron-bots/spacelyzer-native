@@ -74,11 +74,19 @@ struct SpacelyzerApp: App {
                         // Steps 8-9: in-process NSEvents through the window's responder chain (no OS input permission needed).
                         try? await Task.sleep(nanoseconds: 3_000_000_000)
                         MainStall.shared.reset()
+                        // Workflow starts an external sample before acknowledging this cold input.
+                        try? "ready".write(toFile: "/tmp/spz-cold-click-ready", atomically: true, encoding: .utf8)
+                        let sampleDeadline = Date().addingTimeInterval(15)
+                        while !FileManager.default.fileExists(atPath: "/tmp/spz-cold-click-ack") && Date() < sampleDeadline { try? await Task.sleep(nanoseconds: 20_000_000) }
+                        Perf.log("interaction-sample acknowledged=\(FileManager.default.fileExists(atPath: "/tmp/spz-cold-click-ack"))")
+                        MainStall.shared.reset() // Exclude the sampler ready/ack wait from cold input stalls.
+                        InteractionTrace.begin()
                         let clickBefore = model.selected, clickT0 = Perf.now()
                         DemoInput.click(fromTop: 124, x: 168)                       // a visible outline row
                         while model.selected == clickBefore && Perf.ms(since: clickT0) < 5000 { try? await Task.sleep(nanoseconds: 1_000_000) }
                         Perf.log("click-latency (post -> selection changed): \(String(format: "%.1f", Perf.ms(since: clickT0))) ms")
                         try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        InteractionTrace.finish()
                         Perf.log(MainStall.shared.summary("click-only"))
                         MainStall.shared.reset()
                         Perf.log("kbd: after click selected=\(model.selected.map(String.init) ?? "nil")")
@@ -702,6 +710,24 @@ struct SpacelyzerApp: App {
                             try? await Task.sleep(nanoseconds: 700_000_000)
                             Check.expect("footer-simultaneous-warning-presentation-ready", !model.filterPending && model.activeFilter?.totalCount == 1 && model.demoFooterUnreadable == 1_234_567 && model.demoFooterPartial == true, "pixels39 required; partial/unreadable presentation simulation, not permission/cancel accounting")
                             mark(39)
+                            // A separate constrained surface exercises the production footer without shrinking the app below its minimum.
+                            let priorProductWindow = DemoInput.window
+                            let footerWindow = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 700, height: 110), styleMask: [.titled], backing: .buffered, defer: false)
+                            footerWindow.isReleasedWhenClosed = false
+                            footerWindow.title = "CI constrained production footer (700 pt)"
+                            let footerHost = NSHostingView(rootView: VStack(spacing: 0) {
+                                Text("Production footer at 700 pt; simulated warnings").font(.caption).padding(12)
+                                Spacer(minLength: 0)
+                                StatusBar().environment(model)
+                            }.frame(width: 700, height: 110))
+                            footerWindow.contentView = footerHost
+                            footerWindow.center(); footerWindow.makeKeyAndOrderFront(nil)
+                            try? await Task.sleep(nanoseconds: 700_000_000)
+                            let footerSurfaceValid = footerWindow.isVisible && footerWindow.isKeyWindow && abs(footerHost.bounds.width - 700) < 1
+                            Check.expect("footer-constrained-production-surface-ready", footerSurfaceValid && model.activeFilter?.totalCount == 1 && model.demoFooterUnreadable == 1_234_567 && model.demoFooterPartial == true, "pixels40 decide natural ViewThatFits branch/accounting; separate700ptsurface not mainwindowbelowminimum; warning simulation")
+                            Perf.log("footer-constrained surfaceWidth=\(footerHost.bounds.width) filterCount=\(model.activeFilter?.totalCount ?? 0) unreadable=\(model.demoFooterUnreadable ?? 0) partial=\(model.demoFooterPartial == true)")
+                            mark(40)
+                            footerWindow.close(); priorProductWindow?.makeKeyAndOrderFront(nil)
                             model.demoFooterUnreadable = nil; model.demoFooterPartial = nil
                             try? FileManager.default.removeItem(at: zeroRoot)
                             try? Data().write(to: URL(fileURLWithPath: "/tmp/spz-demo-finished"))
@@ -738,7 +764,11 @@ struct SpacelyzerApp: App {
         let p = NSPoint(x: x, y: w.frame.height - y)
         for t in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
             if let e = NSEvent.mouseEvent(with: t, location: p, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-                                          windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) { NSApp.postEvent(e, atStart: false) }
+                                          windowNumber: w.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) {
+                if t == .leftMouseDown { InteractionTrace.record("leftMouseDown-post-before") }
+                NSApp.postEvent(e, atStart: false)
+                if t == .leftMouseDown { InteractionTrace.record("leftMouseDown-post-after") }
+            }
         }
     }
     static func move(fromTop y: CGFloat, x: CGFloat) {
