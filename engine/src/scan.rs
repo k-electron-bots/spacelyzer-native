@@ -135,7 +135,6 @@ fn is_package(name: &str) -> bool {
 }
 
 fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
-    crate::tree::worker_failpoint();
     if ctx.progress.cancel.load(Ordering::Relaxed) {
         return DirNode { ents: vec![], total: 0 };
     }
@@ -199,7 +198,7 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
     ctx.progress.bytes.fetch_add(local_bytes, Ordering::Relaxed);
 
     let results: Vec<(usize, DirNode)> = if subdirs.len() > 1 {
-        subdirs.par_iter().map(|(i, p)| (*i, walk(p, ctx))).collect()
+        subdirs.par_iter().map(|(i, p)| { crate::tree::worker_failpoint(); (*i, walk(p, ctx)) }).collect()
     } else {
         subdirs.iter().map(|(i, p)| (*i, walk(p, ctx))).collect()
     };

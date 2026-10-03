@@ -81,9 +81,15 @@ fn failpoint(n: u8) {
 pub fn ffi_failpoint() { failpoint(9) }
 #[cfg(not(feature = "failpoints"))]
 pub fn ffi_failpoint() {}
-/// Failpoint 10: a panic on a scan worker (rayon pool) thread, inside walk().
+/// Failpoint 10: a panic inside the par_iter closure over sibling subdirectories (a nested parallel task, not the root walk).
 #[cfg(feature = "failpoints")]
-pub fn worker_failpoint() { failpoint(10) }
+pub fn worker_failpoint() {
+    if FAILPOINT.load(Ordering::Relaxed) == 10 { WORKER_PANIC_THREAD.store(rayon::current_thread_index().map(|i| i as i64).unwrap_or(-1), Ordering::SeqCst); }
+    failpoint(10)
+}
+/// Rayon worker index the failpoint-10 panic ran on (-1 = not a rayon worker, -2 = never fired).
+#[cfg(feature = "failpoints")]
+pub static WORKER_PANIC_THREAD: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-2);
 #[cfg(not(feature = "failpoints"))]
 #[inline(always)]
 pub fn worker_failpoint() {}

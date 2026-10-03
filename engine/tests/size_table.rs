@@ -451,7 +451,8 @@ fn panic_on_a_rayon_worker_becomes_a_failed_scan_and_bumps_the_counter() {
     for d in ["a", "b", "c", "d"] { std::fs::create_dir_all(dir.join(d)).unwrap(); std::fs::write(dir.join(d).join("f"), b"x").unwrap(); }
     let root = std::ffi::CString::new(dir.to_str().unwrap()).unwrap();
     let before = spz_engine_panic_count();
-    spacelyzer_engine::tree::set_failpoint(10);   // fires on the first walk() to run, whichever thread runs it
+    spacelyzer_engine::tree::WORKER_PANIC_THREAD.store(-2, std::sync::atomic::Ordering::SeqCst);
+    spacelyzer_engine::tree::set_failpoint(10);   // fires in the par_iter closure over the 4 sibling subdirs of the root
     let sc = unsafe { spz_scan_start(root.as_ptr(), std::ptr::null()) };
     assert!(!sc.is_null());
     let t0 = std::time::Instant::now();
@@ -463,6 +464,8 @@ fn panic_on_a_rayon_worker_becomes_a_failed_scan_and_bumps_the_counter() {
     assert_eq!((p.finished, p.failed), (1, 1), "a worker panic must end as a failed scan, not a hang or a clean tree");
     assert!(unsafe { spz_scan_take_tree(sc) }.is_null(), "no partial tree is handed out");
     assert!(spz_engine_panic_count() > before, "counter must move so the app latches");
+    let w = spacelyzer_engine::tree::WORKER_PANIC_THREAD.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(w >= 0, "the panic must have run on a rayon pool thread (index {w}); -1 = not a pool thread, -2 = never fired");
     unsafe { spz_scan_free(sc); }
     let _ = std::fs::remove_dir_all(&dir);
 }
