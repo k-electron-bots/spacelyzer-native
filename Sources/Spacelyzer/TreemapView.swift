@@ -200,7 +200,17 @@ struct TreemapView: View {
         let s = size, flt = model.activeFilter
         let barrier = publicationProbe?.before, completed = publicationProbe?.after
         task = Task.detached(priority: .userInitiated) {
-            let l = tree.layout(root: root, size: s, filter: flt)
+            // Status API: a stale filter or BUSY is never drawn as an empty picture. The previous layout stays up.
+            let result = tree.layoutChecked(root: root, size: s, filter: flt)
+            guard case .success(let l) = result else {
+                // STALE: the filter is being recomputed after a removal and relayout runs when it lands.
+                // BUSY: another read holds the engine's admission slots; try again shortly.
+                if case .failure(.busy) = result, !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    await MainActor.run { if !Task.isCancelled, generation == request { relayout() } }
+                }
+                return
+            }
             if Task.isCancelled { return }
             let token = (barrier != nil || completed != nil) ? UUID() : nil
             if let token { await barrier?(token, request, s, ObjectIdentifier(tree), flt.map(ObjectIdentifier.init)) }

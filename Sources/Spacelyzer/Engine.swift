@@ -35,6 +35,12 @@ struct NodeInfo {
 
 let noNode = UInt32.max
 
+/// Engine status codes (spacelyzer.h). A non-ok status is never turned into an empty or zero value.
+enum EngineStatus: Int32, Error {
+    case ok = 0, stale, mutationFailed, invalid, busy, internalError
+    init(raw: Int32) { self = EngineStatus(rawValue: raw) ?? .internalError }
+}
+
 /// CI-only timing log (SPZ_DEMO): appends "label: value" lines to /tmp/spz-timing.txt.
 enum Perf {
     static let on = ProcessInfo.processInfo.environment["SPZ_DEMO"] != nil
@@ -120,7 +126,51 @@ final class Tree: @unchecked Sendable {
         return FilterResult(h!)
     }
 
-    func forget(_ id: UInt32) { spz_tree_forget(ptr, id) }
+    /// Version of the engine's published size table. Changes on every committed removal.
+    var version: UInt64 { spz_tree_version(ptr) }
+
+    /// Remove a subtree from the engine's numbers after the filesystem move succeeded. Runs a full table copy
+    /// (about 3 ms at 1M nodes, 30 ms at 5M), so call it from the commit lane, never from the main actor.
+    /// `.ok`, `.mutationFailed` (tree unchanged) or `.invalid`.
+    func forget(_ id: UInt32) -> EngineStatus { EngineStatus(raw: spz_tree_forget(ptr, id)) }
+
+    /// Status API: BUSY, STALE and INVALID come back as errors, never as an empty result.
+    func applyFilterChecked(text: String, kind: FileCategory?, minBytes: UInt64?, maxBytes: UInt64? = nil, modifiedFrom: Int64? = nil, ext: String = "") -> Result<FilterResult, EngineStatus> {
+        let f = SpzFilter(category_mask: kind.map { UInt32(1) << UInt32($0.rawValue) } ?? 0,
+                          has_min: minBytes == nil ? 0 : 1, has_max: maxBytes == nil ? 0 : 1,
+                          has_from: modifiedFrom == nil ? 0 : 1, has_to: 0,
+                          min_size: minBytes ?? 0, max_size: maxBytes ?? 0,
+                          modified_from: modifiedFrom ?? 0, modified_to: 0)
+        var status: Int32 = -1
+        let h = text.withCString { t in ext.withCString { e in spz_filter_apply_status(ptr, t, e, f, &status) } }
+        guard status == 0, let h else { return .failure(status == 0 ? .internalError : EngineStatus(raw: status)) }
+        return .success(FilterResult(h))
+    }
+
+    /// Is this filter result still computed on the tree's current table? `.ok` or `.stale` (recompute) or `.invalid`.
+    func status(of filter: FilterResult) -> EngineStatus { EngineStatus(raw: spz_filter_status(ptr, filter.ptr)) }
+
+    /// Status API layout. The filter result, if any, must be current; otherwise `.stale` (recompute the filter first).
+    func layoutChecked(root: UInt32, size: CGSize, filter: FilterResult? = nil) -> Result<TreemapLayout, EngineStatus> {
+        var status: Int32 = -1
+        let raw = spz_layout_new_status(ptr, root, Float(size.width), Float(size.height), filter?.ptr, &status)
+        guard status == 0, let raw else { return .failure(status == 0 ? .internalError : EngineStatus(raw: status)) }
+        let l = TreemapLayout(raw, size: size)
+        l.treeID = ObjectIdentifier(self)
+        return .success(l)
+    }
+
+    /// True when `node` is `ancestor` or lies inside its subtree. Parent links are never changed by a removal.
+    func isInside(_ node: UInt32, subtreeOf ancestor: UInt32) -> Bool {
+        var cur: UInt32? = node
+        var hops = 0
+        while let c = cur, UInt64(hops) <= nodeCount {
+            if c == ancestor { return true }
+            cur = info(c).parent
+            hops += 1
+        }
+        return false
+    }
 
     func children(_ id: UInt32) -> Range<UInt32> {
         let n = info(id)

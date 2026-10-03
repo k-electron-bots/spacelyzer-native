@@ -271,7 +271,7 @@ impl Tree {
             return None;
         }
         // Atomic reservation: a compare-exchange loop, overflow safe. A tree's first capture (prev == 0) is exempt from
-        // the budget, so the process bound is max(budget, one table per tree that has a running call).
+        // the budget, so reserved bytes can reach the budget PLUS one exempt table for every tree that has a running call. Tables a writer is building, and old tables pinned by legacy (uncapped) readers, are outside this counter. It is a counter for status-API callers, not an application memory bound.
         let mut cur = RESERVED_BYTES.load(Ordering::Acquire);
         loop {
             let next = cur.saturating_add(bytes);
