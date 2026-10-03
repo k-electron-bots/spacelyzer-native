@@ -343,17 +343,21 @@ final class AppModel {
     /// Panic baseline for the loaded tree, taken when a scan completes without any caught panic. Any later change is sticky
     /// (never re-adopted) until the next fully successful rescan or a restart.
     @ObservationIgnored var panicBaseline: UInt64 = EnginePanics.count
-    var enginePoisoned: Bool { EnginePanics.count != panicBaseline }
+    /// Injectable so tests can drive the counter; production reads the engine's sticky counter.
+    @ObservationIgnored var panicCounter: () -> UInt64 = { EnginePanics.count }
+    /// Observable latch set the first time a publication or action sees the counter move; views re-render on it.
+    var poisoned = false
+    var enginePoisoned: Bool { poisoned || panicCounter() != panicBaseline }
     var destructiveBlocked: Bool { rowsPending || viewOutOfDate || enginePoisoned }
     /// Drill and reveal act on shown rows. An out-of-date but self-consistent old tree may still be navigated.
-    var navigationBlocked: Bool { rowsPending }
+    var navigationBlocked: Bool { rowsPending || enginePoisoned }
     var coherenceNotice: String? {
         if rowsPending { return "Updating after a change. Opening folders and removing items are paused for a moment." }
         if enginePoisoned { return "The engine reported an internal error, so numbers on screen may be wrong. Removal is disabled until you rescan." }
         if viewOutOfDate { return (outOfDateReason ?? "The numbers on screen may be out of date.") + " Removal is disabled until you rescan." }
         return nil
     }
-    func markPoisoned() { markOutOfDate("The engine reported an internal error, so the numbers may be wrong. Rescan to continue.") }
+    func markPoisoned() { poisoned = true; filterPending = false; markOutOfDate("The engine reported an internal error, so the numbers may be wrong. Rescan to continue.") }
     func markOutOfDate(_ reason: String) { viewOutOfDate = true; outOfDateReason = reason; requiredVersion = nil }
     /// Called after each surface publishes. Clears the pending requirement only when ALL live surfaces are current.
     func surfaceCheck() {
@@ -498,7 +502,8 @@ final class AppModel {
                     markOutOfDate("Files were moved while this scan ran, so it may not match the disk. Rescan.")
                 } else { viewOutOfDate = false; outOfDateReason = nil }
                 tree = t
-                panicBaseline = EnginePanics.count   // reached only when no panic was caught during this scan (ScanSession.run)
+                panicBaseline = s.validatedPanicCount   // exactly the value ScanSession validated, not a fresh read
+                poisoned = false
                 nodeCache = nil
                 displayedRoot = 0
                 selected = nil
