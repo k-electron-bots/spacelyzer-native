@@ -8,11 +8,14 @@ import SwiftUI
 @MainActor enum InteractionTrace {
     private static var began: UInt64?
     private static var records: [(String, UInt64)] = []
-    static func begin() { guard Perf.on else { return }; records = []; began = Perf.now(); record("trace-begin-before-window-lookup") }
+    private static var wallBefore: TimeInterval = 0
+    private static var wallAfter: TimeInterval = 0
+    static func begin() { guard Perf.on else { return }; records = []; wallBefore = Date().timeIntervalSince1970; began = Perf.now(); wallAfter = Date().timeIntervalSince1970; record("trace-begin-before-window-lookup") }
     static func record(_ stage: String) { guard began != nil, records.count < 256 else { return }; records.append((stage, Perf.now())) }
     static func finish() {
         guard let start = began else { return }
         began = nil
+        Perf.log("interaction-clock pid=\(ProcessInfo.processInfo.processIdentifier) uptime_ns=\(start) wall_before_unix=\(wallBefore) wall_after_unix=\(wallAfter) arm=sampled-requested; profiler/log perturbation retained")
         for (stage, stamp) in records { Perf.log("interaction-stage \(stage) uptime_ns=\(stamp) elapsed_ms=\(Double(stamp - start) / 1e6)") }
         records = []
     }
