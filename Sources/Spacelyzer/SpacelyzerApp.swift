@@ -762,6 +762,7 @@ struct SpacelyzerApp: App {
                             await TreemapMountedRegression.run(capture: mark)
                             await TreemapMountedTreeSwapRegression.run(capture: mark)
                             await TreemapMountedFilterRegression.run(capture: mark)
+                            await TreemapUnmountRegression.run(capture: mark)
                             try? FileManager.default.removeItem(at: zeroRoot)
                             try? Data().write(to: URL(fileURLWithPath: "/tmp/spz-demo-finished"))
 
@@ -1339,5 +1340,62 @@ private actor PublicationBarrier {
         let afterCapture = probe.readEvidence?()
         Check.expect("treemap-mounted-old-filter-rejected-preserves-hit", attempted && old?.requestedTreeID == tree.map(ObjectIdentifier.init) && old?.requestedFilterID == nil && newState.requestedFilterID == filterID && newState.requestedTreeID == tree.map(ObjectIdentifier.init) && old?.requestedSize == CGSize(width: 520, height: 300) && (old?.generation ?? UInt64.max) < newState.generation && old?.evidence.layoutID == newState.evidence.layoutID && old?.evidence.treeID == newState.evidence.treeID && old?.evidence.filterID == newState.evidence.filterID && old?.evidence.size == newState.evidence.size && old?.evidence.hitValid == true && afterCapture?.layoutID == newState.evidence.layoutID && afterCapture?.treeID == newState.evidence.treeID && afterCapture?.size == newState.evidence.size && afterCapture?.filterID == filterID && afterCapture?.hitValid == true, "token-specific old callback ran; actual currentLayout/hit path; pixels46 required")
         capture(46)
+    }
+}
+
+@MainActor private enum TreemapUnmountRegression {
+    @Observable final class MountState { var mounted = true }
+    struct Surface: View {
+        let state: MountState
+        let model: AppModel
+        let probe: TreemapPublicationProbe
+        var body: some View {
+            if state.mounted { TreemapView(publicationProbe: probe).environment(model) }
+            else { Text("Treemap unmounted; pending old publication must not return").frame(maxWidth: .infinity, maxHeight: .infinity) }
+        }
+    }
+    static func run(capture: (Int) -> Void) async {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("spz-unmount-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try? Data(repeating: 65, count: 32768).write(to: directory.appendingPathComponent("old-pending.txt"))
+        let tree = await ScanSession(root: directory.path, excludes: [])?.run { _ in }
+        let model = AppModel(); model.tree = tree
+        let prior = DemoInput.window, state = MountState(), probe = TreemapPublicationProbe(), barrier = PublicationBarrier("unmount")
+        let results = TreemapMountedRegression.Results()
+        var disappeared: (UInt64, TreemapPublicationEvidence)? = nil
+        probe.before = { token, generation, size, treeID, _ in
+            if size == CGSize(width: 520, height: 300), treeID == tree.map(ObjectIdentifier.init) { await barrier.before("unmount", generation, token) }
+        }
+        probe.after = { token, generation, size, treeID, filterID, accepted, evidence in
+            results.values.append((token, generation, size, treeID, filterID, accepted, evidence))
+            Task { await barrier.after("unmount", generation, token) }
+            Perf.log("treemap-unmount token=\(token) requestedGeneration=\(generation) requestedTreeID=\(treeID) accepted=\(accepted) layout=\(String(describing: evidence.layoutID)) tree=\(String(describing: evidence.treeID)) size=\(evidence.size)")
+        }
+        probe.disappeared = { generation, evidence in
+            disappeared = (generation, evidence)
+            Perf.log("treemap-unmount onDisappear generation=\(generation) layout=\(String(describing: evidence.layoutID))")
+        }
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 520, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.title = "CI actual treemap unmount"
+        let host = NSHostingView(rootView: Surface(state: state, model: model, probe: probe))
+        window.contentView = host; window.center(); window.makeKeyAndOrderFront(nil)
+        defer { probe.before = nil; probe.after = nil; probe.readEvidence = nil; probe.disappeared = nil; window.close(); prior?.makeKeyAndOrderFront(nil) }
+        let parked = await PublicationRegression.wait { await barrier.parked() }
+        guard parked else { await barrier.release(); Check.expect("treemap-real-unmount-before-old-publication", false, "old computation did not park"); return }
+        let token = await barrier.heldToken()
+        state.mounted = false
+        let didDisappear = await PublicationRegression.wait { disappeared != nil }
+        try? await Task.sleep(nanoseconds: 700_000_000)
+        let held = !(await barrier.completed())
+        Check.expect("treemap-real-unmount-before-old-publication", didDisappear && held && !state.mounted && disappeared?.1.layoutID == nil && window.isVisible, "actual conditional host removal/onDisappear; pixels47 required")
+        guard didDisappear, held else { await barrier.release(); return }
+        capture(47)
+        await barrier.release()
+        let completed = await PublicationRegression.wait { await barrier.completed() }
+        try? await Task.sleep(nanoseconds: 700_000_000)
+        let old = results.values.last { $0.token == token }
+        Check.expect("treemap-unmounted-old-publication-rejected", completed && old?.accepted == false && old?.requestedTreeID == tree.map(ObjectIdentifier.init) && old?.evidence.layoutID == nil && old?.evidence.treeID == nil && old?.evidence.size == .zero && (old?.generation ?? UInt64.max) < (disappeared?.0 ?? 0) && !state.mounted, "exact old callback ran after real disappearance, no published layout; pixels48 required")
+        capture(48)
     }
 }
