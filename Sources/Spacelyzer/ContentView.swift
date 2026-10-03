@@ -98,7 +98,7 @@ struct StatusBar: View {
     /// Measured on CI: NavigationSplitView columns extend to the window bottom (frame bottom = 612 = window height), under this bar.
     static let height: CGFloat = 26
     @Environment(AppModel.self) private var model
-    private var unreadable: Int { Perf.on ? (model.demoFooterUnreadable ?? model.tree?.skipped.count ?? 0) : (model.tree?.skipped.count ?? 0) }
+    private var unreadable: Int { Perf.on ? (model.demoFooterUnreadable ?? model.tree?.skippedCount ?? 0) : (model.tree?.skippedCount ?? 0) }
     private var partial: Bool { Perf.on ? (model.demoFooterPartial ?? model.tree?.wasCancelled ?? false) : (model.tree?.wasCancelled ?? false) }
     var body: some View {
         HStack(spacing: 8) {
