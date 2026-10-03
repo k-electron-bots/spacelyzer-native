@@ -572,13 +572,17 @@ struct SpacelyzerApp: App {
                                 DemoInput.key(48, chars: "\t")
                                 try? await Task.sleep(nanoseconds: 300_000_000)
                                 let secondFieldStart = directReverse && (window.firstResponder === intendedControl || (window.firstResponder as? NSTextView)?.delegate === intendedControl)
-                                let fieldForward = intendedControl?.nextValidKeyView
+                                // The name field is followed by the extension input in the product filter bar.
+                                // Native key-view graph pointers are diagnostic only across SwiftUI hosts.
+                                let extensionFields = DemoInput.allViews(of: NSTextField.self).filter { $0.window === window && $0.placeholderString == "ext" && !$0.isHiddenOrHasHiddenAncestor && $0.isEnabled }
+                                let fieldForward = extensionFields.count == 1 ? extensionFields.first : nil
+                                let nativeForward = intendedControl?.nextValidKeyView
                                 let fieldForwardEligible = fieldForward != nil && fieldForward !== table && fieldForward !== intendedControl && fieldForward?.window === window
                                 DemoInput.key(48, chars: "\t")
                                 try? await Task.sleep(nanoseconds: 300_000_000)
                                 let fieldForwardResponder = window.firstResponder
                                 let fieldForwardMoved = secondFieldStart && fieldForwardEligible && (fieldForwardResponder === fieldForward || (fieldForwardResponder as? NSTextView)?.delegate === fieldForward)
-                                Perf.log("rest-chain-field-forward eligible=\(fieldForwardEligible) actual=\(fieldForwardMoved) intended=\(String(describing: fieldForward)) responder=\(String(describing: fieldForwardResponder))")
+                                Perf.log("rest-chain-field-forward eligible=\(fieldForwardEligible) actual=\(fieldForwardMoved) extensionCandidates=\(extensionFields.count) intended=\(String(describing: fieldForward)) nativeNext=\(String(describing: nativeForward)) actualDelegate=\(String(describing: (fieldForwardResponder as? NSTextView)?.delegate)) responder=\(String(describing: fieldForwardResponder))")
                                 // Return naturally from the downstream view before exercising field backtab.
                                 DemoInput.key(48, chars: "\t", modifiers: .shift)
                                 try? await Task.sleep(nanoseconds: 300_000_000)
@@ -944,7 +948,8 @@ private actor PublicationBarrier {
     }
     private final class RefusingField: NSTextField {
         override var acceptsFirstResponder: Bool { true }
-        override func becomeFirstResponder() -> Bool { false }
+        var becomeCalls = 0
+        override func becomeFirstResponder() -> Bool { becomeCalls += 1; Perf.log("boundary-native target-become called=\(becomeCalls) result=false"); return false }
     }
     private final class BoundaryWindow: NSWindow {
         // NSTableView.dataSource is weak. Own it through the entire async fixture.
@@ -956,6 +961,7 @@ private actor PublicationBarrier {
         var fakeRestoreFailure = false
         var decoyLandingVerified = false
         var restoreRefusalObserved = false
+        var traceNativeFocus = false
         override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
             if fakeRefusalWithLanding && responder === challengedTarget {
                 let accepted = super.makeFirstResponder(decoy)
@@ -964,7 +970,10 @@ private actor PublicationBarrier {
                 return false
             }
             if fakeRestoreFailure && responder === restoreSource { restoreRefusalObserved = true; Perf.log("boundary-sim restore-refused"); return false }
-            return super.makeFirstResponder(responder)
+            let before = firstResponder
+            let accepted = super.makeFirstResponder(responder)
+            if traceNativeFocus { Perf.log("boundary-native target=\(String(describing: responder)) accepted=\(accepted) before=\(String(describing: before)) after=\(String(describing: firstResponder))") }
+            return accepted
         }
     }
     static let names = ["boundary-helper-missing-target", "boundary-helper-hidden-target", "boundary-helper-disabled-target", "boundary-helper-other-window", "boundary-helper-hidden-source", "boundary-helper-source-not-current", "boundary-helper-modified-tab-refused", "boundary-helper-focus-refusal", "boundary-helper-refusal-changed-restored", "boundary-helper-restore-failure-consumes", "boundary-helper-inactive-source-window"]
@@ -1017,7 +1026,13 @@ private actor PublicationBarrier {
         target.removeFromSuperview(); window.contentView?.addSubview(target)
         let beforeHiddenSource = currentSource()
         source.isHidden = true
-        guardCheck("boundary-helper-hidden-source", setup && beforeHiddenSource && model.focusNameFromOutline(source, modifiers: []) == .unavailable && window.firstResponder === source); source.isHidden = false
+        let afterHide = window.firstResponder
+        Perf.log("boundary-hidden beforeSource=\(beforeHiddenSource) afterHide=\(String(describing: afterHide))")
+        let hiddenResult = model.focusNameFromOutline(source, modifiers: [])
+        // Hiding a native first responder may relocate it before the helper runs.
+        // Assert the helper does not change that captured responder, not that AppKit kept a hidden table focused.
+        guardCheck("boundary-helper-hidden-source", setup && beforeHiddenSource && source.isHiddenOrHasHiddenAncestor && hiddenResult == .unavailable && window.firstResponder === afterHide, "posthide identity preserved; hidden/not-current predicates may overlap")
+        source.isHidden = false
         let unrelatedSetup = window.makeFirstResponder(target)
         let unrelated = window.firstResponder
         guardCheck("boundary-helper-source-not-current", setup && unrelatedSetup && unrelated !== source && model.focusNameFromOutline(source, modifiers: []) == .unavailable && window.firstResponder === unrelated)
@@ -1025,7 +1040,13 @@ private actor PublicationBarrier {
         let modified = [NSEvent.ModifierFlags.command, .control, .option, .shift].allSatisfy { model.focusNameFromOutline(source, modifiers: $0) == .unavailable && window.firstResponder === source }
         guardCheck("boundary-helper-modified-tab-refused", setup && modifierSetup && modified, "helper only, not actual shortcut handling")
         let refusal = RefusingField(frame: target.frame); window.contentView?.addSubview(refusal); model.nameFilterKeyView = refusal
-        guardCheck("boundary-helper-focus-refusal", setup && currentSource() && refuses(), "makeFirstResponder refusal/native caller fallback source only")
+        let refusalSetup = currentSource()
+        window.traceNativeFocus = true
+        let refusalResult = model.focusNameFromOutline(source, modifiers: [])
+        window.traceNativeFocus = false
+        // AppKit can return true with the window as responder when becomeFirstResponder refuses.
+        let refusalSafelyRestored = refusalResult == .unavailable || refusalResult == .restoredUnexpectedLanding
+        guardCheck("boundary-helper-focus-refusal", setup && refusalSetup && refusal.becomeCalls > 0 && refusalSafelyRestored && !refusalResult.consumesCommand && window.firstResponder === source, "result=\(refusalResult) targetBecomeCalls=\(refusal.becomeCalls) native target refusal+exact source preserved/restored; not caller fallback proof")
         let decoy = NSTextField(frame: NSRect(x: 0, y: 90, width: 70, height: 24)); window.contentView?.addSubview(decoy)
         model.nameFilterKeyView = target
         let restoreCaseSetup = resetSource()
