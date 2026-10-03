@@ -438,10 +438,11 @@ final class AppModel {
     /// One slot per key. `inputs` identifies WHAT is being retried (a hash of the current inputs, not a request counter that
     /// every retry bumps): new inputs reset the attempt count, the same inputs keep counting toward the bound.
     func retryBusy(_ key: String, inputs generation: Int, _ action: @escaping @MainActor () -> Void) {
-        if retryGeneration[key] != generation { retryAttempts[key] = nil; retryGeneration[key] = generation }
+        let sameInputs = retryGeneration[key] == generation   // captured BEFORE the reset below
+        if !sameInputs { retryAttempts[key] = nil; retryGeneration[key] = generation }
         // Same inputs and a retry already waiting: repeated calls (a view re-reading several times, several callers) must not
         // consume attempts or restart the timer; only a retry that actually FIRED counts toward the bound.
-        if retryTasks[key] != nil, retryGeneration[key] == generation { return }
+        if retryTasks[key] != nil, sameInputs { return }
         let n = (retryAttempts[key] ?? 0) + 1
         retryTasks[key]?.cancel()
         // Presentation-only reads (the selected node's details) must not escalate to a global out-of-date state: after the
