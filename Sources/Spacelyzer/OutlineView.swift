@@ -4,20 +4,106 @@ import SwiftUI
 
 /// The outline is an NSTableView: AppKit virtualizes rows and scrolls to a row in O(1), which a LazyVStack could not do
 /// for 150k rows (profiled: scrollTo and row re-evaluation dominated every arrow press).
-/// CI-only bounded, buffered stage timestamps. No file I/O on the measured mouse path.
+/// CI-only bounded causal envelope. Buffers instrumentation, not a CPU sampler.
 @MainActor enum InteractionTrace {
+    private struct Expected {
+        let label: String
+        let type: NSEvent.EventType
+        let window: Int
+        let timestamp: TimeInterval
+        let code: UInt16?
+        func matches(_ e: NSEvent) -> Bool {
+            e.type == type && e.windowNumber == window && e.timestamp == timestamp &&
+            (code == nil || code == e.keyCode)
+        }
+    }
     private static var began: UInt64?
     private static var records: [(String, UInt64)] = []
+    private static var dropped = 0
+    private static var identityDropped = 0
+    private static var collisions = 0
+    private static var ambiguities = 0
+    private static var lastPosted = "none"
+    private static var expected: [Expected] = []
+    private static var label = "none"
+    private static var phase = "none"
+    private static var monitor: Any?
+    private static var observer: CFRunLoopObserver?
+    private static var generation = 0
     private static var wallBefore: TimeInterval = 0
     private static var wallAfter: TimeInterval = 0
-    static func begin() { guard Perf.on else { return }; records = []; wallBefore = Date().timeIntervalSince1970; began = Perf.now(); wallAfter = Date().timeIntervalSince1970; record("trace-begin-before-window-lookup") }
-    static func record(_ stage: String) { guard began != nil, records.count < 256 else { return }; records.append((stage, Perf.now())) }
+    static var active: Bool { began != nil }
+    static func begin(_ name: String = "click") {
+        guard Perf.on else { return }
+        if active { finish() }
+        records = []; records.reserveCapacity(8192); expected = []; expected.reserveCapacity(41)
+        dropped = 0; identityDropped = 0; collisions = 0; ambiguities = 0; lastPosted = "none"; label = "none"; phase = name; generation += 1
+        wallBefore = Date().timeIntervalSince1970; began = Perf.now(); wallAfter = Date().timeIntervalSince1970
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .keyDown]) { event in
+            MainActor.assumeIsolated {
+                label = identity(for: event)
+                record("local-monitor-identity type=\(event.type.rawValue) window=\(event.windowNumber) eventTimestamp=\(event.timestamp)")
+            }
+            return event // Do not consume, mutate or repost the event.
+        }
+        observer = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.allActivities.rawValue, true, 0) { _, activity in
+            MainActor.assumeIsolated { record("runloop-activity=\(activity.rawValue)", attribution: "unattributed") }
+        }
+        if let observer { CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes) }
+        record("trace-begin-before-window-lookup monitorInstalled=\(monitor != nil) observerInstalled=\(observer != nil)")
+    }
+    static func record(_ stage: String, attribution: String? = nil, stamp: UInt64? = nil) {
+        guard began != nil else { return }
+        guard records.count < 8192 else { dropped += 1; return }
+        records.append(("event=\(attribution ?? label) \(stage)", stamp ?? Perf.now()))
+    }
+    private static func identity(for event: NSEvent) -> String {
+        let matches = expected.filter { $0.matches(event) }
+        if matches.count == 1 { return matches[0].label }
+        if matches.count > 1 { ambiguities += 1; return "ambiguous" }
+        return "unmatched"
+    }
+    static func recordEvent(_ stage: String, _ event: NSEvent) {
+        guard active else { return }
+        record(stage, attribution: identity(for: event))
+    }
+    static func driverResumed(_ elapsed: Double, selectionChanged: Bool) {
+        record("driver-poll-resume elapsed_ms=\(elapsed) selectionChanged=\(selectionChanged) timeout=\(!selectionChanged)", attribution: lastPosted)
+    }
+    static func willPost(_ event: NSEvent) {
+        guard active else { return }
+        guard expected.count < 41 else { identityDropped += 1; lastPosted = "identity-dropped"; label = "identity-dropped"; record("post-identity-cap-exceeded", attribution: "unattributed"); return }
+        if expected.contains(where: { $0.matches(event) }) {
+            collisions += 1
+            record("duplicate-identity-tuple type=\(event.type.rawValue) window=\(event.windowNumber) eventTimestamp=\(event.timestamp)", attribution: "ambiguous")
+        }
+        label = "\(phase)-\(expected.count)"
+        lastPosted = label
+        expected.append(Expected(label: label, type: event.type, window: event.windowNumber, timestamp: event.timestamp,
+                                 code: event.type == .keyDown ? event.keyCode : nil))
+        record("post-before type=\(event.type.rawValue) window=\(event.windowNumber) eventTimestamp=\(event.timestamp)")
+        let queued = Perf.now(), token = generation, identity = label
+        record("probe-enqueued-before-post main-queue-opportunity-not-dispatch-latency", attribution: identity, stamp: queued)
+        DispatchQueue.main.async {
+            guard active, generation == token else { return }
+            record("probe-executed enqueue_ns=\(queued)", attribution: identity)
+        }
+    }
     static func finish() {
         guard let start = began else { return }
-        began = nil
-        Perf.log("interaction-clock pid=\(ProcessInfo.processInfo.processIdentifier) uptime_ns=\(start) wall_before_unix=\(wallBefore) wall_after_unix=\(wallAfter) arm=sampled-requested-settle-1s; altered-idle=true no-cold-comparability; profiler/log perturbation retained")
-        for (stage, stamp) in records { Perf.log("interaction-stage \(stage) uptime_ns=\(stamp) elapsed_ms=\(Double(stamp - start) / 1e6)") }
-        records = []
+        record("trace-finish")
+        let complete = monitor != nil && observer != nil && dropped == 0 && identityDropped == 0 && collisions == 0 && ambiguities == 0
+        if let monitor { NSEvent.removeMonitor(monitor) }; monitor = nil
+        if let observer { CFRunLoopRemoveObserver(CFRunLoopGetMain(), observer, .commonModes); CFRunLoopObserverInvalidate(observer) }; observer = nil
+        began = nil; generation += 1
+        var lines = ["interaction-clock phase=\(phase) pid=\(ProcessInfo.processInfo.processIdentifier) uptime_ns=\(start) wall_before_unix=\(wallBefore) wall_after_unix=\(wallAfter) records=\(records.count) cap=8192 dropped=\(dropped) expectedEvents=\(expected.count) identityDropped=\(identityDropped) collisions=\(collisions) ambiguousLookups=\(ambiguities) instrumentationStatus=\(complete ? "NO-RECORDED-LOSS-WITH-LIMITS" : "INCOMPLETE-INCONCLUSIVE") cleanupMonitor=\(monitor == nil) cleanupObserver=\(observer == nil) arm=sampled-requested-settle-1s altered-idle=true no-cold-comparability sampleCoverage=UNVERIFIED-REQUIRES-PHASE-BRIDGE",
+                     "limits: monitor excludes nested event-tracking loops; model/view context label is most recent posted-or-monitored event, not causal proof; runloop common-modes only, not all nested loops; stamps unattributed/order0, other observers may run afterward; probe queued before post measures main-queue opportunity, not event dispatch latency; queue delay/runloop stamps are not CPU-busy proof; phase clock bridges separate, raw sampler overlap must be checked separately for click and arrows; flush before MainStall summaries is included, not clean benchmark; status only reports install/counter completeness, not matched delivery or selection causality; missing per-ID post/monitor/handler/model/driver stages require runtime coverage inspection even with zero drops; any cap/drop/collision/ambiguous identity invalidates whole-phase causal attribution, including earlier records; instrumentation/profiler/existing product log perturbation retained"]
+        for (stage, stamp) in records { lines.append("interaction-stage \(stage) uptime_ns=\(stamp) elapsed_ms=\(Double(stamp - start) / 1e6)") }
+        let data = (lines.joined(separator: "\n") + "\n").data(using: .utf8)!
+        let url = URL(fileURLWithPath: "/tmp/spz-interaction-envelope.txt")
+        if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(data); try? h.close() } else { try? data.write(to: url) }
+        // Original timing stream keeps the bounded summary, not thousands of stage lines.
+        Perf.log(lines[0]); records = []; expected = []; label = "none"
     }
 }
 
@@ -42,6 +128,7 @@ struct OutlineView: View {
                     InteractionTrace.record("swiftui-selection-onChange-exit")
                     guard Perf.on else { return }
                     let idx = n.flatMap { model.outlineIndex[$0] }
+                    if InteractionTrace.active { InteractionTrace.record("selection-observed node=\(n.map(String.init) ?? "nil") rowIndex=\(idx.map(String.init) ?? "none")"); return }
                     Perf.log("selection changed: node=\(n.map(String.init) ?? "nil") rowIndex=\(idx.map(String.init) ?? "none") of \(model.outlineRows.count)")
                 }
         } else {
@@ -53,9 +140,9 @@ struct OutlineView: View {
 private final class KeyTable: NSTableView {
     var onAttachment: (() -> Void)?
     override func mouseDown(with event: NSEvent) {
-        InteractionTrace.record("table-mouseDown-enter")
+        InteractionTrace.recordEvent("table-mouseDown-enter", event)
         super.mouseDown(with: event)
-        InteractionTrace.record("table-mouseDown-exit")
+        InteractionTrace.recordEvent("table-mouseDown-exit", event)
     }
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); onAttachment?() }
     var onTab: ((NSEvent.ModifierFlags) -> Bool)?
@@ -82,6 +169,8 @@ private final class KeyTable: NSTableView {
         tabDiagnostic("insertBacktab-exit")
     }
     override func keyDown(with event: NSEvent) {
+        InteractionTrace.recordEvent("table-keyDown-enter code=\(event.keyCode)", event)
+        defer { InteractionTrace.recordEvent("table-keyDown-exit code=\(event.keyCode)", event) }
         if event.keyCode == 48 { tabDiagnostic("keyDown-entry", event) }
         if event.keyCode == 48 && event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
             // Only the forward outline-to-filter boundary is explicit. Backward stays native.
