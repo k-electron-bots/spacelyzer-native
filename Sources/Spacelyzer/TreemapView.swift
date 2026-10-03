@@ -166,8 +166,10 @@ struct TreemapView: View {
             .onChange(of: model.displayedRoot) { relayout() }
             .onChange(of: model.revision) { hovered = nil; relayout() }
             .onChange(of: model.filterRevision) { relayout() }
+            .onChange(of: model.layoutRetryToken) { relayout() }
             .onAppear { relayout() }
-            .onDisappear { task?.cancel(); generation &+= 1; hovered = nil; publicationProbe?.disappeared?(generation, publicationEvidence()) }
+            .onChange(of: model.tab) { if model.layoutNeedsRelayout { relayout() } }
+            .onDisappear { task?.cancel(); generation &+= 1; hovered = nil; model.layoutNotRenderable(); publicationProbe?.disappeared?(generation, publicationEvidence()) }
     }
 
     @ViewBuilder private var readout: some View {
@@ -195,19 +197,38 @@ struct TreemapView: View {
         generation &+= 1
         let request = generation
         hovered = nil
-        guard let tree = model.tree, size.width > 1, size.height > 1 else { layout = nil; return }
+        guard let tree = model.tree, size.width > 1, size.height > 1 else { layout = nil; model.layoutNotRenderable(); return }
         let root = model.displayedRoot, revision = model.revision
         let s = size, flt = model.activeFilter
         let barrier = publicationProbe?.before, completed = publicationProbe?.after
         task = Task.detached(priority: .userInitiated) {
-            let l = tree.layout(root: root, size: s, filter: flt)
+            // Status API: a stale filter or BUSY is never drawn as an empty picture. The previous layout stays up.
+            let result = tree.layoutChecked(root: root, size: s, filter: flt)
+            guard case .success(let l) = result else {
+                await MainActor.run {
+                    guard !Task.isCancelled, generation == request, model.tree === tree else { return }
+                    switch result.failureStatus {
+                    case .busy:
+                        // bounded and keyed by the model; the retry runs relayout(), which re-reads the CURRENT inputs
+                        model.retryBusy("layout", inputs: model.layoutInputKey(root: root, size: s)) { model.layoutRetryToken &+= 1 }
+                    case .stale:
+                        // STALE: the filter handle is from an older table. If no recompute is pending, start one (bounded).
+                        if !model.filterPending { model.retryBusy("layout-stale", inputs: model.layoutInputKey(root: root, size: s)) { model.scheduleFilter(immediate: true) } }
+                    default:
+                        model.markOutOfDate("The treemap could not be updated. Rescan.")
+                    }
+                }
+                return
+            }
             if Task.isCancelled { return }
             let token = (barrier != nil || completed != nil) ? UUID() : nil
             if let token { await barrier?(token, request, s, ObjectIdentifier(tree), flt.map(ObjectIdentifier.init)) }
             await MainActor.run {
                 let accepted: Bool
-                if !Task.isCancelled, generation == request, model.tree === tree,
+                if !Task.isCancelled, generation == request, model.tree === tree, l.version == tree.version,
+                   flt == nil || flt!.version == l.version,
                    model.revision == revision, model.displayedRoot == root, model.activeFilter === flt, size == s {
+                    model.retryDone("layout"); model.retryDone("layout-stale"); model.layoutPublished(l.version)
                     layout = l
                     layoutRevision = revision; layoutRoot = root; layoutFilter = flt; layoutSize = s
                     hovered = nil
@@ -224,6 +245,9 @@ struct TrailingPane: View {
     var body: some View {
         @Bindable var model = model
         VStack(spacing: 0) {
+            if let notice = model.coherenceNotice {
+                Text(notice).font(.caption).foregroundStyle(.orange).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 8).padding(.vertical, 4)
+            }
             switch model.tab {
             case .treemap:
                 HStack {
