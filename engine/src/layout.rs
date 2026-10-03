@@ -56,7 +56,12 @@ pub fn layout(tree: &Tree, root: NodeId, opts: &LayoutOptions) -> Vec<Rect> {
 /// Layout using per-node sizes from a filter result instead of the tree's own sizes.
 /// Children are re-sorted by those sizes.
 pub fn layout_with(tree: &Tree, root: NodeId, opts: &LayoutOptions, sizes: Option<&[u64]>) -> Vec<Rect> {
-    let sz = |id: NodeId| -> u64 { sizes.map(|s| s[id as usize]).unwrap_or_else(|| tree.size(id)) };
+    layout_in(tree, &tree.table(), root, opts, sizes)
+}
+
+/// Layout against a table the caller captured: every size in this layout comes from that one version.
+pub fn layout_in(tree: &Tree, tab: &crate::tree::SizeTable, root: NodeId, opts: &LayoutOptions, sizes: Option<&[u64]>) -> Vec<Rect> {
+    let sz = |id: NodeId| -> u64 { sizes.map(|s| s[id as usize]).unwrap_or_else(|| tab.sizes[id as usize]) };
     let mut out = Vec::new();
     let total = sz(root);
     if total == 0 || opts.width <= 0.0 || opts.height <= 0.0 {

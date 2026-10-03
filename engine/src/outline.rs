@@ -57,10 +57,10 @@ impl SortMode {
     }
 }
 
-fn ordered_children(tree: &Tree, id: NodeId, mode: SortMode, filter: Option<&FilterResult>) -> Vec<NodeId> {
+fn ordered_children(tree: &Tree, tab: &[u64], id: NodeId, mode: SortMode, filter: Option<&FilterResult>) -> Vec<NodeId> {
     let sizes = filter.map(|f| f.sizes.as_slice());
     let mut v: Vec<NodeId> = tree.children(id).collect();
-    let key_size = |n: NodeId| sizes.map(|s| s[n as usize]).unwrap_or_else(|| tree.size(n));
+    let key_size = |n: NodeId| sizes.map(|s| s[n as usize]).unwrap_or_else(|| tab[n as usize]);
     match mode {
         SortMode::SizeDesc => {
             if sizes.is_some() {
@@ -78,8 +78,14 @@ fn ordered_children(tree: &Tree, id: NodeId, mode: SortMode, filter: Option<&Fil
 /// Like `visible_rows`, with a chosen sibling order. Ties keep the native (size-descending) order
 /// because the sorts are stable. Nothing is capped.
 pub fn visible_rows_sorted(tree: &Tree, root: NodeId, expanded: &HashSet<NodeId>, filter: Option<&FilterResult>, mode: SortMode) -> Vec<Row> {
+    visible_rows_sorted_in(tree, &tree.table(), root, expanded, filter, mode)
+}
+
+/// One captured table is used for every expanded directory in this call.
+pub fn visible_rows_sorted_in(tree: &Tree, tab: &crate::tree::SizeTable, root: NodeId, expanded: &HashSet<NodeId>, filter: Option<&FilterResult>, mode: SortMode) -> Vec<Row> {
+    let tab = tab.sizes.as_slice();
     let mut out = Vec::new();
-    let mut stack: Vec<(std::vec::IntoIter<NodeId>, u32)> = vec![(ordered_children(tree, root, mode, filter).into_iter(), 0)];
+    let mut stack: Vec<(std::vec::IntoIter<NodeId>, u32)> = vec![(ordered_children(tree, tab, root, mode, filter).into_iter(), 0)];
     while let Some((it, depth)) = stack.last_mut() {
         let Some(id) = it.next() else {
             stack.pop();
@@ -93,7 +99,7 @@ pub fn visible_rows_sorted(tree: &Tree, root: NodeId, expanded: &HashSet<NodeId>
         let d = *depth;
         out.push(Row { node: id, depth: d });
         if expanded.contains(&id) && tree.child_count(id) > 0 {
-            stack.push((ordered_children(tree, id, mode, filter).into_iter(), d + 1));
+            stack.push((ordered_children(tree, tab, id, mode, filter).into_iter(), d + 1));
         }
     }
     out
