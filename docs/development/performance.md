@@ -46,3 +46,7 @@ PID11509/header07:02:23.977UTC precedes trace07:02:24.8409882 by863.9882ms. Subp
 ## Run116 diagnostic arm
 
 PID23733/rawheader08:05:03.198UTC precedes trace08:05:04.1193771/.119378 by921.3771ms. Subprocessend08:05:12 includesprocessing; requested8s5ms/coarse bracket only,not first/last-sample or causal stack chronology. Selection614.7/stall609.1,warm53; arrowp50/p95/max15.9/54.7/488ms/stall486.6,typing260.9,hover0.4. Alteredidle/no cold comparability or overall win. [Evidence](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37108069847/artifacts/11269385250).
+
+## Run117 diagnostic arm
+
+Selection1284/stall1278.4,warm54.7; arrowp50/p95/max17.1/35.1/332.6ms/stall280.8,typing161.6,hover0.5. Altered1s idle settling arm/sharedrunner/profiler perturbation prevents original-cold comparison; no overall win or causal stack attribution. [Evidence](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37109813090/artifacts/11268988193).
