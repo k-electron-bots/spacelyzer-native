@@ -86,7 +86,7 @@ struct WelcomeView: View {
                 Button("Scan Home Folder") { model.scanHome() }
                 Button("Choose Folder…") { model.chooseFolder() }
             }
-            Text("Tip: grant Full Disk Access in System Settings for a complete scan, then relaunch.")
+            Text("Full Disk Access may improve access after relaunch; some protected locations remain unreadable.")
                 .font(.caption).foregroundStyle(.tertiary)
             if let e = model.error { Text(e).foregroundStyle(.red) }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
