@@ -745,10 +745,15 @@ final class AppModel {
         }
     }
 
-    /// Test/driver helper: the removal task AND the engine commit it enqueues have both finished (bounded wait, 5 s).
-    func settleRemoval() async {
+    /// Test/driver helper: waits for the removal task AND the engine commit it enqueues (bounded, 5 s). Returns false when
+    /// a commit never settled; the caller must treat that as a failure, never as "settled".
+    @discardableResult
+    func settleRemoval() async -> Bool {
         await removalTask?.value
         for _ in 0..<500 where commitsInFlight > 0 { try? await Task.sleep(nanoseconds: 10_000_000) }
+        let ok = commitsInFlight == 0
+        if !ok { Check.expect("removal-commit-never-settled", false, "commitsInFlight=\(commitsInFlight) mutationPending=\(mutationPending)") }
+        return ok
     }
 
     func undoRemoval() {
