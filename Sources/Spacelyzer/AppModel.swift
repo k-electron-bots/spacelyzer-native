@@ -357,6 +357,19 @@ final class AppModel {
         if viewOutOfDate { return (outOfDateReason ?? "The numbers on screen may be out of date.") + " Removal is disabled until you rescan." }
         return nil
     }
+    /// Idle observability: a bounded 1 s check while a tree is loaded, so a panic caught outside any publication still
+    /// reaches the UI. Cancelled on tree replace and deinit; interval is a MainActor wake, not a tight poll.
+    @ObservationIgnored private var poisonWatch: Task<Void, Never>?
+    func startPoisonWatch() {
+        poisonWatch?.cancel()
+        poisonWatch = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard let self, self.tree != nil else { return }
+                if !self.poisoned && self.enginePoisoned { self.markPoisoned() }
+            }
+        }
+    }
     func markPoisoned() { poisoned = true; filterPending = false; markOutOfDate("The engine reported an internal error, so the numbers may be wrong. Rescan to continue.") }
     func markOutOfDate(_ reason: String) { viewOutOfDate = true; outOfDateReason = reason; requiredVersion = nil }
     /// Called after each surface publishes. Clears the pending requirement only when ALL live surfaces are current.
@@ -504,6 +517,7 @@ final class AppModel {
                 tree = t
                 panicBaseline = s.validatedPanicCount   // exactly the value ScanSession validated, not a fresh read
                 poisoned = false
+                startPoisonWatch()
                 nodeCache = nil
                 displayedRoot = 0
                 selected = nil

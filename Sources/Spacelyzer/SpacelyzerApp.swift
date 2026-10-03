@@ -1185,6 +1185,26 @@ private actor PublicationBarrier {
             let latched = m.poisoned && m.enginePoisoned && !m.filterPending && m.viewOutOfDate
             Check.expect("poison-latches-refuses-and-clears-spinner", clean && refused && latched, "clean=\(clean) refused=\(refused) latched=\(latched)")
         } else { Check.expect("poison-latches-refuses-and-clears-spinner", false, "fixture") }
+        // 8c. A counter bump while a derived publication is parked before its barrier must refuse that publication on release;
+        // a counter bump while idle must surface through the bounded watch; the scan baseline is the validated count.
+        if let m = await scanned(root) {
+            let box = PanicBox(m.panicBaseline)
+            m.panicCounter = { box.value }
+            let baselineOK = !m.enginePoisoned   // clean right after a scan; adoption of ScanSession.validatedPanicCount itself is NOT asserted here
+            let before = m.derivedVersion
+            m.beforePublish = { name, _, _ in if name == "derived" { box.value += 1 } }
+            m.refreshDerived()
+            _ = await PublicationRegression.wait { m.poisoned }
+            m.beforePublish = nil
+            Check.expect("poison-refuses-parked-derived-publication", baselineOK && m.poisoned && m.derivedVersion == before, "poisoned=\(m.poisoned) derivedMoved=\(m.derivedVersion != before)")
+        } else { Check.expect("poison-refuses-parked-derived-publication", false, "fixture") }
+        if let m = await scanned(root) {
+            let box = PanicBox(m.panicBaseline)
+            m.panicCounter = { box.value }
+            box.value += 1   // idle: no publication in flight
+            let seen = await PublicationRegression.wait { m.poisoned }
+            Check.expect("poison-idle-counter-move-observed-by-watch", seen && m.viewOutOfDate, "seen=\(seen)")
+        } else { Check.expect("poison-idle-counter-move-observed-by-watch", false, "fixture") }
         // 8b. Deadline must not livelock: repeated publishes of an already-current surface do not reset it; a layout that
         // never lands ends in an explicit out-of-date error after the forced refresh and one extension.
         if let m = await scanned(root), let id = node(m, "dirB") {
@@ -1631,3 +1651,6 @@ private actor PublicationBarrier {
         capture(48)
     }
 }
+
+/// Test-only mutable counter shared with @Sendable publish barriers.
+final class PanicBox: @unchecked Sendable { var value: UInt64; init(_ v: UInt64) { value = v } }
