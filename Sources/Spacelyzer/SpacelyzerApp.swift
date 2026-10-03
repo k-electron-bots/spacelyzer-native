@@ -527,19 +527,22 @@ struct SpacelyzerApp: App {
                                 return "\(phase) appActive=\(NSApp.isActive) policy=\(NSApp.activationPolicy().rawValue) intendedNumber=\(focusWindow?.windowNumber ?? -1) chosenNumber=\(chosen?.windowNumber ?? -1) keyNumber=\(NSApp.keyWindow?.windowNumber ?? -1) mainNumber=\(NSApp.mainWindow?.windowNumber ?? -1) intendedKey=\(focusWindow?.isKeyWindow ?? false) main=\(focusWindow?.isMainWindow ?? false) visible=\(focusWindow?.isVisible ?? false) canBecomeKey=\(focusWindow?.canBecomeKey ?? false) sameChosen=\(focusWindow != nil && chosen === focusWindow) responder=\(String(describing: focusWindow?.firstResponder))"
                             }
                             Perf.log(focusDiagnostic("before-resign"))
-                            DemoInput.window?.resignKey()
-                            Perf.log(focusDiagnostic("after-direct-resign"))
+                            let inactiveFixture = NSWindow(contentRect: NSRect(x: -1000, y: -1000, width: 80, height: 80), styleMask: [.titled], backing: .buffered, defer: false)
+                            inactiveFixture.isReleasedWhenClosed = false
+                            inactiveFixture.makeKeyAndOrderFront(nil)
+                            Perf.log(focusDiagnostic("after-fixture-key-window"))
                             try? await Task.sleep(nanoseconds: 500_000_000)
-                            Check.expect("e2-inactive-count-color-policy", OutlineDemoEvidence.inactiveSelectedCountPolicy && selectedBeforeInactive != nil && model.selected == selectedBeforeInactive && OutlineDemoEvidence.table?.selectedRow == tableRowBeforeInactive && selectedBeforeInactive.flatMap { model.outlineIndex[$0] } == tableRowBeforeInactive)
+                            Check.expect("e2-inactive-count-color-policy", (focusWindow?.isKeyWindow == false) && NSApp.keyWindow === inactiveFixture && OutlineDemoEvidence.inactiveSelectedCountPolicy && selectedBeforeInactive != nil && model.selected == selectedBeforeInactive && OutlineDemoEvidence.table?.selectedRow == tableRowBeforeInactive && selectedBeforeInactive.flatMap { model.outlineIndex[$0] } == tableRowBeforeInactive)
                             mark(35)
                             Perf.log(focusDiagnostic("before-activation"))
+                            inactiveFixture.close()
                             NSApp.activate()
-                            DemoInput.window?.makeKeyAndOrderFront(nil)
+                            focusWindow?.makeKeyAndOrderFront(nil)
                             let activationStarted = Date()
                             let activationDeadline = activationStarted.addingTimeInterval(5)
-                            while (!NSApp.isActive || !(DemoInput.window?.isKeyWindow ?? false)) && Date() < activationDeadline { try? await Task.sleep(nanoseconds: 20_000_000) }
+                            while (!NSApp.isActive || !(focusWindow?.isKeyWindow ?? false)) && Date() < activationDeadline { try? await Task.sleep(nanoseconds: 20_000_000) }
                             Perf.log("activation-wait-seconds=\(Date().timeIntervalSince(activationStarted)) \(focusDiagnostic("after-activation-wait"))")
-                            let activeSetup = NSApp.isActive && (DemoInput.window?.isKeyWindow ?? false)
+                            let activeSetup = focusWindow != nil && focusWindow === OutlineDemoEvidence.table?.window && NSApp.isActive && (focusWindow?.isKeyWindow ?? false)
                             var responderSetup = false
                             if let table = OutlineDemoEvidence.table {
                                 responderSetup = table.window?.makeFirstResponder(table) == true
@@ -547,7 +550,7 @@ struct SpacelyzerApp: App {
                                 if let node = model.selected, let row = model.outlineIndex[node] { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
                             }
                             try? await Task.sleep(nanoseconds: 500_000_000)
-                            Check.expect("e2-count-visible-reload-color-policy", activeSetup && responderSetup && NSApp.isActive && (DemoInput.window?.isKeyWindow ?? false) && DemoInput.window?.firstResponder === OutlineDemoEvidence.table && OutlineDemoEvidence.countColorContract(increased: true) && model.selected == selectedBeforeInactive && OutlineDemoEvidence.table?.selectedRow == tableRowBeforeInactive && selectedBeforeInactive.flatMap { model.outlineIndex[$0] } == tableRowBeforeInactive, "style=\(OutlineDemoEvidence.selectionDiagnostic) key=\(DemoInput.window?.isKeyWindow ?? false) responder=\(String(describing: DemoInput.window?.firstResponder)) node=\(String(describing: model.selected)) row=\(OutlineDemoEvidence.table?.selectedRow ?? -1) expectedRow=\(tableRowBeforeInactive ?? -1)")
+                            Check.expect("e2-count-visible-reload-color-policy", activeSetup && responderSetup && NSApp.isActive && (focusWindow?.isKeyWindow ?? false) && focusWindow?.firstResponder === OutlineDemoEvidence.table && OutlineDemoEvidence.countColorContract(increased: true) && model.selected == selectedBeforeInactive && OutlineDemoEvidence.table?.selectedRow == tableRowBeforeInactive && selectedBeforeInactive.flatMap { model.outlineIndex[$0] } == tableRowBeforeInactive, "style=\(OutlineDemoEvidence.selectionDiagnostic) key=\(DemoInput.window?.isKeyWindow ?? false) responder=\(String(describing: DemoInput.window?.firstResponder)) node=\(String(describing: model.selected)) row=\(OutlineDemoEvidence.table?.selectedRow ?? -1) expectedRow=\(tableRowBeforeInactive ?? -1)")
                             Perf.log(focusDiagnostic("reload-after-responder-wait"))
                             mark(36)
                             model.demoIncreaseContrast = nil; NSApp.appearance = savedAppearance
@@ -562,10 +565,29 @@ struct SpacelyzerApp: App {
                                     && (responder === intendedControl || (responder as? NSTextView)?.delegate === intendedControl)
                                 Check.expect("e2-tab-leaves-outline-without-selection-change", focusMoved && model.selected == selectedBefore, "key=\(window.isKeyWindow) intended=\(String(describing: intendedControl)) responder=\(String(describing: responder)) delegate=\(String(describing: (responder as? NSTextView)?.delegate)) selectedBefore=\(String(describing: selectedBefore)) selectedAfter=\(String(describing: model.selected))")
                                 Perf.log("tab-chain tableNext=\(String(describing: table.nextKeyView)) tableNextValid=\(String(describing: table.nextValidKeyView)) fieldPrevious=\(String(describing: intendedControl?.previousKeyView)) fieldPreviousValid=\(String(describing: intendedControl?.previousValidKeyView)) fieldNext=\(String(describing: intendedControl?.nextKeyView)) tableSetup=\(tableSetup) \(focusDiagnostic("post-tab"))")
+                                let fieldForward = intendedControl?.nextValidKeyView
+                                let fieldForwardEligible = fieldForward != nil && fieldForward !== table && fieldForward !== intendedControl && fieldForward?.window === window
+                                DemoInput.key(48, chars: "\t")
+                                try? await Task.sleep(nanoseconds: 300_000_000)
+                                let fieldForwardResponder = window.firstResponder
+                                let fieldForwardMoved = fieldForwardEligible && (fieldForwardResponder === fieldForward || (fieldForwardResponder as? NSTextView)?.delegate === fieldForward)
+                                Perf.log("rest-chain-field-forward eligible=\(fieldForwardEligible) actual=\(fieldForwardMoved) intended=\(String(describing: fieldForward)) responder=\(String(describing: fieldForwardResponder))")
+                                // Return naturally from the downstream view before exercising field backtab.
+                                DemoInput.key(48, chars: "\t", modifiers: .shift)
+                                try? await Task.sleep(nanoseconds: 300_000_000)
+                                let returnedToField = window.firstResponder === intendedControl || (window.firstResponder as? NSTextView)?.delegate === intendedControl
                                 let reverseChain = intendedControl?.previousValidKeyView === table
                                 DemoInput.key(48, chars: "\t", modifiers: .shift)
                                 try? await Task.sleep(nanoseconds: 500_000_000)
-                                Check.expect("e2-shift-tab-returns-to-outline", focusMoved && reverseChain && activeSetup && NSApp.isActive && window.isKeyWindow && window.firstResponder === table && model.selected == selectedBefore)
+                                let returnedToTable = window.firstResponder === table
+                                let tableBackward = table.previousValidKeyView
+                                let tableBackwardEligible = tableBackward != nil && tableBackward !== table && tableBackward !== intendedControl && tableBackward?.window === window
+                                DemoInput.key(48, chars: "\t", modifiers: .shift)
+                                try? await Task.sleep(nanoseconds: 300_000_000)
+                                let tableBackwardResponder = window.firstResponder
+                                let tableBackwardMoved = tableBackwardEligible && (tableBackwardResponder === tableBackward || (tableBackwardResponder as? NSTextView)?.delegate === tableBackward)
+                                Perf.log("rest-chain-table-backward eligible=\(tableBackwardEligible) actual=\(tableBackwardMoved) intended=\(String(describing: tableBackward)) responder=\(String(describing: tableBackwardResponder))")
+                                Check.expect("e2-shift-tab-returns-to-outline", focusMoved && fieldForwardMoved && returnedToField && reverseChain && returnedToTable && tableBackwardMoved && activeSetup && NSApp.isActive && window.isKeyWindow && model.selected == selectedBefore, "fieldForward=\(fieldForwardMoved) returnedField=\(returnedToField) returnedTable=\(returnedToTable) tableBackward=\(tableBackwardMoved)")
                                 // Escape must not invoke a destructive action or clear the current tree.
                                 let treeBefore = model.tree, removedBefore = model.lastRemoved.count
                                 let pendingBefore = model.pendingRemoval, messageBefore = model.removalMessage
@@ -605,10 +627,11 @@ struct SpacelyzerApp: App {
                                     let consumedDeadline = Date().addingTimeInterval(3)
                                     while model.nameEditorConsumedReset != model.filterResetRevision && Date() < consumedDeadline { try? await Task.sleep(nanoseconds: 10_000_000) }
                                     let resetConsumed = model.nameEditorConsumedReset == model.filterResetRevision
+                                    let alreadyEmptyModel = model.filterText.isEmpty && editor.string.isEmpty && field.stringValue.isEmpty
                                     editor.setMarkedText("再", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: 0, length: 0))
                                     Perf.log("same-value-fixture-start editor=\(editor.string.debugDescription) field=\(field.stringValue.debugDescription) model=\(model.filterText.debugDescription) reset=\(model.filterResetRevision) consumed=\(model.nameEditorConsumedReset) updates=\(model.nameEditorUpdateCount)")
                                     let emptyMarked = editor.hasMarkedText()
-                                    let equalBeforeClear = field.stringValue == model.filterText && model.filterText.isEmpty
+                                    let markedDivergence = editor.hasMarkedText() && editor.string == "再" && field.stringValue == "再" && alreadyEmptyModel && model.filterText.isEmpty
                                     // Exercise an ordinary edit-origin update while marked; no reset intent.
                                     let updatesBefore = model.nameEditorUpdateCount
                                     let resetBefore = model.filterResetRevision, externalBefore = model.externalFilterTextRevision
@@ -618,7 +641,7 @@ struct SpacelyzerApp: App {
                                     while model.nameEditorUpdateCount == updatesBefore && Date() < updateDeadline { try? await Task.sleep(nanoseconds: 10_000_000) }
                                     Check.expect("name-editor-ordinary-update-preserves-marked-text", resetConsumed && model.nameEditorUpdateCount > updatesBefore && model.filterResetRevision == resetBefore && model.externalFilterTextRevision == externalBefore && emptyMarked && editor.hasMarkedText() && editor.string.contains("再"))
                                     @MainActor func resetDiagnostic(_ phase: String) -> String {
-                                        "\(phase) equalBeforeClear=\(equalBeforeClear) initialMarked=\(emptyMarked) marked=\(editor.hasMarkedText()) editor=\(editor.string.debugDescription) field=\(field.stringValue.debugDescription) model=\(model.filterText.debugDescription) resetRevision=\(model.filterResetRevision) consumedReset=\(model.nameEditorConsumedReset) externalRevision=\(model.externalFilterTextRevision) updateCount=\(model.nameEditorUpdateCount)"
+                                        "\(phase) alreadyEmptyModel=\(alreadyEmptyModel) markedDivergence=\(markedDivergence) initialMarked=\(emptyMarked) marked=\(editor.hasMarkedText()) editor=\(editor.string.debugDescription) field=\(field.stringValue.debugDescription) model=\(model.filterText.debugDescription) resetRevision=\(model.filterResetRevision) consumedReset=\(model.nameEditorConsumedReset) externalRevision=\(model.externalFilterTextRevision) updateCount=\(model.nameEditorUpdateCount)"
                                     }
                                     Perf.log(resetDiagnostic("before-same-value-clear"))
                                     let resetUpdatesBefore = model.nameEditorUpdateCount
@@ -626,7 +649,7 @@ struct SpacelyzerApp: App {
                                     let sameValueDeadline = Date().addingTimeInterval(3)
                                     while (model.nameEditorConsumedReset != model.filterResetRevision || model.nameEditorUpdateCount == resetUpdatesBefore) && Date() < sameValueDeadline { try? await Task.sleep(nanoseconds: 10_000_000) }
                                     let sameValueConsumed = model.nameEditorConsumedReset == model.filterResetRevision && model.nameEditorUpdateCount > resetUpdatesBefore
-                                    Check.expect("name-editor-already-empty-reset-with-marked-divergence", sameValueConsumed && equalBeforeClear && emptyMarked && !editor.hasMarkedText() && editor.string.isEmpty && field.stringValue.isEmpty && model.filterText.isEmpty, "consumed=\(sameValueConsumed) \(resetDiagnostic("after-same-value-clear"))")
+                                    Check.expect("name-editor-already-empty-reset-with-marked-divergence", sameValueConsumed && alreadyEmptyModel && markedDivergence && emptyMarked && !editor.hasMarkedText() && editor.string.isEmpty && field.stringValue.isEmpty && model.filterText.isEmpty, "consumed=\(sameValueConsumed) \(resetDiagnostic("after-same-value-clear"))")
                                 } else {
                                     for name in ["name-editor-ordinary-update-preserves-marked-text", "name-editor-already-empty-reset-with-marked-divergence", "name-editor-external-clear-cancels-marked-text", "name-editor-typing-model-sync", "name-editor-external-sync-preserves-cursor", "name-editor-clear-all-while-editing", "name-editor-marked-text-commit-simulation"] { Check.expect(name, false, "active native editor unavailable") }
                                 }
