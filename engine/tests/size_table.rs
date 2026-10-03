@@ -408,3 +408,33 @@ fn caught_legacy_panic_bumps_sticky_counter_and_scan_progress_reports_failed() {
     assert_eq!(st, 5);
     assert!(spz_engine_panic_count() > mid);
 }
+
+#[test]
+fn largest_sized_filtered_uses_the_filter_and_stale_handle_writes_nothing() {
+    use spacelyzer_engine::ffi::*;
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    #[cfg(feature = "failpoints")] spacelyzer_engine::tree::set_failpoint(0);
+    let mut t = Tree::synthetic(5000); t.uid = 11;
+    let tp: *const Tree = &t;
+    unsafe {
+        let ext = std::ffi::CString::new("rs").unwrap();
+        let h = spz_filter_apply(tp, std::ptr::null(), ext.as_ptr(), std::mem::zeroed());
+        assert_eq!(spz_filter_status(tp, h), 0);
+        let total = spz_filter_total_bytes(h);
+        assert!(total > 0, "fixture: some .rs bytes");
+        let (mut ids, mut sizes) = ([0u32; 20], [0u64; 20]);
+        let (mut v, mut st) = (0u64, -1i32);
+        let c = spz_largest_sized_status(tp, h, 20, ids.as_mut_ptr(), sizes.as_mut_ptr(), u64::MAX, &mut v, &mut st);
+        assert!(st == 0 && c > 0, "status {st} count {c}");
+        let names: Vec<String> = (0..c as usize).map(|i| t.name(ids[i]).to_string()).collect();
+        assert!(names.iter().all(|n| n.ends_with(".rs")), "filtered ids must all match the filter: {names:?}");
+        assert!(sizes[..c as usize].windows(2).all(|w| w[0] >= w[1]), "largest first");
+        assert!(sizes[..c as usize].iter().sum::<u64>() <= total);
+        // the filter was computed on the old table: after a commit the handle is STALE and nothing is written
+        t.forget(disjoint_dirs(&t, 1)[0]).unwrap();
+        let mut sizes2 = [7u64; 20]; let mut ids2 = [9u32; 20];
+        let c2 = spz_largest_sized_status(tp, h, 20, ids2.as_mut_ptr(), sizes2.as_mut_ptr(), u64::MAX, &mut v, &mut st);
+        assert!(c2 == 0 && st == 1 && sizes2.iter().all(|&x| x == 7) && ids2.iter().all(|&x| x == 9));
+        spz_filter_free(h);
+    }
+}

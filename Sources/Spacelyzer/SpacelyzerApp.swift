@@ -1190,6 +1190,7 @@ private actor PublicationBarrier {
         if let m = await scanned(root) {
             let box = PanicBox(m.panicBaseline)
             m.panicCounter = { box.value }
+            _ = await PublicationRegression.wait { m.derivedVersion == m.tree?.version && m.outlineVersion == m.tree?.version }   // initial publications settled first
             let baselineOK = !m.enginePoisoned   // clean right after a scan; adoption of ScanSession.validatedPanicCount itself is NOT asserted here
             let before = m.derivedVersion
             m.beforePublish = { name, _, _ in if name == "derived" { box.value += 1 } }
