@@ -3,8 +3,8 @@
 Priorities: safety, real and perceived performance, pixel polish, then features. This page describes future work. [Verification status](verification/README.md) describes accepted evidence; [checkpoint history](verification/checkpoints.md) preserves failed and superseded attempts.
 
 ## Current priorities
-1. Accept or repair the explicit outline/name-field Tab and backtab boundary using actual injected events. Keep helper controls, modified-key/fallback behavior and actual IME separate.
-2. Complete E2 accessibility and real-system validation rather than treating injected preferences or labels as VoiceOver proof.
+1. Extend the bounded injected focus evidence to actual modified-key/fallback behavior and real-system input. The named boundaries and semantic extension route passed run110, not whole-keyboard or native-graph repair.
+2. Ground the cold first-click and typing stalls, then complete E2 accessibility and real-system validation. Injected preferences or labels are not VoiceOver proof.
 3. Prove removal, partial scans, stability and memory behavior on disposable fixtures before a release is called ready.
 
 ## Product epics
