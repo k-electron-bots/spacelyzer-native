@@ -680,6 +680,15 @@ struct SpacelyzerApp: App {
                             try? await Task.sleep(nanoseconds: 700_000_000)
                             Check.expect("no-match-view-fixture-ready", !model.filterPending && model.activeFilter?.count(model.displayedRoot) == 0, "pixels38 required")
                             mark(38)
+                            // Preserve37/38, then stress footer presentation with explicit simulated warnings.
+                            model.filterExt = "pdf"
+                            let footerDeadline = Date().addingTimeInterval(5)
+                            while model.filterPending && Date() < footerDeadline { try? await Task.sleep(nanoseconds: 20_000_000) }
+                            model.demoFooterUnreadable = 1_234_567; model.demoFooterPartial = true
+                            try? await Task.sleep(nanoseconds: 700_000_000)
+                            Check.expect("footer-simultaneous-warning-presentation-ready", !model.filterPending && model.activeFilter?.totalCount == 1 && model.demoFooterUnreadable == 1_234_567 && model.demoFooterPartial == true, "pixels39 required; partial/unreadable presentation simulation, not permission/cancel accounting")
+                            mark(39)
+                            model.demoFooterUnreadable = nil; model.demoFooterPartial = nil
                             try? FileManager.default.removeItem(at: zeroRoot)
                             try? Data().write(to: URL(fileURLWithPath: "/tmp/spz-demo-finished"))
 
