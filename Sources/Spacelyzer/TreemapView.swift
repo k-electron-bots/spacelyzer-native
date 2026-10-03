@@ -332,7 +332,7 @@ struct LargestView: View {
                         Text(t.path(id)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
                     }
                     Spacer()
-                    Text(formatBytes(sizeOf[id] ?? 0)).monospacedDigit()
+                    Text(sizeOf[id].map(formatBytes) ?? "\u{2014}").monospacedDigit()   // a missing size is a visible placeholder, never 0 B
                 }.tag(id)
             }
             .overlay {
