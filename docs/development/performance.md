@@ -38,3 +38,7 @@ Run113 adds explicit1s async idle settling before reset/input, no input/product 
 ## Run114 settled diagnostic arm
 
 PID11681/version114 rawheader06:08:05.410UTC precedes pairedtrace06:08:06.966780/.9667811UTC by1556.78ms. Subprocessend06:08:14 includes report processing, not last-sample time; workflowwait06:11:21 is later. Requested8s5ms/coarse temporal alignment only, no per-stack chronology or cause assignment. Selectionwait1279.1/stall1273.9,warm26.6; arrowp50/p95/max34.0/76.4/768.2ms/stall766.9,typing264.2,hover1.0. The1s idle settling arm changes cold conditions; mixed shared-runner measurements do not establish an overall win. [Evidence](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37101601436/artifacts/11265798604).
+
+## Run115 diagnostic arm
+
+PID11509/header07:02:23.977UTC precedes trace07:02:24.8409882 by863.9882ms. Subprocessend07:02:33exit0 includes processing; requested8s5ms is not a first/last-sample chronology. Selection185.5/stall205.5,warm38; arrowp50/p95/max18.7/175.3/765.5ms/stall761.3,typing240.1,hover0.9. Same alteredidle arm/no cold comparison or overall performance claim. [Evidence](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37104425688/artifacts/11267976189).
