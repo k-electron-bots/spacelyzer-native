@@ -1099,21 +1099,24 @@ private actor PublicationBarrier {
             m3.proposeRemoval(of: c3); m3.confirmRemoval(); _ = await m3.settleRemoval()
             let moved = !fm.fileExists(atPath: root.appendingPathComponent("restore-me.bin").path) && m3.lastRemoved.count == 1
             await scan(m3, root)   // tree replaced after the move
+            // scan completion alone does not clear pending state: wait for presentation readiness before undo
+            let ready = await PublicationRegression.wait { !m3.scanning && !m3.rowsPending && !m3.filterPending && m3.requiredVersion == nil && m3.outlineVersion == m3.tree?.version }
             m3.undoRemoval(); _ = await m3.settleRemoval()
-            let back = fm.fileExists(atPath: root.appendingPathComponent("restore-me.bin").path)
+            let restoredData = try? Data(contentsOf: root.appendingPathComponent("restore-me.bin"))
+            let back = ready && restoredData?.count == 80_000 && restoredData?.allSatisfy({ $0 == 4 }) == true
             Check.expect("async-undo-after-rescan-restores-and-marks-out-of-date", moved && back && m3.lastRemoved.isEmpty && m3.viewOutOfDate, "moved=\(moved) back=\(back) journal=\(m3.lastRemoved.count) outOfDate=\(m3.viewOutOfDate)")
         } else { Check.expect("async-undo-after-rescan-restores-and-marks-out-of-date", false, "fixture") }
 
-        // 7. Cancelling the removal task mid-move cannot undo the filesystem change: the outcome is still journaled and
-        // the flags clear (the move runs in a detached task that cancellation does not stop).
+        // 7. Cancelling the removal task mid-move is harmless: it does NOT stop the move (the detached task finishes), and the
+        // outcome is still journaled with the flags cleared. This asserts that behavior; it is not cancellation support.
         let m4 = AppModel(); await scan(m4, root)
         if let a4 = node(m4, "a.bin") {
             m4.trashItem = { url in Thread.sleep(forTimeInterval: 0.3); return url }
             m4.proposeRemoval(of: a4); m4.confirmRemoval()
             m4.removalTask?.cancel()
             let settled = await m4.settleRemoval()
-            Check.expect("async-removal-cancelled-task-still-journals-and-clears-flags", settled && m4.lastRemoved.count == 1 && !m4.removalInFlight && !m4.mutationPending && m4.commitsInFlight == 0, "settled=\(settled) journal=\(m4.lastRemoved.count) inFlight=\(m4.removalInFlight) pending=\(m4.mutationPending)")
-        } else { Check.expect("async-removal-cancelled-task-still-journals-and-clears-flags", false, "fixture") }
+            Check.expect("async-removal-cancel-is-harmless-and-does-not-stop-the-move", settled && m4.lastRemoved.count == 1 && !m4.removalInFlight && !m4.mutationPending && m4.commitsInFlight == 0, "settled=\(settled) journal=\(m4.lastRemoved.count) inFlight=\(m4.removalInFlight) pending=\(m4.mutationPending)")
+        } else { Check.expect("async-removal-cancel-is-harmless-and-does-not-stop-the-move", false, "fixture") }
     }
 }
 
