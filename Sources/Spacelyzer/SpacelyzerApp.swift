@@ -21,6 +21,7 @@ struct SpacelyzerApp: App {
                         while model.scanning || model.tree == nil { try? await Task.sleep(nanoseconds: 500_000_000) }
                         try? await Task.sleep(nanoseconds: 3_000_000_000)
                         await PublicationRegression.run(tree: model.tree!)
+                        await CommitOrderingRegression.run()
                         await ZeroMatchRegression.run()
                         MainStall.shared.start()
                         func mark(_ n: Int) {
@@ -1015,6 +1016,182 @@ private actor PublicationBarrier {
     }
 }
 
+
+/// Forced-order checks for removal commits. Source-only until a Mac build runs them (not compiled in the Linux sandbox).
+@MainActor private enum CommitOrderingRegression {
+    private static func fixture() -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("spz-commit-\(UUID().uuidString)")
+        let fm = FileManager.default
+        try? fm.createDirectory(at: root.appendingPathComponent("dirA/sub"), withIntermediateDirectories: true)
+        try? fm.createDirectory(at: root.appendingPathComponent("dirB"), withIntermediateDirectories: true)
+        for (n, k) in [("dirA/sub/deep.txt", 40_000), ("dirA/a.txt", 20_000), ("dirB/b.txt", 30_000), ("c.txt", 10_000)] {
+            fm.createFile(atPath: root.appendingPathComponent(n).path, contents: Data(repeating: 1, count: k))
+        }
+        return root
+    }
+    private static func scanned(_ root: URL) async -> AppModel? {
+        let m = AppModel(); m.scan(root.path)
+        _ = await PublicationRegression.wait { !m.scanning && m.tree != nil && !m.filterPending }
+        m.trashItem = { $0 }   // no real file is touched
+        return m.tree == nil ? nil : m
+    }
+    private static func node(_ m: AppModel, _ name: String) -> UInt32? {
+        guard let t = m.tree else { return nil }
+        return (0..<UInt32(t.nodeCount)).first { t.name($0) == name }
+    }
+    private static func remove(_ m: AppModel, _ id: UInt32) { m.pendingRemoval = id; m.confirmRemoval() }
+
+    static func run() async {
+        let root = fixture(); defer { try? FileManager.default.removeItem(at: root) }
+        // 1. A filter publication parked BEFORE a removal commit must not publish old numbers afterwards.
+        if let m = await scanned(root), let big = node(m, "dirA") {
+            let barrier = PublicationBarrier("filter")
+            m.beforePublish = { await barrier.before($0, $1, $2) }
+            m.afterPublish = { await barrier.after($0, $1, $2) }
+            m.filterExt = "txt"
+            let parked = await PublicationRegression.wait { await barrier.parked() }
+            remove(m, big)
+            _ = await PublicationRegression.wait { m.commitsInFlight == 0 }
+            await barrier.release()
+            _ = await PublicationRegression.wait { await barrier.completed() }
+            _ = await PublicationRegression.wait { !m.destructiveBlocked && !m.filterPending }
+            let ok = parked && m.tree.map { t in m.activeFilter.map { $0.version == t.version } ?? true } == true
+            Check.expect("commit-order-filter-parked-before-forget-late-publish-rejected", ok, "parked=\(parked) filterVersion=\(m.activeFilter?.version ?? 0) tree=\(m.tree?.version ?? 0)")
+        } else { Check.expect("commit-order-filter-parked-before-forget-late-publish-rejected", false, "fixture") }
+
+        // 2. A scan that started before a removal and publishes after it is marked out of date.
+        if let m = await scanned(root), let id = node(m, "dirB") {
+            let barrier = PublicationBarrier("scan-completion")
+            m.beforePublish = { await barrier.before($0, $1, $2) }
+            m.afterPublish = { await barrier.after($0, $1, $2) }
+            m.scan(root.path)
+            let parked = await PublicationRegression.wait { await barrier.parked() }
+            remove(m, id)
+            await barrier.release()
+            _ = await PublicationRegression.wait { await barrier.completed() }
+            Check.expect("commit-order-scan-started-before-fs-change-marked-out-of-date", parked && m.viewOutOfDate && m.destructiveBlocked, "parked=\(parked) outOfDate=\(m.viewOutOfDate)")
+        } else { Check.expect("commit-order-scan-started-before-fs-change-marked-out-of-date", false, "fixture") }
+
+        // 3. The tree is replaced while a commit is in flight: the outcome is marked, not dropped.
+        // 4. Undo during a commit is refused and leaves the journal.
+        if let m = await scanned(root), let id = node(m, "dirB") {
+            let gate = PublicationBarrier("commit")
+            m.beforeCommit = { await gate.before("commit", 0, UUID()) }
+            remove(m, id)
+            let held = await PublicationRegression.wait { await gate.parked() }
+            m.undoRemoval()
+            let refused = (m.removalMessage ?? "").contains("still being applied") && !m.lastRemoved.isEmpty
+            let other = await ScanSession(root: root.path, excludes: [])?.run { _ in }
+            let old = m.tree
+            m.tree = other
+            await gate.release()
+            _ = await PublicationRegression.wait { m.commitsInFlight == 0 }
+            Check.expect("commit-order-undo-during-commit-refused", held && refused)
+            Check.expect("commit-order-replaced-tree-outcome-marked-not-dropped", old !== other && m.viewOutOfDate && (m.removalMessage ?? "").contains("Rescan"), "outOfDate=\(m.viewOutOfDate)")
+        } else { Check.expect("commit-order-undo-during-commit-refused", false, "fixture"); Check.expect("commit-order-replaced-tree-outcome-marked-not-dropped", false, "fixture") }
+
+        // 5. Selected, expanded and displayed root inside a removed subtree are reset with the new numbers.
+        if let m = await scanned(root), let dir = node(m, "dirA"), let sub = node(m, "sub"), let deep = node(m, "deep.txt") {
+            m.expanded = [dir, sub]; m.selected = deep; m.displayedRoot = sub
+            remove(m, dir)
+            _ = await PublicationRegression.wait { m.commitsInFlight == 0 && !m.destructiveBlocked }
+            Check.expect("commit-order-subtree-state-reset", m.selected == nil && !m.expanded.contains(dir) && !m.expanded.contains(sub) && m.displayedRoot == 0, "selected=\(String(describing: m.selected)) root=\(m.displayedRoot)")
+        } else { Check.expect("commit-order-subtree-state-reset", false, "fixture") }
+
+        // 6. An engine failure after a successful filesystem move marks the view out of date and blocks further removals.
+        if let m = await scanned(root), let id = node(m, "c.txt") {
+            var overrideCalls = 0
+            var trashCalls: [String] = []
+            m.trashItem = { trashCalls.append($0.lastPathComponent); return $0 }
+            m.commitOverride = { _, _ in overrideCalls += 1; return .mutationFailed }
+            remove(m, id)
+            _ = await PublicationRegression.wait { m.commitsInFlight == 0 }
+            let blocked = m.destructiveBlocked
+            m.removalMessage = nil
+            if let other = node(m, "b.txt") { remove(m, other) }
+            // The second removal must be refused before any filesystem call or engine commit.
+            let journalIsFirst = m.lastRemoved.first?.original.lastPathComponent == "c.txt"
+            Check.expect("commit-order-failure-after-fs-success-persistent-out-of-date", m.viewOutOfDate && blocked && journalIsFirst && trashCalls == ["c.txt"] && overrideCalls == 1, "outOfDate=\(m.viewOutOfDate) trash=\(trashCalls) commits=\(overrideCalls)")
+        } else { Check.expect("commit-order-failure-after-fs-success-persistent-out-of-date", false, "fixture") }
+
+        // 7. Surfaces: after a commit, navigation stays blocked until outline, derived AND the layout (treemap tab) all reach
+        // the required version; viewOutOfDate blocks removal but not navigation of the old consistent tree.
+        if let m = await scanned(root), let id = node(m, "dirB") {
+            m.tab = .treemap
+            remove(m, id)
+            _ = await PublicationRegression.wait { m.commitsInFlight == 0 && m.outlineVersion == m.tree?.version && m.derivedVersion == m.tree?.version }
+            let layoutLagging = m.navigationBlocked && m.requiredVersion != nil          // layout has not published yet
+            m.layoutPublished(m.tree?.version ?? 0)
+            let released = !m.navigationBlocked && m.requiredVersion == nil
+            m.markOutOfDate("test")
+            let destructive = m.destructiveBlocked && !m.navigationBlocked                 // out of date: remove blocked, navigate allowed
+            Check.expect("commit-order-all-surfaces-required-before-unblock", layoutLagging && released && destructive, "lag=\(layoutLagging) released=\(released) destructive=\(destructive)")
+        } else { Check.expect("commit-order-all-surfaces-required-before-unblock", false, "fixture") }
+
+        // 8. Cells never mix versions: the shown size and node details are published with the rows (same count, same version).
+        if let m = await scanned(root) {
+            m.filterExt = "txt"
+            _ = await PublicationRegression.wait { !m.filterPending && m.outlineVersion == m.tree?.version && m.outlineShown.count == m.outlineRows.count }
+            let aligned = m.outlineInfos.count == m.outlineRows.count && m.outlineShown.count == m.outlineRows.count && m.outlineVersion == m.activeFilter?.version
+            let sameAsFilter = zip(m.outlineRows, m.outlineShown).allSatisfy { r, sh in m.activeFilter?.size(r.node) == sh }
+            Check.expect("commit-order-cell-values-published-with-rows", aligned && sameAsFilter)
+        } else { Check.expect("commit-order-cell-values-published-with-rows", false, "fixture") }
+
+        // 9. Scan replacement clears published totals instead of showing the old total with the new count.
+        if let m = await scanned(root) {
+            let barrier = PublicationBarrier("scan-completion")
+            m.beforePublish = { await barrier.before($0, $1, $2) }
+            m.afterPublish = { await barrier.after($0, $1, $2) }
+            let oldTotal = m.publishedTotalBytes
+            m.scan(root.path)
+            _ = await PublicationRegression.wait { await barrier.parked() }
+            await barrier.release()
+            _ = await PublicationRegression.wait { await barrier.completed() }
+            // Checked in the same turn the new tree was published: the old total must be gone until the new outline lands.
+            Check.expect("commit-order-scan-replacement-clears-published-totals", oldTotal != nil && (m.publishedTotalBytes == nil || m.outlineVersion == m.tree?.version), "total=\(String(describing: m.publishedTotalBytes))")
+        } else { Check.expect("commit-order-scan-replacement-clears-published-totals", false, "fixture") }
+
+        // 10. BUSY retries are bounded: the sixth request for the same inputs marks the view out of date; nothing fires meanwhile.
+        // 8a. Layout not renderable (view removed / size <= 1) must not hold actions forever. Model-level only; a real view driver is still owed.
+        if let m = await scanned(root), let id = node(m, "dirB") {
+            m.tab = .treemap
+            remove(m, id)
+            _ = await PublicationRegression.wait { m.commitsInFlight == 0 && m.outlineVersion == m.tree?.version && m.derivedVersion == m.tree?.version }
+            let held = m.requiredVersion != nil
+            m.layoutNotRenderable()
+            Check.expect("commit-order-layout-not-renderable-releases", held && m.requiredVersion == nil && !m.navigationBlocked, "held=\(held) req=\(String(describing: m.requiredVersion))")
+        } else { Check.expect("commit-order-layout-not-renderable-releases", false, "fixture") }
+        // 8b. Deadline must not livelock: repeated publishes of an already-current surface do not reset it; a layout that
+        // never lands ends in an explicit out-of-date error after the forced refresh and one extension.
+        if let m = await scanned(root), let id = node(m, "dirB") {
+            m.pendingStepNanos = 100_000_000
+            m.tab = .treemap
+            remove(m, id)
+            _ = await PublicationRegression.wait { m.outlineVersion == m.tree?.version && m.derivedVersion == m.tree?.version }
+            for _ in 0..<20 { m.surfaceCheck(); try? await Task.sleep(nanoseconds: 30_000_000) }   // same-surface repeats, ~600 ms > 2 steps
+            let ended = await PublicationRegression.wait { m.viewOutOfDate }
+            Check.expect("commit-order-deadline-terminal-when-layout-missing", ended && m.requiredVersion == nil, "outOfDate=\(m.viewOutOfDate)")
+        } else { Check.expect("commit-order-deadline-terminal-when-layout-missing", false, "fixture") }
+        // 9. Retry keys include the table version: after a removal (new version) the keys change, so old retries do not eat the new budget.
+        if let m = await scanned(root), let id = node(m, "dirB") {
+            let k0 = (m.outlineInputKey, m.derivedInputKey, m.filterInputKey, m.layoutInputKey(root: 0, size: CGSize(width: 100, height: 100)))
+            remove(m, id)
+            _ = await PublicationRegression.wait { m.commitsInFlight == 0 }
+            let k1 = (m.outlineInputKey, m.derivedInputKey, m.filterInputKey, m.layoutInputKey(root: 0, size: CGSize(width: 100, height: 100)))
+            Check.expect("commit-order-retry-keys-change-with-version", k0.0 != k1.0 && k0.1 != k1.1 && k0.2 != k1.2 && k0.3 != k1.3, "keys changed (model-level)")
+        } else { Check.expect("commit-order-retry-keys-change-with-version", false, "fixture") }
+
+        if let m = await scanned(root) {
+            var fired = 0
+            for _ in 0..<6 { m.retryBusy("bound-test", inputs: 1) { fired += 1 } }
+            Check.expect("commit-order-busy-retry-bounded", m.viewOutOfDate && fired == 0, "outOfDate=\(m.viewOutOfDate) fired=\(fired)")
+            m.viewOutOfDate = false
+            m.retryBusy("bound-test", inputs: 2) { fired += 1 }       // new inputs reset the count
+            _ = await PublicationRegression.wait { fired == 1 }
+            Check.expect("commit-order-busy-retry-new-inputs-reset", fired == 1 && !m.viewOutOfDate)
+        } else { Check.expect("commit-order-busy-retry-bounded", false, "fixture") }
+    }
+}
 
 /// Isolated native API guards, not actual keyboard-shortcut or IME proof.
 @MainActor private enum BoundaryGuardRegression {
