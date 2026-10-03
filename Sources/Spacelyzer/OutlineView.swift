@@ -389,9 +389,11 @@ private struct OutlineTable: NSViewRepresentable {
                 .withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
             cell.icon.image = NSImage(systemSymbolName: Self.icon(info), accessibilityDescription: nil)
             cell.icon.contentTintColor = isDir ? .controlAccentColor : .secondaryLabelColor
-            let nm = tree.name(r.node)
+            // A caught engine panic makes the legacy name/path reads untrustworthy (they fall back to blank): show it, not a blank.
+            let poisoned = model.enginePoisoned
+            let nm = poisoned ? "Unavailable" : tree.name(r.node)
             cell.name.stringValue = nm
-            let path = tree.path(r.node)
+            let path = poisoned ? "" : tree.path(r.node)
             cell.name.toolTip = path
             cell.toolTip = path
             cell.contrastOverride = Perf.on ? model.demoIncreaseContrast : nil
