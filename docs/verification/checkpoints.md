@@ -188,3 +188,13 @@ The native refusing target's becomeFirstResponder callback ran once and returned
 Ungated shared-runner performance: first-click latency2,096.7 ms/stall2,093.2 ms, later click37.6 ms, typing/filter-arrow stall316.2 ms; 40-arrow p50/p95/max35.7/74.6/117.3 ms; hover0.7 ms. The broad existing sample window does not isolate the first-click cause. Green assertions do not establish smoothness, a performance pass or a regression.
 
 [Run110](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37092313793) · [Artifact](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37092313793/artifacts/11263786545). Release publication was skipped. Compact footer, actual modified-key/native-fallback execution, actual IME, VoiceOver/OS AX, forced treemap interleavings, full E2 and real hardware remain open.
+
+## Run111: natural compact footer and incomplete causal alignment
+
+October 3, 2026, source `df05490`: both jobs succeeded, Swift/UI steps passed, 81 distinct PASS / 0 FAIL, 40 captured states, release skipped. Independent review inspected image40 and accepted the new compact presentation on a separate700pt CI surface. Production ViewThatFits chose Partial/filter1file/1,234,567unreadable labels naturally and kept all readable without overlap. The main app minimum was not changed. Warnings remain presentation simulations; actual help/AX and real permission/cancel accounting are not proved. The qualified FDA welcome copy is source-reviewed, not visually exercised here.
+
+One cold sampler ran at5ms for8s against process17506/version0.1.111, raw header03:55:06.825UTC, exit0. The03:58:06UTC completion entry records the later workflow wait, not actual sampling end. Buffered stages show roughly202ms between event-post and tablemouseDown, about2.65ms in native mouseDown and about0.2ms callback/model assignment. Wall-clock/uptime overlap is unbridged, and the aggregate sample has no per-stack chronology; no frame can be assigned to the pre-table gap or the earlier2s stall. The fixed12s summary caption is wrong for this8s report and is not interval evidence.
+
+Shared-runner/profiler-perturbed measurements: cold260.9ms/stall252.8ms, later42.3ms; 40-arrow p50/p95/max18.6/187.4/787.6ms and stall789.6ms; typing/filter-arrow stall162.1ms; hover0.6ms. Mixed latency does not establish an overall performance improvement or regression. Existing synchronous logs also perturb the path.
+
+[Run111](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37094174463) · [Artifact](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37094174463/artifacts/11264190402). No native-graph, actual shortcut/fallback, IME/AX/VoiceOver, forced treemap-interleaving, full E2 or release acceptance.
