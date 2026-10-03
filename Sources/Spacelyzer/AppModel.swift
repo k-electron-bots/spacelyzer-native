@@ -122,6 +122,7 @@ final class AppModel {
 
     /// Filtering runs in Rust off the main thread, debounced; the UI keeps the last result until the new one lands.
     func scheduleFilter(immediate: Bool = false) {
+        if !immediate { retryDone("filter") }
         filterTask?.cancel()
         filterGeneration &+= 1
         let generation = filterGeneration, barrier = beforePublish, completed = afterPublish
@@ -152,7 +153,7 @@ final class AppModel {
                     guard let self, self.filterGeneration == generation, self.tree === tree else { return }
                     if failure == .busy {
                         // Pending stays true (visible), retries are bounded and keyed; the retry re-reads the current filter inputs.
-                        self.retryBusy("filter") { [weak self] in self?.scheduleFilter(immediate: true) }
+                        self.retryBusy("filter", inputs: self.filterInputKey) { [weak self] in self?.scheduleFilter(immediate: true) }
                     } else {
                         self.filterPending = false
                         self.markOutOfDate("The filter could not run (\(failure)). The list may be out of date. Rescan, or try again.")
@@ -170,6 +171,7 @@ final class AppModel {
                     return
                 }
                 self.retryDone("filter")
+                self.acceptedFilterVersions.append(r?.version ?? 0); if self.acceptedFilterVersions.count > 64 { self.acceptedFilterVersions.removeFirst() }
                 self.activeFilter = r
                 self.filterPending = false
                 self.filterMillis = ms
@@ -197,7 +199,7 @@ final class AppModel {
             guard case .success(let snap) = result else {
                 await MainActor.run {
                     guard let self, self.derivedGeneration == generation, self.tree === tree else { return }
-                    self.handleReadFailure(result.failureStatus, key: "derived") { [weak self] in self?.refreshDerived() }
+                    self.handleReadFailure(result.failureStatus, key: "derived", inputs: self.derivedInputKey) { [weak self] in self?.refreshDerived() }
                 }
                 return
             }
@@ -208,8 +210,10 @@ final class AppModel {
                 // Full key: tree identity, generation, and the table version the data was read at (the engine's stamp).
                 guard let self, !Task.isCancelled, self.derivedGeneration == generation, self.tree === tree, snap.version == tree.version, flt == nil || flt!.version == snap.version else { return }
                 self.retryDone("derived")
+                self.derivedVersion = snap.version
                 self.largestIDs = snap.ids
                 self.kindRows = snap.kinds.filter { $0.items > 0 }.sorted { $0.bytes > $1.bytes }.map { KindRow(category: $0.category, bytes: $0.bytes, items: $0.items) }
+                self.surfaceCheck()
             }
             await completed?("derived", generation, publication)
         }
@@ -217,9 +221,19 @@ final class AppModel {
     var outlineRows: [SpzRow] = []
     /// Node details for each row, same index and same table version as outlineRows.
     var outlineInfos: [NodeInfo] = []
+    /// Size shown per row (filter size or node size), from the same snapshot as the rows. Cells never read the filter live.
+    var outlineShown: [UInt64] = []
     var outlineRootSize: UInt64 = 0
-    var publishedTotalBytes: UInt64 = 0
-    var publishedVersion: UInt64 = 0
+    /// nil until an outline has been published for the current tree (the footer shows a placeholder, never an old total).
+    var publishedTotalBytes: UInt64?
+    /// Table versions of each published surface. Actions unlock only when every live surface is at the required version.
+    var outlineVersion: UInt64?
+    var derivedVersion: UInt64?
+    var layoutVersion: UInt64?
+    /// Bumped to ask the treemap view to relayout (bounded BUSY retry); the view observes it, no escaping view copy.
+    var layoutRetryToken = 0
+    /// Versions of filter results that were accepted for publication (recent 64). Lets tests prove an old result was never accepted.
+    var acceptedFilterVersions: [UInt64] = []
     /// node -> row index, built off the main thread with the rows so selection lookups are O(1).
     var outlineIndex: [UInt32: Int] = [:]
     /// Bumps whenever outlineRows is replaced, so the table reloads exactly once per change.
@@ -244,7 +258,7 @@ final class AppModel {
             guard case .success(let snap) = result else {
                 await MainActor.run {
                     guard let self, self.outlineGeneration == generation, self.tree === tree else { return }
-                    self.handleReadFailure(result.failureStatus, key: "outline") { [weak self] in self?.refreshOutline() }
+                    self.handleReadFailure(result.failureStatus, key: "outline", inputs: self.outlineInputKey) { [weak self] in self?.refreshOutline() }
                 }
                 return
             }
@@ -258,10 +272,10 @@ final class AppModel {
                 self.retryDone("outline")
                 // Rows, per-row details, root size and total are published in ONE main-actor turn from ONE table version,
                 // so cells never mix rows from one version with sizes from another.
-                self.outlineRows = snap.rows; self.outlineInfos = snap.infos; self.outlineRootSize = snap.rootSize
-                self.publishedTotalBytes = snap.totalBytes; self.publishedVersion = snap.version
+                self.outlineRows = snap.rows; self.outlineInfos = snap.infos; self.outlineShown = snap.shown; self.outlineRootSize = snap.rootSize
+                self.publishedTotalBytes = snap.totalBytes; self.outlineVersion = snap.version
                 self.outlineIndex = index; self.outlineRevision += 1; self.outlineMillis = ms
-                if self.refreshAfterCommit && !self.filterPending { self.refreshAfterCommit = false }
+                self.surfaceCheck()
             }
             await completed?("outline", generation, publication)
         }
@@ -289,7 +303,7 @@ final class AppModel {
         refreshOutline()
     }
     var coloring: TreemapColoring = .folder
-    var tab: TrailingTab = .treemap
+    var tab: TrailingTab = .treemap { didSet { surfaceCheck() } }
     var revision = 0   // bumps when the tree changes, so views refresh
     var exclusions: [String] = []
 
@@ -314,23 +328,50 @@ final class AppModel {
     /// The on-screen numbers may not match the disk. Persistent until a scan that provably started after the last change lands.
     var viewOutOfDate = false
     var outOfDateReason: String?
-    /// After a commit, outline, lists and layout are being recomputed on the new table. Rows shown meanwhile are the
-    /// previous publication, so reveal, drill and removal are disabled until it lands.
-    var refreshAfterCommit = false
-    /// Every action that reads or acts on shown rows is disabled unless this is false.
-    var actionsBlocked: Bool { viewOutOfDate || mutationPending || commitsInFlight > 0 || refreshAfterCommit }
-    /// Text for a persistent banner (nil when coherent).
+    /// Table version every surface (outline, derived lists, and the layout while the treemap tab is shown) must reach after
+    /// a commit before rows can be trusted again. nil when no commit is waiting on surfaces.
+    var requiredVersion: UInt64?
+    /// Rows on screen belong to the previous publication, or a change is in flight: navigation AND removal are paused.
+    var rowsPending: Bool { mutationPending || commitsInFlight > 0 || requiredVersion != nil }
+    /// Removal and undo need fresh numbers as well: also blocked while the view is out of date (until a rescan).
+    var destructiveBlocked: Bool { rowsPending || viewOutOfDate }
+    /// Drill and reveal act on shown rows. An out-of-date but self-consistent old tree may still be navigated.
+    var navigationBlocked: Bool { rowsPending }
     var coherenceNotice: String? {
-        if viewOutOfDate { return outOfDateReason ?? "The numbers on screen may be out of date. Rescan." }
-        if mutationPending || commitsInFlight > 0 || refreshAfterCommit { return "Updating after a change. Selecting, opening and removing are paused for a moment." }
+        if rowsPending { return "Updating after a change. Opening folders and removing items are paused for a moment." }
+        if viewOutOfDate { return (outOfDateReason ?? "The numbers on screen may be out of date.") + " Removal is disabled until you rescan." }
         return nil
     }
-    func markOutOfDate(_ reason: String) { viewOutOfDate = true; outOfDateReason = reason; refreshAfterCommit = false }
+    func markOutOfDate(_ reason: String) { viewOutOfDate = true; outOfDateReason = reason; requiredVersion = nil }
+    /// Called after each surface publishes. Clears the pending requirement only when ALL live surfaces are current.
+    func surfaceCheck() {
+        guard let r = requiredVersion else { return }
+        if outlineVersion == r, derivedVersion == r, (tab != .treemap || layoutVersion == r) { requiredVersion = nil }
+    }
+    func layoutPublished(_ version: UInt64) { layoutVersion = version; surfaceCheck() }
+
+    private var filterInputKey: Int {
+        var h = Hasher(); h.combine(filterText); h.combine(filterKind?.rawValue); h.combine(filterMinMB); h.combine(filterMaxMB)
+        h.combine(filterModifiedDays); h.combine(filterExt); h.combine(tree.map(ObjectIdentifier.init)); return h.finalize()
+    }
+    private var derivedInputKey: Int { var h = Hasher(); h.combine(activeFilter.map(ObjectIdentifier.init)); h.combine(tree.map(ObjectIdentifier.init)); return h.finalize() }
+    private var outlineInputKey: Int {
+        var h = Hasher(); h.combine(displayedRoot); h.combine(expanded); h.combine(activeFilter.map(ObjectIdentifier.init))
+        h.combine(outlineSort.rawValue); h.combine(tree.map(ObjectIdentifier.init)); return h.finalize()
+    }
+    /// Key for the layout retry: the treemap inputs (root, size, filter, tree), supplied by the view.
+    func layoutInputKey(root: UInt32, size: CGSize) -> Int {
+        var h = Hasher(); h.combine(root); h.combine(size.width); h.combine(size.height); h.combine(activeFilter.map(ObjectIdentifier.init)); h.combine(tree.map(ObjectIdentifier.init)); return h.finalize()
+    }
 
     // MARK: bounded, keyed retry for BUSY (one slot per key; the action re-reads CURRENT inputs, never captured old ones)
     private var retryTasks: [String: Task<Void, Never>] = [:]
     private var retryAttempts: [String: Int] = [:]
-    func retryBusy(_ key: String, _ action: @escaping @MainActor () -> Void) {
+    private var retryGeneration: [String: Int] = [:]
+    /// One slot per key. `inputs` identifies WHAT is being retried (a hash of the current inputs, not a request counter that
+    /// every retry bumps): new inputs reset the attempt count, the same inputs keep counting toward the bound.
+    func retryBusy(_ key: String, inputs generation: Int, _ action: @escaping @MainActor () -> Void) {
+        if retryGeneration[key] != generation { retryAttempts[key] = nil; retryGeneration[key] = generation }
         let n = (retryAttempts[key] ?? 0) + 1
         retryTasks[key]?.cancel()
         guard n <= 5 else {
@@ -403,12 +444,12 @@ final class AppModel {
                 // Node ids are only valid for one tree: drop every id-keyed cache in the same main-actor turn
                 // so no view can index the new tree with ids from the old one.
                 filterTask?.cancel(); derivedTask?.cancel(); outlineTask?.cancel()
-                outlineRows = []; outlineInfos = []; outlineIndex = [:]; outlineRevision += 1; expanded = []; largestIDs = []; kindRows = []; activeFilter = nil
+                outlineRows = []; outlineInfos = []; outlineShown = []; outlineIndex = [:]; outlineRevision += 1; expanded = []; largestIDs = []; kindRows = []; activeFilter = nil
+                outlineRootSize = 0; publishedTotalBytes = nil; outlineVersion = nil; derivedVersion = nil; layoutVersion = nil; requiredVersion = nil
                 pendingRemoval = nil
                 if fsEpoch != epochAtStart || mutatingAtStart || mutationPending || commitsInFlight > 0 {
                     markOutOfDate("Files were moved while this scan ran, so it may not match the disk. Rescan.")
                 } else { viewOutOfDate = false; outOfDateReason = nil }
-                refreshAfterCommit = false
                 tree = t
                 displayedRoot = 0
                 selected = nil
@@ -425,7 +466,7 @@ final class AppModel {
     func cancel() { session?.cancel() }
 
     func drill(into id: UInt32) {
-        guard let tree, !actionsBlocked else { return }
+        guard let tree, !navigationBlocked else { return }
         let n = tree.info(id)
         guard n.kind == .directory, n.childCount > 0 else { return }
         displayedRoot = id
@@ -480,7 +521,7 @@ final class AppModel {
             removalMessage = "\(path) is protected and cannot be removed from here."
             return
         }
-        if actionsBlocked { removalMessage = coherenceNotice ?? "Please wait for the previous change to finish."; return }
+        if destructiveBlocked { removalMessage = coherenceNotice ?? "Please wait for the previous change to finish."; return }
         let url = URL(fileURLWithPath: path)
         let size = tree.info(id).size
         mutationPending = true      // reserved before the write, so no scan or undo can slip in between
@@ -513,11 +554,11 @@ final class AppModel {
     /// Publishes one removal on the main actor. Ordered after the filesystem outcome; every outcome is reported.
     /// One place for non-OK read statuses: BUSY is retried (bounded, keyed); STALE with a filter means the filter is old and
     /// is recomputed; anything else marks the view out of date. Nothing is shown as empty.
-    private func handleReadFailure(_ status: EngineStatus?, key: String, retry: @escaping @MainActor () -> Void) {
+    private func handleReadFailure(_ status: EngineStatus?, key: String, inputs: Int, retry: @escaping @MainActor () -> Void) {
         switch status {
-        case .busy: retryBusy(key, retry)
+        case .busy: retryBusy(key, inputs: inputs, retry)
         case .stale:
-            if !filterPending { if filterIsActive { scheduleFilter(immediate: true) } else { retryBusy(key, retry) } }
+            if !filterPending { if filterIsActive { scheduleFilter(immediate: true) } else { retryBusy(key, inputs: inputs, retry) } }
         default: markOutOfDate("The list could not be refreshed (\(status.map { "\($0)" } ?? "unknown")). Rescan.")
         }
     }
@@ -540,8 +581,8 @@ final class AppModel {
             if tree.isInside(displayedRoot, subtreeOf: id) { displayedRoot = tree.info(id).parent ?? 0 }
             revision += 1
             // Rows and the layout on screen are the PREVIOUS publication until the recomputed ones land (no old row is
-            // erased early), so actions that read them stay disabled (actionsBlocked via refreshAfterCommit).
-            refreshAfterCommit = true
+            // erased early), so actions that read them stay disabled until every surface reaches requiredVersion.
+            requiredVersion = tree.version   // comparison target only; surfaces carry the engine's own stamps
             if filterIsActive {
                 // The active filter result belongs to the old table (STALE). Recompute without the typing debounce;
                 // its landing refreshes outline, derived lists and layout.
@@ -562,7 +603,7 @@ final class AppModel {
     func undoRemoval() {
         // Undo is a filesystem change too. It is refused while a removal is mid-flight, and afterwards the view is
         // persistently out of date: the engine cannot add a subtree back, only a rescan can.
-        if mutationPending || commitsInFlight > 0 { removalMessage = "The previous change is still being applied. Try again in a moment."; return }
+        if mutationPending || commitsInFlight > 0 || requiredVersion != nil { removalMessage = "The previous change is still being applied. Try again in a moment."; return }
         mutationPending = true
         defer { mutationPending = false }
         for item in lastRemoved {
@@ -579,7 +620,7 @@ final class AppModel {
     }
 
     func reveal(_ id: UInt32) {
-        guard let tree, !actionsBlocked else { return }
+        guard let tree, !navigationBlocked else { return }
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: tree.path(id))])
     }
 }

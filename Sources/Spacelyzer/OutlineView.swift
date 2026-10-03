@@ -375,12 +375,12 @@ private struct OutlineTable: NSViewRepresentable {
         func numberOfRows(in tableView: NSTableView) -> Int { model.outlineRows.count }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-            guard let tree, row < model.outlineRows.count, row < model.outlineInfos.count else { return nil }
+            guard let tree, row < model.outlineRows.count, row < model.outlineInfos.count, row < model.outlineShown.count else { return nil }
             let id = NSUserInterfaceItemIdentifier("cell")
             let cell = (tableView.makeView(withIdentifier: id, owner: nil) as? OutlineCell) ?? { let c = OutlineCell(frame: .zero); c.identifier = id; return c }()
             let r = model.outlineRows[row]
             let info = model.outlineInfos[row]   // published with the rows, never read live from the engine
-            let shown = model.activeFilter?.size(r.node) ?? info.size
+            let shown = row < model.outlineShown.count ? model.outlineShown[row] : info.size   // same snapshot as the row, no live filter read
             let isDir = info.kind == .directory
             let expanded = model.expanded.contains(r.node)
             cell.depth = Int(r.depth)

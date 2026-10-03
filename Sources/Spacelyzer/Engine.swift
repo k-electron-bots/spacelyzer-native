@@ -39,6 +39,8 @@ let noNode = UInt32.max
 struct OutlineSnapshot {
     var rows: [SpzRow]
     var infos: [NodeInfo]
+    /// Size shown for each row: the filter's size when a filter is active, else the node size. Same snapshot as the rows.
+    var shown: [UInt64]
     var version: UInt64
     var rootSize: UInt64
     var totalBytes: UInt64
@@ -187,34 +189,27 @@ final class Tree: @unchecked Sendable {
                                   kind: NodeKind(rawValue: n.kind) ?? .file, category: FileCategory(rawValue: Int(n.category)) ?? .other), v))
     }
 
-    /// Outline rows plus the per-row node details, root size and tree total, all read at ONE table version.
-    /// A commit landing between the calls restarts the read (bounded). STALE with a filter means the filter result is old.
+    /// Rows, per-row details, shown sizes, root size and tree total from ONE engine capture and ONE table version.
+    /// A commit between the count call and the fill call returns STALE and the read restarts (bounded). Every status is
+    /// preserved: BUSY stays BUSY, INVALID stays INVALID, STALE with a filter means the filter result is old.
     func outlineSnapshot(root: UInt32, expanded: Set<UInt32>, filter: FilterResult?, sort: OutlineSort) -> Result<OutlineSnapshot, EngineStatus> {
         let ex = Array(expanded)
         for _ in 0..<3 {
-            var v: UInt64 = 0, st: Int32 = -1
-            let n = Int(ex.withUnsafeBufferPointer { e in spz_outline_rows_status(ptr, root, e.baseAddress, UInt32(e.count), filter?.ptr, sort.rawValue, nil, 0, UInt64.max, &v, &st) })
+            var v: UInt64 = 0, rs: UInt64 = 0, tot: UInt64 = 0, st: Int32 = -1
+            let n = Int(ex.withUnsafeBufferPointer { e in spz_outline_snapshot_status(ptr, root, e.baseAddress, UInt32(e.count), filter?.ptr, sort.rawValue, nil, nil, 0, UInt64.max, &v, &rs, &tot, &st) })
             guard st == 0 else { return .failure(EngineStatus(raw: st)) }
             var rows = [SpzRow](repeating: SpzRow(node: 0, depth: 0), count: n)
-            var v2: UInt64 = 0, st2: Int32 = -1
-            let got = Int(ex.withUnsafeBufferPointer { e in rows.withUnsafeMutableBufferPointer { b in
-                spz_outline_rows_status(ptr, root, e.baseAddress, UInt32(e.count), filter?.ptr, sort.rawValue, b.baseAddress, UInt32(n), v, &v2, &st2) } })
+            var raw = [SpzRowInfo](repeating: SpzRowInfo(node: SpzNode(size: 0, own_bytes: 0, parent: noNode, child_count: 0, first_child: noNode, kind: 0, category: 0), shown: 0), count: n)
+            var v2: UInt64 = 0, rs2: UInt64 = 0, tot2: UInt64 = 0, st2: Int32 = -1
+            let got = Int(ex.withUnsafeBufferPointer { e in rows.withUnsafeMutableBufferPointer { rb in raw.withUnsafeMutableBufferPointer { ib in
+                spz_outline_snapshot_status(ptr, root, e.baseAddress, UInt32(e.count), filter?.ptr, sort.rawValue, rb.baseAddress, ib.baseAddress, UInt32(n), v, &v2, &rs2, &tot2, &st2) } } })
             if st2 == 1 && filter == nil { continue }          // a commit landed between count and fill: read again
-            guard st2 == 0, got == n else { return .failure(st2 == 0 ? .internalError : EngineStatus(raw: st2)) }
-            var infos: [NodeInfo] = []; infos.reserveCapacity(n)
-            var restart = false
-            for r in rows {
-                switch nodeChecked(r.node, expected: v) {
-                case .success(let x): infos.append(x.info)
-                case .failure(.stale) where filter == nil: restart = true
-                case .failure(let e): return .failure(e)
-                }
-                if restart { break }
-            }
-            if restart { continue }
-            guard case .success(let rootInfo) = nodeChecked(root, expected: v), case .success(let top) = nodeChecked(0, expected: v) else { continue }
-            return .success(OutlineSnapshot(rows: rows, infos: infos, version: v,
-                                            rootSize: filter?.size(root) ?? rootInfo.info.size, totalBytes: top.info.size))
+            guard st2 == 0 else { return .failure(EngineStatus(raw: st2)) }
+            guard got == n, v2 == v else { return .failure(.internalError) }
+            let infos = raw.map { r in NodeInfo(size: r.node.size, ownBytes: r.node.own_bytes, parent: r.node.parent == noNode ? nil : r.node.parent,
+                                              childCount: Int(r.node.child_count), firstChild: r.node.first_child,
+                                              kind: NodeKind(rawValue: r.node.kind) ?? .file, category: FileCategory(rawValue: Int(r.node.category)) ?? .other) }
+            return .success(OutlineSnapshot(rows: rows, infos: infos, shown: raw.map { $0.shown }, version: v, rootSize: rs2, totalBytes: tot2))
         }
         return .failure(.stale)
     }
