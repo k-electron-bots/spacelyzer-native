@@ -81,6 +81,12 @@ fn failpoint(n: u8) {
 pub fn ffi_failpoint() { failpoint(9) }
 #[cfg(not(feature = "failpoints"))]
 pub fn ffi_failpoint() {}
+/// Failpoint 10: a panic on a scan worker (rayon pool) thread, inside walk().
+#[cfg(feature = "failpoints")]
+pub fn worker_failpoint() { failpoint(10) }
+#[cfg(not(feature = "failpoints"))]
+#[inline(always)]
+pub fn worker_failpoint() {}
 #[cfg(not(feature = "failpoints"))]
 #[inline(always)]
 fn failpoint(_n: u8) {}

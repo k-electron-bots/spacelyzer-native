@@ -439,3 +439,30 @@ fn largest_sized_filtered_uses_the_filter_and_stale_handle_writes_nothing() {
         spz_filter_free(h);
     }
 }
+
+#[cfg(feature = "failpoints")]
+#[test]
+fn panic_on_a_rayon_worker_becomes_a_failed_scan_and_bumps_the_counter() {
+    use spacelyzer_engine::ffi::*;
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    spacelyzer_engine::tree::set_failpoint(0);
+    let dir = std::env::temp_dir().join("spz_worker_panic");
+    let _ = std::fs::remove_dir_all(&dir);
+    for d in ["a", "b", "c", "d"] { std::fs::create_dir_all(dir.join(d)).unwrap(); std::fs::write(dir.join(d).join("f"), b"x").unwrap(); }
+    let root = std::ffi::CString::new(dir.to_str().unwrap()).unwrap();
+    let before = spz_engine_panic_count();
+    spacelyzer_engine::tree::set_failpoint(10);   // fires on the first walk() to run, whichever thread runs it
+    let sc = unsafe { spz_scan_start(root.as_ptr(), std::ptr::null()) };
+    assert!(!sc.is_null());
+    let t0 = std::time::Instant::now();
+    let p = loop {
+        let p = unsafe { spz_scan_progress(sc) };
+        if p.finished == 1 || t0.elapsed().as_secs() > 10 { break p; }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert_eq!((p.finished, p.failed), (1, 1), "a worker panic must end as a failed scan, not a hang or a clean tree");
+    assert!(unsafe { spz_scan_take_tree(sc) }.is_null(), "no partial tree is handed out");
+    assert!(spz_engine_panic_count() > before, "counter must move so the app latches");
+    unsafe { spz_scan_free(sc); }
+    let _ = std::fs::remove_dir_all(&dir);
+}

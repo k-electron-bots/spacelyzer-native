@@ -135,6 +135,7 @@ fn is_package(name: &str) -> bool {
 }
 
 fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
+    crate::tree::worker_failpoint();
     if ctx.progress.cancel.load(Ordering::Relaxed) {
         return DirNode { ents: vec![], total: 0 };
     }
