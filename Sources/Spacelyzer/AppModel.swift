@@ -28,6 +28,15 @@ final class AppModel {
             table.nextKeyView = field
         }
     }
+    /// Resolve pending geometric recalculation before reconnecting the native boundary.
+    /// Called by the product's Tab handling, never by the demo to repair a test.
+    func prepareOutlineFocusTraversal() {
+        guard let table = outlineKeyView, let field = nameFilterKeyView,
+              table.window != nil, table.window === field.window else { return }
+        _ = table.nextValidKeyView
+        _ = field.previousValidKeyView
+        connectOutlineFocusLoop()
+    }
     var tree: Tree?
     var rootPath: String = ""
     var scanning = false
