@@ -198,3 +198,21 @@ One cold sampler ran at5ms for8s against process17506/version0.1.111, raw header
 Shared-runner/profiler-perturbed measurements: cold260.9ms/stall252.8ms, later42.3ms; 40-arrow p50/p95/max18.6/187.4/787.6ms and stall789.6ms; typing/filter-arrow stall162.1ms; hover0.6ms. Mixed latency does not establish an overall performance improvement or regression. Existing synchronous logs also perturb the path.
 
 [Run111](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37094174463) · [Artifact](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37094174463/artifacts/11264190402). No native-graph, actual shortcut/fallback, IME/AX/VoiceOver, forced treemap-interleaving, full E2 or release acceptance.
+
+## Run112: clock bridge reveals missing cold-input coverage
+
+October3, source `913c339`: Swift/Linux passed, strict UI gate failed,81PASS/1FAIL of82,40states. Only the new footer native full-label retrieval failed: the actual NSHostingView root had empty label/help and no children,1node,truncatedfalse. This is a limitation of the tested in-process retrieval path, not proof of external AX absence. Pixel40 compact simultaneous-warning presentation remained readable.
+
+Clock PID12802 matches report/version0.1.112 and command8s5ms. Paired trace wall04:39:31.035530/.035531UTC precedes rawheader04:39:31.319UTC by283.47ms; selection wait115.5ms/nativecallback95.1ms finished before that header. Launch acknowledgement does not establish cold-input sampling coverage. Subprocess end04:39:40exit0 includes report/symbol processing; workflow wait04:42:34 is later. Cold115.5/stall111.1ms, warm34.5; arrowp50/p95/max34.2/296.8/553.5ms,stall548.1,typing261.8,hover0.5. Mixed ungated results, no overall win or causal stack assignment.
+
+[Run112](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37096739621) · [Artifact](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37096739621/artifacts/11264119652). Release skipped.
+
+## Run113: actual mounted resize and still-failing native footer retrieval
+
+October3, source `63cc6e9`: Swift/Linux passed, strict UI gate failed,83PASS/1FAIL of84,42states. The footer full-label check still failed: root-window title plus one empty ax-child,2uniqueobjects,truncatedfalse. Discovery included native AX children, view subviews and window content; first-discovery edge logs preserve provenance. This does not prove external client reachability or absence; actual help/VoiceOver/tooltip remains open.
+
+Two actual mounted TreemapView checks passed. Old UUIDD8DFD154 generation2/request520x300 was held after real Rust layout. New UUIDF0E50A98 generation3/request680x360 published layout0xb0e422240/tree0xb0bc1b660. The old main-actor callback then ran and rejected, preserving new exact identity,size and Rust center-hit/chosen-node correspondence. Actual pixels41/42 were inspected: large.txt/small.bin fill the mounted680x360 surface with readable labels, unchanged after old release. Independent bounded resize acceptance confirmed. One resize interleaving only, not gesture dispatch, filter/tree/unmount or universal race proof.
+
+Explicit1s async profiler-start settling changed idle/arm conditions, without input/product prewarming. PID21499/version0.1.113/command8s5ms match; rawheader05:11:36.179UTC precedes tracewall05:11:37.072619/.072620 by893.619ms. Actual subprocessend05:11:45exit0 includes processing, workflow wait05:14:41 is not end. Temporal bracket aligns the input with this requested sample arm, not per-stack chronology. Diagnostic selectionwait821.2/stall821.9ms; nativecallback120.845ms, outlineupdate470.492ms. Arrowp50/p95/max18.9/140.9/429.2ms/stall137,typing111.9,warm24.5,hover1.3. No cold comparison, overall improvement or causal frame claim.
+
+[Run113](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37098640048) · [Artifact](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37098640048/artifacts/11265437495). Release skipped; real hardware/full E2 and wider accessibility/interaction gates remain open.
