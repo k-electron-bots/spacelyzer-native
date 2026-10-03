@@ -84,4 +84,7 @@ uint64_t spz_layout_version(const SpzLayout *l);
 typedef struct SpzRowInfo { SpzNode node; uint64_t shown; } SpzRowInfo;
 uint32_t spz_outline_snapshot_status(const SpzTree *t, uint32_t root, const uint32_t *expanded, uint32_t n_expanded, const SpzFilterResult *h, uint32_t sort, SpzRow *rows_out, SpzRowInfo *infos_out, uint32_t cap, uint64_t expected, uint64_t *version, uint64_t *root_shown, uint64_t *total_bytes, int32_t *status);
 
+/* Sticky count of panics caught at any FFI boundary. A legacy call returning 0/null/empty may be a caught-panic fallback; compare before/after a publication. */
+uint64_t spz_engine_panic_count(void);
+
 #endif

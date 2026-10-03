@@ -63,8 +63,15 @@ fn cstr(p: *const c_char) -> String {
 /// Panic guard for the legacy entry points (no status out-parameter): a panic comes back as the fallback value.
 /// Only effective with panic = "unwind" (set in the workspace release profile); with abort it could not catch.
 unsafe fn legacy<R>(fallback: R, f: impl FnOnce() -> R) -> R {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { crate::tree::ffi_failpoint(); f() })).unwrap_or(fallback)
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { crate::tree::ffi_failpoint(); f() })).unwrap_or_else(|_| { PANICS.fetch_add(1, Ordering::SeqCst); fallback })
 }
+
+/// Sticky count of panics caught at any FFI boundary since process start. A legacy call that returns its
+/// fallback (0, null, empty) after a panic is indistinguishable from valid data, so callers must compare this
+/// counter before and after a publication and treat any change as "result not valid".
+static PANICS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[no_mangle]
+pub extern "C" fn spz_engine_panic_count() -> u64 { PANICS.load(Ordering::SeqCst) }
 
 fn to_c(s: String) -> *mut c_char {
     CString::new(s.replace('\0', "")).unwrap().into_raw()
@@ -97,7 +104,7 @@ unsafe fn spz_scan_start_impl(root: *const c_char, excludes: *const c_char) -> *
 
 #[no_mangle]
 pub unsafe extern "C" fn spz_scan_progress(s: *const Scan) -> SpzProgress {
-    legacy(SpzProgress { items: 0, bytes: 0, finished: 0, failed: 0 }, || spz_scan_progress_impl(s))
+    legacy(SpzProgress { items: 0, bytes: 0, finished: 1, failed: 1 }, || spz_scan_progress_impl(s))
 }
 
 unsafe fn spz_scan_progress_impl(s: *const Scan) -> SpzProgress {
@@ -677,7 +684,7 @@ unsafe fn snapshot<'a>(t: *const Tree, h: *const FilterHandle, expected: u64, st
 }
 
 unsafe fn guarded<R>(status: *mut i32, fallback: R, f: impl FnOnce() -> R) -> R {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { crate::tree::ffi_failpoint(); f() })).unwrap_or_else(|_| { if !status.is_null() { *status = 5; } fallback })
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { crate::tree::ffi_failpoint(); f() })).unwrap_or_else(|_| { PANICS.fetch_add(1, Ordering::SeqCst); if !status.is_null() { *status = 5; } fallback })
 }
 
 /// Rows of the outline. Returns the total row count; writes up to `cap` rows when `out` is not null.

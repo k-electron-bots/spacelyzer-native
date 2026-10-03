@@ -376,3 +376,35 @@ fn largest_sized_returns_sizes_from_the_same_capture_as_the_ids() {
         assert!(c3 == 0 && st == 3);
     }
 }
+
+#[cfg(feature = "failpoints")]
+#[test]
+fn caught_legacy_panic_bumps_sticky_counter_and_scan_progress_reports_failed() {
+    use spacelyzer_engine::ffi::*;
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let before = spz_engine_panic_count();
+    spacelyzer_engine::tree::set_failpoint(9);
+    spacelyzer_engine::tree::set_failpoint(0);
+    // real panic path: live scan handle, panic injected inside the legacy guard before the body runs
+    let dir = std::env::temp_dir().join("spz_progress_seam"); std::fs::create_dir_all(&dir).unwrap();
+    let root = std::ffi::CString::new(dir.to_str().unwrap()).unwrap();
+    let sc = unsafe { spz_scan_start(root.as_ptr(), std::ptr::null()) };
+    assert!(!sc.is_null());
+    spacelyzer_engine::tree::set_failpoint(9);
+    let p = unsafe { spz_scan_progress(sc) };
+    assert_eq!((p.finished, p.failed), (1, 1), "caught panic must read as finished+failed, not as still running");
+    assert!(spz_engine_panic_count() > before);
+    unsafe { spz_scan_free(sc); }
+    let t = Tree::synthetic(10); let tp: *const Tree = &t;
+    spacelyzer_engine::tree::set_failpoint(9);
+    let n = unsafe { spz_tree_node_count(tp) };
+    assert_eq!(n, 0, "fallback value after caught panic");
+    assert!(spz_engine_panic_count() > before, "panic must be visible, not silent");
+    // status path counts too
+    let mid = spz_engine_panic_count();
+    spacelyzer_engine::tree::set_failpoint(9);
+    let mut st = -1; let mut v = 0u64; let mut node: SpzNode = unsafe { std::mem::zeroed() };
+    unsafe { spz_tree_node_status(tp, 1, &mut node, u64::MAX, &mut v, &mut st); }
+    assert_eq!(st, 5);
+    assert!(spz_engine_panic_count() > mid);
+}
