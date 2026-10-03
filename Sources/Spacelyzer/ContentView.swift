@@ -296,6 +296,12 @@ private struct NameFilterField: NSViewRepresentable {
             externalRevision = model.externalFilterTextRevision
             resetRevision = model.filterResetRevision
         }
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            guard commandSelector == #selector(NSResponder.insertBacktab(_:)) else { return false }
+            model.prepareOutlineFocusTraversal()
+            control.window?.selectPreviousKeyView(control)
+            return true
+        }
         func controlTextDidChange(_ notification: Notification) {
             guard !programmaticChange, let field = notification.object as? NSTextField else { return }
             model.setFilterTextFromEditor(field.stringValue)
