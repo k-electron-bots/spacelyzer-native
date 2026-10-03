@@ -588,12 +588,15 @@ struct SpacelyzerApp: App {
                                 let tableBackwardMoved = tableBackwardEligible && (tableBackwardResponder === tableBackward || (tableBackwardResponder as? NSTextView)?.delegate === tableBackward)
                                 Perf.log("rest-chain-table-backward eligible=\(tableBackwardEligible) actual=\(tableBackwardMoved) intended=\(String(describing: tableBackward)) responder=\(String(describing: tableBackwardResponder))")
                                 Check.expect("e2-shift-tab-returns-to-outline", focusMoved && fieldForwardMoved && returnedToField && reverseChain && returnedToTable && tableBackwardMoved && activeSetup && NSApp.isActive && window.isKeyWindow && model.selected == selectedBefore, "fieldForward=\(fieldForwardMoved) returnedField=\(returnedToField) returnedTable=\(returnedToTable) tableBackward=\(tableBackwardMoved)")
+                                // Restore the outline explicitly after testing its upstream route.
+                                let escapeSetup = window.makeFirstResponder(table) && window.firstResponder === table
+                                Perf.log("escape-start-outline=\(escapeSetup) responder=\(String(describing: window.firstResponder))")
                                 // Escape must not invoke a destructive action or clear the current tree.
                                 let treeBefore = model.tree, removedBefore = model.lastRemoved.count
                                 let pendingBefore = model.pendingRemoval, messageBefore = model.removalMessage
                                 DemoInput.key(53, chars: String(UnicodeScalar(27)!))
                                 try? await Task.sleep(nanoseconds: 500_000_000)
-                                Check.expect("e2-escape-preserves-tree-and-removal-state", model.tree === treeBefore && model.lastRemoved.count == removedBefore && pendingBefore == nil && messageBefore == nil && model.pendingRemoval == pendingBefore && model.removalMessage == messageBefore)
+                                Check.expect("e2-escape-preserves-tree-and-removal-state", escapeSetup && model.tree === treeBefore && model.lastRemoved.count == removedBefore && pendingBefore == nil && messageBefore == nil && model.pendingRemoval == pendingBefore && model.removalMessage == messageBefore)
                                 window.makeFirstResponder(table)
                                 Check.expect("e2-outline-single-selection-policy", !table.allowsMultipleSelection && table.selectedRowIndexes.count <= 1)
                                 // Text editor parity through native editing APIs; IME simulation is not real keyboard IME proof.
