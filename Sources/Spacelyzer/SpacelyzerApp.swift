@@ -1093,6 +1093,21 @@ private actor PublicationBarrier {
             Check.expect("async-undo-attempted-after-commit-lands", !msg.contains("still being applied") && msg.contains("already exists") && m2.lastRemoved.count == 1, "message=\(msg)")
         } else { Check.expect("async-undo-refused-while-commit-parked", false, "fixture") }
 
+        // 5b. The engine commit for a removal answers BUSY or STALE (an old commit losing to a newer table, or a busy writer):
+        // the file move already happened, so the view must go persistently out of date with an honest message, the journal
+        // keeps the entry (undo still possible), and no flag stays stuck.
+        for (label, status) in [("busy", EngineStatus.busy), ("stale", EngineStatus.stale)] {
+            let m5 = AppModel(); await scan(m5, root)
+            if let b5 = node(m5, "b.bin") {
+                m5.trashItem = { url in url }
+                m5.commitOverride = { _, _ in status }
+                m5.proposeRemoval(of: b5); m5.confirmRemoval()
+                let settled5 = await m5.settleRemoval()
+                let msg5 = m5.removalMessage ?? ""
+                Check.expect("async-removal-commit-\(label)-marks-out-of-date-and-keeps-journal", settled5 && m5.viewOutOfDate && msg5.contains("could not be updated") && m5.lastRemoved.count == 1 && !m5.mutationPending && !m5.removalInFlight && m5.commitsInFlight == 0, "settled=\(settled5) outOfDate=\(m5.viewOutOfDate) message=\(msg5)")
+            } else { Check.expect("async-removal-commit-\(label)-marks-out-of-date-and-keeps-journal", false, "fixture") }
+        }
+
         // 6. A real (temp-dir) move, then a rescan replaces the tree, then undo: the file comes back on disk, the journal
         // is cleared, and the view stays marked out of date (the engine cannot add a subtree back).
         let m3 = AppModel(); await scan(m3, root)
@@ -1872,6 +1887,8 @@ final class BusyFlag: @unchecked Sendable {
     static let required: [String] = [
         "async-removal-cancel-is-harmless-and-does-not-stop-the-move",
         "async-removal-failure-leaves-tree-untouched",
+        "async-removal-commit-busy-marks-out-of-date-and-keeps-journal",
+        "async-removal-commit-stale-marks-out-of-date-and-keeps-journal",
         "async-removal-forgets-after-success",
         "async-removal-main-actor-stays-responsive",
         "async-removal-tree-swapped-mid-move-skips-forget",
