@@ -745,6 +745,12 @@ final class AppModel {
         }
     }
 
+    /// Test/driver helper: the removal task AND the engine commit it enqueues have both finished (bounded wait, 5 s).
+    func settleRemoval() async {
+        await removalTask?.value
+        for _ in 0..<500 where commitsInFlight > 0 { try? await Task.sleep(nanoseconds: 10_000_000) }
+    }
+
     func undoRemoval() {
         // Undo is a filesystem change too. It is refused while a removal or commit is mid-flight, and afterwards the view is
         // persistently out of date: the engine cannot add a subtree back, only a rescan can.

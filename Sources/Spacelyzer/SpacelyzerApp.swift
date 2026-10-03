@@ -156,12 +156,12 @@ struct SpacelyzerApp: App {
                         Perf.log("guardB1 propose-no-filter pending=\(model.pendingRemoval != nil) trashCalls=\(calls) expect pending=true calls=0")
                         Check.expect("propose-with-no-filter-opens-confirmation", model.pendingRemoval != nil && calls == 0)
                         model.filterText = "zzzqqq"; await settle()   // filter changes while the confirmation is open
-                        model.confirmRemoval(); await model.removalTask?.value
+                        model.confirmRemoval(); await model.settleRemoval()
                         Perf.log("guardB2 confirm-after-filter-hid-it pending=\(model.pendingRemoval != nil) message=\(model.removalMessage != nil) trashCalls=\(calls) expect pending=false message=true calls=0")
                         Check.expect("confirm-after-filter-hid-it-trashes-nothing", model.pendingRemoval == nil && model.removalMessage != nil && calls == 0)
                         model.removalMessage = nil
                         model.filterText = ""; await settle()
-                        model.proposeRemoval(of: victim); model.confirmRemoval(); await model.removalTask?.value
+                        model.proposeRemoval(of: victim); model.confirmRemoval(); await model.settleRemoval()
                         Perf.log("guardC control-no-filter-mocked trashCalls=\(calls) expect calls=1 proves-mock-wired")
                         Check.expect("control-unfiltered-confirm-reaches-mock-once", calls == 1, "calls=\(calls)")
                         model.removalMessage = nil
@@ -176,7 +176,7 @@ struct SpacelyzerApp: App {
                         model.proposeRemoval(of: victim2)
                         let opened = model.pendingRemoval != nil
                         model.filterText = "lib"
-                        model.confirmRemoval(); await model.removalTask?.value
+                        model.confirmRemoval(); await model.settleRemoval()
                         Check.expect("confirm-right-after-typing-trashes-nothing", opened && model.filterPending && calls == calls0, "opened=\(opened)")
                         model.removalMessage = nil
                         model.filterText = "zzzqqq"; model.selected = model.outlineRows.first?.node ?? 1
@@ -236,12 +236,12 @@ struct SpacelyzerApp: App {
                         if let t = model.tree, let id = (0..<UInt32(t.nodeCount)).first(where: { t.path($0).hasSuffix("/" + (victimPath as NSString).lastPathComponent) }) {
                             model.selected = id
                             model.proposeRemoval(of: id)
-                            model.confirmRemoval(); await model.removalTask?.value
+                            model.confirmRemoval(); await model.settleRemoval()
                             let fm = FileManager.default
                             let trashed = model.lastRemoved.first?.trashed
                             Check.expect("real-trash-moves-only-the-selected-fixture", !fm.fileExists(atPath: victimPath) && fm.fileExists(atPath: keepPath) && model.lastRemoved.count == 1 && (trashed.map { fm.fileExists(atPath: $0.path) } ?? false), "message=\(model.removalMessage ?? "nil")")
                             try? await Task.sleep(nanoseconds: 1_000_000_000); mark(14)
-                            model.undoRemoval(); await model.removalTask?.value
+                            model.undoRemoval(); await model.settleRemoval()
                             Check.expect("undo-restores-the-fixture", fm.fileExists(atPath: victimPath) && !(trashed.map { fm.fileExists(atPath: $0.path) } ?? true))
                         } else {
                             Check.expect("real-trash-moves-only-the-selected-fixture", false, "fixture node not found")
@@ -1020,7 +1020,7 @@ private actor PublicationBarrier {
         let responsive = Date().timeIntervalSince(t) < 0.3 && m.removalInFlight
         m.proposeRemoval(of: b)
         let refused = m.pendingRemoval == nil && m.removalMessage != nil
-        await m.removalTask?.value
+        await m.settleRemoval()
         Check.expect("async-removal-main-actor-stays-responsive", inFlight && responsive && refused && calls == 1 && !m.removalInFlight, "inFlight=\(inFlight) responsive=\(responsive) refused=\(refused) calls=\(calls)")
         Check.expect("async-removal-forgets-after-success", m.tree?.info(0).size == rootSize - t0.info(a).size || m.tree?.info(a).size == 0, "root=\(m.tree?.info(0).size ?? 0)")
 
@@ -1028,7 +1028,7 @@ private actor PublicationBarrier {
         m.removalMessage = nil
         let before = m.tree?.info(0).size, rev = m.revision
         m.trashItem = { _ in throw CocoaError(.fileWriteNoPermission) }
-        m.proposeRemoval(of: b); m.confirmRemoval(); await m.removalTask?.value
+        m.proposeRemoval(of: b); m.confirmRemoval(); await m.settleRemoval()
         Check.expect("async-removal-failure-leaves-tree-untouched", m.tree?.info(0).size == before && m.revision == rev && m.removalMessage != nil && !m.removalInFlight, "message=\(m.removalMessage ?? "nil")")
 
         // 3. A rescan that swaps the tree mid-move must not forget on the new tree.
@@ -1038,17 +1038,17 @@ private actor PublicationBarrier {
         await scan(m, other)
         let swapped = m.tree
         let otherSize = swapped?.info(0).size
-        await m.removalTask?.value
+        await m.settleRemoval()
         Check.expect("async-removal-tree-swapped-mid-move-skips-forget", m.tree === swapped && m.tree?.info(0).size == otherSize && (m.removalMessage ?? "").contains("rescanned"), "message=\(m.removalMessage ?? "nil")")
 
         // 4. Undo: collision keeps the entry; a clean restore clears it.
         m.lastRemoved = [RemovedItem(original: root.appendingPathComponent("b.bin"), trashed: root.appendingPathComponent("gone.bin"), size: 1)]
-        m.undoRemoval(); await m.removalTask?.value
+        m.undoRemoval(); await m.settleRemoval()
         Check.expect("async-undo-collision-keeps-entry-and-overwrites-nothing", m.lastRemoved.count == 1 && (m.removalMessage ?? "").contains("already exists") && !m.removalInFlight)
         let parked = root.appendingPathComponent("parked.bin"), home = root.appendingPathComponent("restored.bin")
         fm.createFile(atPath: parked.path, contents: Data([1]))
         m.lastRemoved = [RemovedItem(original: home, trashed: parked, size: 1)]
-        m.undoRemoval(); await m.removalTask?.value
+        m.undoRemoval(); await m.settleRemoval()
         Check.expect("async-undo-restores-and-clears-entry", fm.fileExists(atPath: home.path) && !fm.fileExists(atPath: parked.path) && m.lastRemoved.isEmpty)
     }
 }
@@ -1081,7 +1081,7 @@ private actor PublicationBarrier {
         m.removalMessage = nil
         m.proposeRemoval(of: zero)
         let opened = m.pendingRemoval == zero && calls == 0
-        m.confirmRemoval(); await m.removalTask?.value
+        m.confirmRemoval(); await m.settleRemoval()
         Check.expect("zero-match-selection-removal-policy", visible && hiddenBlocked && opened && calls == 1, "visible=\(visible) hiddenBlocked=\(hiddenBlocked) opened=\(opened) mockedCalls=\(calls)")
     }
 }
