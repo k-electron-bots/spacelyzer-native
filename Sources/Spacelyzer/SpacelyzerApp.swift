@@ -730,6 +730,10 @@ struct SpacelyzerApp: App {
                             let footerSurfaceValid = footerWindow.isVisible && footerWindow.isKeyWindow && abs(footerHost.bounds.width - 700) < 1
                             Check.expect("footer-constrained-production-surface-ready", footerSurfaceValid && model.activeFilter?.totalCount == 1 && model.demoFooterUnreadable == 1_234_567 && model.demoFooterPartial == true, "pixels40 decide natural ViewThatFits branch/accounting; separate700ptsurface not mainwindowbelowminimum; warning simulation")
                             Perf.log("footer-constrained surfaceWidth=\(footerHost.bounds.width) filterCount=\(model.activeFilter?.totalCount ?? 0) unreadable=\(model.demoFooterUnreadable ?? 0) partial=\(model.demoFooterPartial == true)")
+                            try? "\(ProcessInfo.processInfo.processIdentifier)".write(toFile: "/tmp/spz-footer-ax-ready", atomically: true, encoding: .utf8)
+                            let axDeadline = Date().addingTimeInterval(20)
+                            while !FileManager.default.fileExists(atPath: "/tmp/spz-footer-ax-ack") && Date() < axDeadline { try? await Task.sleep(nanoseconds: 20_000_000) }
+                            Perf.log("footer-ax external-diagnostic acknowledged=\(FileManager.default.fileExists(atPath: "/tmp/spz-footer-ax-ack"))")
                             let footerAX = FooterAXEvidence.inspect(footerWindow)
                             let fullLabel = footerAX.entries.contains { $0.label.contains("Stopped early, partial accounting") && $0.label.contains("Filter:") && $0.label.contains("1 file") && $0.label.contains("1,234,567 locations not readable") && $0.label.contains("Scanned in") }
                             Check.expect("footer-native-accessibility-full-details", fullLabel, "native accessor from mixed AX/view discovery only; not external client reachability; truncated=\(footerAX.truncated); missing label inconclusive when truncated; not VoiceOver/client announcements or tooltip proof")
