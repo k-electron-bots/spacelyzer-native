@@ -109,6 +109,7 @@ struct StatusBar: View {
                 summary(compact: false).fixedSize(horizontal: true, vertical: false)
                 summary(compact: true).fixedSize(horizontal: true, vertical: false)
             }
+            .accessibilityElement(children: .combine)
             .help(fullDetails).accessibilityLabel(fullDetails)
             .layoutPriority(1)
         }
