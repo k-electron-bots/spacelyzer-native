@@ -2,38 +2,33 @@
 
 See what is using your disk. A native macOS disk-space analyzer with a SwiftUI interface and a Rust engine.
 
-![Spacelyzer outline and treemap](docs/images/overview.png)
+![Outline and treemap showing a scan of Library](docs/images/overview.png)
 
-## What it does
+## Explore before you remove
 
-- Explore folders in an outline, treemap, file-type summary or list of the 200 largest files.
-- Filter by name, extension, kind, size and modified date across the views.
-- Scan off the UI thread, report allocated bytes and count hard-linked files once.
-- Move a selected item to Trash after a full-path confirmation, with undo. Protected paths and hidden or pending-filter selections are refused.
+- Follow folders in the outline or compare their size in the treemap.
+- Switch to Kinds for a file-type breakdown, or Largest for the 200 largest matching files.
+- Combine name, extension, kind, size and modified-date filters across every view.
+- Review the full path before moving an item to Trash. Hidden, protected and pending-filter selections are refused; removal has undo.
 
-Scans stay on your Mac. The app has no networking code.
+Sizes describe allocated disk space, with hard links counted once. Scans stay on your Mac; the app has no networking code.
 
-## Try it
+## Try the development build
 
-Requires macOS 14 or later. This is a development build, **not a release-ready app**. Exact Tab/Shift-Tab navigation is still failing verification. Real-Mac, VoiceOver, actual IME and broader accessibility testing remain open.
+Requires macOS 14 or later. [Development DMGs](https://github.com/k-electron-bots/spacelyzer-native/releases) are self-signed, not notarized. This is **not a release-ready app**. Keyboard focus verification is under repair; real-Mac, VoiceOver and actual IME testing remain open.
 
-Development DMGs are in [GitHub releases](https://github.com/k-electron-bots/spacelyzer-native/releases). They are self-signed, not notarized. If macOS blocks the first launch, use **System Settings > Privacy & Security > Open Anyway**. Do not disable Gatekeeper or clear quarantine flags.
+[Install and permissions](docs/guide/install.md) explains first launch and Full Disk Access without weakening macOS security. [Take the visual tour](docs/guide/tour.md) to see the views, filters and safe-removal workflow.
 
-Grant Full Disk Access there if you want to scan protected folders. Without it, the app reports unreadable locations rather than claiming complete coverage.
+The images show a shared CI Mac, not a personal Mac. They illustrate the interface, not exhaustive validation or a speed comparison.
 
-The screenshot above is from a shared CI Mac, not a personal Mac. CI results and timings are scoped evidence, not a claim of exhaustive testing or a speed advantage over other apps.
+## Find the right documentation
 
-## Development and status
-
-```bash
-cargo test --release -p spacelyzer-engine
-cargo build --release && ./target/release/spz scan <path>
-./scripts/build-engine.sh && swift build -c release  # macOS only
-```
-
-- [Roadmap and verification notes](docs/ROADMAP.md)
-- [Engineering details and checkpoint history](docs/README-HISTORY.md)
-- [Index-assisted early-results evaluation](docs/EVAL-index-accelerant.md) - not implemented
-- [Contribution and safety rules](AGENTS.md) · [Dependencies](docs/DEPENDENCIES.md)
+| You want to... | Start here |
+|---|---|
+| Learn the app | [Visual tour](docs/guide/tour.md) · [Space, filters and Trash](docs/guide/space-and-safety.md) |
+| Build or change it | [Development](docs/development/README.md) · [Architecture](docs/development/architecture.md) · [Engine CLI](docs/development/cli.md) |
+| Check what is actually verified | [Verification status](docs/verification/README.md) |
+| Understand priorities | [Roadmap](docs/ROADMAP.md) |
+| Browse all guides and references | [Documentation index](docs/README.md) |
 
 MIT. See [LICENSE](LICENSE).
