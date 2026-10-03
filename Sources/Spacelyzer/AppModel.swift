@@ -31,17 +31,43 @@ final class AppModel {
             table.nextKeyView = field
         }
     }
-    /// Resolve pending geometric recalculation before reconnecting the native boundary.
-    /// Called by the product's Tab handling, never by the demo to repair a test.
-    func prepareOutlineFocusTraversal() {
-        guard let table = outlineKeyView, let field = nameFilterKeyView,
-              table.window != nil, table.window === field.window else { return }
-        if Perf.on { Perf.log("native-tab prepare-raw-before tableNext=\(String(describing: table.nextKeyView)) fieldPrevious=\(String(describing: field.previousKeyView))") }
-        _ = table.nextValidKeyView
-        _ = field.previousValidKeyView
-        if Perf.on { Perf.log("native-tab prepare-valid-before tableNextValid=\(String(describing: table.nextValidKeyView)) fieldPreviousValid=\(String(describing: field.previousValidKeyView))") }
-        connectOutlineFocusLoop()
-        if Perf.on { Perf.log("native-tab prepare-after tableNextRaw=\(String(describing: table.nextKeyView)) tableNextValid=\(String(describing: table.nextValidKeyView)) fieldPreviousRaw=\(String(describing: field.previousKeyView)) fieldPreviousValid=\(String(describing: field.previousValidKeyView))") }
+    enum BoundaryFocusResult: Equatable {
+        case moved, unavailable, restoredUnexpectedLanding, restoreFailed
+        var consumesCommand: Bool { self == .moved || self == .restoreFailed }
+    }
+    /// Explicit product boundary, not a repaired native key-view graph.
+    func focusNameFromOutline(_ source: NSView, modifiers: NSEvent.ModifierFlags) -> BoundaryFocusResult {
+        guard modifiers.intersection([.command, .control, .option, .shift]).isEmpty,
+              source === outlineKeyView, let field = nameFilterKeyView else { return .unavailable }
+        return focusBoundary(from: source, to: field)
+    }
+    func focusOutlineFromName(_ source: NSView, editor: NSTextView, modifiers: NSEvent.ModifierFlags) -> BoundaryFocusResult {
+        guard modifiers.intersection([.command, .control, .option]).isEmpty,
+              source === nameFilterKeyView, editor.delegate === source,
+              source.window?.firstResponder === editor,
+              !editor.hasMarkedText(), let table = outlineKeyView else { return .unavailable }
+        return focusBoundary(from: source, to: table)
+    }
+    private func focusBoundary(from source: NSView, to target: NSView) -> BoundaryFocusResult {
+        guard let window = source.window, window === target.window,
+              window.isKeyWindow, NSApp.isActive, window.isVisible,
+              !source.isHiddenOrHasHiddenAncestor, (source as? NSControl)?.isEnabled != false,
+              !target.isHiddenOrHasHiddenAncestor, target.acceptsFirstResponder,
+              (target as? NSControl)?.isEnabled != false else { return .unavailable }
+        let previous = window.firstResponder
+        guard previous === source || (previous as? NSTextView)?.delegate === source else { return .unavailable }
+        let accepted = window.makeFirstResponder(target)
+        if !accepted && window.firstResponder === previous { return .unavailable }
+        let actual = window.firstResponder
+        let reached = actual === target || (actual as? NSTextView)?.delegate === target
+        if accepted && reached {
+            if Perf.on { Perf.log("native-tab explicit-boundary reached=true") }
+            return .moved
+        }
+        let restored = window.makeFirstResponder(previous) && window.firstResponder === previous
+        if Perf.on { Perf.log("native-tab unexpected-landing restored=\(restored) responder=\(String(describing: window.firstResponder))") }
+        // Do not run native fallback from a wrong landing when restoration failed.
+        return restored ? .restoredUnexpectedLanding : .restoreFailed
     }
     var tree: Tree?
     var rootPath: String = ""
