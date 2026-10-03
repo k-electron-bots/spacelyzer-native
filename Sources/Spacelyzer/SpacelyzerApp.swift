@@ -141,43 +141,43 @@ struct SpacelyzerApp: App {
                         try? await Task.sleep(nanoseconds: 3_000_000_000); mark(10)
                         // Step 11: removal guards, with the Trash operation mocked (nothing on disk is touched).
                         let realTrash = model.trashItem
-                        var calls = 0
-                        model.trashItem = { url in calls += 1; return url }
+                        let calls = CallCounter()
+                        model.trashItem = { url in calls.bump(); return url }
                         func settle() async { try? await Task.sleep(nanoseconds: 1_500_000_000) }
                         let victim: UInt32 = 67
                         model.selected = victim; model.removalMessage = nil; model.pendingRemoval = nil
                         await settle()   // filter 'zzzqqq' is active: victim is outside it
                         model.proposeRemoval(of: victim)
-                        Perf.log("guardA propose-outside-filter pending=\(model.pendingRemoval != nil) message=\(model.removalMessage != nil) trashCalls=\(calls) expect pending=false message=true calls=0")
-                        Check.expect("propose-outside-filter-is-refused", model.pendingRemoval == nil && model.removalMessage != nil && calls == 0)
+                        Perf.log("guardA propose-outside-filter pending=\(model.pendingRemoval != nil) message=\(model.removalMessage != nil) trashCalls=\(calls.value) expect pending=false message=true calls=0")
+                        Check.expect("propose-outside-filter-is-refused", model.pendingRemoval == nil && model.removalMessage != nil && calls.value == 0)
                         model.removalMessage = nil
                         model.filterText = ""; await settle()
                         model.proposeRemoval(of: victim)
-                        Perf.log("guardB1 propose-no-filter pending=\(model.pendingRemoval != nil) trashCalls=\(calls) expect pending=true calls=0")
-                        Check.expect("propose-with-no-filter-opens-confirmation", model.pendingRemoval != nil && calls == 0)
+                        Perf.log("guardB1 propose-no-filter pending=\(model.pendingRemoval != nil) trashCalls=\(calls.value) expect pending=true calls=0")
+                        Check.expect("propose-with-no-filter-opens-confirmation", model.pendingRemoval != nil && calls.value == 0)
                         model.filterText = "zzzqqq"; await settle()   // filter changes while the confirmation is open
                         model.confirmRemoval(); await model.settleRemoval()
-                        Perf.log("guardB2 confirm-after-filter-hid-it pending=\(model.pendingRemoval != nil) message=\(model.removalMessage != nil) trashCalls=\(calls) expect pending=false message=true calls=0")
-                        Check.expect("confirm-after-filter-hid-it-trashes-nothing", model.pendingRemoval == nil && model.removalMessage != nil && calls == 0)
+                        Perf.log("guardB2 confirm-after-filter-hid-it pending=\(model.pendingRemoval != nil) message=\(model.removalMessage != nil) trashCalls=\(calls.value) expect pending=false message=true calls=0")
+                        Check.expect("confirm-after-filter-hid-it-trashes-nothing", model.pendingRemoval == nil && model.removalMessage != nil && calls.value == 0)
                         model.removalMessage = nil
                         model.filterText = ""; await settle()
                         model.proposeRemoval(of: victim); model.confirmRemoval(); await model.settleRemoval()
-                        Perf.log("guardC control-no-filter-mocked trashCalls=\(calls) expect calls=1 proves-mock-wired")
-                        Check.expect("control-unfiltered-confirm-reaches-mock-once", calls == 1, "calls=\(counter.value)")
+                        Perf.log("guardC control-no-filter-mocked trashCalls=\(calls.value) expect calls=1 proves-mock-wired")
+                        Check.expect("control-unfiltered-confirm-reaches-mock-once", calls.value == 1, "calls=\(calls.value)")
                         model.removalMessage = nil
                         // Typing-race checks: act in the same turn as the filter input changes, before its result lands.
-                        let calls0 = calls
+                        let calls0 = calls.value
                         let victim2: UInt32 = 29554
                         model.filterText = ""; await settle(); model.removalMessage = nil
                         model.filterText = "zzzqqq"
                         model.proposeRemoval(of: victim2)
-                        Check.expect("propose-right-after-typing-is-refused", model.filterPending && model.pendingRemoval == nil && calls == calls0, "pending=\(model.filterPending)")
+                        Check.expect("propose-right-after-typing-is-refused", model.filterPending && model.pendingRemoval == nil && calls.value == calls0, "pending=\(model.filterPending)")
                         await settle(); model.filterText = ""; await settle(); model.removalMessage = nil
                         model.proposeRemoval(of: victim2)
                         let opened = model.pendingRemoval != nil
                         model.filterText = "lib"
                         model.confirmRemoval(); await model.settleRemoval()
-                        Check.expect("confirm-right-after-typing-trashes-nothing", opened && model.filterPending && calls == calls0, "opened=\(opened)")
+                        Check.expect("confirm-right-after-typing-trashes-nothing", opened && model.filterPending && calls.value == calls0, "opened=\(opened)")
                         model.removalMessage = nil
                         model.filterText = "zzzqqq"; model.selected = model.outlineRows.first?.node ?? 1
                         await settle(); mark(11)
@@ -1021,7 +1021,7 @@ private actor PublicationBarrier {
         m.proposeRemoval(of: b)
         let refused = m.pendingRemoval == nil && m.removalMessage != nil
         await m.settleRemoval()
-        Check.expect("async-removal-main-actor-stays-responsive", inFlight && responsive && refused && counter.value == 1 && !m.removalInFlight, "inFlight=\(inFlight) responsive=\(responsive) refused=\(refused) calls=\(calls)")
+        Check.expect("async-removal-main-actor-stays-responsive", inFlight && responsive && refused && counter.value == 1 && !m.removalInFlight, "inFlight=\(inFlight) responsive=\(responsive) refused=\(refused) calls=\(counter.value)")
         Check.expect("async-removal-forgets-after-success", m.tree?.info(0).size == rootSize - t0.info(a).size || m.tree?.info(a).size == 0, "root=\(m.tree?.info(0).size ?? 0)")
 
         // 2. A failure with the original still present leaves the tree, epoch and journal untouched and reports THAT error
@@ -1083,18 +1083,18 @@ private actor PublicationBarrier {
         }
         m.filterExt = "pdf"
         while m.filterPending && Date() < deadline { try? await Task.sleep(nanoseconds: 10_000_000) }
-        var calls = 0
-        m.trashItem = { url in calls += 1; return url }
+        let calls = CallCounter()
+        m.trashItem = { url in calls.bump(); return url }
         let visible = m.activeFilter?.count(zero) == 1 && m.activeFilter?.size(zero) == 0 && !m.isOutsideFilter(zero) && m.removalBlockedReason(zero) == nil
         let emptyLayout = tree.layout(root: 0, size: CGSize(width: 400, height: 400), filter: m.activeFilter)
         Check.expect("zero-match-root-count-and-layout-data-contract", m.activeFilter?.count(0) == 1 && emptyLayout.rects.isEmpty && m.activeFilter?.count(hidden) == 0, "rootMatches=\(m.activeFilter?.count(0) ?? 0) rects=\(emptyLayout.rects.count)")
         m.proposeRemoval(of: hidden)
-        let hiddenBlocked = m.pendingRemoval == nil && calls == 0
+        let hiddenBlocked = m.pendingRemoval == nil && calls.value == 0
         m.removalMessage = nil
         m.proposeRemoval(of: zero)
-        let opened = m.pendingRemoval == zero && calls == 0
+        let opened = m.pendingRemoval == zero && calls.value == 0
         m.confirmRemoval(); await m.settleRemoval()
-        Check.expect("zero-match-selection-removal-policy", visible && hiddenBlocked && opened && calls == 1, "visible=\(visible) hiddenBlocked=\(hiddenBlocked) opened=\(opened) mockedCalls=\(calls)")
+        Check.expect("zero-match-selection-removal-policy", visible && hiddenBlocked && opened && calls.value == 1, "visible=\(visible) hiddenBlocked=\(hiddenBlocked) opened=\(opened) mockedCalls=\(calls.value)")
     }
 }
 
