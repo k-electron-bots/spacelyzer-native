@@ -1152,6 +1152,18 @@ private actor PublicationBarrier {
         } else { Check.expect("commit-order-scan-replacement-clears-published-totals", false, "fixture") }
 
         // 10. BUSY retries are bounded: the sixth request for the same inputs marks the view out of date; nothing fires meanwhile.
+        // 8. Layout not renderable (view removed / size <= 1) must not hold actions forever. Model-level only; a real view driver is still owed.
+        if let m = await scanned(root), let id = node(m, "dirB") {
+            m.tab = .treemap
+            remove(m, id)
+            _ = await PublicationRegression.wait { m.commitsInFlight == 0 && m.outlineVersion == m.tree?.version && m.derivedVersion == m.tree?.version }
+            let held = m.requiredVersion != nil
+            m.layoutNotRenderable()
+            Check.expect("commit-order-layout-not-renderable-releases", held && m.requiredVersion == nil && !m.navigationBlocked, "held=\(held) req=\(String(describing: m.requiredVersion))")
+        } else { Check.expect("commit-order-layout-not-renderable-releases", false, "fixture") }
+        // 9. Retry key includes the table version, so an old commit's retries do not consume a newer commit's budget.
+        // (covered by filterInputKey/layoutInputKey hashing tree.version; behavior test needs a real view driver)
+
         if let m = await scanned(root) {
             var fired = 0
             for _ in 0..<6 { m.retryBusy("bound-test", inputs: 1) { fired += 1 } }

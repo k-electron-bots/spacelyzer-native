@@ -247,7 +247,7 @@ final class AppModel {
         outlineTask?.cancel()
         outlineGeneration &+= 1
         let generation = outlineGeneration, barrier = beforePublish, completed = afterPublish
-        guard let tree else { outlineRows = []; outlineIndex = [:]; outlineRevision += 1; return }
+        guard let tree else { outlineRows = []; outlineInfos = []; outlineShown = []; outlineIndex = [:]; outlineRevision += 1; outlineRootSize = 0; publishedTotalBytes = nil; return }
         let root = displayedRoot, ex = expanded, flt = activeFilter, sort = outlineSort
         outlineTask?.cancel()
         outlineTask = Task.detached(priority: .userInitiated) { [weak self] in
@@ -346,13 +346,30 @@ final class AppModel {
     /// Called after each surface publishes. Clears the pending requirement only when ALL live surfaces are current.
     func surfaceCheck() {
         guard let r = requiredVersion else { return }
-        if outlineVersion == r, derivedVersion == r, (tab != .treemap || layoutVersion == r) { requiredVersion = nil }
+        let layoutOK = tab != .treemap || layoutVersion == r || layoutNotRenderableVersion == r
+        if outlineVersion == r, derivedVersion == r, layoutOK { requiredVersion = nil; pendingTimeout?.cancel(); pendingTimeout = nil }
     }
-    func layoutPublished(_ version: UInt64) { layoutVersion = version; surfaceCheck() }
+    /// The treemap reported (keyed by table version) that it cannot render (no tree, size <= 1, or view removed), so it
+    /// does not hold the actions. Cleared when a layout publishes or a new tree arrives.
+    var layoutNotRenderableVersion: UInt64?
+    func layoutNotRenderable() { layoutNotRenderableVersion = tree?.version; surfaceCheck() }
+    /// True when the treemap tab is showing but its layout is not at the current table version (needs an explicit relayout).
+    var layoutNeedsRelayout: Bool { tab == .treemap && tree != nil && layoutVersion != tree?.version }
+    private var pendingTimeout: Task<Void, Never>?
+    /// Bounded wait: if a required surface never lands, surface an explicit error instead of blocking actions forever.
+    func startPendingTimeout(seconds: UInt64 = 10) {
+        pendingTimeout?.cancel()
+        pendingTimeout = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+            guard !Task.isCancelled, let self, self.requiredVersion != nil else { return }
+            self.markOutOfDate("The view did not finish updating after a change. Rescan to continue.")
+        }
+    }
+    func layoutPublished(_ version: UInt64) { layoutVersion = version; layoutNotRenderableVersion = nil; surfaceCheck() }
 
     private var filterInputKey: Int {
         var h = Hasher(); h.combine(filterText); h.combine(filterKind?.rawValue); h.combine(filterMinMB); h.combine(filterMaxMB)
-        h.combine(filterModifiedDays); h.combine(filterExt); h.combine(tree.map(ObjectIdentifier.init)); return h.finalize()
+        h.combine(filterModifiedDays); h.combine(filterExt); h.combine(tree.map(ObjectIdentifier.init)); h.combine(tree?.version); return h.finalize()
     }
     private var derivedInputKey: Int { var h = Hasher(); h.combine(activeFilter.map(ObjectIdentifier.init)); h.combine(tree.map(ObjectIdentifier.init)); return h.finalize() }
     private var outlineInputKey: Int {
@@ -361,7 +378,7 @@ final class AppModel {
     }
     /// Key for the layout retry: the treemap inputs (root, size, filter, tree), supplied by the view.
     func layoutInputKey(root: UInt32, size: CGSize) -> Int {
-        var h = Hasher(); h.combine(root); h.combine(size.width); h.combine(size.height); h.combine(activeFilter.map(ObjectIdentifier.init)); h.combine(tree.map(ObjectIdentifier.init)); return h.finalize()
+        var h = Hasher(); h.combine(root); h.combine(size.width); h.combine(size.height); h.combine(activeFilter.map(ObjectIdentifier.init)); h.combine(tree.map(ObjectIdentifier.init)); h.combine(tree?.version); return h.finalize()
     }
 
     // MARK: bounded, keyed retry for BUSY (one slot per key; the action re-reads CURRENT inputs, never captured old ones)
@@ -445,7 +462,7 @@ final class AppModel {
                 // so no view can index the new tree with ids from the old one.
                 filterTask?.cancel(); derivedTask?.cancel(); outlineTask?.cancel()
                 outlineRows = []; outlineInfos = []; outlineShown = []; outlineIndex = [:]; outlineRevision += 1; expanded = []; largestIDs = []; kindRows = []; activeFilter = nil
-                outlineRootSize = 0; publishedTotalBytes = nil; outlineVersion = nil; derivedVersion = nil; layoutVersion = nil; requiredVersion = nil
+                outlineRootSize = 0; publishedTotalBytes = nil; outlineVersion = nil; derivedVersion = nil; layoutVersion = nil; layoutNotRenderableVersion = nil; requiredVersion = nil
                 pendingRemoval = nil
                 if fsEpoch != epochAtStart || mutatingAtStart || mutationPending || commitsInFlight > 0 {
                     markOutOfDate("Files were moved while this scan ran, so it may not match the disk. Rescan.")
@@ -582,7 +599,7 @@ final class AppModel {
             revision += 1
             // Rows and the layout on screen are the PREVIOUS publication until the recomputed ones land (no old row is
             // erased early), so actions that read them stay disabled until every surface reaches requiredVersion.
-            requiredVersion = tree.version   // comparison target only; surfaces carry the engine's own stamps
+            requiredVersion = tree.version; layoutNotRenderableVersion = nil; startPendingTimeout()   // comparison target only; surfaces carry the engine's own stamps
             if filterIsActive {
                 // The active filter result belongs to the old table (STALE). Recompute without the typing debounce;
                 // its landing refreshes outline, derived lists and layout.
