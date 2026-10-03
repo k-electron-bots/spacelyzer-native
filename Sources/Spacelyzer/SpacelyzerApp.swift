@@ -163,7 +163,7 @@ struct SpacelyzerApp: App {
                         model.filterText = ""; await settle()
                         model.proposeRemoval(of: victim); model.confirmRemoval(); await model.settleRemoval()
                         Perf.log("guardC control-no-filter-mocked trashCalls=\(calls) expect calls=1 proves-mock-wired")
-                        Check.expect("control-unfiltered-confirm-reaches-mock-once", calls == 1, "calls=\(calls)")
+                        Check.expect("control-unfiltered-confirm-reaches-mock-once", calls == 1, "calls=\(counter.value)")
                         model.removalMessage = nil
                         // Typing-race checks: act in the same turn as the filter input changes, before its result lands.
                         let calls0 = calls
@@ -1011,8 +1011,8 @@ private actor PublicationBarrier {
         let rootSize = t0.info(0).size
 
         // 1. The slow filesystem call does not block the main actor, and repeat requests are refused while it runs.
-        var calls = 0
-        m.trashItem = { url in calls += 1; Thread.sleep(forTimeInterval: 0.4); return url }
+        let counter = CallCounter()   // the mock runs on a background task: a plain captured var would be a data race
+        m.trashItem = { url in counter.bump(); Thread.sleep(forTimeInterval: 0.4); return url }
         m.proposeRemoval(of: a); m.confirmRemoval()
         let inFlight = m.removalInFlight
         let t = Date()
@@ -1021,15 +1021,27 @@ private actor PublicationBarrier {
         m.proposeRemoval(of: b)
         let refused = m.pendingRemoval == nil && m.removalMessage != nil
         await m.settleRemoval()
-        Check.expect("async-removal-main-actor-stays-responsive", inFlight && responsive && refused && calls == 1 && !m.removalInFlight, "inFlight=\(inFlight) responsive=\(responsive) refused=\(refused) calls=\(calls)")
+        Check.expect("async-removal-main-actor-stays-responsive", inFlight && responsive && refused && counter.value == 1 && !m.removalInFlight, "inFlight=\(inFlight) responsive=\(responsive) refused=\(refused) calls=\(calls)")
         Check.expect("async-removal-forgets-after-success", m.tree?.info(0).size == rootSize - t0.info(a).size || m.tree?.info(a).size == 0, "root=\(m.tree?.info(0).size ?? 0)")
 
-        // 2. A failure leaves the tree untouched and keeps undo state empty.
+        // 2. A failure with the original still present leaves the tree, epoch and journal untouched and reports THAT error
+        // (a blocked-commit message must not satisfy this check).
         m.removalMessage = nil
-        let before = m.tree?.info(0).size, rev = m.revision
+        let before = m.tree?.info(0).size, rev = m.revision, epoch0 = m.fsEpoch, journal0 = m.lastRemoved.count
         m.trashItem = { _ in throw CocoaError(.fileWriteNoPermission) }
         m.proposeRemoval(of: b); m.confirmRemoval(); await m.settleRemoval()
-        Check.expect("async-removal-failure-leaves-tree-untouched", m.tree?.info(0).size == before && m.revision == rev && m.removalMessage != nil && !m.removalInFlight, "message=\(m.removalMessage ?? "nil")")
+        let msg2 = m.removalMessage ?? ""
+        Check.expect("async-removal-failure-leaves-tree-untouched", m.tree?.info(0).size == before && m.revision == rev && m.fsEpoch == epoch0 && m.lastRemoved.count == journal0 && msg2.hasPrefix("Could not move it to the Trash") && !msg2.contains("no longer at its original") && !m.removalInFlight && !m.mutationPending && !m.viewOutOfDate, "message=\(msg2)")
+
+        // 2b. The Trash reports an error but the original is gone anyway: say so, bump the epoch, mark out of date.
+        m.removalMessage = nil
+        let epoch1 = m.fsEpoch
+        let bURL = root.appendingPathComponent("b.bin")
+        m.trashItem = { url in try? FileManager.default.removeItem(at: url); throw CocoaError(.fileWriteUnknown) }
+        m.proposeRemoval(of: b); m.confirmRemoval(); await m.settleRemoval()
+        Check.expect("async-removal-vanished-original-reported-and-marked-out-of-date", (m.removalMessage ?? "").contains("no longer at its original location") && m.fsEpoch == epoch1 + 1 && m.viewOutOfDate && !FileManager.default.fileExists(atPath: bURL.path), "message=\(m.removalMessage ?? "nil") outOfDate=\(m.viewOutOfDate)")
+        _ = FileManager.default.createFile(atPath: bURL.path, contents: Data(repeating: 2, count: 100_000))
+        m.viewOutOfDate = false; m.outOfDateReason = nil
 
         // 3. A rescan that swaps the tree mid-move must not forget on the new tree.
         m.removalMessage = nil
@@ -1039,7 +1051,7 @@ private actor PublicationBarrier {
         let swapped = m.tree
         let otherSize = swapped?.info(0).size
         await m.settleRemoval()
-        Check.expect("async-removal-tree-swapped-mid-move-skips-forget", m.tree === swapped && m.tree?.info(0).size == otherSize && (m.removalMessage ?? "").contains("rescanned"), "message=\(m.removalMessage ?? "nil")")
+        Check.expect("async-removal-tree-swapped-mid-move-skips-forget", m.tree === swapped && m.tree?.info(0).size == otherSize && (m.removalMessage ?? "").contains("rescanned") && m.fsEpoch > 0 && !m.mutationPending && !m.removalInFlight, "message=\(m.removalMessage ?? "nil") epoch=\(m.fsEpoch) outOfDate=\(m.viewOutOfDate)")
 
         // 4. Undo: collision keeps the entry; a clean restore clears it.
         m.lastRemoved = [RemovedItem(original: root.appendingPathComponent("b.bin"), trashed: root.appendingPathComponent("gone.bin"), size: 1)]
@@ -1725,3 +1737,10 @@ private actor PublicationBarrier {
 
 /// Test-only mutable counter shared with @Sendable publish barriers.
 final class PanicBox: @unchecked Sendable { var value: UInt64; init(_ v: UInt64) { value = v } }
+
+/// Thread-safe call counter for test mocks that run on a background task.
+final class CallCounter: @unchecked Sendable {
+    private let lock = NSLock(); private var n = 0
+    func bump() { lock.lock(); n += 1; lock.unlock() }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return n }
+}
