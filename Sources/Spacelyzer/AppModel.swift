@@ -782,7 +782,9 @@ final class AppModel {
         await removalTask?.value
         for _ in 0..<500 where commitsInFlight > 0 { try? await Task.sleep(nanoseconds: 10_000_000) }
         let ok = commitsInFlight == 0
+        #if SPZ_CI_TESTS
         if !ok { Check.expect("removal-commit-never-settled", false, "commitsInFlight=\(commitsInFlight) mutationPending=\(mutationPending)") }
+        #endif
         return ok
     }
 
