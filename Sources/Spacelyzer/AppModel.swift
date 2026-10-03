@@ -337,11 +337,16 @@ final class AppModel {
     /// Rows on screen belong to the previous publication, or a change is in flight: navigation AND removal are paused.
     var rowsPending: Bool { mutationPending || commitsInFlight > 0 || requiredVersion != nil }
     /// Removal and undo need fresh numbers as well: also blocked while the view is out of date (until a rescan).
-    var destructiveBlocked: Bool { rowsPending || viewOutOfDate }
+    /// Panic baseline for the loaded tree, taken when a scan completes without any caught panic. Any later change is sticky
+    /// (never re-adopted) until the next fully successful rescan or a restart.
+    @ObservationIgnored var panicBaseline: UInt64 = EnginePanics.count
+    var enginePoisoned: Bool { EnginePanics.count != panicBaseline }
+    var destructiveBlocked: Bool { rowsPending || viewOutOfDate || enginePoisoned }
     /// Drill and reveal act on shown rows. An out-of-date but self-consistent old tree may still be navigated.
     var navigationBlocked: Bool { rowsPending }
     var coherenceNotice: String? {
         if rowsPending { return "Updating after a change. Opening folders and removing items are paused for a moment." }
+        if enginePoisoned { return "The engine reported an internal error, so numbers on screen may be wrong. Removal is disabled until you rescan." }
         if viewOutOfDate { return (outOfDateReason ?? "The numbers on screen may be out of date.") + " Removal is disabled until you rescan." }
         return nil
     }
@@ -489,6 +494,8 @@ final class AppModel {
                     markOutOfDate("Files were moved while this scan ran, so it may not match the disk. Rescan.")
                 } else { viewOutOfDate = false; outOfDateReason = nil }
                 tree = t
+                panicBaseline = EnginePanics.count   // reached only when no panic was caught during this scan (ScanSession.run)
+                nodeCache = nil
                 displayedRoot = 0
                 selected = nil
                 revision += 1
@@ -531,21 +538,22 @@ final class AppModel {
     /// pending or the engine answers STALE/BUSY/INVALID: callers show a placeholder, never an old or zero size.
     struct NodeSnapshot { let id: UInt32; let version: UInt64; let info: NodeInfo; let name: String; let path: String }
     @ObservationIgnored private var nodeCache: NodeSnapshot?
+    @ObservationIgnored private var nodeCacheTree: ObjectIdentifier?
     /// Views read this so a bounded retry re-renders them (a view body must not mutate state itself).
     var nodeRetryToken = 0
     func nodeSnapshot(_ id: UInt32) -> NodeSnapshot? {
-        guard let tree, !rowsPending, UInt64(id) < tree.nodeCount else { return nil }
+        guard let tree, !rowsPending, !enginePoisoned, UInt64(id) < tree.nodeCount else { return nil }
         _ = nodeRetryToken
         switch tree.nodeChecked(id) {
         case .success(let r):
             let snap = NodeSnapshot(id: id, version: r.version, info: r.info, name: tree.name(id), path: tree.path(id))
-            nodeCache = snap
+            nodeCache = snap; nodeCacheTree = ObjectIdentifier(tree)
             retryDone("node")
             return snap
         case .failure(let st):
             // BUSY: reuse the last validated snapshot of THIS node only if it is still at the current table version, and
             // retry (bounded, keyed by node and version) so the view re-renders; STALE/INVALID: nothing is shown as a number.
-            let cached = (nodeCache?.id == id && nodeCache?.version == tree.version) ? nodeCache : nil
+            let cached = (nodeCacheTree == ObjectIdentifier(tree) && nodeCache?.id == id && nodeCache?.version == tree.version) ? nodeCache : nil
             if st == .busy || st == .stale {
                 let key = nodeRetryKey(id, tree)
                 Task { @MainActor [weak self] in self?.retryBusy("node", inputs: key) { [weak self] in self?.nodeRetryToken &+= 1 } }
