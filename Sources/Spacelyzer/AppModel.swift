@@ -16,6 +16,9 @@ struct RemovedItem { var original: URL; var trashed: URL; var size: UInt64 }
 final class AppModel {
     /// CI-only contrast branch injection. Product cells ignore it unless SPZ_DEMO is enabled.
     var demoIncreaseContrast: Bool?
+    /// Presentation-only CI overrides, ignored outside SPZ_DEMO/Perf. Never alter tree accounting.
+    var demoFooterUnreadable: Int?
+    var demoFooterPartial: Bool?
     @ObservationIgnored weak var outlineKeyView: NSTableView?
     @ObservationIgnored weak var nameFilterKeyView: NSTextField?
     /// Explicit bridge across the AppKit outline and SwiftUI control hosting boundary.
@@ -33,9 +36,12 @@ final class AppModel {
     func prepareOutlineFocusTraversal() {
         guard let table = outlineKeyView, let field = nameFilterKeyView,
               table.window != nil, table.window === field.window else { return }
+        if Perf.on { Perf.log("native-tab prepare-raw-before tableNext=\(String(describing: table.nextKeyView)) fieldPrevious=\(String(describing: field.previousKeyView))") }
         _ = table.nextValidKeyView
         _ = field.previousValidKeyView
+        if Perf.on { Perf.log("native-tab prepare-valid-before tableNextValid=\(String(describing: table.nextValidKeyView)) fieldPreviousValid=\(String(describing: field.previousValidKeyView))") }
         connectOutlineFocusLoop()
+        if Perf.on { Perf.log("native-tab prepare-after tableNextRaw=\(String(describing: table.nextKeyView)) tableNextValid=\(String(describing: table.nextValidKeyView)) fieldPreviousRaw=\(String(describing: field.previousKeyView)) fieldPreviousValid=\(String(describing: field.previousValidKeyView))") }
     }
     var tree: Tree?
     var rootPath: String = ""
