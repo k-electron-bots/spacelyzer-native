@@ -561,16 +561,23 @@ struct SpacelyzerApp: App {
                                 DemoInput.key(48, chars: "\t")
                                 try? await Task.sleep(nanoseconds: 500_000_000)
                                 let responder = window.firstResponder
-                                let focusMoved = table.nextValidKeyView === intendedControl && activeSetup && tableSetup && NSApp.isActive && window.isKeyWindow && intendedControl != nil && intendedControl !== table && !intendedControl!.isHidden && intendedControl!.window === window && ((intendedControl as? NSControl)?.isEnabled ?? true)
+                                let focusMoved = activeSetup && tableSetup && NSApp.isActive && window.isKeyWindow && intendedControl != nil && intendedControl !== table && !intendedControl!.isHidden && intendedControl!.window === window && ((intendedControl as? NSControl)?.isEnabled ?? true)
                                     && (responder === intendedControl || (responder as? NSTextView)?.delegate === intendedControl)
                                 Check.expect("e2-tab-leaves-outline-without-selection-change", focusMoved && model.selected == selectedBefore, "key=\(window.isKeyWindow) intended=\(String(describing: intendedControl)) responder=\(String(describing: responder)) delegate=\(String(describing: (responder as? NSTextView)?.delegate)) selectedBefore=\(String(describing: selectedBefore)) selectedAfter=\(String(describing: model.selected))")
                                 Perf.log("tab-chain tableNext=\(String(describing: table.nextKeyView)) tableNextValid=\(String(describing: table.nextValidKeyView)) fieldPrevious=\(String(describing: intendedControl?.previousKeyView)) fieldPreviousValid=\(String(describing: intendedControl?.previousValidKeyView)) fieldNext=\(String(describing: intendedControl?.nextKeyView)) tableSetup=\(tableSetup) \(focusDiagnostic("post-tab"))")
+                                DemoInput.key(48, chars: "\t", modifiers: .shift)
+                                try? await Task.sleep(nanoseconds: 300_000_000)
+                                let directReverse = focusMoved && window.firstResponder === table && model.selected == selectedBefore
+                                Check.expect("e2-explicit-backtab-named-boundary", directReverse, "actual event, not native graph repair")
+                                DemoInput.key(48, chars: "\t")
+                                try? await Task.sleep(nanoseconds: 300_000_000)
+                                let secondFieldStart = directReverse && (window.firstResponder === intendedControl || (window.firstResponder as? NSTextView)?.delegate === intendedControl)
                                 let fieldForward = intendedControl?.nextValidKeyView
                                 let fieldForwardEligible = fieldForward != nil && fieldForward !== table && fieldForward !== intendedControl && fieldForward?.window === window
                                 DemoInput.key(48, chars: "\t")
                                 try? await Task.sleep(nanoseconds: 300_000_000)
                                 let fieldForwardResponder = window.firstResponder
-                                let fieldForwardMoved = fieldForwardEligible && (fieldForwardResponder === fieldForward || (fieldForwardResponder as? NSTextView)?.delegate === fieldForward)
+                                let fieldForwardMoved = secondFieldStart && fieldForwardEligible && (fieldForwardResponder === fieldForward || (fieldForwardResponder as? NSTextView)?.delegate === fieldForward)
                                 Perf.log("rest-chain-field-forward eligible=\(fieldForwardEligible) actual=\(fieldForwardMoved) intended=\(String(describing: fieldForward)) responder=\(String(describing: fieldForwardResponder))")
                                 // Return naturally from the downstream view before exercising field backtab.
                                 DemoInput.key(48, chars: "\t", modifiers: .shift)
@@ -587,7 +594,8 @@ struct SpacelyzerApp: App {
                                 let tableBackwardResponder = window.firstResponder
                                 let tableBackwardMoved = tableBackwardEligible && (tableBackwardResponder === tableBackward || (tableBackwardResponder as? NSTextView)?.delegate === tableBackward)
                                 Perf.log("rest-chain-table-backward eligible=\(tableBackwardEligible) actual=\(tableBackwardMoved) intended=\(String(describing: tableBackward)) responder=\(String(describing: tableBackwardResponder))")
-                                Check.expect("e2-shift-tab-returns-to-outline", focusMoved && fieldForwardMoved && returnedToField && reverseChain && returnedToTable && tableBackwardMoved && activeSetup && NSApp.isActive && window.isKeyWindow && model.selected == selectedBefore, "fieldForward=\(fieldForwardMoved) returnedField=\(returnedToField) returnedTable=\(returnedToTable) tableBackward=\(tableBackwardMoved)")
+                                Check.expect("e2-shift-tab-returns-to-outline", focusMoved && fieldForwardMoved && returnedToField && returnedToTable && tableBackwardMoved && activeSetup && NSApp.isActive && window.isKeyWindow && model.selected == selectedBefore, "fieldForward=\(fieldForwardMoved) returnedField=\(returnedToField) returnedTable=\(returnedToTable) tableBackward=\(tableBackwardMoved)")
+                                await BoundaryGuardRegression.run(restoring: window)
                                 // Restore the outline explicitly after testing its upstream route.
                                 let escapeSetup = window.makeFirstResponder(table) && window.firstResponder === table
                                 Perf.log("escape-start-outline=\(escapeSetup) responder=\(String(describing: window.firstResponder))")
@@ -657,6 +665,8 @@ struct SpacelyzerApp: App {
                                     for name in ["name-editor-ordinary-update-preserves-marked-text", "name-editor-already-empty-reset-with-marked-divergence", "name-editor-external-clear-cancels-marked-text", "name-editor-typing-model-sync", "name-editor-external-sync-preserves-cursor", "name-editor-clear-all-while-editing", "name-editor-marked-text-commit-simulation"] { Check.expect(name, false, "active native editor unavailable") }
                                 }
                             } else {
+                                Check.expect("e2-explicit-backtab-named-boundary", false, "table missing")
+                                BoundaryGuardRegression.recordMissing("table missing")
                                 Check.expect("e2-tab-leaves-outline-without-selection-change", false, "table missing")
                                 Check.expect("e2-shift-tab-returns-to-outline", false, "table missing")
                                 Check.expect("e2-escape-preserves-tree-and-removal-state", false, "table missing")
@@ -919,5 +929,90 @@ private actor PublicationBarrier {
         let opened = m.pendingRemoval == zero && calls == 0
         m.confirmRemoval()
         Check.expect("zero-match-selection-removal-policy", visible && hiddenBlocked && opened && calls == 1, "visible=\(visible) hiddenBlocked=\(hiddenBlocked) opened=\(opened) mockedCalls=\(calls)")
+    }
+}
+
+
+/// Isolated native API guards, not actual keyboard-shortcut or IME proof.
+@MainActor private enum BoundaryGuardRegression {
+    private final class RefusingField: NSTextField {
+        override var acceptsFirstResponder: Bool { true }
+        override func becomeFirstResponder() -> Bool { false }
+    }
+    private final class BoundaryWindow: NSWindow {
+        weak var challengedTarget: NSResponder?
+        weak var restoreSource: NSResponder?
+        weak var decoy: NSResponder?
+        var fakeRefusalWithLanding = false
+        var fakeRestoreFailure = false
+        var decoyLandingVerified = false
+        var restoreRefusalObserved = false
+        override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
+            if fakeRefusalWithLanding && responder === challengedTarget {
+                let accepted = super.makeFirstResponder(decoy)
+                decoyLandingVerified = accepted && (firstResponder === decoy || (firstResponder as? NSTextView)?.delegate === decoy) && firstResponder !== restoreSource
+                Perf.log("boundary-sim decoyAccepted=\(accepted) decoyVerified=\(decoyLandingVerified) responder=\(String(describing: firstResponder))")
+                return false
+            }
+            if fakeRestoreFailure && responder === restoreSource { restoreRefusalObserved = true; Perf.log("boundary-sim restore-refused"); return false }
+            return super.makeFirstResponder(responder)
+        }
+    }
+    static let names = ["boundary-helper-missing-target", "boundary-helper-hidden-target", "boundary-helper-disabled-target", "boundary-helper-other-window", "boundary-helper-hidden-source", "boundary-helper-source-not-current", "boundary-helper-modified-tab-refused", "boundary-helper-focus-refusal", "boundary-helper-refusal-changed-restored", "boundary-helper-restore-failure-consumes", "boundary-helper-inactive-source-window"]
+    static func recordMissing(_ reason: String) { for name in names { Check.expect(name, false, reason) } }
+    static func run(restoring product: NSWindow) async {
+        let model = AppModel()
+        let window = BoundaryWindow(contentRect: NSRect(x: -1000, y: -1000, width: 180, height: 120), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close(); product.makeKeyAndOrderFront(nil) }
+        let source = NSTableView(frame: NSRect(x: 0, y: 0, width: 80, height: 80))
+        let target = NSTextField(frame: NSRect(x: 90, y: 0, width: 80, height: 24))
+        window.contentView?.addSubview(source); window.contentView?.addSubview(target)
+        model.outlineKeyView = source; model.nameFilterKeyView = target
+        window.makeKeyAndOrderFront(nil)
+        let setup = window.makeFirstResponder(source) && window.firstResponder === source && window.isKeyWindow && NSApp.isActive
+        @MainActor func currentSource() -> Bool { window.isKeyWindow && NSApp.isActive && window.firstResponder === source }
+        @MainActor func resetSource() -> Bool { window.makeFirstResponder(source) && currentSource() }
+        @MainActor func refuses() -> Bool { model.focusNameFromOutline(source, modifiers: []) == .unavailable && window.firstResponder === source }
+        model.nameFilterKeyView = nil
+        Check.expect("boundary-helper-missing-target", setup && currentSource() && refuses())
+        model.nameFilterKeyView = target; target.isHidden = true
+        Check.expect("boundary-helper-hidden-target", setup && currentSource() && refuses()); target.isHidden = false
+        target.isEnabled = false
+        Check.expect("boundary-helper-disabled-target", setup && currentSource() && refuses()); target.isEnabled = true
+        let foreign = NSWindow(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: false)
+        foreign.isReleasedWhenClosed = false
+        defer { foreign.close() }
+        target.removeFromSuperview(); foreign.contentView?.addSubview(target)
+        Check.expect("boundary-helper-other-window", setup && currentSource() && refuses())
+        target.removeFromSuperview(); window.contentView?.addSubview(target)
+        let beforeHiddenSource = currentSource()
+        source.isHidden = true
+        Check.expect("boundary-helper-hidden-source", setup && beforeHiddenSource && model.focusNameFromOutline(source, modifiers: []) == .unavailable && window.firstResponder === source); source.isHidden = false
+        let unrelatedSetup = window.makeFirstResponder(target)
+        let unrelated = window.firstResponder
+        Check.expect("boundary-helper-source-not-current", setup && unrelatedSetup && unrelated !== source && model.focusNameFromOutline(source, modifiers: []) == .unavailable && window.firstResponder === unrelated)
+        let modifierSetup = resetSource()
+        let modified = [NSEvent.ModifierFlags.command, .control, .option, .shift].allSatisfy { model.focusNameFromOutline(source, modifiers: $0) == .unavailable && window.firstResponder === source }
+        Check.expect("boundary-helper-modified-tab-refused", setup && modifierSetup && modified, "helper only, not actual shortcut handling")
+        let refusal = RefusingField(frame: target.frame); window.contentView?.addSubview(refusal); model.nameFilterKeyView = refusal
+        Check.expect("boundary-helper-focus-refusal", setup && currentSource() && refuses(), "makeFirstResponder refusal/native caller fallback source only")
+        let decoy = NSTextField(frame: NSRect(x: 0, y: 90, width: 70, height: 24)); window.contentView?.addSubview(decoy)
+        model.nameFilterKeyView = target
+        let restoreCaseSetup = resetSource()
+        window.challengedTarget = target; window.restoreSource = source; window.decoy = decoy
+        window.fakeRefusalWithLanding = true
+        let restored = model.focusNameFromOutline(source, modifiers: [])
+        Check.expect("boundary-helper-refusal-changed-restored", setup && restoreCaseSetup && window.decoyLandingVerified && restored == .restoredUnexpectedLanding && window.firstResponder === source, "simulated API false with changed landing")
+        let failureCaseSetup = currentSource()
+        window.decoyLandingVerified = false
+        window.fakeRestoreFailure = true
+        let failedRestore = model.focusNameFromOutline(source, modifiers: [])
+        Check.expect("boundary-helper-restore-failure-consumes", setup && failureCaseSetup && window.decoyLandingVerified && window.restoreRefusalObserved && failedRestore == .restoreFailed && failedRestore.consumesCommand && (window.firstResponder === decoy || (window.firstResponder as? NSTextView)?.delegate === decoy), "simulated API refusal+restore failure")
+        window.fakeRefusalWithLanding = false; window.fakeRestoreFailure = false
+        let beforeInactive = resetSource()
+        product.makeKeyAndOrderFront(nil)
+        Check.expect("boundary-helper-inactive-source-window", setup && beforeInactive && !window.isKeyWindow && model.focusNameFromOutline(source, modifiers: []) == .unavailable && window.firstResponder === source)
+        window.close(); foreign.close(); product.makeKeyAndOrderFront(nil)
     }
 }
