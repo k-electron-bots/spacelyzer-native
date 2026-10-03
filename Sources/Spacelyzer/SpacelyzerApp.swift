@@ -726,6 +726,9 @@ struct SpacelyzerApp: App {
                             let footerSurfaceValid = footerWindow.isVisible && footerWindow.isKeyWindow && abs(footerHost.bounds.width - 700) < 1
                             Check.expect("footer-constrained-production-surface-ready", footerSurfaceValid && model.activeFilter?.totalCount == 1 && model.demoFooterUnreadable == 1_234_567 && model.demoFooterPartial == true, "pixels40 decide natural ViewThatFits branch/accounting; separate700ptsurface not mainwindowbelowminimum; warning simulation")
                             Perf.log("footer-constrained surfaceWidth=\(footerHost.bounds.width) filterCount=\(model.activeFilter?.totalCount ?? 0) unreadable=\(model.demoFooterUnreadable ?? 0) partial=\(model.demoFooterPartial == true)")
+                            let footerAX = FooterAXEvidence.inspect(footerHost)
+                            let fullLabel = footerAX.entries.contains { $0.label.contains("Stopped early, partial accounting") && $0.label.contains("Filter:") && $0.label.contains("1 file") && $0.label.contains("1,234,567 locations not readable") && $0.label.contains("Scanned in") }
+                            Check.expect("footer-native-accessibility-full-details", fullLabel, "native in-process AX tree only; truncated=\(footerAX.truncated); missing label inconclusive when truncated; not VoiceOver/client announcements or tooltip proof")
                             mark(40)
                             footerWindow.close(); priorProductWindow?.makeKeyAndOrderFront(nil)
                             model.demoFooterUnreadable = nil; model.demoFooterPartial = nil
@@ -1094,5 +1097,33 @@ private actor PublicationBarrier {
         product.makeKeyAndOrderFront(nil)
         guardCheck("boundary-helper-inactive-source-window", setup && beforeInactive && !window.isKeyWindow && model.focusNameFromOutline(source, modifiers: []) == .unavailable && window.firstResponder === source)
         window.close(); foreign.close(); product.makeKeyAndOrderFront(nil)
+    }
+}
+
+/// CI-only: read the real hosted native accessibility descendants, never substitute the authored SwiftUI label.
+@MainActor private enum FooterAXEvidence {
+    struct Entry { let label: String; let help: String }
+    struct Result { let entries: [Entry]; let truncated: Bool }
+    static func inspect(_ root: NSView) -> Result {
+        var entries: [Entry] = []
+        var seen = Set<ObjectIdentifier>()
+        var truncated = false
+        func visit(_ object: Any, depth: Int) {
+            guard depth < 24, entries.count < 512 else { truncated = true; return }
+            guard let node = object as? NSAccessibilityProtocol else { return }
+            let identity = ObjectIdentifier(node)
+            guard seen.insert(identity).inserted else { return }
+            let label = node.accessibilityLabel() ?? ""
+            let help = node.accessibilityHelp() ?? ""
+            entries.append(Entry(label: label, help: help))
+            Perf.log("footer-ax depth=\(depth) label=\(label.debugDescription) help=\(help.debugDescription)")
+            for child in node.accessibilityChildren() ?? [] {
+                if entries.count >= 512 { truncated = true; break }
+                visit(child, depth: depth + 1)
+            }
+        }
+        visit(root, depth: 0)
+        Perf.log("footer-ax complete nodes=\(entries.count) truncated=\(truncated)")
+        return Result(entries: entries, truncated: truncated)
     }
 }
