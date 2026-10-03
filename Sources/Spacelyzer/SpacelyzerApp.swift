@@ -23,6 +23,7 @@ struct SpacelyzerApp: App {
                         await PublicationRegression.run(tree: model.tree!)
                         await CommitOrderingRegression.run()
                         await ZeroMatchRegression.run()
+                        await AsyncRemovalRegression.run()
                         MainStall.shared.start()
                         func mark(_ n: Int) {
                             // CI-only handshake: the runner owns screen-capture permission.
@@ -155,12 +156,12 @@ struct SpacelyzerApp: App {
                         Perf.log("guardB1 propose-no-filter pending=\(model.pendingRemoval != nil) trashCalls=\(calls) expect pending=true calls=0")
                         Check.expect("propose-with-no-filter-opens-confirmation", model.pendingRemoval != nil && calls == 0)
                         model.filterText = "zzzqqq"; await settle()   // filter changes while the confirmation is open
-                        model.confirmRemoval()
+                        model.confirmRemoval(); await model.removalTask?.value
                         Perf.log("guardB2 confirm-after-filter-hid-it pending=\(model.pendingRemoval != nil) message=\(model.removalMessage != nil) trashCalls=\(calls) expect pending=false message=true calls=0")
                         Check.expect("confirm-after-filter-hid-it-trashes-nothing", model.pendingRemoval == nil && model.removalMessage != nil && calls == 0)
                         model.removalMessage = nil
                         model.filterText = ""; await settle()
-                        model.proposeRemoval(of: victim); model.confirmRemoval()
+                        model.proposeRemoval(of: victim); model.confirmRemoval(); await model.removalTask?.value
                         Perf.log("guardC control-no-filter-mocked trashCalls=\(calls) expect calls=1 proves-mock-wired")
                         Check.expect("control-unfiltered-confirm-reaches-mock-once", calls == 1, "calls=\(calls)")
                         model.removalMessage = nil
@@ -175,7 +176,7 @@ struct SpacelyzerApp: App {
                         model.proposeRemoval(of: victim2)
                         let opened = model.pendingRemoval != nil
                         model.filterText = "lib"
-                        model.confirmRemoval()
+                        model.confirmRemoval(); await model.removalTask?.value
                         Check.expect("confirm-right-after-typing-trashes-nothing", opened && model.filterPending && calls == calls0, "opened=\(opened)")
                         model.removalMessage = nil
                         model.filterText = "zzzqqq"; model.selected = model.outlineRows.first?.node ?? 1
@@ -235,12 +236,12 @@ struct SpacelyzerApp: App {
                         if let t = model.tree, let id = (0..<UInt32(t.nodeCount)).first(where: { t.path($0).hasSuffix("/" + (victimPath as NSString).lastPathComponent) }) {
                             model.selected = id
                             model.proposeRemoval(of: id)
-                            model.confirmRemoval()
+                            model.confirmRemoval(); await model.removalTask?.value
                             let fm = FileManager.default
                             let trashed = model.lastRemoved.first?.trashed
                             Check.expect("real-trash-moves-only-the-selected-fixture", !fm.fileExists(atPath: victimPath) && fm.fileExists(atPath: keepPath) && model.lastRemoved.count == 1 && (trashed.map { fm.fileExists(atPath: $0.path) } ?? false), "message=\(model.removalMessage ?? "nil")")
                             try? await Task.sleep(nanoseconds: 1_000_000_000); mark(14)
-                            model.undoRemoval()
+                            model.undoRemoval(); await model.removalTask?.value
                             Check.expect("undo-restores-the-fixture", fm.fileExists(atPath: victimPath) && !(trashed.map { fm.fileExists(atPath: $0.path) } ?? true))
                         } else {
                             Check.expect("real-trash-moves-only-the-selected-fixture", false, "fixture node not found")
@@ -983,6 +984,75 @@ private actor PublicationBarrier {
     }
 }
 
+/// Removal runs its filesystem call off the main actor. These checks use the mocked Trash seam only; no real file is touched.
+@MainActor private enum AsyncRemovalRegression {
+    static func run() async {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("spz-async-rm-\(UUID().uuidString)")
+        let other = fm.temporaryDirectory.appendingPathComponent("spz-async-rm2-\(UUID().uuidString)")
+        for d in [root, other] { try? fm.createDirectory(at: d, withIntermediateDirectories: true) }
+        fm.createFile(atPath: root.appendingPathComponent("a.bin").path, contents: Data(repeating: 1, count: 100_000))
+        fm.createFile(atPath: root.appendingPathComponent("b.bin").path, contents: Data(repeating: 2, count: 100_000))
+        fm.createFile(atPath: other.appendingPathComponent("c.bin").path, contents: Data(repeating: 3, count: 50_000))
+        defer { try? fm.removeItem(at: root); try? fm.removeItem(at: other) }
+        func scan(_ m: AppModel, _ dir: URL) async {
+            m.scan(dir.path)
+            let deadline = Date().addingTimeInterval(10)
+            while m.scanning && Date() < deadline { try? await Task.sleep(nanoseconds: 10_000_000) }
+        }
+        func node(_ m: AppModel, _ name: String) -> UInt32? {
+            guard let t = m.tree else { return nil }
+            return (0..<UInt32(t.nodeCount)).first(where: { t.name($0) == name })
+        }
+        let m = AppModel(); await scan(m, root)
+        guard let a = node(m, "a.bin"), let b = node(m, "b.bin"), let t0 = m.tree else {
+            Check.expect("async-removal-fixture", false, "fixture missing"); return
+        }
+        let rootSize = t0.info(0).size
+
+        // 1. The slow filesystem call does not block the main actor, and repeat requests are refused while it runs.
+        var calls = 0
+        m.trashItem = { url in calls += 1; Thread.sleep(forTimeInterval: 0.4); return url }
+        m.proposeRemoval(of: a); m.confirmRemoval()
+        let inFlight = m.removalInFlight
+        let t = Date()
+        try? await Task.sleep(nanoseconds: 50_000_000)   // main actor must be free to resume this promptly
+        let responsive = Date().timeIntervalSince(t) < 0.3 && m.removalInFlight
+        m.proposeRemoval(of: b)
+        let refused = m.pendingRemoval == nil && m.removalMessage != nil
+        await m.removalTask?.value
+        Check.expect("async-removal-main-actor-stays-responsive", inFlight && responsive && refused && calls == 1 && !m.removalInFlight, "inFlight=\(inFlight) responsive=\(responsive) refused=\(refused) calls=\(calls)")
+        Check.expect("async-removal-forgets-after-success", m.tree?.info(0).size == rootSize - t0.info(a).size || m.tree?.info(a).size == 0, "root=\(m.tree?.info(0).size ?? 0)")
+
+        // 2. A failure leaves the tree untouched and keeps undo state empty.
+        m.removalMessage = nil
+        let before = m.tree?.info(0).size, rev = m.revision
+        m.trashItem = { _ in throw CocoaError(.fileWriteNoPermission) }
+        m.proposeRemoval(of: b); m.confirmRemoval(); await m.removalTask?.value
+        Check.expect("async-removal-failure-leaves-tree-untouched", m.tree?.info(0).size == before && m.revision == rev && m.removalMessage != nil && !m.removalInFlight, "message=\(m.removalMessage ?? "nil")")
+
+        // 3. A rescan that swaps the tree mid-move must not forget on the new tree.
+        m.removalMessage = nil
+        m.trashItem = { url in Thread.sleep(forTimeInterval: 0.4); return url }
+        m.proposeRemoval(of: b); m.confirmRemoval()
+        await scan(m, other)
+        let swapped = m.tree
+        let otherSize = swapped?.info(0).size
+        await m.removalTask?.value
+        Check.expect("async-removal-tree-swapped-mid-move-skips-forget", m.tree === swapped && m.tree?.info(0).size == otherSize && (m.removalMessage ?? "").contains("rescanned"), "message=\(m.removalMessage ?? "nil")")
+
+        // 4. Undo: collision keeps the entry; a clean restore clears it.
+        m.lastRemoved = [RemovedItem(original: root.appendingPathComponent("b.bin"), trashed: root.appendingPathComponent("gone.bin"), size: 1)]
+        m.undoRemoval(); await m.removalTask?.value
+        Check.expect("async-undo-collision-keeps-entry-and-overwrites-nothing", m.lastRemoved.count == 1 && (m.removalMessage ?? "").contains("already exists") && !m.removalInFlight)
+        let parked = root.appendingPathComponent("parked.bin"), home = root.appendingPathComponent("restored.bin")
+        fm.createFile(atPath: parked.path, contents: Data([1]))
+        m.lastRemoved = [RemovedItem(original: home, trashed: parked, size: 1)]
+        m.undoRemoval(); await m.removalTask?.value
+        Check.expect("async-undo-restores-and-clears-entry", fm.fileExists(atPath: home.path) && !fm.fileExists(atPath: parked.path) && m.lastRemoved.isEmpty)
+    }
+}
+
 @MainActor private enum ZeroMatchRegression {
     static func run() async {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("spz-zero-\(UUID().uuidString)")
@@ -1011,7 +1081,7 @@ private actor PublicationBarrier {
         m.removalMessage = nil
         m.proposeRemoval(of: zero)
         let opened = m.pendingRemoval == zero && calls == 0
-        m.confirmRemoval()
+        m.confirmRemoval(); await m.removalTask?.value
         Check.expect("zero-match-selection-removal-policy", visible && hiddenBlocked && opened && calls == 1, "visible=\(visible) hiddenBlocked=\(hiddenBlocked) opened=\(opened) mockedCalls=\(calls)")
     }
 }

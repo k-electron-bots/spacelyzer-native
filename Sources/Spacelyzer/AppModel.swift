@@ -321,6 +321,9 @@ final class AppModel {
         return out! as URL
     }
     var lastRemoved: [RemovedItem] = []
+    /// True while a Trash move or undo runs off the main actor; repeat requests are refused meanwhile.
+    var removalInFlight = false
+    var removalTask: Task<Void, Never>?
     var removalMessage: String?
 
     // MARK: coherence state (filesystem vs engine numbers)
@@ -597,6 +600,7 @@ final class AppModel {
         guard id != 0 else { return }
         if destructiveBlocked { removalMessage = coherenceNotice ?? "Please wait for the previous change to finish."; return }
         // A selection the filter has hidden must not be removable from here: clear the filter or reselect first.
+        if removalInFlight { removalMessage = "Another removal is still in progress."; return }
         if filterPending { removalMessage = "The filter is still updating, so the list may be out of date. Try again in a moment."; return }
         if isOutsideFilter(id) { removalMessage = "That item is outside the current filter. Clear the filter or select it again to move it to the Trash."; return }
         pendingRemoval = id
@@ -610,9 +614,24 @@ final class AppModel {
         return false
     }
 
+    /// Result of the filesystem half of a removal. Carries only Sendable values so it can cross from the background task.
+    enum RemovalOutcome: Sendable {
+        case moved(URL)
+        case failed(String, originalStillExists: Bool)
+    }
+    enum UndoOutcome: Sendable {
+        case restored
+        case collision
+        case failed(String)
+    }
+    /// `trashItem` is a plain closure so tests can mock it; it is only ever called from one background task at a time
+    /// (removalInFlight serializes), which is the invariant this wrapper relies on.
+    private struct SerialOperation: @unchecked Sendable { let run: (URL) throws -> URL }
+
     func confirmRemoval() {
         guard let tree, let id = pendingRemoval else { return }
         pendingRemoval = nil
+        if removalInFlight { removalMessage = "Another removal is still in progress."; return }
         if filterPending { removalMessage = "The filter is still updating, so nothing was moved. Select the item again in a moment."; return }
         if isOutsideFilter(id) { removalMessage = "The filter changed and this item is no longer shown, so nothing was moved. Select it again to remove it."; return }
         let path = tree.path(id)
@@ -626,22 +645,47 @@ final class AppModel {
         guard let snap = nodeSnapshot(id) else { removalMessage = "Sizes are still updating, so nothing was moved. Try again in a moment."; return }
         let size = snap.info.size
         mutationPending = true      // reserved before the write, so no scan or undo can slip in between
-        do {
-            // 1. Filesystem outcome first (the real event). It is journaled in lastRemoved immediately.
-            let trashed = try trashItem(url)
+        removalInFlight = true
+        let op = SerialOperation(run: trashItem)
+        // 1. The filesystem move runs OFF the main actor (it can take seconds on a slow volume). The tree is not touched
+        // until the outcome is back on the main actor; mutationPending/removalInFlight stay set for the whole window.
+        removalTask = Task { [weak self] in
+            let outcome: RemovalOutcome = await Task.detached(priority: .userInitiated) {
+                do { return .moved(try op.run(url)) }
+                catch { return .failed(error.localizedDescription, originalStillExists: FileManager.default.fileExists(atPath: url.path)) }
+            }.value
+            self?.finishRemoval(outcome, id: id, url: url, size: size, tree: tree)
+        }
+    }
+
+    private func finishRemoval(_ outcome: RemovalOutcome, id: UInt32, url: URL, size: UInt64, tree removedFrom: Tree) {
+        removalInFlight = false
+        switch outcome {
+        case .failed(let reason, let stillExists):
+            mutationPending = commitsInFlight > 0
+            removalMessage = stillExists
+                ? "Could not move it to the Trash: \(reason)"
+                : "The Trash move reported an error (\(reason)) but \(url.lastPathComponent) is no longer at its original location. Rescan to refresh."
+            if !stillExists { fsEpoch += 1; markOutOfDate("\(url.lastPathComponent) may have been moved even though the Trash reported an error. Rescan.") }
+        case .moved(let trashed):
+            // 2. Filesystem outcome journaled first (the real event), then the engine commit on the serial lane.
             fsEpoch += 1
             lastRemoved = [RemovedItem(original: url, trashed: trashed, size: size)]
-            // 2. Engine commit on the serial commit lane, off the main actor. Table copy is O(nodes).
+            guard tree === removedFrom else {
+                // A rescan replaced the tree while the move was running. Its node ids are gone; do not forget on the new one.
+                mutationPending = commitsInFlight > 0
+                markOutOfDate("\(url.lastPathComponent) was moved to the Trash while a scan was replacing the results, so they may still include it. Rescan.")
+                removalMessage = "Moved \(url.lastPathComponent) to the Trash. The folder was rescanned meanwhile, so sizes may be out of date. Rescan to refresh."
+                return
+            }
             commitsInFlight += 1
+            let name = url.lastPathComponent
             Task { [weak self] in
                 if let hook = self?.beforeCommit { await hook() }     // test seam: park between the FS move and the commit
                 let status: EngineStatus
-                if let o = self?.commitOverride { status = await o(tree, id) } else { status = await Self.commitLane.forget(tree, id) }
-                await MainActor.run { self?.finishCommit(tree: tree, removed: id, status: status, name: url.lastPathComponent) }
+                if let o = self?.commitOverride { status = await o(removedFrom, id) } else { status = await Self.commitLane.forget(removedFrom, id) }
+                await MainActor.run { self?.finishCommit(tree: removedFrom, removed: id, status: status, name: name) }
             }
-        } catch {
-            mutationPending = false
-            removalMessage = "Could not move it to the Trash: \(error.localizedDescription)"
         }
     }
 
@@ -702,22 +746,43 @@ final class AppModel {
     }
 
     func undoRemoval() {
-        // Undo is a filesystem change too. It is refused while a removal is mid-flight, and afterwards the view is
+        // Undo is a filesystem change too. It is refused while a removal or commit is mid-flight, and afterwards the view is
         // persistently out of date: the engine cannot add a subtree back, only a rescan can.
-        if mutationPending || commitsInFlight > 0 || requiredVersion != nil { removalMessage = "The previous change is still being applied. Try again in a moment."; return }
+        if removalInFlight || mutationPending || commitsInFlight > 0 || requiredVersion != nil { removalMessage = "The previous change is still being applied. Try again in a moment."; return }
+        guard !lastRemoved.isEmpty else { return }
+        let items = lastRemoved
         mutationPending = true
-        defer { mutationPending = false }
-        for item in lastRemoved {
-            do {
-                try FileManager.default.moveItem(at: item.trashed, to: item.original)
+        removalInFlight = true
+        removalTask = Task { [weak self] in
+            let outcomes: [UndoOutcome] = await Task.detached(priority: .userInitiated) {
+                items.map { item in
+                    let fm = FileManager.default
+                    if fm.fileExists(atPath: item.original.path) { return UndoOutcome.collision }
+                    do { try fm.moveItem(at: item.trashed, to: item.original); return .restored }
+                    catch { return .failed(error.localizedDescription) }
+                }
+            }.value
+            self?.finishUndo(items, outcomes)
+        }
+    }
+
+    private func finishUndo(_ items: [RemovedItem], _ outcomes: [UndoOutcome]) {
+        removalInFlight = false
+        mutationPending = commitsInFlight > 0
+        var remaining: [RemovedItem] = []
+        var message: String?
+        for (item, outcome) in zip(items, outcomes) {
+            switch outcome {
+            case .restored:
                 fsEpoch += 1
                 markOutOfDate("Restored on disk. Rescan to bring it back.")
-                removalMessage = "Put \(item.original.lastPathComponent) back. Restored on disk. Rescan to bring it back."
-            } catch {
-                removalMessage = "Could not put it back: \(error.localizedDescription)"
+                message = message ?? "Put \(item.original.lastPathComponent) back. Restored on disk. Rescan to bring it back."
+            case .collision: remaining.append(item); message = "Could not put it back: something already exists at \(item.original.path)."
+            case .failed(let reason): remaining.append(item); message = "Could not put it back: \(reason)"
             }
         }
-        lastRemoved = []
+        lastRemoved = remaining   // only successful restores are forgotten
+        removalMessage = message
     }
 
     func reveal(_ id: UInt32) {
