@@ -46,6 +46,8 @@ pub struct FilterResult {
 // Preserve the allocation-free ASCII hot path; use the same Unicode lowercase semantics
 // as outline name sorting when either side contains non-ASCII letters. No normalization.
 fn contains_ci(hay: &str, needle_lower: &str) -> bool {
+    // An empty name query matches every name without scanning or allocating it.
+    if needle_lower.is_empty() { return true; }
     if hay.is_ascii() && needle_lower.is_ascii() {
         let needle = needle_lower.as_bytes();
         return needle.is_empty() || hay.as_bytes().windows(needle.len()).any(|w|
@@ -144,4 +146,37 @@ pub fn category_totals(tree: &Tree, r: &FilterResult) -> [(u64, u64); crate::cat
         out[c].1 += 1;
     }
     out
+}
+
+#[cfg(test)]
+mod matching_parity {
+    use super::contains_ci;
+    fn strings(alphabet: &[&str], max_len: usize) -> Vec<String> {
+        let mut all = vec![String::new()];
+        let mut level = vec![String::new()];
+        for _ in 0..max_len {
+            let mut next = Vec::new();
+            for prefix in &level { for letter in alphabet { next.push(format!("{prefix}{letter}")); } }
+            all.extend(next.iter().cloned()); level = next;
+        }
+        all
+    }
+    #[test]
+    fn empty_and_unicode_examples_match_lowercase_substring() {
+        for hay in ["", "ASCII_FILE.TXT", "École", "ΩΜΕΓΑ", "文件", "İstanbul", "Straße", "Cafe\u{301}", "Kelvin", "kELVIN"] {
+            for query in ["", "file", "ÉCOLE", "ω", "文", "i", "İ", "ß", "SS", "é", "e\u{301}", "not-here", "k", "K", "kelvin"] {
+                let needle = query.to_lowercase();
+                assert_eq!(contains_ci(hay, &needle), hay.to_lowercase().contains(&needle), "hay={hay:?} query={query:?}");
+            }
+        }
+    }
+    #[test]
+    fn exhaustive_small_ascii_and_unicode_lowercase_parity() {
+        let names = strings(&["A", "b", "É", "Ω", "文"], 4);
+        let queries = strings(&["a", "B", "é", "ω", "文"], 2);
+        for hay in &names { for query in &queries {
+            let needle = query.to_lowercase();
+            assert_eq!(contains_ci(hay, &needle), hay.to_lowercase().contains(&needle), "hay={hay:?} query={query:?}");
+        } }
+    }
 }
