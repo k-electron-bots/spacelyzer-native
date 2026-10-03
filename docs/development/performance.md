@@ -50,3 +50,7 @@ PID23733/rawheader08:05:03.198UTC precedes trace08:05:04.1193771/.119378 by921.3
 ## Run117 diagnostic arm
 
 Selection1284/stall1278.4,warm54.7; arrowp50/p95/max17.1/35.1/332.6ms/stall280.8,typing161.6,hover0.5. Altered1s idle settling arm/sharedrunner/profiler perturbation prevents original-cold comparison; no overall win or causal stack attribution. [Evidence](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37109813090/artifacts/11268988193).
+
+## Run118 diagnostic arm
+
+Selection708.9/stall708.3,warm57.9; arrowp50/p95/max37.6/109.2/575.3ms/stall569.1,typing211.1,hover0.2. Altered1s idle settling arm/sharedrunner/profiler perturbation prevents original-cold comparison; no overall win or causal stack attribution. [Evidence](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37111144701/artifacts/11269359238).
