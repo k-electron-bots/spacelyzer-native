@@ -347,7 +347,7 @@ final class AppModel {
     func surfaceCheck() {
         guard let r = requiredVersion else { return }
         let layoutOK = tab != .treemap || layoutVersion == r || layoutNotRenderableVersion == r
-        if outlineVersion == r, derivedVersion == r, layoutOK { requiredVersion = nil; pendingTimeout?.cancel(); pendingTimeout = nil }
+        if outlineVersion == r, derivedVersion == r, layoutOK { requiredVersion = nil; pendingTimeout?.cancel(); pendingTimeout = nil } else if outlineVersion == r || derivedVersion == r || layoutVersion == r { startPendingTimeout() }
     }
     /// The treemap reported (keyed by table version) that it cannot render (no tree, size <= 1, or view removed), so it
     /// does not hold the actions. Cleared when a layout publishes or a new tree arrives.
@@ -360,21 +360,27 @@ final class AppModel {
     func startPendingTimeout(seconds: UInt64 = 10) {
         pendingTimeout?.cancel()
         pendingTimeout = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
-            guard !Task.isCancelled, let self, self.requiredVersion != nil else { return }
+            // Deadline restarts on every surface publication (see surfaceCheck). On expiry: one forced refresh and one
+            // extension, then an explicit error. The 10 s values are unvalidated guesses, not measured.
+            for stage in 0..<2 {
+                try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+                guard !Task.isCancelled, let self, self.requiredVersion != nil else { return }
+                if stage == 0 { self.refreshOutline(); if self.filterIsActive { self.scheduleFilter(immediate: true) }; self.layoutRetryToken &+= 1 }
+            }
+            guard let self, !Task.isCancelled, self.requiredVersion != nil else { return }
             self.markOutOfDate("The view did not finish updating after a change. Rescan to continue.")
         }
     }
     func layoutPublished(_ version: UInt64) { layoutVersion = version; layoutNotRenderableVersion = nil; surfaceCheck() }
 
-    private var filterInputKey: Int {
+    var filterInputKey: Int {
         var h = Hasher(); h.combine(filterText); h.combine(filterKind?.rawValue); h.combine(filterMinMB); h.combine(filterMaxMB)
         h.combine(filterModifiedDays); h.combine(filterExt); h.combine(tree.map(ObjectIdentifier.init)); h.combine(tree?.version); return h.finalize()
     }
-    private var derivedInputKey: Int { var h = Hasher(); h.combine(activeFilter.map(ObjectIdentifier.init)); h.combine(tree.map(ObjectIdentifier.init)); return h.finalize() }
-    private var outlineInputKey: Int {
+    var derivedInputKey: Int { var h = Hasher(); h.combine(activeFilter.map(ObjectIdentifier.init)); h.combine(tree.map(ObjectIdentifier.init)); h.combine(tree?.version); return h.finalize() }
+    var outlineInputKey: Int {
         var h = Hasher(); h.combine(displayedRoot); h.combine(expanded); h.combine(activeFilter.map(ObjectIdentifier.init))
-        h.combine(outlineSort.rawValue); h.combine(tree.map(ObjectIdentifier.init)); return h.finalize()
+        h.combine(outlineSort.rawValue); h.combine(tree.map(ObjectIdentifier.init)); h.combine(tree?.version); return h.finalize()
     }
     /// Key for the layout retry: the treemap inputs (root, size, filter, tree), supplied by the view.
     func layoutInputKey(root: UInt32, size: CGSize) -> Int {

@@ -1152,7 +1152,7 @@ private actor PublicationBarrier {
         } else { Check.expect("commit-order-scan-replacement-clears-published-totals", false, "fixture") }
 
         // 10. BUSY retries are bounded: the sixth request for the same inputs marks the view out of date; nothing fires meanwhile.
-        // 8. Layout not renderable (view removed / size <= 1) must not hold actions forever. Model-level only; a real view driver is still owed.
+        // 8a. Layout not renderable (view removed / size <= 1) must not hold actions forever. Model-level only; a real view driver is still owed.
         if let m = await scanned(root), let id = node(m, "dirB") {
             m.tab = .treemap
             remove(m, id)
@@ -1161,8 +1161,14 @@ private actor PublicationBarrier {
             m.layoutNotRenderable()
             Check.expect("commit-order-layout-not-renderable-releases", held && m.requiredVersion == nil && !m.navigationBlocked, "held=\(held) req=\(String(describing: m.requiredVersion))")
         } else { Check.expect("commit-order-layout-not-renderable-releases", false, "fixture") }
-        // 9. Retry key includes the table version, so an old commit's retries do not consume a newer commit's budget.
-        // (covered by filterInputKey/layoutInputKey hashing tree.version; behavior test needs a real view driver)
+        // 9. Retry keys include the table version: after a removal (new version) the keys change, so old retries do not eat the new budget.
+        if let m = await scanned(root), let id = node(m, "dirB") {
+            let k0 = (m.outlineInputKey, m.derivedInputKey, m.filterInputKey, m.layoutInputKey(root: 0, size: CGSize(width: 100, height: 100)))
+            remove(m, id)
+            _ = await PublicationRegression.wait { m.commitsInFlight == 0 }
+            let k1 = (m.outlineInputKey, m.derivedInputKey, m.filterInputKey, m.layoutInputKey(root: 0, size: CGSize(width: 100, height: 100)))
+            Check.expect("commit-order-retry-keys-change-with-version", k0.0 != k1.0 && k0.1 != k1.1 && k0.2 != k1.2 && k0.3 != k1.3, "keys changed (model-level)")
+        } else { Check.expect("commit-order-retry-keys-change-with-version", false, "fixture") }
 
         if let m = await scanned(root) {
             var fired = 0
