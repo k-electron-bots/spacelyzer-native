@@ -430,6 +430,7 @@ fn largest_sized_filtered_uses_the_filter_and_stale_handle_writes_nothing() {
         assert!(names.iter().all(|n| n.ends_with(".rs")), "filtered ids must all match the filter: {names:?}");
         assert!(sizes[..c as usize].windows(2).all(|w| w[0] >= w[1]), "largest first");
         assert!(sizes[..c as usize].iter().sum::<u64>() <= total);
+        for i in 0..c as usize { assert_eq!(sizes[i], spz_filter_size(h, ids[i]), "item {i} id {}: size must be the filter's own size", ids[i]); }
         // the filter was computed on the old table: after a commit the handle is STALE and nothing is written
         t.forget(disjoint_dirs(&t, 1)[0]).unwrap();
         let mut sizes2 = [7u64; 20]; let mut ids2 = [9u32; 20];
