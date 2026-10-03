@@ -174,7 +174,7 @@ struct TreemapView: View {
 
     @ViewBuilder private var readout: some View {
         // Hover shows the published layout's own size (same snapshot as the picture); hidden while that layout is not the current table version.
-        if let h = hovered, let cl = currentLayout, cl.version == model.tree?.version, !model.rowsPending, let tree = model.tree {
+        if let h = hovered, let cl = currentLayout, cl.version == model.tree?.version, !model.rowsPending, !model.enginePoisoned, let tree = model.tree {
             let name = h.isRemainder ? "Smaller items in \(tree.name(h.node))" : tree.name(h.node)
             Text("\(name)  ·  \(formatBytes(h.size))")
                 .font(.caption).padding(.horizontal, 8).padding(.vertical, 4)
@@ -226,6 +226,7 @@ struct TreemapView: View {
             if let token { await barrier?(token, request, s, ObjectIdentifier(tree), flt.map(ObjectIdentifier.init)) }
             await MainActor.run {
                 let accepted: Bool
+                if model.enginePoisoned { model.markPoisoned(); accepted = false } else
                 if !Task.isCancelled, generation == request, model.tree === tree, l.version == tree.version,
                    flt == nil || flt!.version == l.version,
                    model.revision == revision, model.displayedRoot == root, model.activeFilter === flt, size == s {
@@ -328,8 +329,9 @@ struct LargestView: View {
             List(ids, id: \.self, selection: Bindable(model).selected) { id in
                 HStack {
                     VStack(alignment: .leading) {
-                        Text(t.name(id)).lineLimit(1)
-                        Text(t.path(id)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+                        // A caught engine panic makes the legacy name/path reads untrustworthy (they fall back to blank).
+                        Text(model.enginePoisoned ? "Unavailable" : t.name(id)).lineLimit(1)
+                        Text(model.enginePoisoned ? "" : t.path(id)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
                     }
                     Spacer()
                     Text(sizeOf[id].map(formatBytes) ?? "\u{2014}").monospacedDigit()   // a missing size is a visible placeholder, never 0 B
