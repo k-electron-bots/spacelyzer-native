@@ -85,6 +85,7 @@ jobs:
           sleep 2
           # Scripted interaction run: the app writes /tmp/spz-demo-step after each state settles.
           swiftc scripts/ax-client.swift -o /tmp/spz-ax-client
+          rm -rf /tmp/spz-chronology
           rm -f /tmp/spz-interaction-envelope.txt /tmp/spz-footer-ax-status.txt /tmp/spz-footer-ax-result.txt /tmp/spz-footer-ax-expected.txt /tmp/spz-footer-ax-ready /tmp/spz-footer-ax-ack /tmp/spz-footer-ax-client.txt /tmp/spz-cold-click-subprocess-end.txt /tmp/spz-sample.txt /tmp/spz-cold-click-sample.txt /tmp/spz-cold-click-sample-command.txt /tmp/spz-cold-click-sample-status.txt /tmp/spz-cold-click-ready /tmp/spz-cold-click-ack /tmp/spz-demo-ready-* /tmp/spz-demo-ack-* /tmp/spz-demo-*.png /tmp/spz-demo-step /tmp/spz-demo-finished /tmp/spz-geom.txt /tmp/spz-timing.txt /tmp/spz-assertions.txt
           open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Library --env SPZ_DEMO=1
           for step in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 23 24 19 25 20 21 22 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48; do
@@ -112,16 +113,9 @@ jobs:
           PY
                 touch /tmp/spz-footer-ax-ack
               fi
-              if [ -f /tmp/spz-cold-click-ready ] && [ ! -f /tmp/spz-cold-click-ack ]; then
-                (
-                  code=0
-                  sample Spacelyzer 8 5 -file /tmp/spz-cold-click-sample.txt >/tmp/spz-cold-click-sample-command.txt 2>&1 || code=$?
-                  echo "sample subprocess-end exit=$code $(date -u '+%Y-%m-%dT%H:%M:%SZ')" > /tmp/spz-cold-click-subprocess-end.txt
-                  exit "$code"
-                ) &
-                cold_sample_pid=$!
-                echo "sample launched pid=$cold_sample_pid $(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> /tmp/spz-timing.txt
-                touch /tmp/spz-cold-click-ack
+              if [ -f /tmp/spz-cold-click-ready ] && [ ! -f /tmp/spz-cold-click-ack ] && [ -z "${chronology_pid:-}" ]; then
+                python3 scripts/capture-interactions.py &
+                chronology_pid=$!
               fi
               [ -f "/tmp/spz-demo-ready-$step" ] && break; sleep 1
             done
@@ -147,24 +141,17 @@ jobs:
           cp /tmp/spz-timing.txt dist/ui-timing.txt 2>/dev/null || true
           pkill Spacelyzer || true
           sleep 3
-          if [ -n "${cold_sample_pid:-}" ]; then
-            cold_exit=0
-            wait "$cold_sample_pid" || cold_exit=$?
-            if [ "$cold_exit" -ne 0 ] || [ ! -s /tmp/spz-cold-click-sample.txt ]; then echo 'sample failed/missing report: cold-input capture inconclusive' >> /tmp/spz-timing.txt; fi
-            echo "sample completed exit=$cold_exit $(date -u '+%Y-%m-%dT%H:%M:%SZ')" | tee /tmp/spz-cold-click-sample-status.txt >> /tmp/spz-timing.txt
-          else
-            echo 'sample missing: cold-input capture inconclusive' | tee /tmp/spz-cold-click-sample-status.txt >> /tmp/spz-timing.txt
+          if [ -n "${chronology_pid:-}" ]; then
+            wait "$chronology_pid" || echo 'chronology helper failed; capture inconclusive' >> /tmp/spz-timing.txt
           fi
+          mkdir -p dist/chronology
+          cp /tmp/spz-chronology/*.txt /tmp/spz-chronology/*.json /tmp/spz-chronology/*.xml /tmp/spz-chronology/*.zip dist/chronology/ 2>/dev/null || true
           cp /tmp/spz-footer-ax-client.txt dist/footer-ax-client.txt 2>/dev/null || true
           cp /tmp/spz-footer-ax-expected.txt dist/footer-ax-expected.txt 2>/dev/null || true
           cp /tmp/spz-footer-ax-result.txt dist/footer-ax-result.txt 2>/dev/null || true
           cp /tmp/spz-footer-ax-status.txt dist/footer-ax-status.txt 2>/dev/null || true
           cp /tmp/spz-timing.txt dist/ui-timing.txt
           cp /tmp/spz-interaction-envelope.txt dist/interaction-envelope.txt 2>/dev/null || true
-          cp /tmp/spz-cold-click-sample-status.txt dist/cold-click-sample-status.txt
-          cp /tmp/spz-cold-click-subprocess-end.txt dist/cold-click-subprocess-end.txt 2>/dev/null || true
-          cp /tmp/spz-cold-click-sample.txt dist/cold-click-sample.txt 2>/dev/null || true
-          cp /tmp/spz-cold-click-sample-command.txt dist/cold-click-sample-command.txt 2>/dev/null || true
           if [ -f /tmp/spz-sample.txt ]; then cp /tmp/spz-sample.txt dist/main-thread-sample.txt; body=$(python3 scripts/sample-summary.py /tmp/spz-sample.txt | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}' | head -c 12000); echo "::notice title=sample::$body"; fi
           for f in $(ls -t ~/Library/Logs/DiagnosticReports/Spacelyzer*.ips 2>/dev/null | head -1); do
             cp "$f" dist/crash-report.ips
@@ -199,13 +186,10 @@ jobs:
             dist/screenshot*.png
             dist/ui-assertions.txt
             dist/main-thread-sample.txt
-            dist/cold-click-sample.txt
-            dist/cold-click-sample-command.txt
-            dist/cold-click-sample-status.txt
-            dist/cold-click-subprocess-end.txt
             dist/crash-report.ips
             dist/ui-timing.txt
             dist/interaction-envelope.txt
+            dist/chronology/
             dist/footer-ax-client.txt
             dist/footer-ax-expected.txt
             dist/footer-ax-result.txt
