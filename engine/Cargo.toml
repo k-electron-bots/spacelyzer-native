@@ -21,3 +21,7 @@ rayon = "1.10"
 [features]
 # Test-only panic injection into the size-table writer. Never enabled in release builds.
 failpoints = []
+
+[[example]]
+name = "shipped_panic"
+required-features = ["failpoints"]
