@@ -7,6 +7,9 @@ Priorities: safety, real and perceived performance, pixel polish, then features.
 2. Ground the cold first-click and typing stalls, then complete E2 accessibility and real-system validation. Injected preferences or labels are not VoiceOver proof.
 3. Prove removal, partial scans, stability and memory behavior on disposable fixtures before a release is called ready.
 
+## First usable release priority
+Karim approved safe big-file cleanup first on October3, ahead of hidden macOS space/snapshot/accounting explanations. Build useful inspect/preview and reviewed Trash workflows on the existing Largest/outline surfaces. Responsiveness, current-file identity validation, permissions, protected paths, failure and undo gates remain; this direction does not authorize automatic deletion or establish release readiness. One-item versus batch cleanup scope is still a product question, not an implementation decision. Hidden-space accounting stays planned after this first usable workflow.
+
 ## Product epics
 | Epic | Scope and dependencies | Status |
 |---|---|---|
