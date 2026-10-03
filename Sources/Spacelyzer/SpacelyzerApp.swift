@@ -74,15 +74,15 @@ struct SpacelyzerApp: App {
                         // Steps 8-9: in-process NSEvents through the window's responder chain (no OS input permission needed).
                         try? await Task.sleep(nanoseconds: 3_000_000_000)
                         MainStall.shared.reset()
-                        // Workflow starts an external sample before acknowledging this cold input.
-                        try? "ready".write(toFile: "/tmp/spz-cold-click-ready", atomically: true, encoding: .utf8)
-                        let sampleDeadline = Date().addingTimeInterval(15)
+                        // Workflow starts one bounded chronology capture before acknowledging this cold input.
+                        try? "\(ProcessInfo.processInfo.processIdentifier)".write(toFile: "/tmp/spz-cold-click-ready", atomically: true, encoding: .utf8)
+                        let sampleDeadline = Date().addingTimeInterval(60)
                         while !FileManager.default.fileExists(atPath: "/tmp/spz-cold-click-ack") && Date() < sampleDeadline { try? await Task.sleep(nanoseconds: 20_000_000) }
                         Perf.log("interaction-sample acknowledged=\(FileManager.default.fileExists(atPath: "/tmp/spz-cold-click-ack"))")
-                        // Diagnostic sampled arm: explicit idle settling for profiler startup, not prewarmed input.
+                        // Diagnostic sampled arm: explicit idle settling after profiler readiness or inconclusive ack, not prewarmed input.
                         // This changes idle/arm conditions and cannot be compared as original cold latency.
                         try? await Task.sleep(nanoseconds: 1_000_000_000)
-                        Perf.log("interaction-sample arm=sampled-requested-settle-1s altered-idle=true no-cold-comparability; raw header must precede trace to establish coverage")
+                        Perf.log("interaction-sample arm=chronology-requested-settle-1s altered-idle=true no-cold-comparability; trace metadata and phase bridges must establish coverage")
                         MainStall.shared.reset() // Exclude ready/ack/startup settling from measured input stalls.
                         InteractionTrace.begin()
                         let clickBefore = model.selected, clickT0 = Perf.now()
