@@ -569,13 +569,18 @@ final class AppModel {
 
     // MARK: Removal (always to the Trash, always after confirmation, always undoable)
 
-    /// True when a filter is active and this item is outside it (hidden from every view).
+    /// True ONLY when the published filter is current and the item is genuinely outside it (hidden from every view).
     func isOutsideFilter(_ id: UInt32) -> Bool {
-        guard let f = activeFilter else { return false }
-        // A filter result from another table version, or any caught engine panic (the legacy count falls back to 0), cannot
-        // prove the item is inside the filter: refuse conservatively rather than act on a fallback or stale count.
-        if enginePoisoned || f.version != tree?.version { return true }
+        guard let f = activeFilter, filterUntrustedReason == nil else { return false }
         return f.count(id) == 0
+    }
+    /// Why the active filter cannot be used to judge an item right now (nil when it can, or when no filter is active).
+    /// Not "outside the filter": a stale filter version or a caught engine panic is a different, accurate refusal.
+    var filterUntrustedReason: String? {
+        guard let f = activeFilter else { return nil }
+        if enginePoisoned { return "The engine reported an internal error, so the filter result cannot be trusted. Rescan to continue." }
+        if f.version != tree?.version { return "The filter result is out of date and is being recomputed. Nothing was moved; try again in a moment." }
+        return nil
     }
 
     /// Why removal is unavailable right now, or nil when it is allowed.
@@ -614,6 +619,7 @@ final class AppModel {
     func removalBlockedReason(_ id: UInt32) -> String? {
         if destructiveBlocked { return coherenceNotice ?? "Please wait for the previous change to finish." }
         if filterPending { return "The filter is still updating." }
+        if let r = filterUntrustedReason { return r }
         if isOutsideFilter(id) { return "This item is outside the current filter. Clear the filter or select it again." }
         return nil
     }
@@ -624,6 +630,7 @@ final class AppModel {
         // A selection the filter has hidden must not be removable from here: clear the filter or reselect first.
         if removalInFlight { removalMessage = "Another removal is still in progress."; return }
         if filterPending { removalMessage = "The filter is still updating, so the list may be out of date. Try again in a moment."; return }
+        if let r = filterUntrustedReason { removalMessage = r; return }
         if isOutsideFilter(id) { removalMessage = "That item is outside the current filter. Clear the filter or select it again to move it to the Trash."; return }
         pendingRemoval = id
     }
@@ -655,6 +662,7 @@ final class AppModel {
         pendingRemoval = nil
         if removalInFlight { removalMessage = "Another removal is still in progress."; return }
         if filterPending { removalMessage = "The filter is still updating, so nothing was moved. Select the item again in a moment."; return }
+        if let r = filterUntrustedReason { removalMessage = r; return }
         if isOutsideFilter(id) { removalMessage = "The filter changed and this item is no longer shown, so nothing was moved. Select it again to remove it."; return }
         let path = tree.path(id)
         if isProtected(path) {
