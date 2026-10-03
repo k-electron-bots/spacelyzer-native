@@ -278,3 +278,15 @@ Two new first-pending unmount checks independently accepted. Actual conditional 
 Diagnosticselection1575.4/stall1570.3,warm45.4; arrowp50/p95/max28.2/104.9/1451.1ms/stall1455.3,typing278.5,hover0.9. These substantial stalls remain unresolved. Alteredidle arm/sharedrunner/profiler perturbation,no original-cold comparison or overall win. Next work is focused causal diagnostics before optimization, not more green fixtures.
 
 [Run119](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37115126519) · [Artifact](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37115126519/artifacts/11271710264). Historical native failures retained; no broader AX/VoiceOver/tooltip/compliance claim.
+
+## Run120: causal envelope coverage remains incomplete
+
+[Run120](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37116511862) at source `a941c25` compiled on Linux/macOS, including the external client. Whole result: 90 PASS / 1 FAIL of 91 checks, 48 states; release skipped. The native footer accessor remains the sole failure. The separate external same-node exact Help+Value regression passed. No new product safety or performance acceptance follows.
+
+Both diagnostic phases installed and removed their monitor/observer with zero recorded drops, identity-cap loss, collisions or ambiguous lookups. However, click and 31 of 40 arrows have unmatched exact timestamp identities. Only nine arrows have full exact-associated stage chains. Outbound/delivered timestamps differ by fractions of a nanosecond, consistent with representation quantization, but its mechanism is not proven. Do not retroactively relabel unmatched records. Model/view context is heuristic; common-mode runloop observations and queued-probe delay do not prove CPU-busy time or sleeping time. Buffered flush is included before stall summaries.
+
+PID17849 bridges place click at 10:37:30.708123 to 31.9608235Z and arrows at 10:37:31.964457 to 35.453766Z. The raw sampler header is 10:37:29.742Z, with an eight-second sampling command and subprocess end at 10:37:38Z. This is coarse temporal overlap for both phases, not per-stack chronology or exact per-event sampler coverage.
+
+Diagnostic click243.3ms/stall235.2ms, warm34.5ms; arrows p50/p95/max17.6/83.1/909.3ms, stall908.6ms; typing202.2ms, hover0.5ms. Shared-runner, altered-idle, profiler and instrumentation effects remain. No original-cold comparison, clean benchmark, overall win or CPU cause. Pixels8/48 inspected: selected outline row readable and unmount placeholder has no returned old layout. Existing narrow safety boundaries remain unchanged. Next work is prospective diagnostic identity repair, reviewed before landing, not optimization.
+
+[Artifact](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37116511862/artifacts/11271722675) includes the raw envelope and unchanged failure evidence.
