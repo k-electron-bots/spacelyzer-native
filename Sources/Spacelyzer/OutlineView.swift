@@ -4,6 +4,20 @@ import SwiftUI
 
 /// The outline is an NSTableView: AppKit virtualizes rows and scrolls to a row in O(1), which a LazyVStack could not do
 /// for 150k rows (profiled: scrollTo and row re-evaluation dominated every arrow press).
+/// CI-only bounded, buffered stage timestamps. No file I/O on the measured mouse path.
+@MainActor enum InteractionTrace {
+    private static var began: UInt64?
+    private static var records: [(String, UInt64)] = []
+    static func begin() { guard Perf.on else { return }; records = []; began = Perf.now(); record("trace-begin-before-window-lookup") }
+    static func record(_ stage: String) { guard began != nil, records.count < 256 else { return }; records.append((stage, Perf.now())) }
+    static func finish() {
+        guard let start = began else { return }
+        began = nil
+        for (stage, stamp) in records { Perf.log("interaction-stage \(stage) uptime_ns=\(stamp) elapsed_ms=\(Double(stamp - start) / 1e6)") }
+        records = []
+    }
+}
+
 struct OutlineView: View {
     @Environment(AppModel.self) private var model
     static let rowHeight: CGFloat = 28
@@ -20,7 +34,9 @@ struct OutlineView: View {
                 }
                 .onAppear { model.refreshOutline() }
                 .onChange(of: model.selected) { _, n in
+                    InteractionTrace.record("swiftui-selection-onChange-enter")
                     if let n { model.revealInOutline(n) }
+                    InteractionTrace.record("swiftui-selection-onChange-exit")
                     guard Perf.on else { return }
                     let idx = n.flatMap { model.outlineIndex[$0] }
                     Perf.log("selection changed: node=\(n.map(String.init) ?? "nil") rowIndex=\(idx.map(String.init) ?? "none") of \(model.outlineRows.count)")
@@ -33,6 +49,11 @@ struct OutlineView: View {
 
 private final class KeyTable: NSTableView {
     var onAttachment: (() -> Void)?
+    override func mouseDown(with event: NSEvent) {
+        InteractionTrace.record("table-mouseDown-enter")
+        super.mouseDown(with: event)
+        InteractionTrace.record("table-mouseDown-exit")
+    }
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); onAttachment?() }
     var onTab: ((NSEvent.ModifierFlags) -> Bool)?
     var onKey: ((UInt16) -> Bool)?
@@ -211,6 +232,8 @@ private struct OutlineTable: NSViewRepresentable {
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
+        InteractionTrace.record("outline-update-enter")
+        defer { InteractionTrace.record("outline-update-exit") }
         let c = context.coordinator
         c.tree = tree
         model.outlineKeyView = c.table
@@ -287,10 +310,12 @@ private struct OutlineTable: NSViewRepresentable {
         }
 
         func tableViewSelectionDidChange(_ notification: Notification) {
+            InteractionTrace.record("native-selection-callback-enter")
+            defer { InteractionTrace.record("native-selection-callback-exit") }
             guard !suppress, let t = table else { return }
             let r = t.selectedRow
             let node: UInt32? = r >= 0 && r < model.outlineRows.count ? model.outlineRows[r].node : nil
-            if model.selected != node { model.selected = node }
+            if model.selected != node { InteractionTrace.record("model-selection-assign-begin"); model.selected = node; InteractionTrace.record("model-selection-assign-end") }
         }
 
         /// Model -> table. O(1): dictionary lookup, then AppKit scrolls straight to the row.
