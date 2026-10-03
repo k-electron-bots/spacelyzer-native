@@ -16,13 +16,12 @@ struct SpacelyzerApp: App {
                     // CI uses this to launch with a scan already running and take a screenshot.
                     let env = ProcessInfo.processInfo.environment
                     if let path = env["SPZ_AUTOSCAN"] { model.scan(path) }
+                    #if SPZ_CI_TESTS   // scripted demo + regression suites exist only in test builds
                     // CI-only scripted interaction so screenshots can show expand, filter and kind views.
                     if env["SPZ_AUTOSCAN"] != nil, env["SPZ_DEMO"] != nil {
                         while model.scanning || model.tree == nil { try? await Task.sleep(nanoseconds: 500_000_000) }
                         try? await Task.sleep(nanoseconds: 3_000_000_000)
-                        #if SPZ_ORDERING_CI
                         if env["SPZ_CHECKS"] == "ordering" { await OrderingDriver.run(tree: model.tree!) }   // never returns
-                        #endif
                         await PublicationRegression.run(tree: model.tree!)
                         await CommitOrderingRegression.run()
                         await ZeroMatchRegression.run()
@@ -782,6 +781,7 @@ struct SpacelyzerApp: App {
                             mark(21); try? await Task.sleep(nanoseconds: 4_000_000_000); mark(22)
                         }
                     }
+                    #endif
                 }
         }
         .commands {
@@ -840,20 +840,25 @@ struct SpacelyzerApp: App {
     }
 }
 
+#if SPZ_CI_TESTS
 /// CI-only: pass/fail assertions, written to their own file so evidence never depends on log truncation.
 @MainActor enum Check {
     /// In-memory copy of every result, used by the CI ordering driver to verify the run itself (not only the file).
     static var results: [(name: String, ok: Bool)] = []
+    /// Where assertions are written. The ordering driver points this at a unique per-run directory; the UI-calibration
+    /// job keeps the historical path.
+    static var path = "/tmp/spz-assertions.txt"
     static func expect(_ name: String, _ ok: Bool, _ detail: String = "") {
         results.append((name, ok))
         let line = "\(ok ? "PASS" : "FAIL") \(name) \(detail)\n"
-        let url = URL(fileURLWithPath: "/tmp/spz-assertions.txt")
+        let url = URL(fileURLWithPath: path)
         if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); try? h.close() } else { try? line.write(to: url, atomically: true, encoding: .utf8) }
         Perf.log("check \(line.trimmingCharacters(in: .whitespacesAndNewlines))")
     }
 }
 
 
+#endif
 /// Physical memory footprint of this process (what Activity Monitor calls Memory), in MB.
 enum Footprint {
     static func megabytes() -> Double {
@@ -878,6 +883,7 @@ private struct DemoAccessibilityModes: ViewModifier {
     }
 }
 
+#if SPZ_CI_TESTS   // test-only code: compiled only when the build passes -Xswiftc -DSPZ_CI_TESTS
 /// Holds exactly one computed publication until the newer operation has completed.
 /// Token-specific completion proves the old main-actor closure ran, rather than relying on sleeps.
 private actor PublicationBarrier {
@@ -1230,7 +1236,8 @@ private actor PublicationBarrier {
             Check.expect("commit-order-scan-started-before-fs-change-marked-out-of-date", parked && m.viewOutOfDate && m.destructiveBlocked, "parked=\(parked) outOfDate=\(m.viewOutOfDate)")
         } else { Check.expect("commit-order-scan-started-before-fs-change-marked-out-of-date", false, "fixture") }
 
-        // 3. The tree is replaced while a commit is in flight: the outcome is marked, not dropped.
+        // 3. MANUAL tree replacement (m.tree = other, not a scan publication) while a commit is parked: proves only that the
+        // outcome is marked and not dropped. It does not prove actual scan publication behavior or new-tree invariants (see 3b).
         // 4. Undo during a commit is refused and leaves the journal.
         if let m = await scanned(root), let id = node(m, "dirB") {
             let gate = PublicationBarrier("commit")
@@ -1247,6 +1254,30 @@ private actor PublicationBarrier {
             Check.expect("commit-order-undo-during-commit-refused", held && refused)
             Check.expect("commit-order-replaced-tree-outcome-marked-not-dropped", old !== other && m.viewOutOfDate && (m.removalMessage ?? "").contains("Rescan"), "outOfDate=\(m.viewOutOfDate)")
         } else { Check.expect("commit-order-undo-during-commit-refused", false, "fixture"); Check.expect("commit-order-replaced-tree-outcome-marked-not-dropped", false, "fixture") }
+
+        // 3b. A REAL scan publishes a new tree while a commit is parked between the file move and the engine forget; then
+        // the parked commit finishes against the OLD tree. The outcome must be marked, and the new tree's published state
+        // must be exactly what the scan published (no forget applied to it, no revision bump, no selection or row change).
+        if let m = await scanned(root), let id = node(m, "dirB") {
+            let other2 = fixture()
+            defer { try? FileManager.default.removeItem(at: other2) }
+            let gate = PublicationBarrier("commit")
+            m.beforeCommit = { await gate.before("commit", 0, UUID()) }
+            remove(m, id)
+            let held = await PublicationRegression.wait { await gate.parked() }
+            let oldTree = m.tree
+            m.scan(other2.path)
+            let published = await PublicationRegression.wait { !m.scanning && m.tree != nil && m.tree !== oldTree && !m.filterPending }
+            let newTree = m.tree, newVersion = m.tree?.version, newRevision = m.revision
+            let newRows = m.outlineRows.map { $0.node }, newItems = m.progress.items, newBytes = m.progress.bytes
+            let newRoot = newTree.map { $0.info(0).size }
+            let outOfDateBefore = m.viewOutOfDate
+            let commitStillParked = m.commitsInFlight == 1
+            await gate.release()
+            let settled = await PublicationRegression.wait { m.commitsInFlight == 0 }
+            let invariants = m.tree === newTree && m.tree?.version == newVersion && m.revision == newRevision && m.outlineRows.map { $0.node } == newRows && m.progress.items == newItems && m.progress.bytes == newBytes && m.tree.map { $0.info(0).size } == newRoot && !m.scanning
+            Check.expect("commit-order-real-scan-published-before-parked-commit-finishes-marks-out-of-date-keeps-new-tree", held && published && commitStillParked && settled && invariants && m.viewOutOfDate && (m.removalMessage ?? "").contains("Rescan") && !m.mutationPending, "held=\(held) published=\(published) parked=\(commitStillParked) settled=\(settled) invariants=\(invariants) outOfDateBeforeRelease=\(outOfDateBefore) outOfDate=\(m.viewOutOfDate)")
+        } else { Check.expect("commit-order-real-scan-published-before-parked-commit-finishes-marks-out-of-date-keeps-new-tree", false, "fixture") }
 
         // 5. Selected, expanded and displayed root inside a removed subtree are reset with the new numbers.
         if let m = await scanned(root), let dir = node(m, "dirA"), let sub = node(m, "sub"), let deep = node(m, "deep.txt") {
@@ -1880,10 +1911,9 @@ final class BusyFlag: @unchecked Sendable {
     var value: Bool { get { lock.lock(); defer { lock.unlock() }; return b } set { lock.lock(); b = newValue; lock.unlock() } }
 }
 
-#if SPZ_ORDERING_CI   // compiled only when the build passes -Xswiftc -DSPZ_ORDERING_CI; absent from every normal/release build
 /// CI-only driver (SPZ_DEMO + SPZ_AUTOSCAN + SPZ_CHECKS=ordering): runs ONLY the model-level ordering/coherence checks, verifies
-/// the result set fails closed, writes /tmp/spz-ordering-result.txt and exits. Not compiled behavior in release use: the
-/// entry is gated by the same env vars as the other CI-only scripts.
+/// the result set fails closed, writes result.txt and assertions.txt into the unique SPZ_RESULT_DIR and exits. Compiled only with SPZ_CI_TESTS; the
+/// entry additionally needs the env vars below.
 @MainActor enum OrderingDriver {
     /// Every check name that must appear exactly once as PASS. A check that silently does not run, runs twice, or is
     /// not listed here fails the run. Add a name here in the same change that adds a check.
@@ -1910,6 +1940,7 @@ final class BusyFlag: @unchecked Sendable {
         "commit-order-filter-parked-before-forget-late-publish-rejected",
         "commit-order-layout-not-renderable-releases",
         "commit-order-node-snapshot-withheld-while-pending",
+        "commit-order-real-scan-published-before-parked-commit-finishes-marks-out-of-date-keeps-new-tree",
         "commit-order-replaced-tree-outcome-marked-not-dropped",
         "commit-order-retry-keys-change-with-version",
         "commit-order-scan-replacement-clears-published-totals",
@@ -1932,12 +1963,19 @@ final class BusyFlag: @unchecked Sendable {
         "zero-match-selection-removal-policy"
     ]
     static func run(tree: Tree) async -> Never {
+        // Results go to a unique per-run directory chosen by the runner (SPZ_RESULT_DIR). Nothing shared is deleted or
+        // overwritten: a missing, unwritable or non-empty directory is a failure before any check runs.
+        let fm = FileManager.default
+        guard let dir = ProcessInfo.processInfo.environment["SPZ_RESULT_DIR"], dir.hasPrefix("/"),
+              (try? fm.contentsOfDirectory(atPath: dir))?.isEmpty == true else {
+            FileHandle.standardError.write(Data("FAIL SPZ_RESULT_DIR missing, relative, or not an empty directory\n".utf8)); exit(3)
+        }
+        let resultPath = dir + "/result.txt"
+        Check.path = dir + "/assertions.txt"
         // Hard timeout: a hang or deadlock is a failure, never a pass.
         DispatchQueue.global().asyncAfter(deadline: .now() + 300) {
-            try? "FAIL timeout\n".write(toFile: "/tmp/spz-ordering-result.txt", atomically: true, encoding: .utf8); exit(2)
+            try? "FAIL timeout\n".write(toFile: resultPath, atomically: true, encoding: .utf8); exit(2)
         }
-        try? FileManager.default.removeItem(atPath: "/tmp/spz-assertions.txt")
-        try? FileManager.default.removeItem(atPath: "/tmp/spz-ordering-result.txt")
         Check.results.removeAll()
         await PublicationRegression.run(tree: tree)
         await CommitOrderingRegression.run()
@@ -1945,7 +1983,7 @@ final class BusyFlag: @unchecked Sendable {
         await AsyncRemovalRegression.run()
         var problems: [String] = []
         if Check.results.isEmpty { problems.append("no results recorded") }
-        let fileOK = (try? String(contentsOfFile: "/tmp/spz-assertions.txt", encoding: .utf8))?.isEmpty == false
+        let fileOK = (try? String(contentsOfFile: Check.path, encoding: .utf8))?.isEmpty == false
         if !fileOK { problems.append("assertion file missing or empty") }
         let counts = Dictionary(grouping: Check.results, by: { $0.name })
         for r in required {
@@ -1958,8 +1996,9 @@ final class BusyFlag: @unchecked Sendable {
         for (n, rs) in counts where !allowed.contains(n) { problems.append("unlisted result \(n) ok=\(rs.map { $0.ok })") }
         for r in Check.results where !r.ok && allowed.contains(r.name) == false { problems.append("FAIL (unlisted): \(r.name)") }
         let body = problems.isEmpty ? "PASS \(required.count) required checks, each exactly once\n" : "FAIL\n" + problems.joined(separator: "\n") + "\n"
-        try? body.write(toFile: "/tmp/spz-ordering-result.txt", atomically: true, encoding: .utf8)
+        try? body.write(toFile: resultPath, atomically: true, encoding: .utf8)
         exit(problems.isEmpty ? 0 : 1)
     }
 }
+
 #endif
