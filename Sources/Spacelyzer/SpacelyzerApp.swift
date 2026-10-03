@@ -1313,6 +1313,33 @@ private actor PublicationBarrier {
             let seen = await PublicationRegression.wait { m.poisoned }
             Check.expect("poison-idle-counter-move-observed-by-watch", seen && m.viewOutOfDate, "seen=\(seen)")
         } else { Check.expect("poison-idle-counter-move-observed-by-watch", false, "fixture") }
+        // 8d. Selected-node BUSY policy: past 5 fast retries the view stays on a placeholder (nil), the model is NOT marked out
+        // of date, and retries continue; a later success clears it; changing the selection cancels the pending retry.
+        if let m = await scanned(root), let id = node(m, "dirB"), let other = node(m, "dirA") {
+            let busy = BusyFlag(true)
+            m.nodeCheckedOverride = { tree, i in
+                busy.value ? .failure(.busy) : tree.nodeChecked(i)
+            }
+            var rounds = 0, last = m.nodeRetryToken
+            _ = m.nodeSnapshot(id)
+            while rounds < 7 {
+                let moved = await PublicationRegression.wait { m.nodeRetryToken != last }
+                if !moved { break }
+                last = m.nodeRetryToken; rounds += 1
+                _ = m.nodeSnapshot(id)   // what the view does on re-render
+            }
+            let stillPlaceholder = m.nodeSnapshot(id) == nil
+            let notEscalated = !m.viewOutOfDate && m.requiredVersion == nil
+            busy.value = false
+            let last2 = m.nodeRetryToken
+            let recovered = await PublicationRegression.wait { m.nodeRetryToken != last2 } && m.nodeSnapshot(id) != nil && !m.retryPending("node")
+            busy.value = true
+            _ = m.nodeSnapshot(id)
+            let pendingBefore = m.retryPending("node")
+            m.selected = other   // selection change must cancel the old node's retry
+            let cancelled = pendingBefore && !m.retryPending("node")
+            Check.expect("node-busy-6plus-placeholder-recovers-and-cancels-on-selection-change", rounds >= 6 && stillPlaceholder && notEscalated && recovered && cancelled, "rounds=\(rounds) placeholder=\(stillPlaceholder) notEscalated=\(notEscalated) recovered=\(recovered) cancelled=\(cancelled)")
+        } else { Check.expect("node-busy-6plus-placeholder-recovers-and-cancels-on-selection-change", false, "fixture") }
         // 8b. Deadline must not livelock: repeated publishes of an already-current surface do not reset it; a layout that
         // never lands ends in an explicit out-of-date error after the forced refresh and one extension.
         if let m = await scanned(root), let id = node(m, "dirB") {
@@ -1775,4 +1802,10 @@ final class OpenGate: @unchecked Sendable {
     private let lock = NSLock(); private var o = false
     var isOpen: Bool { lock.lock(); defer { lock.unlock() }; return o }
     func open() { lock.lock(); o = true; lock.unlock() }
+}
+
+final class BusyFlag: @unchecked Sendable {
+    private let lock = NSLock(); private var b: Bool
+    init(_ v: Bool) { b = v }
+    var value: Bool { get { lock.lock(); defer { lock.unlock() }; return b } set { lock.lock(); b = newValue; lock.unlock() } }
 }
