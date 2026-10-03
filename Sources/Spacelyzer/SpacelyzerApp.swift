@@ -79,7 +79,11 @@ struct SpacelyzerApp: App {
                         let sampleDeadline = Date().addingTimeInterval(15)
                         while !FileManager.default.fileExists(atPath: "/tmp/spz-cold-click-ack") && Date() < sampleDeadline { try? await Task.sleep(nanoseconds: 20_000_000) }
                         Perf.log("interaction-sample acknowledged=\(FileManager.default.fileExists(atPath: "/tmp/spz-cold-click-ack"))")
-                        MainStall.shared.reset() // Exclude the sampler ready/ack wait from cold input stalls.
+                        // Diagnostic sampled arm: explicit idle settling for profiler startup, not prewarmed input.
+                        // This changes idle/arm conditions and cannot be compared as original cold latency.
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        Perf.log("interaction-sample arm=sampled-requested-settle-1s altered-idle=true no-cold-comparability; raw header must precede trace to establish coverage")
+                        MainStall.shared.reset() // Exclude ready/ack/startup settling from measured input stalls.
                         InteractionTrace.begin()
                         let clickBefore = model.selected, clickT0 = Perf.now()
                         DemoInput.click(fromTop: 124, x: 168)                       // a visible outline row
@@ -726,9 +730,9 @@ struct SpacelyzerApp: App {
                             let footerSurfaceValid = footerWindow.isVisible && footerWindow.isKeyWindow && abs(footerHost.bounds.width - 700) < 1
                             Check.expect("footer-constrained-production-surface-ready", footerSurfaceValid && model.activeFilter?.totalCount == 1 && model.demoFooterUnreadable == 1_234_567 && model.demoFooterPartial == true, "pixels40 decide natural ViewThatFits branch/accounting; separate700ptsurface not mainwindowbelowminimum; warning simulation")
                             Perf.log("footer-constrained surfaceWidth=\(footerHost.bounds.width) filterCount=\(model.activeFilter?.totalCount ?? 0) unreadable=\(model.demoFooterUnreadable ?? 0) partial=\(model.demoFooterPartial == true)")
-                            let footerAX = FooterAXEvidence.inspect(footerHost)
+                            let footerAX = FooterAXEvidence.inspect(footerWindow)
                             let fullLabel = footerAX.entries.contains { $0.label.contains("Stopped early, partial accounting") && $0.label.contains("Filter:") && $0.label.contains("1 file") && $0.label.contains("1,234,567 locations not readable") && $0.label.contains("Scanned in") }
-                            Check.expect("footer-native-accessibility-full-details", fullLabel, "native in-process AX tree only; truncated=\(footerAX.truncated); missing label inconclusive when truncated; not VoiceOver/client announcements or tooltip proof")
+                            Check.expect("footer-native-accessibility-full-details", fullLabel, "native accessor from mixed AX/view discovery only; not external client reachability; truncated=\(footerAX.truncated); missing label inconclusive when truncated; not VoiceOver/client announcements or tooltip proof")
                             mark(40)
                             footerWindow.close(); priorProductWindow?.makeKeyAndOrderFront(nil)
                             model.demoFooterUnreadable = nil; model.demoFooterPartial = nil
@@ -1107,11 +1111,11 @@ private actor PublicationBarrier {
 @MainActor private enum FooterAXEvidence {
     struct Entry { let label: String; let help: String }
     struct Result { let entries: [Entry]; let truncated: Bool }
-    static func inspect(_ root: NSView) -> Result {
+    static func inspect(_ root: NSWindow) -> Result {
         var entries: [Entry] = []
         var seen = Set<ObjectIdentifier>()
         var truncated = false
-        func visit(_ object: Any, depth: Int) {
+        func visit(_ object: Any, depth: Int, edge: String) {
             guard depth < 24, entries.count < 512 else { truncated = true; return }
             guard let node = object as? NSAccessibilityProtocol else { return }
             let identity = ObjectIdentifier(node)
@@ -1119,13 +1123,21 @@ private actor PublicationBarrier {
             let label = node.accessibilityLabel() ?? ""
             let help = node.accessibilityHelp() ?? ""
             entries.append(Entry(label: label, help: help))
-            Perf.log("footer-ax depth=\(depth) label=\(label.debugDescription) help=\(help.debugDescription)")
-            for child in node.accessibilityChildren() ?? [] {
-                if entries.count >= 512 { truncated = true; break }
-                visit(child, depth: depth + 1)
+            Perf.log("footer-ax edge=\(edge) depth=\(depth) label=\(label.debugDescription) help=\(help.debugDescription)")
+            // Include native view descendants as discovery roots when hosting AX children is nil.
+            // Read each descendant's real native AX label/help; never replace it with authored text.
+            let children = node.accessibilityChildren() ?? []
+            let views = (node as? NSView)?.subviews ?? []
+            let content = (node as? NSWindow)?.contentView.map { [$0] } ?? []
+            for (edge, descendants) in [("ax-child", children), ("view-subview", views as [Any]), ("window-content", content as [Any])] {
+                for child in descendants {
+                    if entries.count >= 512 { truncated = true; break }
+                    visit(child, depth: depth + 1, edge: edge)
+                }
+                if entries.count >= 512 { break }
             }
         }
-        visit(root, depth: 0)
+        visit(root, depth: 0, edge: "root-window")
         Perf.log("footer-ax complete nodes=\(entries.count) truncated=\(truncated)")
         return Result(entries: entries, truncated: truncated)
     }
