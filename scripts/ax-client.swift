@@ -8,6 +8,10 @@ print("ax-client targetPID=\(pid) clientPID=\(getpid()) trusted=\(AXIsProcessTru
 guard pid > 0, AXIsProcessTrusted() else { print("INCONCLUSIVE trust denied or invalid PID; no accessibility absence conclusion"); exit(0) }
 let root = AXUIElementCreateApplication(pid)
 var footerMatched = false
+var matchedDetails = false
+let expectedPath = CommandLine.arguments.count > 2 ? CommandLine.arguments[2] : ""
+let resultPath = CommandLine.arguments.count > 3 ? CommandLine.arguments[3] : ""
+let expected = try? Data(contentsOf: URL(fileURLWithPath: expectedPath))
 var seen: [AXUIElement] = []
 var truncated = false
 func attribute(_ element: AXUIElement, _ name: CFString) -> CFTypeRef? {
@@ -29,6 +33,14 @@ func visit(_ element: AXUIElement, depth: Int, edge: String, inFooter: Bool) {
     if isFooter { footerMatched = true }
     let footerScope = inFooter || isFooter
     print("scope footer700pt=\(footerScope) exactWindowMatched=\(isFooter)")
+    if footerScope, pidError == .success, actualPID == pid, role == kAXStaticTextRole, let expected, !expected.isEmpty {
+        let help = attribute(element, kAXHelpAttribute as CFString) as? String
+        let value = attribute(element, kAXValueAttribute as CFString) as? String
+        if help.map({ Data($0.utf8) }) == expected && value.map({ Data($0.utf8) }) == expected {
+            matchedDetails = true
+            print("external-footer-same-node-exact-details matched node=\(seen.count)")
+        }
+    }
     for name in [kAXRoleAttribute, kAXTitleAttribute, kAXDescriptionAttribute, kAXHelpAttribute, kAXValueAttribute] {
         if let value = attribute(element, name as CFString) { print("value \(name)=\(String(describing: value))") }
     }
@@ -43,3 +55,7 @@ func visit(_ element: AXUIElement, depth: Int, edge: String, inFooter: Bool) {
 }
 visit(root, depth: 0, edge: "application-root", inFooter: false)
 print("ax-client complete footerWindowMatched=\(footerMatched) nodes=\(seen.count) truncated=\(truncated); diagnostic only, separate from strict native accessor gate")
+
+let verified = footerMatched && matchedDetails && !truncated && expected != nil
+print("external-footer-regression verified=\(verified) sameNodeHelpValue=\(matchedDetails); native accessor gate remains separate")
+if !resultPath.isEmpty { try? (verified ? "VERIFIED" : "INCONCLUSIVE_OR_FAILED").write(toFile: resultPath, atomically: true, encoding: .utf8) }
