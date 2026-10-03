@@ -572,6 +572,9 @@ final class AppModel {
     /// True when a filter is active and this item is outside it (hidden from every view).
     func isOutsideFilter(_ id: UInt32) -> Bool {
         guard let f = activeFilter else { return false }
+        // A filter result from another table version, or any caught engine panic (the legacy count falls back to 0), cannot
+        // prove the item is inside the filter: refuse conservatively rather than act on a fallback or stale count.
+        if enginePoisoned || f.version != tree?.version { return true }
         return f.count(id) == 0
     }
 
