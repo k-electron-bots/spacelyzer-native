@@ -4,11 +4,11 @@ Priorities: safety, real and perceived performance, pixel polish, then features.
 
 ## Current priorities
 1. Extend the bounded injected focus evidence to actual modified-key/fallback behavior and real-system input. The named boundaries and semantic extension route passed run110, not whole-keyboard or native-graph repair.
-2. Ground the cold first-click and typing stalls, then complete E2 accessibility and real-system validation. Injected preferences or labels are not VoiceOver proof.
+2. Ground the cold first-click and typing stalls, compare equivalent release builds and audit UI/FFI/rendering costs, then complete E2 accessibility and real-system validation. Injected preferences or labels are not VoiceOver proof.
 3. Prove removal, partial scans, stability and memory behavior on disposable fixtures before a release is called ready.
 
 ## First usable release priority
-Karim approved safe big-file cleanup first on October3, ahead of hidden macOS space/snapshot/accounting explanations. Build useful inspect/preview and reviewed Trash workflows on the existing Largest/outline surfaces. Responsiveness, current-file identity validation, permissions, protected paths, failure and undo gates remain; this direction does not authorize automatic deletion or establish release readiness. One-item versus batch cleanup scope is still a product question, not an implementation decision. Hidden-space accounting stays planned after this first usable workflow.
+Karim approved safe big-file cleanup first on October3, ahead of hidden macOS space/snapshot/accounting explanations. Build useful inspect/preview and reviewed Trash workflows on the existing Largest/outline surfaces. Responsiveness, current-file identity validation, permissions, protected paths, failure and undo gates remain; this direction does not authorize automatic deletion or establish release readiness. The first release uses one-item-at-a-time cleanup with a preview, full path and clear undo; batch cleanup comes later. Hidden-space accounting stays planned after this first usable workflow.
 
 ## Product epics
 | Epic | Scope and dependencies | Status |
@@ -22,7 +22,7 @@ Karim approved safe big-file cleanup first on October3, ahead of hidden macOS sp
 | E7 Polish and endurance | App icon, decimal/binary units, cold first-click investigation, long-session soak/leaks | Planned; stability is cross-cutting |
 
 ## Release gates across epics
-- Broader Trash failure/undo and real-hardware behavior beyond the narrow disposable CI remove/undo pass.
+- Broader Trash failure/undo and real-hardware behavior beyond the narrow disposable CI remove/undo pass. Current MainActor Trash/undo filesystem work and Rust subtree mutation must gain safe off-main execution with current identity revalidation and no concurrent tree mutation/read before cleanup ships.
 - Rescan/tree-swap/cancel recovery, including old work released after a newer result.
 - Memory plateau across repeated rescans, long-session sampling and Rust/FFI leak/bounds checks.
 - Main-thread stall measurements for hover, typing and expand-all.
