@@ -322,7 +322,10 @@ private struct NameFilterField: NSViewRepresentable {
             resetRevision = model.filterResetRevision
         }
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-            if Perf.on { Perf.log("native-tab field-command=\(NSStringFromSelector(commandSelector)) responder=\(String(describing: control.window?.firstResponder))") }
+            if Perf.on {
+                let event = NSApp.currentEvent
+                Perf.log("native-tab field-command=\(NSStringFromSelector(commandSelector)) code=\(event.map { String($0.keyCode) } ?? "none") modifiers=\(event.map { String($0.modifierFlags.rawValue) } ?? "none") chars=\(event?.characters?.debugDescription ?? "none") ignoring=\(event?.charactersIgnoringModifiers?.debugDescription ?? "none") editorMatches=\(control.window?.firstResponder === textView) delegateMatches=\(textView.delegate === control) responder=\(String(describing: control.window?.firstResponder))")
+            }
             guard commandSelector == #selector(NSResponder.insertBacktab(_:)), !textView.hasMarkedText() else { return false }
             // Do not intercept modified shortcuts, or IME composition commands.
             if let event = NSApp.currentEvent, !event.modifierFlags.intersection([.command, .control, .option]).isEmpty { return false }
