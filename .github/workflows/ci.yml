@@ -72,6 +72,8 @@ jobs:
           echo "hash=$HASH" >> "$GITHUB_OUTPUT"
       - name: Package signed DMG
         run: ./scripts/package-dmg.sh "${{ steps.ver.outputs.version }}" "${{ steps.sign.outputs.hash }}"
+      - name: Build TEST-ONLY app with SPZ_CI_TESTS (never packaged or released; the DMG above is built without the flag)
+        run: ./scripts/build-test-app.sh dist-test "${{ steps.sign.outputs.hash }}"
       - name: Launch app and screenshot (informational)
         continue-on-error: true
         run: |
@@ -87,7 +89,7 @@ jobs:
           swiftc scripts/ax-client.swift -o /tmp/spz-ax-client
           rm -rf /tmp/spz-chronology
           rm -f /tmp/spz-interaction-envelope.txt /tmp/spz-footer-ax-status.txt /tmp/spz-footer-ax-result.txt /tmp/spz-footer-ax-expected.txt /tmp/spz-footer-ax-ready /tmp/spz-footer-ax-ack /tmp/spz-footer-ax-client.txt /tmp/spz-cold-click-subprocess-end.txt /tmp/spz-sample.txt /tmp/spz-cold-click-sample.txt /tmp/spz-cold-click-sample-command.txt /tmp/spz-cold-click-sample-status.txt /tmp/spz-cold-click-ready /tmp/spz-cold-click-ack /tmp/spz-demo-ready-* /tmp/spz-demo-ack-* /tmp/spz-demo-*.png /tmp/spz-demo-step /tmp/spz-demo-finished /tmp/spz-geom.txt /tmp/spz-timing.txt /tmp/spz-assertions.txt
-          open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Library --env SPZ_DEMO=1
+          open -n dist-test/Spacelyzer.app --env SPZ_AUTOSCAN=/Library --env SPZ_DEMO=1
           for step in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 23 24 19 25 20 21 22 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48; do
             for i in $(seq 1 240); do
               if [ -f /tmp/spz-footer-ax-ready ] && [ ! -f /tmp/spz-footer-ax-ack ]; then
