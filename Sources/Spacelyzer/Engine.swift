@@ -144,6 +144,9 @@ final class Tree: @unchecked Sendable {
         return Array(ids.prefix(Int(c)))
     }
 
+    /// Count only: footer rendering must not copy every unreadable path.
+    var skippedCount: Int { Int(spz_tree_skipped_count(ptr)) }
+
     var skipped: [(path: String, reason: Int)] {
         (0..<spz_tree_skipped_count(ptr)).map { (take(spz_tree_skipped_path(ptr, $0)), Int(spz_tree_skipped_reason(ptr, $0))) }
     }
