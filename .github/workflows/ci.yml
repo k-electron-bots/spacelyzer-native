@@ -84,15 +84,23 @@ jobs:
           pkill Spacelyzer || true
           sleep 2
           # Scripted interaction run: the app writes /tmp/spz-demo-step after each state settles.
-          rm -f /tmp/spz-demo-ready-* /tmp/spz-demo-ack-* /tmp/spz-demo-*.png /tmp/spz-demo-step /tmp/spz-demo-finished /tmp/spz-geom.txt /tmp/spz-timing.txt /tmp/spz-assertions.txt
+          rm -f /tmp/spz-sample.txt /tmp/spz-cold-click-sample.txt /tmp/spz-cold-click-sample-command.txt /tmp/spz-cold-click-sample-status.txt /tmp/spz-cold-click-ready /tmp/spz-cold-click-ack /tmp/spz-demo-ready-* /tmp/spz-demo-ack-* /tmp/spz-demo-*.png /tmp/spz-demo-step /tmp/spz-demo-finished /tmp/spz-geom.txt /tmp/spz-timing.txt /tmp/spz-assertions.txt
           open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Library --env SPZ_DEMO=1
-          for step in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 23 24 19 25 20 21 22 26 27 28 29 30 31 32 33 34 35 36 37 38 39; do
-            for i in $(seq 1 240); do [ -f "/tmp/spz-demo-ready-$step" ] && break; sleep 1; done
+          for step in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 23 24 19 25 20 21 22 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40; do
+            for i in $(seq 1 240); do
+              if [ -f /tmp/spz-cold-click-ready ] && [ ! -f /tmp/spz-cold-click-ack ]; then
+                sample Spacelyzer 8 5 -file /tmp/spz-cold-click-sample.txt >/tmp/spz-cold-click-sample-command.txt 2>&1 &
+                cold_sample_pid=$!
+                echo "sample launched pid=$cold_sample_pid $(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> /tmp/spz-timing.txt
+                touch /tmp/spz-cold-click-ack
+              fi
+              [ -f "/tmp/spz-demo-ready-$step" ] && break; sleep 1
+            done
             if [ ! -f "/tmp/spz-demo-ready-$step" ]; then
               echo "DEMO STEP TIMEOUT: expected $step, last $(cat /tmp/spz-demo-step 2>/dev/null)" >> /tmp/spz-timing.txt
               break
             fi
-            if [ "$step" = 7 ]; then (sample Spacelyzer 12 5 -file /tmp/spz-sample.txt >/dev/null 2>&1 &) ; fi
+            # The old step7 sampler is disabled to avoid overlapping cold-input sampling.
             screencapture -x "dist/screenshot-demo-$step.png"
             touch "/tmp/spz-demo-ack-$step"
           done
@@ -106,6 +114,18 @@ jobs:
           cp /tmp/spz-timing.txt dist/ui-timing.txt 2>/dev/null || true
           pkill Spacelyzer || true
           sleep 3
+          if [ -n "${cold_sample_pid:-}" ]; then
+            cold_exit=0
+            wait "$cold_sample_pid" || cold_exit=$?
+            if [ "$cold_exit" -ne 0 ] || [ ! -s /tmp/spz-cold-click-sample.txt ]; then echo 'sample failed/missing report: cold-input capture inconclusive' >> /tmp/spz-timing.txt; fi
+            echo "sample completed exit=$cold_exit $(date -u '+%Y-%m-%dT%H:%M:%SZ')" | tee /tmp/spz-cold-click-sample-status.txt >> /tmp/spz-timing.txt
+          else
+            echo 'sample missing: cold-input capture inconclusive' | tee /tmp/spz-cold-click-sample-status.txt >> /tmp/spz-timing.txt
+          fi
+          cp /tmp/spz-timing.txt dist/ui-timing.txt
+          cp /tmp/spz-cold-click-sample-status.txt dist/cold-click-sample-status.txt
+          cp /tmp/spz-cold-click-sample.txt dist/cold-click-sample.txt 2>/dev/null || true
+          cp /tmp/spz-cold-click-sample-command.txt dist/cold-click-sample-command.txt 2>/dev/null || true
           if [ -f /tmp/spz-sample.txt ]; then cp /tmp/spz-sample.txt dist/main-thread-sample.txt; body=$(python3 scripts/sample-summary.py /tmp/spz-sample.txt | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}' | head -c 12000); echo "::notice title=sample::$body"; fi
           for f in $(ls -t ~/Library/Logs/DiagnosticReports/Spacelyzer*.ips 2>/dev/null | head -1); do
             cp "$f" dist/crash-report.ips
@@ -119,12 +139,12 @@ jobs:
           cp /tmp/spz-assertions.txt dist/ui-assertions.txt 2>/dev/null || true
           # Ordinary log lines survive artifact-service failure and annotation truncation.
           echo 'Critical focus/reset evidence (strict assertions remain below):'
-          grep -E '^(before-resign|after-direct-resign|after-fixture-key-window|before-activation|activation-wait-seconds=|reload-after-responder-wait|tab-chain |rest-chain-|native-tab |boundary-sim |boundary-setup |boundary-native |boundary-hidden |same-value-fixture-start |before-same-value-clear |check FAIL|app still running at end|APP NOT RUNNING|DEMO .*TIMEOUT)' /tmp/spz-timing.txt 2>/dev/null || true
+          grep -E '^(before-resign|after-direct-resign|after-fixture-key-window|before-activation|activation-wait-seconds=|reload-after-responder-wait|tab-chain |rest-chain-|native-tab |boundary-sim |boundary-setup |boundary-native |boundary-hidden |interaction-stage |interaction-sample |footer-constrained |sample launched |sample completed |sample missing:|sample failed/missing report:|same-value-fixture-start |before-same-value-clear |check FAIL|app still running at end|APP NOT RUNNING|DEMO .*TIMEOUT)' /tmp/spz-timing.txt 2>/dev/null || true
           cat /tmp/spz-assertions.txt || true
-          expected=80
+          expected=81
           if grep -q 'APP NOT RUNNING' /tmp/spz-timing.txt 2>/dev/null; then echo "::error title=ui-assertions::app was not running at the end of the demo (crash or exit)"; exit 1; fi
           if grep -q 'DEMO .*TIMEOUT' /tmp/spz-timing.txt 2>/dev/null; then echo "::error title=ui-assertions::$(grep 'DEMO .*TIMEOUT' /tmp/spz-timing.txt)"; exit 1; fi
-          for step in $(seq 1 39); do [ -s "dist/screenshot-demo-$step.png" ] || { echo "::error title=ui-assertions::missing screenshot step $step"; exit 1; }; done
+          for step in $(seq 1 40); do [ -s "dist/screenshot-demo-$step.png" ] || { echo "::error title=ui-assertions::missing screenshot step $step"; exit 1; }; done
           n=$(grep -c '^PASS\|^FAIL' /tmp/spz-assertions.txt 2>/dev/null || echo 0)
           if grep -q '^FAIL' /tmp/spz-assertions.txt 2>/dev/null || [ "$n" -ne "$expected" ]; then
             echo "::error title=ui-assertions::expected $expected results, got $n; $(tr '\n' ';' < /tmp/spz-assertions.txt 2>/dev/null)"
@@ -140,6 +160,9 @@ jobs:
             dist/screenshot*.png
             dist/ui-assertions.txt
             dist/main-thread-sample.txt
+            dist/cold-click-sample.txt
+            dist/cold-click-sample-command.txt
+            dist/cold-click-sample-status.txt
             dist/crash-report.ips
             dist/ui-timing.txt
       - name: Publish release (epic tags only)
