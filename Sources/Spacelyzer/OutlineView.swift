@@ -34,7 +34,7 @@ struct OutlineView: View {
 private final class KeyTable: NSTableView {
     var onAttachment: (() -> Void)?
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); onAttachment?() }
-    var onTab: (() -> Void)?
+    var onTab: ((NSEvent.ModifierFlags) -> Bool)?
     var onKey: ((UInt16) -> Bool)?
     var contextRow: ((Int) -> NSMenu?)?
     private func tabDiagnostic(_ stage: String, _ event: NSEvent? = nil) {
@@ -60,13 +60,12 @@ private final class KeyTable: NSTableView {
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 48 { tabDiagnostic("keyDown-entry", event) }
         if event.keyCode == 48 && event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
-            tabDiagnostic("before-reconnect", event)
-            onTab?()
-            tabDiagnostic("after-reconnect", event)
-            if event.modifierFlags.contains(.shift) { window?.selectPreviousKeyView(self) }
-            else { window?.selectNextKeyView(self) }
-            tabDiagnostic("after-select", event)
-            return
+            // Only the forward outline-to-filter boundary is explicit. Backward stays native.
+            if !event.modifierFlags.contains(.shift), onTab?(event.modifierFlags) == true {
+                tabDiagnostic("after-explicit-boundary", event)
+                return
+            }
+            tabDiagnostic("native-fallback", event)
         }
         if let h = onKey, h(event.keyCode) { return }
         super.keyDown(with: event)
@@ -194,7 +193,10 @@ private struct OutlineTable: NSViewRepresentable {
         table.target = context.coordinator
         table.doubleAction = #selector(Coordinator.doubleClicked)
         table.setAccessibilityLabel("Folder outline")
-        table.onTab = { [weak model] in model?.prepareOutlineFocusTraversal() }
+        table.onTab = { [weak model, weak table] modifiers in
+            guard let table else { return false }
+            return model?.focusNameFromOutline(table, modifiers: modifiers).consumesCommand ?? false
+        }
         table.onKey = { [weak c = context.coordinator] code in c?.key(code) ?? false }
         table.contextRow = { [weak c = context.coordinator] r in c?.menu(for: r) }
         context.coordinator.table = table
