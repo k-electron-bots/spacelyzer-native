@@ -747,10 +747,12 @@ struct SpacelyzerApp: App {
         guard let w = window else { return }
         let plain = chars ?? (code == 125 ? String(UnicodeScalar(NSDownArrowFunctionKey)!) : "")
         let ch = code == 48 && modifiers.contains(.shift) ? String(UnicodeScalar(NSBackTabCharacter)!) : plain
-        if code == 48 { Perf.log("native-tab injected code=\(code) modifiers=\(modifiers.rawValue) chars=\(ch.debugDescription) ignoring=\(plain.debugDescription)") }
+        // AppKit preserves Shift in charactersIgnoringModifiers.
+        let ignoring = code == 48 ? ch : plain
+        if code == 48 { Perf.log("native-tab injected code=\(code) modifiers=\(modifiers.rawValue) chars=\(ch.debugDescription) ignoring=\(ignoring.debugDescription)") }
         for t in [NSEvent.EventType.keyDown, .keyUp] {
             if let e = NSEvent.keyEvent(with: t, location: .zero, modifierFlags: modifiers, timestamp: ProcessInfo.processInfo.systemUptime,
-                                        windowNumber: w.windowNumber, context: nil, characters: ch, charactersIgnoringModifiers: plain,
+                                        windowNumber: w.windowNumber, context: nil, characters: ch, charactersIgnoringModifiers: ignoring,
                                         isARepeat: false, keyCode: code) { NSApp.postEvent(e, atStart: false) }
         }
     }
@@ -937,11 +939,16 @@ private actor PublicationBarrier {
 
 /// Isolated native API guards, not actual keyboard-shortcut or IME proof.
 @MainActor private enum BoundaryGuardRegression {
+    private final class TableData: NSObject, NSTableViewDataSource {
+        func numberOfRows(in tableView: NSTableView) -> Int { 1 }
+    }
     private final class RefusingField: NSTextField {
         override var acceptsFirstResponder: Bool { true }
         override func becomeFirstResponder() -> Bool { false }
     }
     private final class BoundaryWindow: NSWindow {
+        // NSTableView.dataSource is weak. Own it through the entire async fixture.
+        var retainedTableData: TableData?
         weak var challengedTarget: NSResponder?
         weak var restoreSource: NSResponder?
         weak var decoy: NSResponder?
@@ -968,16 +975,26 @@ private actor PublicationBarrier {
         window.isReleasedWhenClosed = false
         defer { window.close(); product.makeKeyAndOrderFront(nil) }
         let source = NSTableView(frame: NSRect(x: 0, y: 0, width: 80, height: 80))
+        let tableData = TableData()
+        window.retainedTableData = tableData
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("boundary-source"))
+        source.addTableColumn(column)
+        source.dataSource = tableData
+        source.headerView = nil
+        source.allowsEmptySelection = true
+        source.reloadData()
+        let scroll = NSScrollView(frame: source.frame)
+        scroll.documentView = source
         let target = NSTextField(frame: NSRect(x: 90, y: 0, width: 80, height: 24))
-        window.contentView?.addSubview(source); window.contentView?.addSubview(target)
+        window.contentView?.addSubview(scroll); window.contentView?.addSubview(target)
         model.outlineKeyView = source; model.nameFilterKeyView = target
         window.makeKeyAndOrderFront(nil)
         let initialResponderAccepted = window.makeFirstResponder(source)
         let setupDeadline = Date().addingTimeInterval(3)
         while (!window.isKeyWindow || !NSApp.isActive) && Date() < setupDeadline { try? await Task.sleep(nanoseconds: 20_000_000) }
-        let setup = initialResponderAccepted && window.firstResponder === source && window.isKeyWindow && NSApp.isActive
+        let setup = initialResponderAccepted && source.acceptsFirstResponder && window.firstResponder === source && window.isKeyWindow && NSApp.isActive
         @MainActor func guardDiagnostic(_ name: String) -> String {
-            "\(name) initialAccepted=\(initialResponderAccepted) setup=\(setup) sourceAccepts=\(source.acceptsFirstResponder) key=\(window.isKeyWindow) active=\(NSApp.isActive) visible=\(window.isVisible) sourceVisible=\(!source.isHiddenOrHasHiddenAncestor) sourceEnabled=\(source.isEnabled) responder=\(String(describing: window.firstResponder)) target=\(String(describing: model.nameFilterKeyView))"
+            "\(name) initialAccepted=\(initialResponderAccepted) setup=\(setup) sourceAccepts=\(source.acceptsFirstResponder) rows=\(source.numberOfRows) columns=\(source.numberOfColumns) sourceIdentity=\(window.firstResponder === source) key=\(window.isKeyWindow) active=\(NSApp.isActive) visible=\(window.isVisible) sourceVisible=\(!source.isHiddenOrHasHiddenAncestor) sourceEnabled=\(source.isEnabled) responder=\(String(describing: window.firstResponder)) target=\(String(describing: model.nameFilterKeyView))"
         }
         Perf.log("boundary-setup \(guardDiagnostic("initial"))")
         @MainActor func currentSource() -> Bool { window.isKeyWindow && NSApp.isActive && window.firstResponder === source }
