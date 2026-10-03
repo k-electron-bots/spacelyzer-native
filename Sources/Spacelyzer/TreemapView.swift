@@ -81,8 +81,8 @@ func fill(_ r: TreemapRect, tree: Tree, coloring: TreemapColoring) -> Color {
 
 /// Optional CI hook. With nil (normal app), no waits or evidence callbacks occur.
 @MainActor final class TreemapPublicationProbe {
-    var before: (@Sendable (UUID, UInt64, CGSize) async -> Void)?
-    var after: ((UUID, UInt64, CGSize, Bool, TreemapPublicationEvidence) -> Void)?
+    var before: (@Sendable (UUID, UInt64, CGSize, ObjectIdentifier) async -> Void)?
+    var after: ((UUID, UInt64, CGSize, ObjectIdentifier, Bool, TreemapPublicationEvidence) -> Void)?
     var readEvidence: (() -> TreemapPublicationEvidence)?
 }
 struct TreemapPublicationEvidence {
@@ -201,7 +201,7 @@ struct TreemapView: View {
             let l = tree.layout(root: root, size: s, filter: flt)
             if Task.isCancelled { return }
             let token = (barrier != nil || completed != nil) ? UUID() : nil
-            if let token { await barrier?(token, request, s) }
+            if let token { await barrier?(token, request, s, ObjectIdentifier(tree)) }
             await MainActor.run {
                 let accepted: Bool
                 if !Task.isCancelled, generation == request, model.tree === tree,
@@ -211,7 +211,7 @@ struct TreemapView: View {
                     hovered = nil
                     accepted = true
                 } else { accepted = false }
-                if let token { completed?(token, request, s, accepted, publicationEvidence()) }
+                if let token { completed?(token, request, s, ObjectIdentifier(tree), accepted, publicationEvidence()) }
             }
         }
     }
