@@ -1350,6 +1350,14 @@ private actor PublicationBarrier {
             try? await Task.sleep(nanoseconds: 400_000_000)   // a duplicate would have fired by now
             Check.expect("retry-same-inputs-dedupes-to-one-fire", fired.value == 1, "fired=\(fired.value)")
             m.retryDone("dedupe-test")
+            // New inputs while a retry is pending REPLACE it: only the second action fires, once, and the count restarts.
+            let a = CallCounter(), b = CallCounter()
+            m.retryBusy("replace-test", inputs: 7) { a.bump() }
+            m.retryBusy("replace-test", inputs: 8) { b.bump() }
+            _ = await PublicationRegression.wait { b.value >= 1 }
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            Check.expect("retry-new-inputs-replace-pending-action", a.value == 0 && b.value == 1, "old=\(a.value) new=\(b.value)")
+            m.retryDone("replace-test")
         } else { Check.expect("retry-same-inputs-dedupes-to-one-fire", false, "fixture") }
         // 8b. Deadline must not livelock: repeated publishes of an already-current surface do not reset it; a layout that
         // never lands ends in an explicit out-of-date error after the forced refresh and one extension.
