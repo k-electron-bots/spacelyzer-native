@@ -732,6 +732,7 @@ struct SpacelyzerApp: App {
                             mark(40)
                             footerWindow.close(); priorProductWindow?.makeKeyAndOrderFront(nil)
                             model.demoFooterUnreadable = nil; model.demoFooterPartial = nil
+                            await TreemapMountedRegression.run(capture: mark)
                             try? FileManager.default.removeItem(at: zeroRoot)
                             try? Data().write(to: URL(fileURLWithPath: "/tmp/spz-demo-finished"))
 
@@ -837,17 +838,19 @@ private actor PublicationBarrier {
     private var token: UUID?
     private var continuation: CheckedContinuation<Void, Never>?
     private var finished = false
+    private var released = false
     init(_ stage: String) { self.stage = stage }
     func before(_ stage: String, _ generation: UInt64, _ publication: UUID) async {
-        guard stage == self.stage, token == nil else { return }
+        guard !released, stage == self.stage, token == nil else { return }
         token = publication
         await withCheckedContinuation { continuation = $0 }
     }
     func after(_ stage: String, _ generation: UInt64, _ publication: UUID) {
         if stage == self.stage && publication == token { finished = true }
     }
-    func release() { continuation?.resume(); continuation = nil }
+    func release() { released = true; continuation?.resume(); continuation = nil }
     func parked() -> Bool { continuation != nil }
+    func heldToken() -> UUID? { token }
     func completed() -> Bool { finished }
 }
 
@@ -1125,5 +1128,61 @@ private actor PublicationBarrier {
         visit(root, depth: 0)
         Perf.log("footer-ax complete nodes=\(entries.count) truncated=\(truncated)")
         return Result(entries: entries, truncated: truncated)
+    }
+}
+
+@MainActor private enum TreemapMountedRegression {
+    final class Results {
+        var values: [(token: UUID, generation: UInt64, requestedSize: CGSize, accepted: Bool, evidence: TreemapPublicationEvidence)] = []
+    }
+    static func run(capture: (Int) -> Void) async {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("spz-mounted-treemap-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try? Data(repeating: 65, count: 32768).write(to: directory.appendingPathComponent("large.txt"))
+        try? Data(repeating: 66, count: 16384).write(to: directory.appendingPathComponent("small.bin"))
+        let tree = await ScanSession(root: directory.path, excludes: [])?.run { _ in }
+        let model = AppModel(); model.tree = tree
+        let prior = DemoInput.window
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 520, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.title = "CI actual mounted treemap publication"
+        let barrier = PublicationBarrier("treemap"), results = Results(), probe = TreemapPublicationProbe()
+        probe.before = { token, generation, requestedSize in
+            if requestedSize == CGSize(width: 520, height: 300) { await barrier.before("treemap", generation, token) }
+        }
+        probe.after = { token, generation, requestedSize, accepted, evidence in
+            results.values.append((token, generation, requestedSize, accepted, evidence))
+            Task { await barrier.after("treemap", generation, token) }
+            Perf.log("treemap-mounted token=\(token) generation=\(generation) requestedSize=\(requestedSize) accepted=\(accepted) layout=\(String(describing: evidence.layoutID)) tree=\(String(describing: evidence.treeID)) size=\(evidence.size) hitValid=\(evidence.hitValid)")
+        }
+        let host = NSHostingView(rootView: TreemapView(publicationProbe: probe).environment(model))
+        window.contentView = host; window.center(); window.makeKeyAndOrderFront(nil)
+        defer { probe.before = nil; probe.after = nil; probe.readEvidence = nil; window.close(); prior?.makeKeyAndOrderFront(nil) }
+        let parked = await PublicationRegression.wait { await barrier.parked() }
+        guard parked else {
+            await barrier.release()
+            Check.expect("treemap-mounted-newer-resize-published", false, "520x300 request did not park; inconclusive lifecycle fixture")
+            return
+        }
+        let oldToken = await barrier.heldToken()
+        window.setContentSize(NSSize(width: 680, height: 360))
+        func validNew(_ value: (token: UUID, generation: UInt64, requestedSize: CGSize, accepted: Bool, evidence: TreemapPublicationEvidence)) -> Bool {
+            value.accepted && value.requestedSize == CGSize(width: 680, height: 360) && value.evidence.size == value.requestedSize && value.evidence.treeID == tree.map(ObjectIdentifier.init) && value.evidence.layoutID != nil && value.evidence.hitValid
+        }
+        let newer = await PublicationRegression.wait { results.values.contains(where: validNew) }
+        try? await Task.sleep(nanoseconds: 700_000_000) // yield for Canvas rendering; pixels remain decisive
+        let newState = results.values.last(where: validNew)
+        let beforeCapture = probe.readEvidence?()
+        let stillHeld = !(await barrier.completed())
+        Check.expect("treemap-mounted-newer-resize-published", tree != nil && newer && stillHeld && window.isVisible && host.window === window && beforeCapture?.layoutID == newState?.evidence.layoutID && beforeCapture?.hitValid == true, "actual Rust layout + hosted view; pixels41 required")
+        guard newer, stillHeld, let newState else { await barrier.release(); return }
+        capture(41)
+        await barrier.release()
+        let attempted = await PublicationRegression.wait { await barrier.completed() }
+        try? await Task.sleep(nanoseconds: 700_000_000) // allow rendered state to settle before42
+        let old = results.values.last { $0.token == oldToken && !$0.accepted }
+        let afterCapture = probe.readEvidence?()
+        Check.expect("treemap-mounted-old-resize-rejected-preserves-hit", attempted && old?.requestedSize == CGSize(width: 520, height: 300) && (old?.generation ?? UInt64.max) < newState.generation && old?.evidence.layoutID == newState.evidence.layoutID && old?.evidence.treeID == newState.evidence.treeID && old?.evidence.size == newState.evidence.size && old?.evidence.hitValid == true && afterCapture?.layoutID == newState.evidence.layoutID && afterCapture?.treeID == newState.evidence.treeID && afterCapture?.size == newState.evidence.size && afterCapture?.hitValid == true, "token-specific old callback ran; actual currentLayout/hit path; pixels42 required")
+        capture(42)
     }
 }
