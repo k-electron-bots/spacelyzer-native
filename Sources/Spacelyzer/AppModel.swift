@@ -441,6 +441,18 @@ final class AppModel {
         if retryGeneration[key] != generation { retryAttempts[key] = nil; retryGeneration[key] = generation }
         let n = (retryAttempts[key] ?? 0) + 1
         retryTasks[key]?.cancel()
+        // Presentation-only reads (the selected node's details) must not escalate to a global out-of-date state: after the
+        // bounded fast retries they keep a persistent "Updating" placeholder and retry slowly, forever cheap (one capture / 2 s).
+        if key == "node" && n > 5 {
+            retryAttempts[key] = 5
+            retryTasks[key] = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                if Task.isCancelled { return }
+                self?.retryTasks[key] = nil
+                action()
+            }
+            return
+        }
         guard n <= 5 else {
             retryAttempts[key] = nil; retryTasks[key] = nil
             markOutOfDate("The engine stayed busy and the list could not be refreshed. Rescan, or try again.")
