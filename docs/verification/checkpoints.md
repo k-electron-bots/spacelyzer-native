@@ -77,7 +77,7 @@ Run106 at8694d903:66PASS2FAIL/68,39images. Native keyDown runs; raw/valid namedf
 
 ### Run107 result and scope
 
-Reported 67 PASS / 13 FAIL of 80; forward Tab exact field/editor independently accepted. Two reverse checks and eleven helper checks failed; no reverse/helper acceptance. Fixture diagnostic source `72e178a` is separate from the product baseline `e2cd228`; [follow-up108](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37088229962) pending. [Observed run](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37086620447).
+Reported 67 PASS / 13 FAIL of 80; forward Tab exact field/editor independently accepted. Two reverse checks and eleven helper checks failed; no reverse/helper acceptance. Fixture diagnostic source `72e178a` is separate from the product baseline `e2cd228`; follow-up108 also failed, as recorded below. [Observed run](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37086620447).
 
 ## Failure details accompanying checkpoints
 
@@ -162,3 +162,11 @@ Independent origin/revision source blocker closed; composition fixture now waits
 - Run37043128105 at c892613 passed all30 checks and captured22 images. Pixel review confirms399/401pt empty/five-digit counts and real date/sort/reset effects. Depth12 evidence is not yet accepted: /tmp vs /private/tmp path mismatch left the large folder expanded. Canonical-path fixture exclusion and explicit visible-depth12 check repaired; independent signoff remains pending.
 
 - Run37046851306 failed strengthened depth checks at correct399/401 widths: b-large still expanded; choice-menu images23-25 were blank. Do not accept those pixels. Depth fixture now selects nodes by root-child identity instead of path. Menu visual automation remains unresolved; no new checkpoint before that review decision.
+
+## Run108: native event identity and blocked helper setup
+
+October 2, 2026, fixture source `72e178a`: 67 PASS / 13 FAIL of 80, 39 captured states. Forward Tab still reached the exact name field/editor without changing selection. Shift-Tab arrived with keycode48, Shift, characters0x19 and charactersIgnoringModifiers0x09; the correct field/editor delegate received `insertTab:`, so reverse handling was not exercised. Apple documents that charactersIgnoringModifiers preserves Shift; faithful event construction remains a fixture prerequisite, not a reason to certify or bypass the product handler.
+
+The helper window was key, active and visible, but its bare table reported acceptsFirstResponder=false and the actual first responder was BoundaryWindow. makeFirstResponder returned true, demonstrating why its Boolean alone is not acquisition proof. All eleven helper results are blocked setup, not guard execution or eleven product bugs. A realistic native table and exact responder identity must be established before repeating those cases. No acceptance override is a substitute for that proof.
+
+[Run108](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37088229962) · [Artifact](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37088229962/artifacts/11260769990) · [Apple event contract](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/EventOverview/HandlingKeyEvents/HandlingKeyEvents.html). Linux/engine and build steps completed; the strict UI gate failed. No release, native-graph repair, modified-shortcut fallback, actual IME or real-hardware claim follows.
