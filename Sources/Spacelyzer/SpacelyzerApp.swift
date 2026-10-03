@@ -1340,6 +1340,17 @@ private actor PublicationBarrier {
             let cancelled = pendingBefore && !m.retryPending("node")
             Check.expect("node-busy-6plus-placeholder-recovers-and-cancels-on-selection-change", rounds >= 6 && stillPlaceholder && notEscalated && recovered && cancelled, "rounds=\(rounds) placeholder=\(stillPlaceholder) notEscalated=\(notEscalated) recovered=\(recovered) cancelled=\(cancelled)")
         } else { Check.expect("node-busy-6plus-placeholder-recovers-and-cancels-on-selection-change", false, "fixture") }
+        // 8e. Retry dedupe: three calls with the same inputs while one retry is waiting fire ONE action and consume ONE attempt.
+        if let m = await scanned(root) {
+            let fired = CallCounter()
+            m.retryBusy("dedupe-test", inputs: 7) { fired.bump() }
+            m.retryBusy("dedupe-test", inputs: 7) { fired.bump() }
+            m.retryBusy("dedupe-test", inputs: 7) { fired.bump() }
+            _ = await PublicationRegression.wait { fired.value >= 1 }
+            try? await Task.sleep(nanoseconds: 400_000_000)   // a duplicate would have fired by now
+            Check.expect("retry-same-inputs-dedupes-to-one-fire", fired.value == 1, "fired=\(fired.value)")
+            m.retryDone("dedupe-test")
+        } else { Check.expect("retry-same-inputs-dedupes-to-one-fire", false, "fixture") }
         // 8b. Deadline must not livelock: repeated publishes of an already-current surface do not reset it; a layout that
         // never lands ends in an explicit out-of-date error after the forced refresh and one extension.
         if let m = await scanned(root), let id = node(m, "dirB") {
