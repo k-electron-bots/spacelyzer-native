@@ -14,5 +14,10 @@ name = "spz"
 path = "src/bin/spz.rs"
 
 [dependencies]
+arc-swap = "1"
 libc = "0.2"
 rayon = "1.10"
+
+[features]
+# Test-only panic injection into the size-table writer. Never enabled in release builds.
+failpoints = []
