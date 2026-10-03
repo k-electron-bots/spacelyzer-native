@@ -1150,32 +1150,54 @@ private actor PublicationBarrier {
         var entries: [Entry] = []
         var seen = Set<ObjectIdentifier>()
         var truncated = false
+        var discovered = 0, rejected = 0
         func visit(_ object: Any, depth: Int, edge: String) {
-            guard depth < 24, entries.count < 512 else { truncated = true; return }
-            guard let node = object as? NSAccessibilityProtocol else { return }
-            let identity = ObjectIdentifier(node)
-            guard seen.insert(identity).inserted else { return }
-            let label = node.accessibilityLabel() ?? ""
-            let help = node.accessibilityHelp() ?? ""
-            entries.append(Entry(label: label, help: help))
-            Perf.log("footer-ax edge=\(edge) depth=\(depth) label=\(label.debugDescription) help=\(help.debugDescription)")
-            // Include native view descendants as discovery roots when hosting AX children is nil.
-            // Read each descendant's real native AX label/help; never replace it with authored text.
-            let children = node.accessibilityChildren() ?? []
-            let views = (node as? NSView)?.subviews ?? []
-            let content = (node as? NSWindow)?.contentView.map { [$0] } ?? []
-            for (edge, descendants) in [("ax-child", children), ("view-subview", views as [Any]), ("window-content", content as [Any])] {
+            guard depth < 24, discovered < 512 else { truncated = true; return }
+            guard let instance = object as? NSObject else {
+                discovered += 1; rejected += 1
+                Perf.log("footer-ax discovery edge=\(edge) depth=\(depth) class=\(String(reflecting: type(of: object))) unsupported-nonNSObject")
+                return
+            }
+            guard seen.insert(ObjectIdentifier(instance)).inserted else { return }
+            discovered += 1
+            let protocolNode = instance as? NSAccessibilityProtocol
+            let view = instance as? NSView
+            let window = instance as? NSWindow
+            let label: String?, help: String?, children: [Any]
+            // Typed AppKit methods are supported even when protocol discovery is rejected.
+            // Hierarchy discovery does not depend on a successful accessibility protocol cast.
+            if let view {
+                label = view.accessibilityLabel(); help = view.accessibilityHelp()
+                children = view.accessibilityChildren() ?? []
+            } else if let window {
+                label = window.accessibilityLabel(); help = window.accessibilityHelp()
+                children = window.accessibilityChildren() ?? []
+            } else if let protocolNode {
+                label = protocolNode.accessibilityLabel(); help = protocolNode.accessibilityHelp()
+                children = protocolNode.accessibilityChildren() ?? []
+            } else {
+                label = nil; help = nil; children = []; rejected += 1
+            }
+            Perf.log("footer-ax discovery edge=\(edge) depth=\(depth) class=\(NSStringFromClass(type(of: instance))) protocol=\(protocolNode != nil) view=\(view != nil) window=\(window != nil) readable=\(view != nil || window != nil || protocolNode != nil)")
+            if view != nil || window != nil || protocolNode != nil {
+                entries.append(Entry(label: label ?? "", help: help ?? ""))
+                Perf.log("footer-ax edge=\(edge) depth=\(depth) label=\((label ?? "").debugDescription) help=\((help ?? "").debugDescription)")
+            }
+            let views = view?.subviews ?? []
+            let content = window?.contentView.map { [$0] } ?? []
+            for (childEdge, descendants) in [("ax-child", children), ("view-subview", views as [Any]), ("window-content", content as [Any])] {
                 for child in descendants {
-                    if entries.count >= 512 { truncated = true; break }
-                    visit(child, depth: depth + 1, edge: edge)
+                    if discovered >= 512 { truncated = true; break }
+                    visit(child, depth: depth + 1, edge: childEdge)
                 }
-                if entries.count >= 512 { break }
+                if discovered >= 512 { break }
             }
         }
         visit(root, depth: 0, edge: "root-window")
-        Perf.log("footer-ax complete nodes=\(entries.count) truncated=\(truncated)")
+        Perf.log("footer-ax complete nodes=\(entries.count) discovered=\(discovered) rejectedBranches=\(rejected) truncated=\(truncated); rejected non-view/nonprotocol branches remain uninspected, no authored substitution")
         return Result(entries: entries, truncated: truncated)
     }
+
 }
 
 @MainActor private enum TreemapMountedRegression {
