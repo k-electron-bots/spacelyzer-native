@@ -185,13 +185,15 @@ final class AppModel {
     }
     /// Largest-files and per-kind lists are computed in Rust off the main thread, never inside a view body.
     var largestIDs: [UInt32] = []
+    /// Sizes for largestIDs, same engine capture (the Largest list never reads sizes live).
+    var largestSizes: [UInt64] = []
     var kindRows: [KindRow] = []
     private var derivedTask: Task<Void, Never>?
     func refreshDerived() {
         derivedTask?.cancel()
         derivedGeneration &+= 1
         let generation = derivedGeneration, barrier = beforePublish, completed = afterPublish
-        guard let tree else { largestIDs = []; kindRows = []; return }
+        guard let tree else { largestIDs = []; largestSizes = []; kindRows = []; return }
         let flt = activeFilter
         derivedTask = Task.detached(priority: .userInitiated) { [weak self] in
             let t0 = Perf.now()
@@ -212,7 +214,7 @@ final class AppModel {
                 guard let self, !Task.isCancelled, self.derivedGeneration == generation, self.tree === tree, snap.version == tree.version, flt == nil || flt!.version == snap.version else { return }
                 self.retryDone("derived")
                 self.derivedVersion = snap.version
-                self.largestIDs = snap.ids
+                self.largestIDs = snap.ids; self.largestSizes = snap.sizes
                 self.kindRows = snap.kinds.filter { $0.items > 0 }.sorted { $0.bytes > $1.bytes }.map { KindRow(category: $0.category, bytes: $0.bytes, items: $0.items) }
                 self.surfaceCheck()
             }
@@ -480,7 +482,7 @@ final class AppModel {
                 // Node ids are only valid for one tree: drop every id-keyed cache in the same main-actor turn
                 // so no view can index the new tree with ids from the old one.
                 filterTask?.cancel(); derivedTask?.cancel(); outlineTask?.cancel()
-                outlineRows = []; outlineInfos = []; outlineShown = []; outlineIndex = [:]; outlineRevision += 1; expanded = []; largestIDs = []; kindRows = []; activeFilter = nil
+                outlineRows = []; outlineInfos = []; outlineShown = []; outlineIndex = [:]; outlineRevision += 1; expanded = []; largestIDs = []; largestSizes = []; kindRows = []; activeFilter = nil
                 outlineRootSize = 0; publishedTotalBytes = nil; outlineVersion = nil; derivedVersion = nil; layoutVersion = nil; layoutNotRenderableVersion = nil; requiredVersion = nil
                 pendingRemoval = nil
                 if fsEpoch != epochAtStart || mutatingAtStart || mutationPending || commitsInFlight > 0 {
