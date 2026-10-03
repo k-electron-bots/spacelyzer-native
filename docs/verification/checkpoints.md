@@ -248,3 +248,13 @@ The old in-process native full-label check remained the sole failure with two no
 DiagnosticPID23733/version116: rawheader08:05:03.198UTC precedes trace08:05:04.1193771/.119378 by921.3771ms; subprocessend08:05:12exit0 includesprocessing. Coarse requested8s5ms bracket,not first/last-sample chronology. Selection614.7/stall609.1,warm53; arrowp50/p95/max15.9/54.7/488ms/stall486.6,typing260.9,hover0.4. Alteredidle arm,no cold comparison or overall performance win.
 
 [Run116](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37108069847) · [Artifact](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37108069847/artifacts/11269385250). No unchanged rerun or native-gate removal follows from the external pass.
+
+## Run117: mounted replacement arena publication
+
+October3,source `77c6e08`: Swift/Linux/client compiled; strict UI gate failed,86PASS/1FAIL of87,44states,release skipped. Sole failure remains in-process footer full-label retrieval; separate external exact-details regression passed.
+
+Two new actual mounted tree-replacement checks independently accepted. Held old UUIDD7107085,generation2,request520x300,computed arena0xa8000f0e0. New UUID1B24EED3,generation3,computed replacement0xa8000e8e0,same520x300 accepted layout0xa80668d00/replacementtree/fullsize/Rust center-hit correspondence. The exact old main-actor callback ran and rejected without changing the newer published state. Actual pixels43/44 inspected: only readable new-tree-only.txt fills520x300, no old labels, unchanged after release. This is combined tree/revision/generation/cancellation protection, not isolation of tree predicate or proven numeric NodeID reuse. No gesture/filter/unmount/universal claim. Existing mounted resize and external exact regression passed within their previous narrow scopes.
+
+Diagnostic selection1284/stall1278.4,warm54.7; arrowp50/p95/max17.1/35.1/332.6ms/stall280.8,typing161.6,hover0.5. Alteredidle arm,mixed shared-runner/profiler perturbation,no original-cold comparison or overall win. Clock/sample evidence remains coarse,not causal stack chronology.
+
+[Run117](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37109813090) · [Artifact](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37109813090/artifacts/11268988193). Historical native failures remain recorded; accepted external API retrieval is not broader VoiceOver/tooltip/compliance evidence.
