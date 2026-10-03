@@ -1171,6 +1171,20 @@ private actor PublicationBarrier {
             let after = m.nodeSnapshot(id)
             Check.expect("commit-order-node-snapshot-withheld-while-pending", before != nil && during == nil && blocked && after != nil && after?.version == m.tree?.version, "before=\(before != nil) during=\(during == nil) blocked=\(blocked) after=\(after != nil)")
         } else { Check.expect("commit-order-node-snapshot-withheld-while-pending", false, "fixture") }
+        // 8a. Poison: a moved panic counter must refuse actions, node reads, navigation and publication, clear the filter spinner,
+        // and stay latched (the baseline is never re-adopted) until a clean rescan.
+        if let m = await scanned(root), let id = node(m, "dirB") {
+            var fake = m.panicBaseline
+            m.panicCounter = { fake }
+            let clean = !m.enginePoisoned && m.nodeSnapshot(id) != nil && m.removalBlockedReason(id) == nil
+            fake += 1
+            let refused = m.enginePoisoned && m.nodeSnapshot(id) == nil && m.removalBlockedReason(id) != nil && m.navigationBlocked
+            m.filterPending = true
+            m.markPoisoned()
+            fake = m.panicBaseline   // counter "returns" to baseline: the latch must hold
+            let latched = m.poisoned && m.enginePoisoned && !m.filterPending && m.viewOutOfDate
+            Check.expect("poison-latches-refuses-and-clears-spinner", clean && refused && latched, "clean=\(clean) refused=\(refused) latched=\(latched)")
+        } else { Check.expect("poison-latches-refuses-and-clears-spinner", false, "fixture") }
         // 8b. Deadline must not livelock: repeated publishes of an already-current surface do not reset it; a layout that
         // never lands ends in an explicit out-of-date error after the forced refresh and one extension.
         if let m = await scanned(root), let id = node(m, "dirB") {
