@@ -22,3 +22,7 @@ Repeat-scan and early-results proposals are in the [incremental](../EVAL-increme
 ## Run110 ungated interaction measurements
 
 Shared CI Mac, October 2, 2026: first-click post-to-selection2,096.7 ms and main-thread stall2,093.2 ms; later click37.6 ms; typing/filter-arrow stall316.2 ms; 40-arrow p50/p95/max35.7/74.6/117.3 ms; hover0.7 ms. These are outside the 80 green functional assertions, not a performance pass or proof of regression. The existing broad sample window does not isolate cold-click causality. Separate event dispatch, native selection callback, model publication and view updates before changing the product or claiming smoothness. [Evidence](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37092313793/artifacts/11263786545).
+
+## Run111 sampled stages, not a performance win
+
+Cold260.9ms/stall252.8ms, later42.3ms; 40-arrow p50/p95/max18.6/187.4/787.6ms and stall789.6ms; typing/filter-arrow stall162.1ms; hover0.6ms. Buffered click stages place about202ms before tablemouseDown, about2.65ms inside it and about0.2ms in the callback/model assignment. The8s5ms sampler identifies the correct process/version and exits0, but no wall/uptime bridge proves overlap and no aggregate stack has chronological assignment. The later workflow completion timestamp is not sample-end time. These mixed profiler-perturbed CI numbers, with existing synchronous log I/O, are not an overall improvement or causal proof. [Evidence](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37094174463/artifacts/11264190402).
