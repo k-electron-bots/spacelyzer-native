@@ -290,3 +290,17 @@ PID17849 bridges place click at 10:37:30.708123 to 31.9608235Z and arrows at 10:
 Diagnostic click243.3ms/stall235.2ms, warm34.5ms; arrows p50/p95/max17.6/83.1/909.3ms, stall908.6ms; typing202.2ms, hover0.5ms. Shared-runner, altered-idle, profiler and instrumentation effects remain. No original-cold comparison, clean benchmark, overall win or CPU cause. Pixels8/48 inspected: selected outline row readable and unmount placeholder has no returned old layout. Existing narrow safety boundaries remain unchanged. Next work is prospective diagnostic identity repair, reviewed before landing, not optimization.
 
 [Artifact](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37116511862/artifacts/11271722675) includes the raw envelope and unchanged failure evidence.
+
+## Run121 and run122: prospective normalized diagnostic identity
+
+Run121 at `8ee2f15` failed Swift compilation before UI execution: nested Expected.matches called the actor-isolated pure timestampBin helper synchronously. Linux passed33 tests; no UI artifacts or91/48 runtime result. Run122 at `88aeb4d` marks only this pure argument/local-arithmetic helper nonisolated; shared monitoring and buffering state remain on MainActor.
+
+[Run122](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37121764101) compiled Swift/client and passed Rust33 tests. UI90 PASS /1 FAIL of91,48states. Native footer accessor remains failed; separate external exact Help+Value regression passed. Artifact publication is not release acceptance.
+
+Independent raw-envelope review accepted the prospective normalized injected arm: click1/arrow40 have post, monitor, native handler, assignment, outline update, SwiftUI selection, probe and driver records. Both monitors/observers installed and cleaned; zero drops, identity loss, collisions, ambiguous lookups or invalid timestamps. Normalized lookups3click/99arrows, all41 driver polls changed selection without timeout. This is rounded-microsecond singleton-tuple attribution only, not raw timestamp identity, general event identity, proven timestamp-conversion mechanism or retroactive relabeling of run120. Bin boundaries can split close timestamps; unrelated inbound same-tuple events remain indistinguishable. Model/view context remains heuristic.
+
+Click post-to-monitor332.768ms, monitor-to-table311.422ms, table handler1.347ms, driver59.063ms after assignment. Arrow0 handler2.249ms, driver619.936ms after assignment. Queued probes measure main-queue opportunity, not dispatch latency. Common-mode runloop gaps include actual handler/update records inside them and do not prove sleeping or CPU-busy time. Chronology-bearing profiling is needed before optimizing.
+
+Mixed click704.6ms/stall700.9ms,warm30.0ms; arrows p50/p95/max17.6/41.6/738.1ms,stall737.8ms; typing150.6ms,hover0.5ms. Alteredidle/sharedrunner/profiler/instrumentation and buffered flush limits remain; no clean benchmark or overall win. PID19240 raw sample header12:14:45.286Z precedes click12:14:46.083592Z and arrows12:14:47.801996Z;8s command/subprocess end12:14:54Z gives coarse temporal overlap, not per-stack chronology. Pixels8/48 inspected: readable selected row and no returned treemap behind the unmount placeholder.
+
+[Run121](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37120426167) · [Run122 artifact](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37121764101/artifacts/11273437286). Native failure,120 missing exact identities and prior narrow safety boundaries remain unchanged.
