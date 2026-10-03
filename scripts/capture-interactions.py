@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """One bounded CI capture. Missing schema/readiness/alignment is inconclusive."""
-import ctypes, datetime, json, os, pathlib, select, signal, subprocess, sys, time, zipfile
+import ctypes, datetime, json, os, pathlib, select, signal, stat, subprocess, sys, time, zipfile
 import xml.etree.ElementTree as ET
 ROOT = pathlib.Path('/tmp/spz-chronology')
 ROOT.mkdir(exist_ok=True)
@@ -8,6 +8,7 @@ ACK = pathlib.Path('/tmp/spz-cold-click-ack')
 READY = pathlib.Path('/tmp/spz-cold-click-ready')
 status = {'outcome': 'INCONCLUSIVE', 'limits': 'CPU samples only; absence does not prove sleep/block/scheduler cause. No clean benchmark.20s need not cover all40 arrows; actual phase alignment/full stack/thread identity require inspection. Size limits are post-generation artifact limits, not live storage bounds.'}
 proc = None
+trace = ROOT / "interactions.trace"
 lib = None
 token = ctypes.c_int(-1)
 notify_fd = ctypes.c_int(-1)
@@ -23,10 +24,91 @@ def command(args, filename, timeout):
     with (ROOT / filename).open('w') as out:
         return subprocess.run(args, stdout=out, stderr=subprocess.STDOUT, timeout=timeout).returncode
 def stop():
-    if proc is not None and proc.poll() is None:
+    status['stop_begin_bridge'] = bridge()
+    try:
+        if proc is None:
+            status['stop_outcome'] = 'NOT-LAUNCHED'; return
+        if proc.poll() is not None:
+            status.update(stop_outcome='ALREADY-EXITED', stopped_exit=proc.returncode); return
         proc.send_signal(signal.SIGINT)
-        try: proc.wait(timeout=5)
-        except subprocess.TimeoutExpired: proc.kill(); proc.wait(timeout=5)
+        status['stop_signal'] = 'SIGINT'
+        try:
+            code = proc.wait(timeout=5)
+            status.update(stop_outcome='EXITED-AFTER-SIGINT', stopped_exit=code)
+        except subprocess.TimeoutExpired:
+            proc.kill(); status['stop_signal'] = 'SIGKILL-AFTER-5S'
+            try:
+                code = proc.wait(timeout=5)
+                status.update(stop_outcome='EXITED-AFTER-KILL', stopped_exit=code)
+            except subprocess.TimeoutExpired:
+                status['stop_outcome'] = 'STILL-RUNNING-UNRESOLVED'
+    except Exception as error:
+        status.update(stop_outcome='STOP-ERROR-UNRESOLVED', stop_error=str(error))
+    finally:
+        status['stop_end_bridge'] = bridge()
+
+def preserve_partial():
+    # Recorder exit does not establish descendant-writer quiescence or bundle validity.
+    status['partial_writer_quiescence'] = 'UNVERIFIED-DESCENDANTS'
+    if proc is not None and proc.poll() is None:
+        status['partial_trace'] = 'OMITTED-RECORDER-STILL-RUNNING'; return
+    for parent in [trace, ROOT, ROOT.parent]:
+        if parent.is_symlink():
+            status['partial_trace'] = 'OMITTED-SYMLINK-ROOT-OR-ANCESTOR'; return
+    if not trace.is_dir():
+        status['partial_trace'] = 'MISSING'; return
+    destination = ROOT/'partial-trace-UNVERIFIED.zip'
+    inventory = ROOT/'partial-inventory.txt' # JSONL content, workflow copies *.txt.
+    total = count = skipped = directories = records_count = actual_bytes = 0
+    def bounded_record(output, record):
+        nonlocal records_count
+        records_count += 1
+        if records_count > 10000: raise RuntimeError('partial inventory record cap exceeded')
+        output.write(json.dumps(record)+'\n')
+    try:
+        with inventory.open('w') as records, zipfile.ZipFile(destination,'w',zipfile.ZIP_DEFLATED) as archive:
+            for directory, dirs, files in os.walk(trace, followlinks=False):
+                directories += 1
+                if directories > 10000: raise RuntimeError('partial directory cap exceeded')
+                retained = []
+                for name in dirs:
+                    p = pathlib.Path(directory)/name
+                    if p.is_symlink():
+                        skipped += 1
+                        if skipped > 10000: raise RuntimeError('partial skip cap exceeded')
+                        bounded_record(records, {'path':str(p.relative_to(ROOT)), 'skip':'directory-symlink'})
+                    else: retained.append(name)
+                dirs[:] = retained
+                for name in files:
+                    p = pathlib.Path(directory)/name
+                    info = p.lstat()
+                    if not stat.S_ISREG(info.st_mode):
+                        skipped += 1
+                        if skipped > 10000: raise RuntimeError('partial skip cap exceeded')
+                        bounded_record(records, {'path':str(p.relative_to(ROOT)), 'skip':'nonregular-or-symlink'}); continue
+                    count += 1; total += info.st_size
+                    if count > 10000 or total > 128*1024*1024:
+                        raise RuntimeError('partial inventory file/stat-byte cap exceeded')
+                    bounded_record(records, {'path':str(p.relative_to(ROOT)), 'stat_bytes':info.st_size})
+                    # Refuse leaf symlink races; stream actual bytes, not only stat size.
+                    fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                    with os.fdopen(fd, 'rb') as source:
+                        opened = os.fstat(source.fileno())
+                        if not stat.S_ISREG(opened.st_mode): raise RuntimeError('partial file changed to nonregular')
+                        with archive.open(str(p.relative_to(ROOT)), 'w') as target:
+                            while True:
+                                chunk = source.read(65536)
+                                if not chunk: break
+                                actual_bytes += len(chunk)
+                                if actual_bytes > 128*1024*1024: raise RuntimeError('partial actual-read byte cap exceeded')
+                                target.write(chunk)
+        status['partial_trace'] = 'PRESERVED-UNVERIFIED-NOT-FINALIZED-NOT-EXPORTED'
+    except Exception:
+        destination.unlink(missing_ok=True); raise
+    finally:
+        status.update(partial_trace_stat_bytes=total, partial_trace_actual_bytes=actual_bytes,
+                      partial_trace_files=count, partial_skipped_entries=skipped, partial_directories=directories, partial_inventory_records=records_count)
+
 try:
     pid = int(READY.read_text().strip())
     if pid <= 0: raise RuntimeError("invalid app PID")
@@ -75,8 +157,15 @@ try:
             raise RuntimeError('capture readiness missing or process exited; no input coverage claim')
         status.update(recording_started_bridge=bridge(), readiness='DARWIN_TRACING_STARTED_FD_NOTIFICATION-TRACE-METADATA-STILL-REQUIRED', outcome='RECORDING-REQUIRES-ALIGNMENT')
         ack()
-        try: code = proc.wait(timeout=35)
-        except subprocess.TimeoutExpired: raise RuntimeError('capture process timeout')
+        status.update(finalization_wait_begin_bridge=bridge(), finalization_wait_budget_seconds=35)
+        try:
+            code = proc.wait(timeout=35)
+            status['finalization_wait_outcome'] = 'RECORDER-EXITED'
+        except subprocess.TimeoutExpired:
+            status['finalization_wait_outcome'] = 'TIMEOUT-35S'
+            raise RuntimeError('capture process timeout')
+        finally:
+            status['finalization_wait_end_bridge'] = bridge()
     status.update(record_exit=code, record_end_bridge=bridge())
     if code != 0 or not trace.is_dir(): raise RuntimeError('capture failed or trace missing')
     size = sum(p.stat().st_size for p in trace.rglob('*') if p.is_file())
@@ -109,6 +198,8 @@ try:
     status['required_review']='Resolve exact PID/main thread, run start and sample-time units, ref IDs/full stacks and phase bridge overlap. Missing/ambiguous evidence remains inconclusive.'
 except Exception as error:
     status.update(outcome='INCONCLUSIVE', error=str(error)); stop()
+    try: preserve_partial()
+    except Exception as partial_error: status['partial_preservation_error'] = str(partial_error)
 finally:
     # notify_cancel owns/ closes its registered descriptor. Never close it again.
     # Cleanup failures are evidence, but must not suppress status/handshake release.
