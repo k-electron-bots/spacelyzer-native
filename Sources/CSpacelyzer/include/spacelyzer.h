@@ -29,7 +29,8 @@ SpzNode spz_tree_node(const SpzTree *t, uint32_t id);
 char *spz_tree_name(const SpzTree *t, uint32_t id);
 char *spz_tree_path(const SpzTree *t, uint32_t id);
 uint32_t spz_tree_find(const SpzTree *t, const char *path);
-void spz_tree_forget(SpzTree *t, uint32_t id);
+int32_t spz_tree_forget(SpzTree *t, uint32_t id);
+uint64_t spz_tree_version(const SpzTree *t);
 void spz_tree_category_totals(const SpzTree *t, uint64_t *out /* 11 * 2 */);
 uint32_t spz_tree_largest_files(const SpzTree *t, uint32_t cap, uint32_t *out);
 uint32_t spz_tree_skipped_count(const SpzTree *t);
@@ -62,4 +63,24 @@ const SpzRect *spz_layout_rects(const SpzLayout *l);
 uint32_t spz_layout_hit(const SpzLayout *l, float x, float y);
 
 void spz_string_free(char *s);
+
+/* Statuses: 0 OK, 1 STALE, 2 MUTATION_FAILED, 3 INVALID, 4 BUSY, 5 INTERNAL. Null results always come with a status. */
+SpzFilterResult *spz_filter_apply_status(const SpzTree *t, const char *text, const char *ext, SpzFilter f, int32_t *status);
+int32_t spz_filter_status(const SpzTree *t, const SpzFilterResult *h);
+SpzLayout *spz_layout_new_status(const SpzTree *t, uint32_t root, float width, float height, const SpzFilterResult *h, int32_t *status);
+int32_t spz_layout_status(const SpzTree *t, const SpzLayout *l);
+
+/* Snapshot reads: one engine capture per call. `expected` is a table version the caller already holds, or UINT64_MAX for any.
+   `version` receives the version read. A non-OK status writes nothing (counts return 0). */
+uint32_t spz_outline_rows_status(const SpzTree *t, uint32_t root, const uint32_t *expanded, uint32_t n_expanded, const SpzFilterResult *h, uint32_t sort, SpzRow *out, uint32_t cap, uint64_t expected, uint64_t *version, int32_t *status);
+uint32_t spz_largest_status(const SpzTree *t, const SpzFilterResult *h, uint32_t cap, uint32_t *out, uint64_t expected, uint64_t *version, int32_t *status);
+void spz_category_totals_status(const SpzTree *t, const SpzFilterResult *h, uint64_t *out, uint64_t expected, uint64_t *version, int32_t *status);
+void spz_tree_node_status(const SpzTree *t, uint32_t id, SpzNode *out, uint64_t expected, uint64_t *version, int32_t *status);
+
+uint64_t spz_filter_version(const SpzFilterResult *h);
+uint64_t spz_layout_version(const SpzLayout *l);
+
+typedef struct SpzRowInfo { SpzNode node; uint64_t shown; } SpzRowInfo;
+uint32_t spz_outline_snapshot_status(const SpzTree *t, uint32_t root, const uint32_t *expanded, uint32_t n_expanded, const SpzFilterResult *h, uint32_t sort, SpzRow *rows_out, SpzRowInfo *infos_out, uint32_t cap, uint64_t expected, uint64_t *version, uint64_t *root_shown, uint64_t *total_bytes, int32_t *status);
+
 #endif
