@@ -1062,6 +1062,24 @@ private actor PublicationBarrier {
         m.lastRemoved = [RemovedItem(original: home, trashed: parked, size: 1)]
         m.undoRemoval(); await m.settleRemoval()
         Check.expect("async-undo-restores-and-clears-entry", fm.fileExists(atPath: home.path) && !fm.fileExists(atPath: parked.path) && m.lastRemoved.isEmpty)
+
+        // 5. Undo is refused while the engine commit for the removal is parked (filesystem outcome done, table not yet
+        // swapped); once the commit lands it is allowed and leaves the view out of date. Mocked Trash only.
+        let m2 = AppModel(); await scan(m2, root)
+        if let b2 = node(m2, "b.bin") {
+            let gate = OpenGate()
+            m2.trashItem = { url in url }   // pretend moved; the file stays, so this exercises ordering only
+            m2.beforeCommit = { while !gate.isOpen { try? await Task.sleep(nanoseconds: 5_000_000) } }
+            m2.proposeRemoval(of: b2); m2.confirmRemoval()
+            let parkedOK = await PublicationRegression.wait { m2.commitsInFlight == 1 && !m2.removalInFlight }
+            let journaled = m2.lastRemoved.count == 1
+            let items0 = m2.lastRemoved
+            m2.undoRemoval()
+            let refused = (m2.removalMessage ?? "").contains("still being applied") && m2.lastRemoved.count == items0.count && !m2.removalInFlight
+            gate.open()
+            let settled = await m2.settleRemoval()
+            Check.expect("async-undo-refused-while-commit-parked", parkedOK && journaled && refused && settled && m2.commitsInFlight == 0, "parked=\(parkedOK) journaled=\(journaled) refused=\(refused) settled=\(settled)")
+        } else { Check.expect("async-undo-refused-while-commit-parked", false, "fixture") }
     }
 }
 
@@ -1743,4 +1761,11 @@ final class CallCounter: @unchecked Sendable {
     private let lock = NSLock(); private var n = 0
     func bump() { lock.lock(); n += 1; lock.unlock() }
     var value: Int { lock.lock(); defer { lock.unlock() }; return n }
+}
+
+/// Test gate for parking the engine commit between the filesystem move and the table swap.
+final class OpenGate: @unchecked Sendable {
+    private let lock = NSLock(); private var o = false
+    var isOpen: Bool { lock.lock(); defer { lock.unlock() }; return o }
+    func open() { lock.lock(); o = true; lock.unlock() }
 }
