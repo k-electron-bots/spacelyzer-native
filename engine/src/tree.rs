@@ -11,6 +11,10 @@ use std::sync::{Arc, Mutex};
 pub struct SizeTable {
     pub version: u64,
     pub sizes: Vec<u64>,
+    /// Roots of subtrees removed by `forget`, ascending. Lives in the same immutable table as the sizes, so a reader that
+    /// captured a table sees sizes and removals from one version. A size of 0 alone cannot tell a removed node from a
+    /// legitimate zero-byte file, so the outline projection hides rows by this list, never by size.
+    pub forgotten: Vec<NodeId>,
 }
 
 /// Number of SizeTable values currently alive (current, retired-but-pinned, and under construction). Test support.
@@ -29,13 +33,13 @@ pub fn admission_cap(n: usize) -> usize {
 }
 
 impl SizeTable {
-    fn new(version: u64, sizes: Vec<u64>) -> SizeTable {
+    fn new(version: u64, sizes: Vec<u64>, forgotten: Vec<NodeId>) -> SizeTable {
         LIVE_TABLES.fetch_add(1, Ordering::Relaxed);
-        SizeTable { version, sizes }
+        SizeTable { version, sizes, forgotten }
     }
 }
 impl Default for SizeTable {
-    fn default() -> SizeTable { SizeTable::new(0, Vec::new()) }
+    fn default() -> SizeTable { SizeTable::new(0, Vec::new(), Vec::new()) }
 }
 impl Drop for SizeTable {
     fn drop(&mut self) { LIVE_TABLES.fetch_sub(1, Ordering::Relaxed); }
@@ -309,7 +313,7 @@ impl Tree {
     /// Move build-time sizes into the published table. Called once when a tree is complete.
     pub(crate) fn seal(mut self) -> Tree {
         let v = std::mem::take(&mut self.size);
-        self.table.store(Arc::new(SizeTable::new(0, v)));
+        self.table.store(Arc::new(SizeTable::new(0, v, Vec::new())));
         self
     }
 
@@ -360,14 +364,20 @@ impl Tree {
         let cur = self.table.load_full();
         if id as usize >= cur.sizes.len() { return Err(MutationError::Invalid); }
         let removed = cur.sizes[id as usize];
-        if removed == 0 && self.kind[id as usize] == Kind::Directory as u8 { return Ok(None); }
+        // Already removed: nothing to change. (A zero-size directory that was NOT removed still gets marked, so it leaves the outline.)
+        if cur.forgotten.binary_search(&id).is_ok() { return Ok(None); }
+        let mut gone: Vec<NodeId> = Vec::new();
+        gone.try_reserve_exact(cur.forgotten.len() + 1).map_err(|_| MutationError::AllocFailed)?;
+        gone.extend_from_slice(&cur.forgotten);
+        let at = gone.binary_search(&id).unwrap_or_else(|i| i);
+        gone.insert(at, id);   // capacity reserved above: no allocation
         let mut copy: Vec<u64> = Vec::new();
         copy.try_reserve_exact(cur.sizes.len()).map_err(|_| MutationError::AllocFailed)?;
         failpoint(1);
         copy.extend_from_slice(&cur.sizes);
         self.apply_forget(&mut copy, id, removed);
         failpoint(2);
-        let next = Arc::new(SizeTable::new(cur.version + 1, copy));
+        let next = Arc::new(SizeTable::new(cur.version + 1, copy, gone));
         failpoint(3);
         Ok(Some(next))
     }
