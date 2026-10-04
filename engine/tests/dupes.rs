@@ -223,3 +223,66 @@ fn a_file_replaced_during_the_full_hash_stage_counts_as_changed_not_unreadable()
     assert_eq!(r.groups.len(), 1); assert_eq!(r.groups[0].ids.len(), 2);
     assert!(!r.groups[0].ids.contains(&node(&t, &d.join("x2"))));
 }
+
+// Reads before the compare stage for three 100000-byte identical files: 3 prefix reads (4096) + 3 full-hash reads (100000).
+const BEFORE_COMPARE: u64 = 3 * 4096 + 3 * 100_000;
+
+#[test]
+fn stop_inside_the_compare_stage_drops_the_bucket_and_counts_nothing() {
+    let d = fixture("compare-stop");
+    for n in ["x1", "x2", "x3"] { std::fs::write(d.join(n), vec![4u8; 100_000]).unwrap(); }
+    let t = scanned(&d);
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let c2 = cancel.clone();
+    let mut pr = DupProgress::default();
+    pr.on_read = Some(Box::new(move |total| if total > BEFORE_COMPARE { c2.store(true, std::sync::atomic::Ordering::SeqCst); }));   // first compare read
+    let r = find_duplicates_with(&t, 1, &cancel, &pr);
+    use std::sync::atomic::Ordering::Relaxed;
+    assert!(pr.bytes_read.load(Relaxed) > BEFORE_COMPARE, "the stop really happened inside the compare stage (precondition)");
+    assert!(r.cancelled && r.incomplete && r.groups.is_empty() && r.duplicate_allocated_bytes == 0, "{:?}", r);
+    assert_eq!((r.unreadable, r.changed), (0, 0), "{:?}", r);
+}
+
+#[test]
+fn a_failing_class_representative_is_blamed_alone_and_the_rest_still_group() {
+    let d = fixture("rep-fail");
+    for n in ["x1", "x2", "x3"] { std::fs::write(d.join(n), vec![4u8; 100_000]).unwrap(); }
+    let t = scanned(&d);
+    let pin = d.join("pin"); std::fs::hard_link(d.join("x1"), &pin).unwrap();     // x1 is the lowest id, hence the first representative; pin keeps its inode alive
+    let x1 = d.join("x1");
+    let done = std::sync::Arc::new(AtomicBool::new(false));
+    let (done2, x1c) = (done.clone(), x1.clone());
+    let mut pr = DupProgress::default();
+    // on the first compare read (x1 vs x2, both already open and matching) replace x1 on disk: the NEXT compare (x1 as representative vs x3) opens a new inode
+    pr.on_read = Some(Box::new(move |total| {
+        if total > BEFORE_COMPARE && !done2.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            std::fs::remove_file(&x1c).unwrap(); std::fs::write(&x1c, vec![4u8; 100_000]).unwrap();
+        }
+    }));
+    let r = find_duplicates_with(&t, 1, &AtomicBool::new(false), &pr);
+    assert!(done.load(std::sync::atomic::Ordering::SeqCst), "replacement ran (precondition)");
+    assert_eq!((r.changed, r.unreadable), (1, 0), "exactly the representative is counted: {:?}", r);
+    let (id1, id2, id3) = (node(&t, &d.join("x1")), node(&t, &d.join("x2")), node(&t, &d.join("x3")));
+    assert_eq!(r.groups.len(), 1, "{:?}", r);
+    let mut got = r.groups[0].ids.clone(); got.sort();
+    let mut want = vec![id2, id3]; want.sort();
+    assert_eq!(got, want, "x3 must not be blamed or lost; x1 (changed) is out: {:?}", r);
+    assert!(!r.groups[0].ids.contains(&id1));
+}
+
+#[test]
+fn a_reused_progress_is_reset_per_pass_not_carrying_budget_or_totals() {
+    let d = fixture("reuse");
+    for n in ["x1", "x2", "x3"] { std::fs::write(d.join(n), vec![4u8; 100_000]).unwrap(); }
+    let t = scanned(&d);
+    let pr = DupProgress::default();
+    use std::sync::atomic::Ordering::Relaxed;
+    let first = find_duplicates_opts(&t, DupOptions { min_size: 1, max_read_bytes: 20_000 }, &AtomicBool::new(false), &pr);
+    assert!(first.budget_exhausted && pr.budget_hit.load(Relaxed));
+    let second = find_duplicates_opts(&t, DupOptions { min_size: 1, max_read_bytes: 0 }, &AtomicBool::new(false), &pr);
+    assert!(!second.budget_exhausted && !second.incomplete && !pr.budget_hit.load(Relaxed), "{:?}", second);
+    assert_eq!(second.groups.len(), 1);
+    let fresh = DupProgress::default(); let _ = find_duplicates_with(&t, 1, &AtomicBool::new(false), &fresh);
+    assert_eq!(pr.bytes_read.load(Relaxed), fresh.bytes_read.load(Relaxed), "totals describe only the second pass");
+    assert_eq!((pr.candidates.load(Relaxed), pr.examined.load(Relaxed)), (3, 3));
+}

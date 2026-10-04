@@ -119,16 +119,23 @@ fn hash_full(tree: &Tree, id: NodeId, len: u64, cancel: &AtomicBool, pr: &DupPro
     Ok(h.finish())
 }
 
-/// Byte-for-byte equality of two files of the same logical length. None on any read problem or cancel.
-fn same_bytes(tree: &Tree, a: NodeId, b: NodeId, len: u64, cancel: &AtomicBool, pr: &DupProgress) -> Result<bool, Fail> {
-    let (mut fa, mut fb) = (open_checked(tree, a)?, open_checked(tree, b)?);
-    if fa.len != len || fb.len != len { return Err(Fail::Changed); }
+/// Which file of a compared pair a failure belongs to: A is the class representative, B the file being placed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Side { A, B }
+
+/// Byte-for-byte equality of two files of the same logical length. A failure names the file it happened on.
+fn same_bytes(tree: &Tree, a: NodeId, b: NodeId, len: u64, cancel: &AtomicBool, pr: &DupProgress) -> Result<bool, (Fail, Side)> {
+    let mut fa = open_checked(tree, a).map_err(|f| (f, Side::A))?;
+    let mut fb = open_checked(tree, b).map_err(|f| (f, Side::B))?;
+    if fa.len != len { return Err((Fail::Changed, Side::A)); }
+    if fb.len != len { return Err((Fail::Changed, Side::B)); }
     let (mut ba, mut bb) = (vec![0u8; CHUNK], vec![0u8; CHUNK]);
     let mut left = len;
     while left > 0 {
-        if pr.stop(cancel) { return Err(Fail::Stopped); }
+        if pr.stop(cancel) { return Err((Fail::Stopped, Side::B)); }
         let n = (left as usize).min(CHUNK);
-        fa.f.read_exact(&mut ba[..n]).map_err(|_| Fail::Unreadable)?; fb.f.read_exact(&mut bb[..n]).map_err(|_| Fail::Unreadable)?;
+        fa.f.read_exact(&mut ba[..n]).map_err(|_| (Fail::Unreadable, Side::A))?;
+        fb.f.read_exact(&mut bb[..n]).map_err(|_| (Fail::Unreadable, Side::B))?;
         pr.read(2 * n);
         if ba[..n] != bb[..n] { return Ok(false); }
         left -= n as u64;
@@ -175,17 +182,25 @@ fn process_size_group(tree: &Tree, size: u64, ids: Vec<NodeId>, cancel: &AtomicB
             if same_hash.len() < 2 { continue; }
             // 4c. byte-for-byte against class representatives. A stopped pass drops this bucket's groups: a class could be missing members.
             let mut classes: Vec<Vec<NodeId>> = Vec::new();
-            for id in same_hash {
-                let mut placed = false;
-                for c in classes.iter_mut() {
-                    match same_bytes(tree, c[0], id, len, cancel, pr) {
-                        Ok(true) => { c.push(id); placed = true; break; }
-                        Ok(false) => {}
-                        Err(Fail::Stopped) => return part,
-                        Err(f) => { part.fail(f); placed = true; break; }          // this file is out; the representative is not blamed
+            'files: for id in same_hash {
+                loop {
+                    let mut dropped_rep = false;
+                    for ci in 0..classes.len() {
+                        match same_bytes(tree, classes[ci][0], id, len, cancel, pr) {
+                            Ok(true) => { classes[ci].push(id); continue 'files; }
+                            Ok(false) => {}
+                            Err((Fail::Stopped, _)) => return part,
+                            Err((f, Side::B)) => { part.fail(f); continue 'files; }        // the file being placed is out
+                            Err((f, Side::A)) => {                                          // the REPRESENTATIVE failed: it alone is out, the rest of its class stays
+                                part.fail(f);
+                                classes[ci].remove(0);
+                                if classes[ci].is_empty() { classes.remove(ci); }
+                                dropped_rep = true; break;
+                            }
+                        }
                     }
+                    if !dropped_rep { classes.push(vec![id]); continue 'files; }
                 }
-                if !placed { classes.push(vec![id]); }
             }
             if pr.stop(cancel) { return part; }
             for mut c in classes {
@@ -220,6 +235,10 @@ pub fn find_duplicates_with(tree: &Tree, min_size: u64, cancel: &AtomicBool, pro
 }
 
 pub fn find_duplicates_opts(tree: &Tree, opts: DupOptions, cancel: &AtomicBool, progress: &DupProgress) -> DupReport {
+    // A DupProgress describes ONE pass: it is reset here (counters, budget flag) so reusing it never carries a stale budget_hit or old totals.
+    // Sharing one DupProgress between passes that run at the same time is not supported.
+    progress.candidates.store(0, Ordering::Relaxed); progress.examined.store(0, Ordering::Relaxed); progress.bytes_read.store(0, Ordering::Relaxed);
+    progress.budget_hit.store(false, Ordering::Relaxed);
     progress.max_read.store(opts.max_read_bytes, Ordering::Relaxed);
     let min_size = opts.min_size;
     let tab = tree.table();
