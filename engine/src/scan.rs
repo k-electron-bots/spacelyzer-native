@@ -97,7 +97,10 @@ struct Ctx<'a> {
     root_ino: u64,
     devs: Mutex<Vec<u64>>,
     skipped: Mutex<Vec<Skipped>>,
-    exclude: Vec<String>,
+    exclude: Vec<Option<String>>,
+    /// Parallel to `exclude`: true once some scanned entry matched it. Non-matchable (non-UTF-8) exclusions stay false.
+    excl_hit: Vec<AtomicBool>,
+    excl_display: Vec<String>,
     #[allow(dead_code)]
     bulk: bool,
 }
@@ -123,12 +126,14 @@ pub fn scan(root: &Path, opts: &ScanOptions, progress: &ScanProgress) -> std::io
         root_ino: md.ino(),
         devs: Mutex::new(Vec::new()),
         skipped: Mutex::new(Vec::new()),
+        excl_hit: opts.exclude.iter().map(|_| AtomicBool::new(false)).collect(),
+        excl_display: opts.exclude.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
         exclude: opts
             .exclude
             .iter()
-            // An exclusion that is not valid UTF-8 can only name a non-UTF-8 entry, which the walk already leaves out, so dropping it cannot expose anything;
-            // keeping a lossy form could overmatch a real U+FFFD-named sibling.
-            .filter_map(|p| p.to_str().map(|p| p.trim_end_matches('/').to_string()))
+            // An exclusion that is not valid UTF-8 can only name a non-UTF-8 entry, which the walk already leaves out, so it is never matchable (None); a lossy
+            // form could overmatch a real U+FFFD-named sibling. It stays in the list so it is REPORTED as unmatched rather than silently vanishing.
+            .map(|p| p.to_str().map(|p| p.trim_end_matches('/').to_string()))
             .collect(),
         bulk: cfg!(target_os = "macos") && !opts.force_portable,
     };
@@ -201,16 +206,22 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
             ctx.skipped.lock().unwrap().push(Skipped::new(&path, if r.failed == 1 { SkipReason::PermissionDenied } else { SkipReason::Unreadable }));
             continue;
         }
+        if !ctx.exclude.is_empty() {
+            // Any entry kind (directory, file, symlink) can be excluded by exact path. Every equal exclusion is marked as hit.
+            let path = dir.join(&*r.name);
+            let p = path.to_string_lossy();
+            let mut hit = false;
+            for (i, x) in ctx.exclude.iter().enumerate() {
+                if x.as_deref() == Some(&*p) { ctx.excl_hit[i].store(true, Ordering::Relaxed); hit = true; }
+            }
+            if hit {
+                ctx.skipped.lock().unwrap().push(Skipped::new(&path, SkipReason::UserExcluded));
+                continue;
+            }
+        }
         match r.kind {
             Kind::Directory => {
                 let path = dir.join(&*r.name);
-                if !ctx.exclude.is_empty() {
-                    let p = path.to_string_lossy();
-                    if ctx.exclude.iter().any(|x| *x == *p) {
-                        ctx.skipped.lock().unwrap().push(Skipped::new(&path, SkipReason::UserExcluded));
-                        continue;
-                    }
-                }
                 if !ctx.opts.cross_devices && r.dev != ctx.root_dev {
                     ctx.skipped.lock().unwrap().push(Skipped::new(&path, SkipReason::SeparateVolume));
                     continue;
@@ -295,6 +306,13 @@ fn flatten(root_path: String, root: DirNode, ctx: Ctx, progress: &ScanProgress) 
     t.items = t.len() as u64 - 1;
     t.cancelled = progress.cancel.load(Ordering::Relaxed);
     t.skipped = ctx.skipped.into_inner().unwrap();
+    // Exclusions that matched no scanned entry (a file or symlinked path given instead of the real one, a relative path, the scan root itself, a path outside the
+    // scan, a typo, a non-UTF-8 path). Only meaningful for a complete scan: a cancelled walk may simply not have reached the entry.
+    if !t.cancelled {
+        let mut u: Vec<String> = ctx.excl_display.iter().zip(&ctx.excl_hit).filter(|(_, h)| !h.load(Ordering::Relaxed)).map(|(d, _)| d.clone()).collect();
+        u.sort(); u.dedup();
+        t.unmatched_exclusions = u;
+    }
     // Pushed from parallel workers in whatever order they finish; sort so index i means the same entry on every scan of the same disk state.
     t.skipped.sort_by(|a, b| a.path.cmp(&b.path).then((a.reason as u8).cmp(&(b.reason as u8))));
     t.seal()

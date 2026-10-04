@@ -186,6 +186,8 @@ pub struct Tree {
     pub(crate) child_count: Vec<u32>,
     pub(crate) root_path: String,
     pub skipped: Vec<Skipped>,
+    /// Requested exclusions that matched no scanned entry (sorted, deduplicated, lossy display text). Empty for a cancelled scan.
+    pub unmatched_exclusions: Vec<String>,
     pub items: u64,
     pub cancelled: bool,
     /// Process-unique generation id, assigned when the tree is handed across the FFI. Filters and layouts are bound to it.
