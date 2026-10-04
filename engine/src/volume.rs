@@ -27,9 +27,30 @@ pub fn volume_info(path: &Path) -> Result<VolumeInfo, i32> {
     if unsafe { libc::statvfs(c.as_ptr(), &mut s) } != 0 {
         return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO));
     }
-    let fr = if s.f_frsize != 0 { s.f_frsize as u64 } else { s.f_bsize as u64 };
+    Ok(convert(s.f_frsize as u64, s.f_bsize as u64, s.f_blocks as u64, s.f_bfree as u64, s.f_bavail as u64, s.f_flag as u64))
+}
+
+/// Pure statvfs-field conversion, split out so overflow, the f_frsize==0 fallback and the read-only flag can be tested without a special filesystem.
+pub(crate) fn convert(frsize: u64, bsize: u64, blocks: u64, bfree: u64, bavail: u64, flag: u64) -> VolumeInfo {
+    let fr = if frsize != 0 { frsize } else { bsize };
     let mut saturated = false;
-    let mut mul = |blocks: u64| blocks.checked_mul(fr).unwrap_or_else(|| { saturated = true; u64::MAX });
-    let (total_bytes, free_bytes, available_bytes) = (mul(s.f_blocks as u64), mul(s.f_bfree as u64), mul(s.f_bavail as u64));
-    Ok(VolumeInfo { total_bytes, free_bytes, available_bytes, block_size: fr, read_only: (s.f_flag as u64) & (libc::ST_RDONLY as u64) != 0, saturated })
+    let mut mul = |b: u64| b.checked_mul(fr).unwrap_or_else(|| { saturated = true; u64::MAX });
+    let (total_bytes, free_bytes, available_bytes) = (mul(blocks), mul(bfree), mul(bavail));
+    VolumeInfo { total_bytes, free_bytes, available_bytes, block_size: fr, read_only: flag & (libc::ST_RDONLY as u64) != 0, saturated }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn converts_units_falls_back_to_bsize_and_flags_overflow_and_readonly() {
+        let v = convert(4096, 512, 10, 4, 3, 0);
+        assert_eq!((v.total_bytes, v.free_bytes, v.available_bytes, v.block_size, v.read_only, v.saturated), (40960, 16384, 12288, 4096, false, false));
+        let v = convert(0, 512, 10, 4, 3, 0);
+        assert_eq!((v.total_bytes, v.block_size), (5120, 512), "f_frsize 0 falls back to f_bsize");
+        let v = convert(4096, 4096, u64::MAX / 2, 1, 1, libc::ST_RDONLY as u64);
+        assert!(v.saturated && v.total_bytes == u64::MAX && v.free_bytes == 4096 && v.read_only);
+        let v = convert(1, 1, u64::MAX, 0, 0, 0);
+        assert!(!v.saturated && v.total_bytes == u64::MAX, "exactly u64::MAX does not overflow");
+    }
 }
