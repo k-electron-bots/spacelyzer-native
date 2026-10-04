@@ -294,10 +294,10 @@ struct SelectionBar: View {
                 .help("Reveal the selected item in Finder")
                 .accessibilityLabel("Show selected item in Finder")
             Button("Check on disk…") { showReview = true }
-                .disabled(model.enginePoisoned)
+                .disabled(model.enginePoisoned || model.mutationPending)
                 .help("Read only: compare this item on disk with the scan")
                 .accessibilityLabel("Check selected item on disk, read only")
-                .popover(isPresented: $showReview, arrowEdge: .top) { ItemReviewPopover(tree: tree, id: id, dismiss: { showReview = false }) }
+                .popover(isPresented: $showReview, arrowEdge: .top) { ItemReviewPopover(model: model, tree: tree, id: id, dismiss: { showReview = false }) }
             Button("Move to Trash…", role: .destructive) { model.proposeRemoval(of: id) }
                 .disabled(model.removalBlockedReason(id) != nil)
                 .help(model.removalBlockedReason(id) ?? "")

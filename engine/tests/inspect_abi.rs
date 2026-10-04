@@ -192,3 +192,46 @@ fn review_of_a_same_kind_new_inode_is_different_with_the_new_files_own_metadata(
     assert_eq!((r.live.ino, r.live.dev, r.live.logical), (new.ino, new.dev, 30), "metadata is the replacement's, not the scanned file's");
     drop(keep);
 }
+
+/// Source argument (checked here by behavior, not proven by it): `review_scanned` reads only fields that are written once during the scan
+/// (names, parent, kind, ino, dev_ix, devs, root_path) and never the size table; `forget` takes `&self` and replaces only the table.
+/// This stress test runs real reviews concurrently with a stream of forgets and requires every review to equal its quiet-time baseline.
+/// It cannot prove the absence of a race (that rests on the source argument and on Rust's aliasing rules); a version check in the caller
+/// is a separate staleness guard and is not a race-freedom proof.
+#[test]
+fn reviews_run_concurrently_with_forgets_and_never_change_their_answer() {
+    #[cfg(feature = "failpoints")]
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let d = fixture("stress");
+    for i in 0..6 { std::fs::create_dir_all(d.join(format!("d{i}/sub"))).unwrap(); for j in 0..8 { std::fs::write(d.join(format!("d{i}/sub/f{j}")), vec![1u8; 4096]).unwrap(); } }
+    let t = scanned(&d);
+    let n = t.len() as u32;
+    let baseline: Vec<(i32, u8, u64)> = (0..n).map(|id| { let (rc, r) = review(&t, id); (rc, r.live_state, r.live.ino) }).collect();
+    assert!(baseline.iter().any(|b| b.0 == C::Same as i32), "fixture must produce real Same verdicts");
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let mismatches = std::sync::atomic::AtomicUsize::new(0);
+    let reviews = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|s| {
+        for _ in 0..3 {
+            s.spawn(|| {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    for id in 0..n {
+                        let (rc, r) = review(&t, id);
+                        if (rc, r.live_state, r.live.ino) != baseline[id as usize] { mismatches.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+                        reviews.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            });
+        }
+        let v0 = t.table().version;
+        for id in (1..n).rev() { let _ = t.forget(id); std::thread::yield_now(); }
+        assert!(t.table().version > v0, "forgets must have advanced the table version while reviews ran");
+        // keep the readers going until each has done real work after the last forget
+        let target = reviews.load(std::sync::atomic::Ordering::Relaxed) + 3 * n as usize;
+        let t0 = std::time::Instant::now();
+        while reviews.load(std::sync::atomic::Ordering::Relaxed) < target && t0.elapsed().as_secs() < 20 { std::thread::yield_now(); }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    assert!(reviews.load(std::sync::atomic::Ordering::Relaxed) > n as usize, "readers must have run");
+    assert_eq!(mismatches.load(std::sync::atomic::Ordering::Relaxed), 0, "a review changed its answer while forgets ran");
+}
