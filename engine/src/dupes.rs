@@ -10,6 +10,8 @@
 //!    Otherwise it is counted `changed` (identity or type differs) or `unreadable` (open/read failed) and left out.
 //! 4. Prefix hash, full-content hash (std SipHash, not cryptographic), then byte-for-byte comparison against class representatives. Members
 //!    of a group matched byte-for-byte in this pass, so hash collisions cannot create a false group. Files can change after being read.
+//! Point in time: a file that grows or changes after it was opened is read only up to the length seen at open (a later append is not seen), and
+//! content can change after the pass; equality describes what this pass read.
 //! Limits: `cancel` stops cooperatively; `max_read_bytes` bounds disk reads. When either stops the pass, groups from a bucket that was not
 //! fully processed are dropped (never a group with missing members), counters are lower bounds, and `cancelled` / `budget_exhausted` say why.
 use crate::tree::{Kind, NodeId, Tree};
@@ -29,8 +31,10 @@ pub struct DupGroup {
     pub ids: Vec<NodeId>,
     /// All members found, even when `ids` was capped.
     pub member_count: u32,
-    /// How many members had a link count above 1 when opened (another path to the same storage may exist outside the scan, so removing
-    /// that member would not free its bytes). 0 means none was seen, not that sharing is impossible (clones are invisible here).
+    /// GROUP-level count over ALL `member_count` members, including members hidden by `max_members_per_group`: how many had a link count above 1
+    /// when opened (another path to the same storage may exist outside the scan, so removing that member would not free its bytes). It says
+    /// nothing about which listed id is linked, so a consumer must not turn it into a per-row flag. 0 means none was seen, not that sharing
+    /// is impossible (clones are invisible here).
     pub linked: u32,
 }
 
@@ -231,9 +235,12 @@ pub struct DupOptions {
     pub min_size: u64,
     /// Stop after about this many bytes were read from disk (all stages); 0 = unbounded. Checked per chunk, so the overshoot is at most one chunk per worker.
     pub max_read_bytes: u64,
-    /// Keep only the first N groups of the final order (largest duplicate_allocated_bytes first); 0 = all. Totals are still computed over every group found.
+    /// Keep only the first N groups of the final order (largest duplicate_allocated_bytes first); 0 = all. REPORT-ONLY: the pass still finds, holds
+    /// and sorts every group, so this limits what is returned, not memory or work (`max_read_bytes` bounds work). A capped report must never be
+    /// presented as "all duplicates" or used to drive removal. Totals are still computed over every group found.
     pub max_groups: usize,
-    /// Keep only the lowest N ids per group (values below 2 act as 2; `member_count` keeps the truth); 0 = all.
+    /// Keep only the lowest N ids per group (values below 2 act as 2; `member_count` keeps the truth); 0 = all. REPORT-ONLY, like `max_groups`;
+    /// a group listed with fewer ids than `member_count` is not the complete member set.
     pub max_members_per_group: usize,
 }
 
