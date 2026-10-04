@@ -852,7 +852,7 @@ pub unsafe extern "C" fn spz_inspect_path(path: *const c_char, out: *mut crate::
     legacy(-2, || {
         use std::os::unix::ffi::OsStrExt;
         if path.is_null() || out.is_null() { return -1; }
-        let p = std::path::Path::new(std::ffi::OsStr::from_bytes(std::ffi::CStr::from_ptr(path).to_bytes()));
+        let p = { use std::os::unix::ffi::OsStrExt; std::path::Path::new(std::ffi::OsStr::from_bytes(std::ffi::CStr::from_ptr(path).to_bytes())) };
         match crate::inspect::inspect(p) { Ok(i) => { *out = i; 0 } Err(Some(e)) if e > 0 => e, Err(_) => -3 }
     })
 }
@@ -1049,5 +1049,28 @@ pub unsafe extern "C" fn spz_tree_skipped_item_status(t: *const Tree, i: u32, re
         if !lossy.is_null() { *lossy = s.lossy as u8; }
         if !status.is_null() { *status = 0; }
         to_c(s.path.clone())
+    })
+}
+
+// ---- Volume capacity (statvfs). Raw filesystem numbers only; see volume.rs for what they do not include. ----
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct SpzVolume { pub total_bytes: u64, pub free_bytes: u64, pub available_bytes: u64, pub block_size: u64, pub os_errno: i32, pub flags: u32 }
+
+/// Capacity of the filesystem holding `path` (NUL-terminated). Status 0 OK; 3 INVALID for a null path/out; 6 OS_ERROR with `os_errno` set (out otherwise zeroed).
+/// flags: bit0 read-only, bit1 a figure saturated at u64::MAX. Blocking statvfs call on the caller's thread (can stall on a hung network mount).
+#[no_mangle]
+pub unsafe extern "C" fn spz_volume_info_status(path: *const c_char, out: *mut SpzVolume, status: *mut i32) {
+    guarded(status, (), || {
+        if path.is_null() || out.is_null() { if !status.is_null() { *status = 3; } return; }
+        let p = { use std::os::unix::ffi::OsStrExt; std::path::Path::new(std::ffi::OsStr::from_bytes(std::ffi::CStr::from_ptr(path).to_bytes())) };
+        match crate::volume::volume_info(p) {
+            Ok(v) => {
+                *out = SpzVolume { total_bytes: v.total_bytes, free_bytes: v.free_bytes, available_bytes: v.available_bytes, block_size: v.block_size, os_errno: 0, flags: v.read_only as u32 | (v.saturated as u32) << 1 };
+                if !status.is_null() { *status = 0; }
+            }
+            Err(e) => { *out = SpzVolume { os_errno: e, ..Default::default() }; if !status.is_null() { *status = 6; } }
+        }
     })
 }

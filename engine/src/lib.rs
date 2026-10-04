@@ -11,6 +11,7 @@ pub mod ffi;
 pub mod layout;
 pub mod scan;
 pub mod tree;
+pub mod volume;
 
 pub use category::Category;
 pub use filter::{apply as apply_filter, Filter, FilterResult};
