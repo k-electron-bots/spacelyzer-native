@@ -342,3 +342,75 @@ fn group_order_is_total_and_stable_with_equal_duplicate_bytes() {
     assert!(r.groups[0].ids[0] < r.groups[1].ids[0]);
     for _ in 0..5 { assert_eq!(find(&t), r); }
 }
+
+/// Tiny deterministic generator (no external crate): reproducible failures by seed.
+struct Lcg(u64);
+impl Lcg {
+    fn next(&mut self) -> u64 { self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); self.0 >> 33 }
+    fn below(&mut self, n: u64) -> u64 { self.next() % n }
+}
+
+/// Differential check against a brute-force oracle: all live candidate files, bucketed by scanned allocated size, split by exact byte equality
+/// (std::fs::read, no hashing, no prefix shortcut). The finder must report exactly those classes of size >= 2.
+fn brute_force(t: &Tree, d: &Path, names: &[String], dead: &std::collections::BTreeSet<u32>) -> std::collections::BTreeSet<Vec<u32>> {
+    use std::collections::BTreeMap;
+    let tab = t.table();
+    let mut by_alloc: BTreeMap<u64, Vec<(u32, Vec<u8>)>> = BTreeMap::new();
+    for n in names {
+        let id = node(t, &d.join(n));
+        if dead.contains(&id) { continue; }
+        let sz = tab.sizes[id as usize];
+        if sz == 0 { continue; }
+        by_alloc.entry(sz).or_default().push((id, std::fs::read(d.join(n)).unwrap()));
+    }
+    let mut out = std::collections::BTreeSet::new();
+    for (_, files) in by_alloc {
+        let mut classes: Vec<(Vec<u8>, Vec<u32>)> = Vec::new();
+        for (id, bytes) in files {
+            match classes.iter_mut().find(|(b, _)| *b == bytes) { Some((_, v)) => v.push(id), None => classes.push((bytes, vec![id])) }
+        }
+        for (_, mut v) in classes { if v.len() >= 2 { v.sort(); out.insert(v); } }
+    }
+    out
+}
+
+#[test]
+fn randomized_differential_against_a_brute_force_oracle() {
+    // lengths straddle the prefix (4096), the chunk (65536) and the allocation block, so equal-allocation/different-length and late-difference cases occur
+    let lens: [usize; 9] = [1, 100, 4095, 4096, 4097, 8192, 65_535, 65_536, 70_000];
+    let mut cases = 0u32; let mut with_groups = 0u32; let mut same_alloc_diff_len = 0u32;
+    for seed in 1..=40u64 {
+        let d = fixture(&format!("diff{seed}"));
+        let mut g = Lcg(seed);
+        // a few base contents, each with a few mutations (first byte, last byte, a middle byte) so near-misses are common
+        let mut names: Vec<String> = Vec::new();
+        let nfiles = 6 + g.below(20) as usize;
+        let nbases = 1 + g.below(4) as usize;
+        let bases: Vec<Vec<u8>> = (0..nbases).map(|b| { let l = lens[g.below(lens.len() as u64) as usize]; (0..l).map(|i| ((i * 31 + b * 17 + seed as usize) % 251) as u8).collect() }).collect();
+        for i in 0..nfiles {
+            let mut c = bases[g.below(nbases as u64) as usize].clone();
+            match g.below(5) { 0 => { let l = c.len() - 1; c[l] ^= 1; } 1 => { c[0] ^= 1; } 2 => { let m = c.len() / 2; c[m] ^= 1; } _ => {} }
+            if g.below(7) == 0 { c.clear(); }                                    // empty files are never candidates
+            let name = format!("f{i}"); std::fs::write(d.join(&name), &c).unwrap(); names.push(name);
+        }
+        let t = scanned(&d);
+        let mut dead = std::collections::BTreeSet::new();
+        for n in &names { if g.below(9) == 0 { let id = node(&t, &d.join(n)); let _ = t.forget(id); dead.insert(id); } }
+        let r = find(&t);
+        let got: std::collections::BTreeSet<Vec<u32>> = r.groups.iter().map(|x| x.ids.clone()).collect();
+        let want = brute_force(&t, &d, &names, &dead);
+        assert_eq!(got, want, "seed {seed}: finder and oracle disagree; report {:?}", r);
+        assert_eq!((r.unreadable, r.changed, r.cancelled, r.incomplete), (0, 0, false, false), "seed {seed}: {:?}", r);
+        let tab = t.table();
+        for gr in &r.groups { assert_eq!(gr.member_count as usize, gr.ids.len()); assert!(gr.ids.windows(2).all(|w| w[0] < w[1])); assert_eq!(gr.size, tab.sizes[gr.ids[0] as usize]); }
+        assert_eq!(r.duplicate_allocated_bytes, r.groups.iter().map(|x| x.size * (x.member_count as u64 - 1)).sum::<u64>());
+        cases += 1; if !r.groups.is_empty() { with_groups += 1; }
+        // coverage evidence: some case where two files of different length share an allocated size (and so are not duplicates)
+        let mut alloc_len: std::collections::BTreeMap<u64, std::collections::BTreeSet<usize>> = Default::default();
+        for n in &names { let id = node(&t, &d.join(n)); if !dead.contains(&id) && tab.sizes[id as usize] > 0 { alloc_len.entry(tab.sizes[id as usize]).or_default().insert(std::fs::read(d.join(n)).unwrap().len()); } }
+        if alloc_len.values().any(|s| s.len() > 1) { same_alloc_diff_len += 1; }
+    }
+    assert_eq!(cases, 40);
+    assert!(with_groups >= 10, "the generator must produce duplicates often enough to mean something: {with_groups}");
+    assert!(same_alloc_diff_len >= 3, "the generator must hit equal-allocation/different-length cases: {same_alloc_diff_len}");
+}
