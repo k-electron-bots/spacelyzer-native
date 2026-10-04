@@ -346,18 +346,32 @@ struct KindsView: View {
     @Environment(AppModel.self) private var model
     var body: some View {
         if let t = model.tree {
-            let rows = model.kindRows
+            let presentation = model.derivedPresentation
+            let rows = presentation == .ready ? model.kindRows : []        // old totals are never shown while stale, updating, poisoned or out of date
             let total = max(1, rows.reduce(0) { $0 + $1.bytes })
             List(rows) { r in
                 HStack {
                     Circle().fill(categoryColor(r.category)).frame(width: 10, height: 10)
                     Text(r.category.label)
                     Spacer()
-                    Text(model.enginePoisoned ? "\u{2014}" : "\(r.items.formatted()) items").foregroundStyle(.secondary)
-                    Text(model.enginePoisoned ? "\u{2014}" : formatBytes(r.bytes)).monospacedDigit().frame(width: 90, alignment: .trailing)
+                    Text("\(r.items.formatted()) items").foregroundStyle(.secondary)
+                    Text(formatBytes(r.bytes)).monospacedDigit().frame(width: 90, alignment: .trailing)
                     ShareBar(fraction: Double(r.bytes) / Double(total)).frame(width: 60, height: 6)
                 }
             }
+            .overlay { DerivedOverlay(presentation: presentation) }
+        }
+    }
+}
+
+/// Shown over a derived list (Kinds, Largest) while its rows are withheld.
+struct DerivedOverlay: View {
+    let presentation: AppModel.DerivedPresentation
+    var body: some View {
+        switch presentation {
+        case .ready: EmptyView()
+        case .updating: ProgressView("Updating…")
+        case .unavailable(let why): ContentUnavailableView("Unavailable", systemImage: "exclamationmark.triangle", description: Text(why))
         }
     }
 }
@@ -417,8 +431,9 @@ struct LargestView: View {
     @Environment(AppModel.self) private var model
     var body: some View {
         if let t = model.tree {
-            let ids = model.largestIDs
-            let sizes = model.largestSizes
+            let presentation = model.derivedPresentation
+            let ids = presentation == .ready ? model.largestIDs : []         // a removed row or old size is never shown or selectable while stale
+            let sizes = presentation == .ready ? model.largestSizes : []
             let sizeOf = Dictionary(zip(ids, sizes), uniquingKeysWith: { a, _ in a })   // sizes come from the same capture as the ids
             List(ids, id: \.self, selection: Bindable(model).selected) { id in
                 HStack {
@@ -428,18 +443,22 @@ struct LargestView: View {
                         Text(model.enginePoisoned ? "" : t.path(id)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
                     }
                     Spacer()
-                    Text(model.enginePoisoned ? "\u{2014}" : (sizeOf[id].map(formatBytes) ?? "\u{2014}")).monospacedDigit()   // a missing size, or a poisoned engine, is a visible placeholder, never 0 B or an old number
+                    Text(sizeOf[id].map(formatBytes) ?? "\u{2014}").monospacedDigit()   // a missing size, or a poisoned engine, is a visible placeholder, never 0 B or an old number
                 }.tag(id)
             }
+            .disabled(presentation != .ready)
             .overlay {
-                if model.activeFilter != nil && ids.isEmpty {
+                if presentation != .ready { DerivedOverlay(presentation: presentation) }
+                else if model.activeFilter != nil && ids.isEmpty {
                     ContentUnavailableView("No matches", systemImage: "line.3.horizontal.decrease.circle",
                                            description: Text("No file matches the current filter."))
                 }
             }
             .safeAreaInset(edge: .top, spacing: 0) {
+                if presentation == .ready {   // no count while rows are withheld
                 Text(ids.count >= 200 ? "Showing the 200 largest\(model.activeFilter != nil ? " matching" : "") files" : "\(ids.count.formatted()) \(model.activeFilter != nil ? "matching " : "")files")
                     .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 4)
+                }
             }
         }
     }

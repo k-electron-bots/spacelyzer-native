@@ -1943,7 +1943,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
 
     /// UNCOMPILED/UNRUN until a Mac run. Deterministic: every step that must happen after another waits on a gate, not on a sleep.
     private static func reviewModelChecks() async {
-        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state", "review-model-refuses-and-drops-when-engine-untrusted", "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", "review-bare-model-selection-change-makes-no-review-request", "copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write", "csv-largest-quotes-exactly-and-marks-unrepresentable-paths", "csv-export-flow-refuses-blocked-toolarge-stale-and-writes-once-when-unchanged", "csv-export-real-model-wiring-leaves-removal-message-untouched", "engine-largest-folders-abi-and-forget-on-real-tree", "folders-model-publishes-real-list-drops-stale-and-clears-on-poison", "folders-model-clears-at-once-and-rejects-stale-version-with-bounded-retry", "folders-model-version-retry-is-bounded-and-ends-failed-with-no-rows"]
+        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state", "review-model-refuses-and-drops-when-engine-untrusted", "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", "review-bare-model-selection-change-makes-no-review-request", "copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write", "csv-largest-quotes-exactly-and-marks-unrepresentable-paths", "csv-export-flow-refuses-blocked-toolarge-stale-and-writes-once-when-unchanged", "csv-export-real-model-wiring-leaves-removal-message-untouched", "engine-largest-folders-abi-and-forget-on-real-tree", "folders-model-publishes-real-list-drops-stale-and-clears-on-poison", "folders-model-clears-at-once-and-rejects-stale-version-with-bounded-retry", "folders-model-version-retry-is-bounded-and-ends-failed-with-no-rows", "derived-presentation-withholds-rows-when-stale-updating-poisoned-or-out-of-date"]
         let d = fixture("review-model", [("a.bin", 30_000), ("b.bin", 20_000), ("c.bin", 10_000)])
         defer { try? FileManager.default.removeItem(at: d) }
         guard let t = await ScanSession(root: d.path, excludes: [])?.run({ _ in }), let a = node(t, "a.bin"), let b = node(t, "b.bin"), let c = node(t, "c.bin") else {
@@ -2144,6 +2144,25 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         am3.refreshFolders()
         for _ in 0..<20 where am3.folderLoad == .loading { await am3.folderTask?.value }
         let failedMsg: String? = { if case .failed(let m) = am3.folderLoad { return m }; return nil }()
+        // 5. The rule the Largest and Kinds views use to decide whether rows may be shown (model level; the mounted views are not exercised).
+        let am4 = AppModel(); am4.tree = t2; am4.panicBaseline = EnginePanics.count
+        let noVersion = am4.derivedPresentation == .updating                  // nothing published yet
+        am4.derivedVersion = t2.version
+        let ready = am4.derivedPresentation == .ready
+        _ = t2.forget(y)                                                       // table moves; the published lists are now the OLD table's
+        let staleHidden = am4.derivedPresentation == .updating
+        am4.derivedVersion = t2.version
+        am4.requiredVersion = t2.version                                        // a removal is settling
+        let pendingHidden = am4.derivedPresentation == .updating
+        am4.requiredVersion = nil
+        am4.markOutOfDate("test reason")
+        let outOfDateHidden = am4.derivedPresentation == .unavailable("test reason")
+        am4.viewOutOfDate = false; am4.outOfDateReason = nil
+        let readyAgain = am4.derivedPresentation == .ready
+        am4.panicBaseline = EnginePanics.count &- 1
+        let poisonHidden: Bool = { if case .unavailable = am4.derivedPresentation { return true }; return false }()
+        Check.expect("derived-presentation-withholds-rows-when-stale-updating-poisoned-or-out-of-date", noVersion && ready && staleHidden && pendingHidden && outOfDateHidden && readyAgain && poisonHidden, "noVersion=\(noVersion) ready=\(ready) staleHidden=\(staleHidden) pendingHidden=\(pendingHidden) outOfDateHidden=\(outOfDateHidden) readyAgain=\(readyAgain) poisonHidden=\(poisonHidden)")
+
         Check.expect("folders-model-version-retry-is-bounded-and-ends-failed-with-no-rows", tries.value == AppModel.folderMaxAttempts && failedMsg != nil && am3.folderIDs.isEmpty && am3.folderVersion == nil, "tries=\(tries.value) failed=\(failedMsg ?? "nil") rows=\(am3.folderIDs.count)")
     }
 
@@ -2780,6 +2799,7 @@ final class BusyFlag: @unchecked Sendable {
         "folders-model-publishes-real-list-drops-stale-and-clears-on-poison",
         "folders-model-clears-at-once-and-rejects-stale-version-with-bounded-retry",
         "folders-model-version-retry-is-bounded-and-ends-failed-with-no-rows",
+        "derived-presentation-withholds-rows-when-stale-updating-poisoned-or-out-of-date",
         "engine-scanned-identity-matches-lstat-on-fixture",
         "view-poison-outline-cells-show-unavailable-not-stale-names",
         "view-poison-outline-latch-persists-in-mounted-table",
