@@ -178,7 +178,7 @@ fn read_budget_stops_the_pass_with_budget_exhausted_and_only_complete_groups() {
     let full = find(&t);
     assert_eq!(full.groups.len(), 2); assert!(!full.incomplete && !full.budget_exhausted);
     let pr = DupProgress::default();
-    let r = find_duplicates_opts(&t, DupOptions { min_size: 1, max_read_bytes: 50_000 }, &AtomicBool::new(false), &pr);
+    let r = find_duplicates_opts(&t, DupOptions { min_size: 1, max_read_bytes: 50_000, ..Default::default() }, &AtomicBool::new(false), &pr);
     use std::sync::atomic::Ordering::Relaxed;
     assert!(r.budget_exhausted && r.incomplete && !r.cancelled, "{:?}", r);
     let read = pr.bytes_read.load(Relaxed);
@@ -277,12 +277,68 @@ fn a_reused_progress_is_reset_per_pass_not_carrying_budget_or_totals() {
     let t = scanned(&d);
     let pr = DupProgress::default();
     use std::sync::atomic::Ordering::Relaxed;
-    let first = find_duplicates_opts(&t, DupOptions { min_size: 1, max_read_bytes: 20_000 }, &AtomicBool::new(false), &pr);
+    let first = find_duplicates_opts(&t, DupOptions { min_size: 1, max_read_bytes: 20_000, ..Default::default() }, &AtomicBool::new(false), &pr);
     assert!(first.budget_exhausted && pr.budget_hit.load(Relaxed));
-    let second = find_duplicates_opts(&t, DupOptions { min_size: 1, max_read_bytes: 0 }, &AtomicBool::new(false), &pr);
+    let second = find_duplicates_opts(&t, DupOptions { min_size: 1, max_read_bytes: 0, ..Default::default() }, &AtomicBool::new(false), &pr);
     assert!(!second.budget_exhausted && !second.incomplete && !pr.budget_hit.load(Relaxed), "{:?}", second);
     assert_eq!(second.groups.len(), 1);
     let fresh = DupProgress::default(); let _ = find_duplicates_with(&t, 1, &AtomicBool::new(false), &fresh);
     assert_eq!(pr.bytes_read.load(Relaxed), fresh.bytes_read.load(Relaxed), "totals describe only the second pass");
     assert_eq!((pr.candidates.load(Relaxed), pr.examined.load(Relaxed)), (3, 3));
+}
+
+#[test]
+fn a_file_shortened_while_being_read_is_changed_not_unreadable() {
+    let d = fixture("shrink");
+    for n in ["x1", "x2", "x3"] { std::fs::write(d.join(n), vec![4u8; 300_000]).unwrap(); }
+    let t = scanned(&d);
+    let done = std::sync::Arc::new(AtomicBool::new(false));
+    let (done2, dir) = (done.clone(), d.clone());
+    let mut pr = DupProgress::default();
+    // after the first full-hash chunk of the first file (3 prefix reads + one 64 KiB chunk), truncate all three in place (same inodes): the file being read hits EOF mid-read
+    pr.on_read = Some(Box::new(move |total| {
+        if total >= 3 * 4096 + 65_536 && !done2.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            for n in ["x1", "x2", "x3"] { std::fs::OpenOptions::new().write(true).open(dir.join(n)).unwrap().set_len(10).unwrap(); }
+        }
+    }));
+    let r = find_duplicates_with(&t, 1, &AtomicBool::new(false), &pr);
+    assert!(done.load(std::sync::atomic::Ordering::SeqCst), "truncation ran (precondition)");
+    assert_eq!((r.changed, r.unreadable), (3, 0), "a short read is a change, not an I/O failure: {:?}", r);
+    assert!(r.groups.is_empty());
+}
+
+#[test]
+fn group_and_member_caps_keep_the_largest_groups_and_lowest_ids_and_say_so() {
+    let d = fixture("caps");
+    // 3 groups: big (4 x 90k), mid (3 x 50k), small (2 x 20k)
+    for i in 0..4 { std::fs::write(d.join(format!("big{i}")), vec![1u8; 90_000]).unwrap(); }
+    for i in 0..3 { std::fs::write(d.join(format!("mid{i}")), vec![2u8; 50_000]).unwrap(); }
+    for i in 0..2 { std::fs::write(d.join(format!("sm{i}")), vec![3u8; 20_000]).unwrap(); }
+    let t = scanned(&d);
+    let all = find(&t);
+    assert_eq!((all.groups.len(), all.groups_total, all.groups_truncated), (3, 3, false));
+    assert_eq!(all.groups[0].member_count, 4); assert!(all.groups[0].size > all.groups[1].size);
+    let pr = DupProgress::default();
+    let r = find_duplicates_opts(&t, DupOptions { min_size: 1, max_groups: 2, max_members_per_group: 2, ..Default::default() }, &AtomicBool::new(false), &pr);
+    assert_eq!((r.groups.len(), r.groups_total, r.groups_truncated), (2, 3, true));
+    assert_eq!(r.duplicate_allocated_bytes, all.duplicate_allocated_bytes, "the total covers every group found, not only the listed ones");
+    assert_eq!(r.groups[0].size, all.groups[0].size); assert_eq!(r.groups[1].size, all.groups[1].size);
+    for (g, full) in r.groups.iter().zip(all.groups.iter()) {
+        assert_eq!(g.member_count, full.member_count, "the true count survives the cap");
+        assert_eq!(g.ids, full.ids[..2].to_vec(), "the lowest ids are kept, deterministically");
+    }
+    assert!(!r.incomplete, "caps are truncation, not an incomplete pass");
+}
+
+#[test]
+fn group_order_is_total_and_stable_with_equal_duplicate_bytes() {
+    let d = fixture("order");
+    // two groups with identical size and member count: order falls to the lowest member id
+    for n in ["a1", "a2", "b1", "b2"] { std::fs::write(d.join(n), vec![if n.starts_with('a') { 1u8 } else { 2u8 }; 30_000]).unwrap(); }
+    let t = scanned(&d);
+    let r = find(&t);
+    assert_eq!(r.groups.len(), 2);
+    assert_eq!(r.groups[0].size, r.groups[1].size);
+    assert!(r.groups[0].ids[0] < r.groups[1].ids[0]);
+    for _ in 0..5 { assert_eq!(find(&t), r); }
 }
