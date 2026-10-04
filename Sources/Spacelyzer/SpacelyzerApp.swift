@@ -1943,7 +1943,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
 
     /// UNCOMPILED/UNRUN until a Mac run. Deterministic: every step that must happen after another waits on a gate, not on a sleep.
     private static func reviewModelChecks() async {
-        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state", "review-model-refuses-and-drops-when-engine-untrusted", "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", "review-bare-model-selection-change-makes-no-review-request", "copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write"]
+        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state", "review-model-refuses-and-drops-when-engine-untrusted", "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", "review-bare-model-selection-change-makes-no-review-request", "copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write", "csv-largest-quotes-exactly-and-marks-unrepresentable-paths"]
         let d = fixture("review-model", [("a.bin", 30_000), ("b.bin", 20_000), ("c.bin", 10_000)])
         defer { try? FileManager.default.removeItem(at: d) }
         guard let t = await ScanSession(root: d.path, excludes: [])?.run({ _ in }), let a = node(t, "a.bin"), let b = node(t, "b.bin"), let c = node(t, "c.bin") else {
@@ -2046,6 +2046,22 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         Check.expect("copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write", good && refused && writes.count == 1, "good=\(good) refused=\(refused) writes=\(writes.count)")
     }
 
+    /// UNCOMPILED/UNRUN. Pure formatting, no file or panel.
+    private static func csvChecks() {
+        let (t, marked) = LargestCSV.csv([
+            .init(path: "/a/plain.txt", bytes: 10), .init(path: "/a/with,comma \"q\".txt", bytes: 20), .init(path: "/a/line\nbreak", bytes: 30),
+            .init(path: "/a/bad\u{FFFD}", bytes: 40), .init(path: "=cmd", bytes: 50), .init(path: "", bytes: 60)])
+        let lines = t.components(separatedBy: "\r\n")
+        let header = lines.first == "rank,size_bytes_on_disk_at_scan,path,note"
+        let plain = lines.contains("1,10,/a/plain.txt,")
+        let quoted = t.contains("2,20,\"/a/with,comma \"\"q\"\".txt\",\r\n")
+        let newline = t.contains("3,30,\"/a/line\nbreak\",\r\n")
+        let lossy = lines.contains("4,40,,name not exactly representable")
+        let formula = lines.contains("5,50,,path starts with a formula character")
+        let none = lines.contains("6,60,,no path")
+        Check.expect("csv-largest-quotes-exactly-and-marks-unrepresentable-paths", header && plain && quoted && newline && lossy && formula && none && marked == 3, "header=\(header) plain=\(plain) quoted=\(quoted) newline=\(newline) lossy=\(lossy) formula=\(formula) none=\(none) marked=\(marked)")
+    }
+
     private static func engine() async {
         let d1 = fixture("engine-old", [("f1.bin", 40_000), ("f2.bin", 24_000), ("f3.bin", 8_000)])
         let d2 = fixture("engine-new", [("g1.bin", 30_000), ("g2.bin", 10_000)])
@@ -2084,6 +2100,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         Check.expect("engine-scanned-identity-matches-lstat-on-fixture", identOK, identOK ? "root and 3 files Same; Foundation lstat agrees with engine lstat" : identDetail)
         await reviewModelChecks()
         copyPathChecks()
+        csvChecks()
         // Real engine forget on the OLD tree handle after a second tree exists: only the old tree changes.
         let v1 = t1.version, v2 = t2.version, r1 = t1.info(0).size, r2 = t2.info(0).size, s1 = t1.info(f1).size, s2 = t1.info(f2).size, s3 = t1.info(f3).size
         let st = t1.forget(f1)
@@ -2571,6 +2588,7 @@ final class BusyFlag: @unchecked Sendable {
         "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding",
         "review-bare-model-selection-change-makes-no-review-request",
         "copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write",
+        "csv-largest-quotes-exactly-and-marks-unrepresentable-paths",
         "engine-scanned-identity-matches-lstat-on-fixture",
         "view-poison-outline-cells-show-unavailable-not-stale-names",
         "view-poison-outline-latch-persists-in-mounted-table",
