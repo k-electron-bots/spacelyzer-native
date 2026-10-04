@@ -1581,6 +1581,21 @@ private actor PublicationBarrier {
         let dir = (Check.path as NSString).deletingLastPathComponent
         if let png = rep.representation(using: .png, properties: [:]) { try? png.write(to: URL(fileURLWithPath: dir + "/" + file)) }
     }
+    private static func subviewsDeep(_ v: NSView) -> [NSView] { v.subviews + v.subviews.flatMap { subviewsDeep($0) } }
+    /// Visible text of every realized row (all NSTextFields not hidden) plus whether any share bar or chevron is still visible.
+    private static func visibleCellState(_ t: NSTableView) -> (texts: [String], barsVisible: Int, chevronsVisible: Int) {
+        var texts: [String] = [], bars = 0, chev = 0
+        for r in 0..<t.numberOfRows {
+            guard let c = t.view(atColumn: 0, row: r, makeIfNecessary: true) else { continue }
+            c.layoutSubtreeIfNeeded()
+            for v in subviewsDeep(c) {
+                if let f = v as? NSTextField, !f.isHidden, !f.stringValue.isEmpty { texts.append(f.stringValue) }
+                if String(describing: type(of: v)).contains("ShareBarView"), !v.isHidden { bars += 1 }
+                if v is NSButton, !v.isHidden { chev += 1 }
+            }
+        }
+        return (texts, bars, chev)
+    }
     private static func hasLabel(_ l: [String], _ name: String) -> Bool { l.contains { $0.hasPrefix(name + ",") } }
 
     static func run() async {
@@ -1618,7 +1633,7 @@ private actor PublicationBarrier {
 
         // Real removal flow with the Trash mocked: row disappears from the mounted table, selection must not point at it.
         m.selected = big
-        _ = await PublicationRegression.wait { if let i = m.outlineIndex[big] { return table.selectedRow == i }; return false }
+        let selectedBeforeRemoval = await PublicationRegression.wait { if let i = m.outlineIndex[big] { return table.selectedRow == i }; return false }
         let v0 = m.tree?.version ?? 0
         m.pendingRemoval = big; m.confirmRemoval()
         let accepted: Bool = m.removalInFlight
@@ -1629,7 +1644,7 @@ private actor PublicationBarrier {
         let gone: Bool = !hasLabel(l1, "big.bin")
         let others: Bool = ["mid.bin", "small.bin", "tiny.bin"].allSatisfy { hasLabel(l1, $0) }
         let selClear: Bool = m.selected != big && (table.selectedRow < 0 || table.selectedRow >= l1.count || !l1[table.selectedRow].hasPrefix("big.bin,"))
-        Check.expect("view-outline-removal-drops-row-and-clears-selection", accepted && settled && gone && others && selClear, "accepted=\(accepted) settled=\(settled) bigRowGone=\(gone) othersPresent=\(others) selection=\(String(describing: m.selected)) selectedRow=\(table.selectedRow) labels=\(l1)")
+        Check.expect("view-outline-removal-drops-row-and-clears-selection", selectedBeforeRemoval && accepted && settled && gone && others && selClear, "selectedBeforeRemoval=\(selectedBeforeRemoval) accepted=\(accepted) settled=\(settled) bigRowGone=\(gone) othersPresent=\(others) selection=\(String(describing: m.selected)) selectedRow=\(table.selectedRow) labels=\(l1)")
 
         // Slice 3: poison in the mounted outline. A moved panic counter must replace every realized row's name and path with
         // "Unavailable" in the actual table (not just in the model), and the out-of-date state must be set.
@@ -1641,8 +1656,11 @@ private actor PublicationBarrier {
         let l2 = labels(table)
         snapshot(host, "outline-poisoned.png")
         let noStaleName: Bool = !l2.contains { $0.contains(".bin") }
+        let vis = visibleCellState(table)
+        let noStaleNumbers: Bool = !vis.texts.contains { $0.contains("KB") || $0.contains("MB") || $0.contains("bytes") || $0.contains("byte") || $0.contains("item") }
+        let noBarsOrChevrons: Bool = vis.barsVisible == 0 && vis.chevronsVisible == 0
         let flagged: Bool = m.viewOutOfDate && m.poisoned
-        Check.expect("view-poison-outline-cells-show-unavailable-not-stale-names", repainted && noStaleName && flagged, "repainted=\(repainted) noStaleName=\(noStaleName) outOfDate=\(m.viewOutOfDate) poisoned=\(m.poisoned) labels=\(l2)")
+        Check.expect("view-poison-outline-cells-show-unavailable-not-stale-names", repainted && noStaleName && noStaleNumbers && noBarsOrChevrons && flagged, "repainted=\(repainted) noStaleName=\(noStaleName) noStaleNumbers=\(noStaleNumbers) noBarsOrChevrons=\(noBarsOrChevrons) visibleTexts=\(vis.texts) bars=\(vis.barsVisible) chevrons=\(vis.chevronsVisible) outOfDate=\(m.viewOutOfDate) poisoned=\(m.poisoned) labels=\(l2)")
         fake = m.panicBaseline   // counter returns to baseline: the latch must hold in the mounted table too
         try? await Task.sleep(nanoseconds: 300_000_000)
         let latchedView: Bool = labels(table).allSatisfy { $0.hasPrefix("Unavailable,") } && m.enginePoisoned
