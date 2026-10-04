@@ -15,7 +15,7 @@ Karim approved safe big-file cleanup first on October3, ahead of hidden macOS sp
 |---|---|---|
 | E1 Outline and filters | Ancestor reveal, extension/size/date filters, sort, deep item counts, zero-byte matches | Scoped CI/pixel acceptance across checkpoints; see verification limits |
 | E2 Glass and accessibility | Selection/action surface, native filter editor, focus, Reduce Transparency/Motion, minimum layout, VoiceOver | Underway; full signoff open |
-| E3 Volume accounting | Used/free/purgeable space, snapshots, unaccounted space | Planned |
+| E3 Volume accounting | Used/free/purgeable space, snapshots, unaccounted space | Engine has raw statvfs capacity (`engine/src/volume.rs`, `spz_volume_info_status`, header only, Linux-tested, no Swift consumer). Purgeable, snapshots and container sharing are Mac-only and not implemented; no UI |
 | E4 Inspect and remove | Item details and Quick Look, then batch removal/history | Planned; batch work depends on details and safety |
 | E5 Scan control | Persistent exclusions, reviewable unreadable list, Full Disk Access detection | Planned |
 | E6 Duplicates | Rust duplicate finding and review/removal UI | Rust finder `engine/src/dupes.rs` and its C ABI (`spz_dup_*`, header only, no Swift consumer) exist with Linux tests only (read-only; no UI, no removal path; caps are report-only; sizes are allocated bytes, not reclaimable space). Swift/UI and Mac behavior unverified; depends on E4 for review/removal |
