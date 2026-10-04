@@ -43,3 +43,11 @@ the picker's fourth segment at minimum width, a removal while the tab is open, a
 
 Folders retry button ("Try Again" in the failed overlay, disabled while the engine is poisoned) and `.task(id:)` refresh on tab show: source only, never rendered or clicked.
 Needs a window to test: clicking Try Again shows Loading then ready, the task refresh runs when the tab appears, and the overlay layout.
+
+## Largest and Kinds publication gating (source only, UNCOMPILED/UNRUN)
+The views now show rows only when `AppModel.derivedPresentation == .ready` (published at the current table version, nothing pending, not poisoned,
+not out of date, filter result current). Otherwise the rows are withheld and cannot be selected: "Updating..." or "Unavailable" with the reason.
+The model keeps its previous publication underneath, so the existing model-level removal checks are unaffected. Declared check:
+derived-presentation-withholds-rows-when-stale-updating-poisoned-or-out-of-date (the rule only, on a real tree and AppModel).
+PLANNED and needs a mounted window: the Largest and Kinds views actually show no rows and no selectable removed row during a removal, poison and
+out-of-date states, the Kinds share bar and header are hidden then, and the existing UI calibration screenshots must be re-baselined.
