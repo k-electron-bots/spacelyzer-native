@@ -399,30 +399,32 @@ private struct OutlineTable: NSViewRepresentable {
             let shown = row < model.outlineShown.count ? model.outlineShown[row] : info.size   // same snapshot as the row, no live filter read
             let isDir = info.kind == .directory
             let expanded = model.expanded.contains(r.node)
+            // A caught engine panic: every number derived from the engine is untrustworthy, so show none (no size, count, bar, chevron).
+            let poisoned = model.enginePoisoned
             cell.depth = Int(r.depth)
-            cell.hasChildren = isDir && info.childCount > 0
+            cell.hasChildren = !poisoned && isDir && info.childCount > 0
             cell.chevron.image = NSImage(systemSymbolName: expanded ? "chevron.down" : "chevron.right", accessibilityDescription: expanded ? "Collapse" : "Expand")?
                 .withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
             cell.icon.image = NSImage(systemSymbolName: Self.icon(info), accessibilityDescription: nil)
             cell.icon.contentTintColor = isDir ? .controlAccentColor : .secondaryLabelColor
             // A caught engine panic makes the legacy name/path reads untrustworthy (they fall back to blank): show it, not a blank.
-            let poisoned = model.enginePoisoned
             let nm = poisoned ? "Unavailable" : tree.name(r.node)
             cell.name.stringValue = nm
             let path = poisoned ? "" : tree.path(r.node)
             cell.name.toolTip = path
             cell.toolTip = path
             cell.contrastOverride = Perf.on ? model.demoIncreaseContrast : nil
-            cell.size.stringValue = formatBytes(shown)
-            cell.count.stringValue = isDir ? "\(info.childCount.formatted()) item\(info.childCount == 1 ? "" : "s")" : ""
-            cell.bar.fraction = Double(shown) / Double(max(1, total))
+            cell.size.stringValue = poisoned ? "\u{2014}" : formatBytes(shown)
+            cell.count.stringValue = (!poisoned && isDir) ? "\(info.childCount.formatted()) item\(info.childCount == 1 ? "" : "s")" : ""
+            cell.bar.fraction = poisoned ? 0 : Double(shown) / Double(max(1, total))
+            cell.bar.isHidden = poisoned
             let node = r.node
             cell.onToggle = { [weak self] in self?.model.toggle(node) }
             cell.chevron.setAccessibilityLabel("\(expanded ? "Collapse" : "Expand") \(nm)")
             cell.chevron.setAccessibilityHelp("Show or hide this folder's children")
             cell.bar.setAccessibilityElement(false)
             cell.icon.setAccessibilityElement(false)
-            cell.setAccessibilityLabel("\(nm), \(isDir ? "folder" : "item"), \(formatBytes(shown))\(isDir ? ", \(info.childCount) items" : "")")
+            cell.setAccessibilityLabel(poisoned ? "Unavailable, engine error, rescan needed" : "\(nm), \(isDir ? "folder" : "item"), \(formatBytes(shown))\(isDir ? ", \(info.childCount) items" : "")")
             cell.setAccessibilityValue(cell.hasChildren ? (expanded ? "expanded" : "collapsed") : nil)
             cell.needsLayout = true
             return cell
