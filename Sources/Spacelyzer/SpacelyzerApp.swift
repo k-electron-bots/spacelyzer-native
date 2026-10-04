@@ -1581,7 +1581,7 @@ private actor PublicationBarrier {
         defer { try? FileManager.default.removeItem(at: dir) }
         let m = AppModel(); m.scan(dir.path)
         guard await PublicationRegression.ready(m) != nil, let tree = m.tree, let big = node(tree, "big.bin"), let mid = node(tree, "mid.bin") else {
-            Check.expect("view-outline-rows-mounted-match-published", false, "fixture: model never ready"); Check.expect("view-outline-selection-syncs-both-ways", false, "fixture: model never ready"); Check.expect("view-outline-removal-drops-row-and-clears-selection", false, "fixture: model never ready"); return
+            Check.expect("view-outline-rows-mounted-match-published", false, "fixture: model never ready"); Check.expect("view-outline-selection-syncs-both-ways", false, "fixture: model never ready"); Check.expect("view-outline-removal-drops-row-and-clears-selection", false, "fixture: model never ready"); Check.expect("view-poison-outline-cells-show-unavailable-not-stale-names", false, "fixture: model never ready"); Check.expect("view-poison-outline-latch-persists-in-mounted-table", false, "fixture: model never ready"); return
         }
         m.trashItem = { $0 }
         let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: 520, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
@@ -1591,7 +1591,7 @@ private actor PublicationBarrier {
         defer { window.close() }
         let mounted = await PublicationRegression.wait { if let t = findTable(host) { return t.numberOfRows > 0 && t.numberOfRows == m.outlineRows.count }; return false }
         guard mounted, let table = findTable(host) else {
-            Check.expect("view-outline-rows-mounted-match-published", false, "outline table never mounted with published rows"); Check.expect("view-outline-selection-syncs-both-ways", false, "outline table never mounted with published rows"); Check.expect("view-outline-removal-drops-row-and-clears-selection", false, "outline table never mounted with published rows"); return
+            Check.expect("view-outline-rows-mounted-match-published", false, "outline table never mounted with published rows"); Check.expect("view-outline-selection-syncs-both-ways", false, "outline table never mounted with published rows"); Check.expect("view-outline-removal-drops-row-and-clears-selection", false, "outline table never mounted with published rows"); Check.expect("view-poison-outline-cells-show-unavailable-not-stale-names", false, "outline table never mounted"); Check.expect("view-poison-outline-latch-persists-in-mounted-table", false, "outline table never mounted"); return
         }
         try? await Task.sleep(nanoseconds: 400_000_000)
         let l0 = labels(table)
@@ -1621,6 +1621,22 @@ private actor PublicationBarrier {
         let others: Bool = ["mid.bin", "small.bin", "tiny.bin"].allSatisfy { hasLabel(l1, $0) }
         let selClear: Bool = m.selected != big && (table.selectedRow < 0 || table.selectedRow >= l1.count || !l1[table.selectedRow].hasPrefix("big.bin,"))
         Check.expect("view-outline-removal-drops-row-and-clears-selection", accepted && settled && gone && others && selClear, "accepted=\(accepted) settled=\(settled) bigRowGone=\(gone) othersPresent=\(others) selection=\(String(describing: m.selected)) selectedRow=\(table.selectedRow) labels=\(l1)")
+
+        // Slice 3: poison in the mounted outline. A moved panic counter must replace every realized row's name and path with
+        // "Unavailable" in the actual table (not just in the model), and the out-of-date state must be set.
+        var fake = m.panicBaseline
+        m.panicCounter = { fake }
+        fake += 1
+        m.markPoisoned()
+        let repainted = await PublicationRegression.wait { labels(table).allSatisfy { $0.hasPrefix("Unavailable,") } && table.numberOfRows > 0 }
+        let l2 = labels(table)
+        let noStaleName: Bool = !l2.contains { $0.contains(".bin") }
+        let flagged: Bool = m.viewOutOfDate && m.poisoned
+        Check.expect("view-poison-outline-cells-show-unavailable-not-stale-names", repainted && noStaleName && flagged, "repainted=\(repainted) noStaleName=\(noStaleName) outOfDate=\(m.viewOutOfDate) poisoned=\(m.poisoned) labels=\(l2)")
+        fake = m.panicBaseline   // counter returns to baseline: the latch must hold in the mounted table too
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        let latchedView: Bool = labels(table).allSatisfy { $0.hasPrefix("Unavailable,") } && m.enginePoisoned
+        Check.expect("view-poison-outline-latch-persists-in-mounted-table", latchedView, "latched=\(m.enginePoisoned) labels=\(labels(table))")
     }
 }
 
@@ -2195,6 +2211,8 @@ final class BusyFlag: @unchecked Sendable {
         "view-outline-rows-mounted-match-published",
         "view-outline-selection-syncs-both-ways",
         "view-outline-removal-drops-row-and-clears-selection",
+        "view-poison-outline-cells-show-unavailable-not-stale-names",
+        "view-poison-outline-latch-persists-in-mounted-table",
         "engine-old-tree-forget-advances-old-only-after-swap",
         "engine-concurrent-forgets-on-one-tree-no-lost-update",
         "async-removal-cancel-is-harmless-and-does-not-stop-the-move",
