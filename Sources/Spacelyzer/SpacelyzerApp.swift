@@ -914,6 +914,11 @@ private actor PublicationBarrier {
     func completed() -> Bool { finished }
 }
 
+/// Free (nonisolated) so a @Sendable test reviewer can call it. Builds the answer a reviewer would return for (tree, id, version).
+private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemReviewResult {
+    ItemReviewResult(treeID: ObjectIdentifier(tree), node: id, treeVersion: v, path: "node-\(id)", verdict: .same, live: nil)
+}
+
 @MainActor private enum PublicationRegression {
     /// A scanned model is READY only when the scan finished and every published surface is current, and that stays true for
     /// several consecutive polls. Run 37164951533 showed a removal refused with "The filter is still updating" right after a
@@ -1924,6 +1929,69 @@ private actor PublicationBarrier {
         } else { Check.expect("view-treemap-pixels-change-after-removal", false, "snapshot unavailable or bitmaps not comparable") }
     }
 
+    /// A parked read that a test can release. Sendable by lock, not by actor, so a test can open it from the main actor.
+    private final class ReviewGate: @unchecked Sendable {
+        private let lock = NSLock(); private var cont: CheckedContinuation<Void, Never>?; private var opened = false
+        func wait() async {
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                lock.lock()
+                if opened { lock.unlock(); c.resume() } else { cont = c; lock.unlock() }
+            }
+        }
+        func open() { lock.lock(); opened = true; let c = cont; cont = nil; lock.unlock(); c?.resume() }
+    }
+    private static func settle(_ cond: () -> Bool) async { for _ in 0..<300 where !cond() { try? await Task.sleep(nanoseconds: 10_000_000) } }
+
+    /// UNCOMPILED/UNRUN until a Mac run. Deterministic: every step that must happen after another waits on a gate, not on a sleep.
+    private static func reviewModelChecks() async {
+        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state"]
+        let d = fixture("review-model", [("a.bin", 30_000), ("b.bin", 20_000), ("c.bin", 10_000)])
+        defer { try? FileManager.default.removeItem(at: d) }
+        guard let t = await ScanSession(root: d.path, excludes: [])?.run({ _ in }), let a = node(t, "a.bin"), let b = node(t, "b.bin"), let c = node(t, "c.bin") else {
+            for n in names { Check.expect(n, false, "fixture") }; return
+        }
+
+        // 1. The table version moves while the read is parked: the late answer is dropped, progress ends, outdated is set.
+        let g1 = ReviewGate()
+        let m1 = ItemReviewModel(reviewer: { tree, id, v in await g1.wait(); return reviewTestAnswer(tree, id, v) })
+        m1.request(tree: t, node: b)
+        let inFlightBefore = m1.inProgress
+        _ = t.forget(c)                       // real engine mutation on this tree: version advances
+        g1.open()
+        await settle { !m1.inProgress }
+        Check.expect("review-model-version-change-drops-result-and-clears-progress", inFlightBefore && m1.result == nil && !m1.inProgress && m1.outdated, "inFlightBefore=\(inFlightBefore) result=\(String(describing: m1.result)) inProgress=\(m1.inProgress) outdated=\(m1.outdated)")
+
+        // 2. A newer request wins; the older answer arriving later changes nothing.
+        let gA = ReviewGate(), gB = ReviewGate()
+        let m2 = ItemReviewModel(reviewer: { tree, id, v in if id == a { await gA.wait() } else { await gB.wait() }; return reviewTestAnswer(tree, id, v) })
+        m2.request(tree: t, node: a)
+        m2.request(tree: t, node: b)
+        gB.open()
+        await settle { m2.result != nil }
+        let shownB = m2.result?.node == b && !m2.inProgress
+        gA.open()
+        for _ in 0..<20 { await Task.yield() }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        Check.expect("review-model-newer-request-wins-and-late-result-is-ignored", shownB && m2.result?.node == b && !m2.inProgress && !m2.outdated, "shownB=\(shownB) result=\(m2.result.map { String($0.node) } ?? "nil") inProgress=\(m2.inProgress) outdated=\(m2.outdated)")
+
+        // 3. Cancelling the caller of the REAL review reaches the inner detached read (a plain detached task would keep running);
+        // and invalidate() on the model clears its state.
+        let start = Date()
+        let real = Task { try await ItemReview.review(tree: t, id: a, version: t.version, parkForTest: { try await Task.sleep(nanoseconds: 30_000_000_000) }) }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        real.cancel()
+        let outcome = await real.result
+        let elapsed = Date().timeIntervalSince(start)
+        let cancelled: Bool = { if case .failure(let e) = outcome { return e is CancellationError }; return false }()
+        let g3 = ReviewGate()
+        let m3 = ItemReviewModel(reviewer: { _, _, _ in await g3.wait(); throw CancellationError() })
+        m3.request(tree: t, node: a)
+        m3.invalidate()
+        g3.open()
+        for _ in 0..<20 { await Task.yield() }
+        Check.expect("review-cancel-reaches-the-inner-read-and-clears-state", cancelled && elapsed < 5 && m3.result == nil && !m3.inProgress && !m3.outdated, "cancelled=\(cancelled) elapsed=\(elapsed)s result=\(m3.result == nil ? "nil" : "set") inProgress=\(m3.inProgress) outdated=\(m3.outdated)")
+    }
+
     private static func engine() async {
         let d1 = fixture("engine-old", [("f1.bin", 40_000), ("f2.bin", 24_000), ("f3.bin", 8_000)])
         let d2 = fixture("engine-new", [("g1.bin", 30_000), ("g2.bin", 10_000)])
@@ -1960,6 +2028,7 @@ private actor PublicationBarrier {
             if code != 0 || !agree { identOK = false; identDetail += " id=\(id) check=\(code) inspect=\(rc) lstat=\(lrc) ino=\(lst.st_ino)/\(insp.ino) dev=\(lst.st_dev)/\(insp.dev);" }
         }
         Check.expect("engine-scanned-identity-matches-lstat-on-fixture", identOK, identOK ? "root and 3 files Same; Foundation lstat agrees with engine lstat" : identDetail)
+        await reviewModelChecks()
         // Real engine forget on the OLD tree handle after a second tree exists: only the old tree changes.
         let v1 = t1.version, v2 = t2.version, r1 = t1.info(0).size, r2 = t2.info(0).size, s1 = t1.info(f1).size, s2 = t1.info(f2).size, s3 = t1.info(f3).size
         let st = t1.forget(f1)
@@ -2440,6 +2509,9 @@ final class BusyFlag: @unchecked Sendable {
         "view-outline-last-match-removal-hides-folder",
         "engine-row-info-abi-matches-rust",
         "engine-inspect-abi-matches-rust",
+        "review-model-version-change-drops-result-and-clears-progress",
+        "review-model-newer-request-wins-and-late-result-is-ignored",
+        "review-cancel-reaches-the-inner-read-and-clears-state",
         "engine-scanned-identity-matches-lstat-on-fixture",
         "view-poison-outline-cells-show-unavailable-not-stale-names",
         "view-poison-outline-latch-persists-in-mounted-table",

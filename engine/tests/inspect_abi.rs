@@ -162,7 +162,7 @@ fn review_of_lossy_name_and_missing_identity_never_inspects() {
 
 #[test]
 fn review_layout_matches_header_numbers() {
-    let mut v = [0u64; 3]; unsafe { spz_review_layout(v.as_mut_ptr()); } assert_eq!(v, [56, 8, 48]);
+    let mut v = [0u64; 4]; unsafe { spz_review_layout(v.as_mut_ptr()); } assert_eq!(v, [56, 8, 48, 0]);
     unsafe { spz_review_layout(std::ptr::null_mut()); }
 }
 
@@ -174,4 +174,21 @@ fn review_caught_panic_returns_minus_two_and_leaves_out_untouched() {
     spacelyzer_engine::tree::set_failpoint(9);
     let (rc, r) = review(&t, id); spacelyzer_engine::tree::set_failpoint(0);
     assert_eq!(rc, -2); assert_eq!((r.live_state, r.live.ino), (77, 0xDEAD));
+}
+
+#[test]
+fn review_of_a_same_kind_new_inode_is_different_with_the_new_files_own_metadata() {
+    let d = fixture("review4"); std::fs::write(d.join("f"), b"abc").unwrap();
+    let t = scanned(&d); let id = node(&t, &d.join("f"));
+    let old = spacelyzer_engine::inspect::inspect(&d.join("f")).unwrap();
+    let keep = std::fs::File::open(d.join("f")).unwrap(); // keeps the old inode alive so it cannot be reused
+    std::fs::remove_file(d.join("f")).unwrap(); std::fs::write(d.join("f"), b"a much longer replacement body").unwrap();
+    let new = spacelyzer_engine::inspect::inspect(&d.join("f")).unwrap();
+    let (rc, r) = review(&t, id);
+    assert_eq!(rc, C::Different as i32);
+    assert_eq!(r.live_state, 2, "different item now at the path");
+    assert_eq!(r.live.kind, 0, "same kind (file): only the inode differs");
+    assert_ne!(r.live.ino, old.ino);
+    assert_eq!((r.live.ino, r.live.dev, r.live.logical), (new.ino, new.dev, 30), "metadata is the replacement's, not the scanned file's");
+    drop(keep);
 }
