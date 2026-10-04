@@ -272,6 +272,7 @@ struct SelectionBar: View {
     @Environment(AppModel.self) private var model
     let tree: Tree
     let id: UInt32
+    @State private var showReview = false
     var body: some View {
         // One engine capture for the numbers; a placeholder (never an old or zero size) while rows are pending or the engine is busy.
         let snap = model.nodeSnapshot(id)
@@ -292,11 +293,17 @@ struct SelectionBar: View {
             Button("Show in Finder") { model.reveal(id) }
                 .help("Reveal the selected item in Finder")
                 .accessibilityLabel("Show selected item in Finder")
+            Button("Check on disk…") { showReview = true }
+                .disabled(model.enginePoisoned)
+                .help("Read only: compare this item on disk with the scan")
+                .accessibilityLabel("Check selected item on disk, read only")
+                .popover(isPresented: $showReview, arrowEdge: .top) { ItemReviewPopover(tree: tree, id: id, dismiss: { showReview = false }) }
             Button("Move to Trash…", role: .destructive) { model.proposeRemoval(of: id) }
                 .disabled(model.removalBlockedReason(id) != nil)
                 .help(model.removalBlockedReason(id) ?? "")
                 .accessibilityLabel("Move selected item to Trash")
         }.padding(10).background(.bar)
+            .onChange(of: id) { _, _ in showReview = false }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Selected item: \(title), \(detail)")
     }
