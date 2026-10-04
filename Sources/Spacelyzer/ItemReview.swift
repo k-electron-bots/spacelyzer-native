@@ -146,16 +146,30 @@ final class ItemReviewModel: ObservableObject {
     #endif
     private var wanted: (tree: ObjectIdentifier, node: UInt32, version: UInt64)?
     private let reviewer: Reviewer
+    /// Asked once before a read starts and once before an answer is accepted, so a caught engine panic (before or during the read) means no
+    /// answer is shown as valid. Bounded and explicit: no polling. The app passes `!model.enginePoisoned`.
+    private let trusted: @MainActor () -> Bool
+    #if SPZ_CI_TESTS
+    /// TEST BUILDS ONLY. Counts every request(), so a check can show that selection changes alone start no review.
+    static var requestCountForTests = 0
+    #endif
 
-    init(reviewer: @escaping Reviewer = { tree, id, version in try await ItemReview.review(tree: tree, id: id, version: version) }) { self.reviewer = reviewer }
+    init(trusted: @escaping @MainActor () -> Bool = { true },
+         reviewer: @escaping Reviewer = { tree, id, version in try await ItemReview.review(tree: tree, id: id, version: version) }) {
+        self.trusted = trusted; self.reviewer = reviewer
+    }
 
     func request(tree: Tree, node: UInt32) {
         task?.cancel()
+        #if SPZ_CI_TESTS
+        Self.requestCountForTests += 1
+        #endif
         token += 1
         let mine = token
         let version = tree.version                      // captured once; the result echoes it
         wanted = (ObjectIdentifier(tree), node, version)
         result = nil; outdated = false; inProgress = true
+        if !trusted() { inProgress = false; outdated = true; return }                  // engine already reported an error: do not read, show nothing as valid
         let reviewer = self.reviewer
         task = Task { [weak self] in
             let r: ItemReviewResult?
@@ -165,6 +179,7 @@ final class ItemReviewModel: ObservableObject {
             #endif
             guard let self, mine == self.token else { return }                          // superseded or invalidated: the newer owner decides the state
             defer { self.inProgress = false }
+            guard self.trusted() else { self.result = nil; self.outdated = true; return }   // a panic was caught before or during the read
             guard let r, let w = self.wanted, r.treeID == w.tree, r.node == w.node, r.treeVersion == w.version, tree.version == w.version else {
                 self.result = nil; self.outdated = true; return
             }
@@ -212,7 +227,11 @@ struct ItemReviewPopover: View {
     let tree: Tree
     let id: UInt32
     let dismiss: () -> Void
-    @StateObject private var review = ItemReviewModel()
+    @StateObject private var review: ItemReviewModel
+    init(model: AppModel, tree: Tree, id: UInt32, dismiss: @escaping () -> Void) {
+        self.model = model; self.tree = tree; self.id = id; self.dismiss = dismiss
+        _review = StateObject(wrappedValue: ItemReviewModel(trusted: { [weak model] in model.map { !$0.enginePoisoned } ?? false }))
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let r = review.result {
@@ -231,7 +250,7 @@ struct ItemReviewPopover: View {
         .onChange(of: model.revision) { _, _ in review.invalidate(); dismiss() }       // tree changed or replaced
         .onChange(of: model.selected) { _, _ in review.invalidate(); dismiss() }       // selection moved
         .onChange(of: model.filterRevision) { _, _ in review.invalidate(); dismiss() } // filter result changed
-        .onChange(of: model.enginePoisoned) { _, p in if p { review.invalidate(); dismiss() } }   // a caught engine panic: nothing here is trustworthy
+        .onChange(of: model.poisoned) { _, p in if p { review.invalidate(); dismiss() } }   // stored flag set by markPoisoned; the pre/post trusted() checks cover a panic that is not yet published
         .onChange(of: model.mutationPending) { _, p in if p { review.invalidate(); dismiss() } }  // a removal is being applied
     }
 }
