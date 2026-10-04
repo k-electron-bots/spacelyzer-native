@@ -1,6 +1,7 @@
 #ifndef SPACELYZER_H
 #define SPACELYZER_H
 #include <stdint.h>
+#include <stddef.h>
 
 typedef struct SpzScan SpzScan;
 typedef struct SpzTree SpzTree;
@@ -103,11 +104,17 @@ uint64_t spz_engine_panic_count(void);
 
 
 /* Duplicate finder (read-only; Rust/Linux-tested, no Swift consumer yet). A blocking pass on the caller's thread. Caps are REPORT-ONLY: a capped report is
-   not "all duplicates" and must never drive removal. wasted-style bytes are allocated sizes, NOT reclaimable space. A control is single use. */
+   not "all duplicates" and must never drive removal. wasted-style bytes are allocated sizes, NOT reclaimable space. A control is single use.
+   OWNERSHIP: the pass holds its own reference to the control, but that protects only the pass-owned reference, NOT the raw handle you hold. Never call
+   spz_dup_control_free while another thread may still call cancel/progress on it, or before spz_dup_find_status has been entered and acquired its reference.
+   The SpzTree must stay alive for the whole pass and for any report calls. Free the control only after every thread using it has stopped. */
 typedef struct { uint64_t candidates; uint64_t examined; uint64_t bytes_read; uint8_t cancelled; uint8_t budget_hit; } SpzDupProgress;
 /* flags: bit0 cancelled, bit1 incomplete, bit2 budget_exhausted, bit3 groups_truncated */
 typedef struct { uint64_t version; uint64_t duplicate_allocated_bytes; uint32_t groups_total; uint32_t groups_listed; uint32_t unreadable; uint32_t changed; uint32_t hardlink_aliases; uint32_t flags; } SpzDupSummary;
 typedef struct { uint64_t size; uint32_t member_count; uint32_t ids_listed; uint32_t linked; } SpzDupGroup;
+_Static_assert(sizeof(SpzDupProgress) == 32 && offsetof(SpzDupProgress, bytes_read) == 16 && offsetof(SpzDupProgress, cancelled) == 24 && offsetof(SpzDupProgress, budget_hit) == 25, "SpzDupProgress layout");
+_Static_assert(sizeof(SpzDupSummary) == 40 && offsetof(SpzDupSummary, groups_total) == 16 && offsetof(SpzDupSummary, flags) == 36, "SpzDupSummary layout");
+_Static_assert(sizeof(SpzDupGroup) == 24 && offsetof(SpzDupGroup, member_count) == 8 && offsetof(SpzDupGroup, linked) == 16, "SpzDupGroup layout");
 SpzDupControl *spz_dup_control_new(void);
 void spz_dup_control_cancel(const SpzDupControl *c);
 SpzDupProgress spz_dup_control_progress(const SpzDupControl *c);

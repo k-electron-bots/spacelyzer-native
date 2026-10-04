@@ -221,3 +221,11 @@ fn a_panic_inside_the_entry_comes_back_as_internal_status_and_null_never_across_
     let (r, st) = run(&t, 0, 0, 0, std::ptr::null(), u64::MAX);          // the next call is healthy
     assert_eq!(st, 0); assert!(!r.is_null()); unsafe { spz_dup_report_free(r) };
 }
+
+#[test]
+fn c_struct_layout_matches_the_header_static_asserts() {
+    use std::mem::{size_of, offset_of};
+    assert_eq!((size_of::<SpzDupProgress>(), offset_of!(SpzDupProgress, bytes_read), offset_of!(SpzDupProgress, cancelled), offset_of!(SpzDupProgress, budget_hit)), (32, 16, 24, 25));
+    assert_eq!((size_of::<SpzDupSummary>(), offset_of!(SpzDupSummary, groups_total), offset_of!(SpzDupSummary, flags)), (40, 16, 36));
+    assert_eq!((size_of::<SpzDupGroup>(), offset_of!(SpzDupGroup, member_count), offset_of!(SpzDupGroup, linked)), (24, 8, 16));
+}
