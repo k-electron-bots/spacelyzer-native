@@ -51,7 +51,8 @@ pub(crate) struct RawEntry {
 }
 
 struct Ent {
-    dev: u64,
+    /// Index into the scan's interned device table (see `dev_index`), not the raw device id: 1 byte instead of 8 per pending entry.
+    dev: u8,
     ino: u64,
     mtime: i64,
     name: Box<str>,
@@ -89,6 +90,7 @@ struct Ctx<'a> {
     dirs: Seen,
     root_dev: u64,
     root_ino: u64,
+    devs: Mutex<Vec<u64>>,
     skipped: Mutex<Vec<Skipped>>,
     exclude: Vec<String>,
     #[allow(dead_code)]
@@ -109,6 +111,7 @@ pub fn scan(root: &Path, opts: &ScanOptions, progress: &ScanProgress) -> std::io
         dirs: Seen::new(),
         root_dev: md.dev(),
         root_ino: md.ino(),
+        devs: Mutex::new(Vec::new()),
         skipped: Mutex::new(Vec::new()),
         exclude: opts
             .exclude
@@ -138,6 +141,19 @@ fn is_package(name: &str) -> bool {
     }
 }
 
+/// Intern a device id into the shared table (normally 1-2 entries; the lock is taken only when a directory's device changes).
+/// More than 254 distinct devices map to DEV_UNKNOWN, which the tree reads as "no scanned identity".
+fn dev_index(ctx: &Ctx, last: &mut (u64, u8), dev: u64) -> u8 {
+    if last.1 != crate::tree::DEV_UNKNOWN && last.0 == dev { return last.1; }
+    let mut g = ctx.devs.lock().unwrap();
+    let ix = match g.iter().position(|&d| d == dev) {
+        Some(i) => i as u8,
+        None if g.len() < crate::tree::DEV_UNKNOWN as usize => { g.push(dev); (g.len() - 1) as u8 }
+        None => crate::tree::DEV_UNKNOWN,
+    };
+    *last = (dev, ix); ix
+}
+
 fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
     if ctx.progress.cancel.load(Ordering::Relaxed) {
         return DirNode { ents: vec![], total: 0 };
@@ -158,6 +174,7 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
     let mut ents: Vec<Ent> = Vec::with_capacity(raw.len());
     let mut subdirs: Vec<(usize, PathBuf)> = Vec::new();
     let mut local_bytes = 0u64;
+    let mut last_dev: (u64, u8) = (0, crate::tree::DEV_UNKNOWN);
     for r in raw {
         match r.kind {
             Kind::Directory => {
@@ -185,7 +202,7 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
                 }
                 let kind = if is_package(&r.name) { Kind::Package } else { Kind::Directory };
                 subdirs.push((ents.len(), path));
-                ents.push(Ent { dev: r.dev, ino: r.ino, mtime: r.mtime, name: r.name, kind, size: 0, dir: None });
+                ents.push(Ent { dev: dev_index(ctx, &mut last_dev, r.dev), ino: r.ino, mtime: r.mtime, name: r.name, kind, size: 0, dir: None });
             }
             k => {
                 let size = if k == Kind::File && r.nlink > 1 && !ctx.files.claim(r.dev, r.ino) {
@@ -194,7 +211,7 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
                     r.alloc
                 };
                 local_bytes += size;
-                ents.push(Ent { dev: r.dev, ino: r.ino, mtime: r.mtime, name: r.name, kind: k, size, dir: None });
+                ents.push(Ent { dev: dev_index(ctx, &mut last_dev, r.dev), ino: r.ino, mtime: r.mtime, name: r.name, kind: k, size, dir: None });
             }
         }
     }
@@ -217,12 +234,13 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
 
 /// Breadth-first flatten so each directory's children are contiguous and size-sorted.
 fn flatten(root_path: String, root: DirNode, ctx: Ctx, progress: &ScanProgress) -> Tree {
-    let root_ident = (ctx.root_dev, ctx.root_ino);
+    let root_dev_ix = dev_index(&ctx, &mut (0, crate::tree::DEV_UNKNOWN), ctx.root_dev);
+    let root_ident = (root_dev_ix, ctx.root_ino);
     let mut t = Tree { root_path, ..Default::default() };
     t.identity_enabled = t.reserve_identity(ctx.progress.items.load(Ordering::Relaxed) as usize + 1);
-    let push = |t: &mut Tree, name: &str, parent: u32, kind: Kind, size: u64, mtime: i64, ident: (u64, u64)| -> u32 {
+    let push = |t: &mut Tree, name: &str, parent: u32, kind: Kind, size: u64, mtime: i64, ident: (u8, u64)| -> u32 {
         let id = t.names.len() as u32;
-        t.push_identity(ident.0, ident.1);
+        t.push_identity_ix(ident.0, ident.1);
         t.names.push(name.into());
         t.parent.push(parent);
         t.kind.push(kind as u8);
@@ -254,6 +272,7 @@ fn flatten(root_path: String, root: DirNode, ctx: Ctx, progress: &ScanProgress) 
             }
         }
     }
+    t.devs = ctx.devs.into_inner().unwrap();
     t.items = t.len() as u64 - 1;
     t.cancelled = progress.cancel.load(Ordering::Relaxed);
     t.skipped = ctx.skipped.into_inner().unwrap();
