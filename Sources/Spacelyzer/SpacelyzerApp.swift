@@ -1601,6 +1601,10 @@ private actor PublicationBarrier {
     static func run() async {
         let dir = fixture("mounted-outline", [("big.bin", 600_000), ("mid.bin", 250_000), ("small.bin", 90_000), ("tiny.bin", 40_000)])
         defer { try? FileManager.default.removeItem(at: dir) }
+        // A folder row, so the unpoisoned positive control can see a chevron.
+        let sub = dir.appendingPathComponent("sub")
+        try? FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: sub.appendingPathComponent("inner.dat").path, contents: Data(repeating: 7, count: 30_000))
         let m = AppModel(); m.scan(dir.path)
         guard await PublicationRegression.ready(m) != nil, let tree = m.tree, let big = node(tree, "big.bin"), let mid = node(tree, "mid.bin") else {
             Check.expect("view-outline-rows-mounted-match-published", false, "fixture: model never ready"); Check.expect("view-outline-selection-syncs-both-ways", false, "fixture: model never ready"); Check.expect("view-outline-removal-drops-row-and-clears-selection", false, "fixture: model never ready"); Check.expect("view-poison-outline-cells-show-unavailable-not-stale-names", false, "fixture: model never ready"); Check.expect("view-poison-outline-latch-persists-in-mounted-table", false, "fixture: model never ready"); return
@@ -1648,11 +1652,17 @@ private actor PublicationBarrier {
 
         // Slice 3: poison in the mounted outline. A moved panic counter must replace every realized row's name and path with
         // "Unavailable" in the actual table (not just in the model), and the out-of-date state must be set.
+        // Detector positive control on the UNPOISONED mounted table: the same reader must see a size text, share bars and a chevron
+        // (the "sub" folder row) here, otherwise "none visible" after poison would prove nothing.
+        let pre = visibleCellState(table)
+        let preSize: Bool = pre.texts.contains { $0.contains("KB") || $0.contains("MB") || $0.contains("bytes") || $0.contains("byte") }
+        let preControl: Bool = preSize && pre.barsVisible > 0 && pre.chevronsVisible > 0 && hasLabel(l1, "sub")
+        let poisonAX = "Unavailable, engine error, rescan needed"
         var fake = m.panicBaseline
         m.panicCounter = { fake }
         fake += 1
         m.markPoisoned()
-        let repainted = await PublicationRegression.wait { labels(table).allSatisfy { $0.hasPrefix("Unavailable,") } && table.numberOfRows > 0 }
+        let repainted = await PublicationRegression.wait { labels(table).allSatisfy { $0 == poisonAX } && table.numberOfRows > 0 }
         let l2 = labels(table)
         snapshot(host, "outline-poisoned.png")
         let noStaleName: Bool = !l2.contains { $0.contains(".bin") }
@@ -1660,10 +1670,10 @@ private actor PublicationBarrier {
         let noStaleNumbers: Bool = !vis.texts.contains { $0.contains("KB") || $0.contains("MB") || $0.contains("bytes") || $0.contains("byte") || $0.contains("item") }
         let noBarsOrChevrons: Bool = vis.barsVisible == 0 && vis.chevronsVisible == 0
         let flagged: Bool = m.viewOutOfDate && m.poisoned
-        Check.expect("view-poison-outline-cells-show-unavailable-not-stale-names", repainted && noStaleName && noStaleNumbers && noBarsOrChevrons && flagged, "repainted=\(repainted) noStaleName=\(noStaleName) noStaleNumbers=\(noStaleNumbers) noBarsOrChevrons=\(noBarsOrChevrons) visibleTexts=\(vis.texts) bars=\(vis.barsVisible) chevrons=\(vis.chevronsVisible) outOfDate=\(m.viewOutOfDate) poisoned=\(m.poisoned) labels=\(l2)")
+        Check.expect("view-poison-outline-cells-show-unavailable-not-stale-names", preControl && repainted && noStaleName && noStaleNumbers && noBarsOrChevrons && flagged, "positiveControl=\(preControl) (sizeText=\(preSize) bars=\(pre.barsVisible) chevrons=\(pre.chevronsVisible)) repainted=\(repainted) noStaleName=\(noStaleName) noStaleNumbers=\(noStaleNumbers) noBarsOrChevrons=\(noBarsOrChevrons) visibleTexts=\(vis.texts) bars=\(vis.barsVisible) chevrons=\(vis.chevronsVisible) outOfDate=\(m.viewOutOfDate) poisoned=\(m.poisoned) labels=\(l2)")
         fake = m.panicBaseline   // counter returns to baseline: the latch must hold in the mounted table too
         try? await Task.sleep(nanoseconds: 300_000_000)
-        let latchedView: Bool = labels(table).allSatisfy { $0.hasPrefix("Unavailable,") } && m.enginePoisoned
+        let latchedView: Bool = labels(table).allSatisfy { $0 == poisonAX } && m.enginePoisoned
         Check.expect("view-poison-outline-latch-persists-in-mounted-table", latchedView, "latched=\(m.enginePoisoned) labels=\(labels(table))")
     }
 }
