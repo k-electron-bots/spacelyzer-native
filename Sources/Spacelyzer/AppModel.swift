@@ -394,7 +394,7 @@ final class AppModel {
             }
         }
     }
-    func markPoisoned() { poisoned = true; filterPending = false; markOutOfDate("The engine reported an internal error, so the numbers may be wrong. Rescan to continue.") }
+    func markPoisoned() { poisoned = true; filterPending = false; folderTask?.cancel(); folderGeneration &+= 1; folderIDs = []; folderSizes = []; folderVersion = nil; folderLoad = .failed("The engine reported an internal error. Rescan to continue."); markOutOfDate("The engine reported an internal error, so the numbers may be wrong. Rescan to continue.") }
     func markOutOfDate(_ reason: String) { viewOutOfDate = true; outOfDateReason = reason; requiredVersion = nil }
     /// Called after each surface publishes. Clears the pending requirement only when ALL live surfaces are current.
     func surfaceCheck() {
@@ -581,17 +581,17 @@ final class AppModel {
         folderLoad = .idle
     }
 
-    /// What the Largest and Kinds lists may show right now. They keep their previous publication in the MODEL while a change settles, but the
-    /// VIEW shows rows only when that publication is the current table's, so a removed item or an old total is never presented as live
-    /// and cannot be selected from a list.
-    enum DerivedPresentation: Equatable { case ready, updating, unavailable(String) }
+    /// What the Largest and Kinds lists show right now. `.ready`: the publication is the current table's. `.stale(reason)`: the previous
+    /// coherent publication is kept (not erased early) but shown dimmed with its selection disabled, and removal/navigation stay gated.
+    /// `.unavailable`: the engine is poisoned, so NO derived number, bar, count or selectable row is shown.
+    enum DerivedPresentation: Equatable { case ready, stale(String), unavailable(String) }
     var derivedPresentation: DerivedPresentation {
-        guard let tree else { return .updating }
         if enginePoisoned { return .unavailable("The engine reported an internal error. Rescan to continue.") }
-        if viewOutOfDate { return .unavailable(outOfDateReason ?? "The results may be out of date. Rescan to refresh.") }
-        if rowsPending || filterPending { return .updating }
-        if let f = activeFilter, f.version != tree.version { return .updating }
-        guard let v = derivedVersion, v == tree.version else { return .updating }
+        guard let tree else { return .stale("Updating…") }
+        if viewOutOfDate { return .stale(outOfDateReason ?? "The results may be out of date. Rescan to refresh.") }
+        if rowsPending || filterPending { return .stale("Updating after a change…") }
+        if let f = activeFilter, f.version != tree.version { return .stale("Updating…") }
+        guard let v = derivedVersion, v == tree.version else { return .stale("Updating…") }
         return .ready
     }
 

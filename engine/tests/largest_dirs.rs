@@ -150,26 +150,31 @@ fn lists_stay_well_formed_while_folders_are_forgotten_concurrently() {
     assert!(dirs(&t, n).0.is_empty(), "everything removed, nothing listed");
 }
 
-/// Cross-surface consistency (Kinds totals, Largest files, Folders, root size) on one table, before and after removals.
-/// Rust-side only: the Swift views are not exercised here.
+/// Several readouts of ONE table, before and after removals, on one fixture (Rust side only; the Swift views are not exercised, and this is
+/// not a proof for other trees). Largest files: exactly the live regular files, each once, sizes equal to the table through the FFI.
 fn assert_surfaces_agree(t: &Tree) {
     let tab = t.table();
     let n = t.len() as u32;
     let dead = tab.dead_mask(t);
     let alive = |i: u32| !dead.as_ref().map_or(false, |d| d[i as usize]);
-    // 1. Every byte of the root is owned by exactly one live node: Kinds bytes (non-directory nodes) + directories' own bytes == root size.
+    // 1. Kinds bytes (non-directory nodes) + live directories' own bytes == root size.
     let kinds_bytes: u64 = t.category_totals_in(&tab).iter().map(|c| c.0).sum();
     let dir_own: u64 = (0..n).filter(|&i| alive(i) && t.kind(i) == spacelyzer_engine::tree::Kind::Directory).map(|i| t.own_bytes_in(&tab.sizes, i)).sum();
     assert_eq!(kinds_bytes + dir_own, tab.sizes[0], "kinds + directory bytes must add up to the root");
-    // 2. Largest files lists exactly the live regular files, each once, with the table's size, largest first.
-    let files: Vec<u32> = t.largest_files_in(&tab, n as usize);
-    let want_files = (0..n).filter(|&i| alive(i) && t.kind(i) == spacelyzer_engine::tree::Kind::File).count();
-    assert_eq!(files.len(), want_files);
-    assert!(files.windows(2).all(|w| tab.sizes[w[0] as usize] >= tab.sizes[w[1] as usize]));
-    // 3. Folders never list something Kinds does not count as live, and never exceed the root.
-    let (ids, sizes, _v, st) = dirs(t, n + 5);
-    assert_eq!(st, 0);
-    assert!(ids.iter().all(|&i| alive(i)) && sizes.iter().all(|&s| s <= tab.sizes[0]));
+    // 2. Largest files through the FFI (ids AND sizes): the exact live regular-file set, unique, sizes equal to the table, largest first.
+    let cap = n + 5;
+    let mut ids = vec![0u32; cap as usize]; let mut sizes = vec![0u64; cap as usize]; let (mut v, mut st) = (0u64, -1i32);
+    let got = unsafe { spz_largest_sized_status(t as *const Tree, std::ptr::null(), cap, ids.as_mut_ptr(), sizes.as_mut_ptr(), u64::MAX, &mut v, &mut st) } as usize;
+    assert_eq!(st, 0); assert_eq!(v, tab.version);
+    ids.truncate(got); sizes.truncate(got);
+    let want: std::collections::BTreeSet<u32> = (0..n).filter(|&i| alive(i) && t.kind(i) == spacelyzer_engine::tree::Kind::File).collect();
+    let have: std::collections::BTreeSet<u32> = ids.iter().copied().collect();
+    assert_eq!(have, want, "exactly the live regular files");
+    assert_eq!(ids.len(), have.len(), "each once");
+    for (i, id) in ids.iter().enumerate() { assert_eq!(sizes[i], tab.sizes[*id as usize], "size equals the table"); }
+    assert!(sizes.windows(2).all(|w| w[0] >= w[1]), "largest first");
+    // 3. Folders: the exact live-folder rule (set, order, sizes) from the property check.
+    assert_list_matches_rule(t);
 }
 
 #[test]
