@@ -1701,6 +1701,80 @@ private actor PublicationBarrier {
         let latchedView: Bool = labels(table).allSatisfy { $0 == poisonAX } && m.enginePoisoned
         Check.expect("view-poison-outline-latch-persists-in-mounted-table", latchedView, "latched=\(m.enginePoisoned) labels=\(labels(table))")
     }
+
+    /// Filtered + expanded slice. V = read from the mounted NSTableView (labels, visible chevrons). M = model readouts (kindRows, largestIDs): the
+    /// Kinds and Largest panes are NOT mounted here. Poison is not part of this fixture and is not covered by it.
+    private static func childCount(_ l: [String], _ name: String) -> Int? {
+        guard let row = l.first(where: { $0.hasPrefix(name + ", folder") }) else { return nil }
+        for part in row.components(separatedBy: ", ") where part.hasSuffix(" items") || part.hasSuffix(" item") {
+            return Int(part.split(separator: " ")[0])
+        }
+        return nil
+    }
+    static func runFiltered() async {
+        let dir = fixture("mounted-outline-filtered", [("big.txt", 600_000), ("keep.log", 70_000)])
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let sub = dir.appendingPathComponent("sub")
+        try? FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: sub.appendingPathComponent("gone.txt").path, contents: Data(repeating: 7, count: 120_000))
+        FileManager.default.createFile(atPath: sub.appendingPathComponent("stay.txt").path, contents: Data(repeating: 7, count: 60_000))
+        FileManager.default.createFile(atPath: sub.appendingPathComponent("hidden.log").path, contents: Data(repeating: 7, count: 30_000))
+        let m = AppModel(); m.scan(dir.path)
+        guard await PublicationRegression.ready(m) != nil, let tree = m.tree, let gone = node(tree, "gone.txt"), let sdir = node(tree, "sub") else {
+            Check.expect("view-outline-filtered-expanded-removal-readouts-coherent", false, "fixture: model never ready"); Check.expect("view-outline-filtered-expanded-selection-and-neighbors", false, "fixture: model never ready"); return
+        }
+        m.trashItem = { $0 }
+        m.tab = .kinds
+        m.filterExt = "txt"
+        let filterOn: Bool = await PublicationRegression.wait { m.activeFilter != nil }
+        let filterReady: Bool = await PublicationRegression.ready(m) != nil
+        m.expanded = [sdir]; m.refreshOutline()
+        let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: 520, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.title = "CI mounted outline filtered+expanded (ordering driver)"
+        let host = NSHostingView(rootView: OutlineView().environment(m))
+        window.contentView = host; window.center(); window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        let mounted: Bool = await PublicationRegression.wait {
+            if let t = findTable(host) { return t.numberOfRows > 0 && t.numberOfRows == m.outlineRows.count && hasLabel(labels(t), "gone.txt") }
+            return false
+        }
+        guard filterOn, filterReady, mounted, let table = findTable(host) else {
+            let why = "setup: filterOn=\(filterOn) filterReady=\(filterReady) mounted=\(mounted)"
+            Check.expect("view-outline-filtered-expanded-removal-readouts-coherent", false, why); Check.expect("view-outline-filtered-expanded-selection-and-neighbors", false, why); return
+        }
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        let l0 = labels(table)
+        let v0state = visibleCellState(table)
+        snapshot(host, "outline-filtered-before-removal.png")
+        let before = (count: childCount(l0, "sub"), chevrons: v0state.chevronsVisible, kindItems: m.kindRows.reduce(UInt64(0)) { $0 + $1.items },
+                      largestHas: m.largestIDs.contains(gone))
+        // Positive controls: the filter is really applied in the view and the folder is really expanded.
+        let controls: Bool = hasLabel(l0, "gone.txt") && hasLabel(l0, "stay.txt") && hasLabel(l0, "big.txt") && !hasLabel(l0, "keep.log") && !hasLabel(l0, "hidden.log")
+            && (before.count ?? 0) >= 2 && before.chevrons >= 1 && before.largestHas && before.kindItems >= 3
+
+        m.selected = gone
+        let selectedBefore: Bool = await PublicationRegression.wait { if let i = m.outlineIndex[gone] { return table.selectedRow == i }; return false }
+        let v0 = m.tree?.version ?? 0
+        m.pendingRemoval = gone; m.confirmRemoval()
+        let accepted: Bool = m.removalInFlight
+        let settled: Bool = await PublicationRegression.wait { !m.removalInFlight && m.commitsInFlight == 0 && (m.tree?.version ?? 0) > v0 && !m.rowsPending && table.numberOfRows == m.outlineRows.count }
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        let l1 = labels(table)
+        let v1state = visibleCellState(table)
+        snapshot(host, "outline-filtered-after-removal.png")
+        let after = (count: childCount(l1, "sub"), chevrons: v1state.chevronsVisible, kindItems: m.kindRows.reduce(UInt64(0)) { $0 + $1.items },
+                     largestHas: m.largestIDs.contains(gone))
+        let goneRowGone: Bool = !hasLabel(l1, "gone.txt")
+        let countDropped: Bool = before.count != nil && after.count != nil && after.count! == before.count! - 1
+        let kindsDropped: Bool = after.kindItems + 1 == before.kindItems
+        let viewV = "V[rowGone=\(goneRowGone) subCount=\(String(describing: before.count))->\(String(describing: after.count)) chevrons=\(before.chevrons)->\(after.chevrons) labels=\(l1)]"
+        let modelM = "M[kindItems=\(before.kindItems)->\(after.kindItems) largestHadGone=\(before.largestHas)->\(after.largestHas)] (Kinds/Largest panes not mounted)"
+        Check.expect("view-outline-filtered-expanded-removal-readouts-coherent", controls && accepted && settled && goneRowGone && countDropped && after.chevrons >= 1 && kindsDropped && !after.largestHas,
+                     "controls=\(controls) accepted=\(accepted) settled=\(settled) \(viewV) \(modelM) l0=\(l0)")
+        let neighbors: Bool = hasLabel(l1, "stay.txt") && hasLabel(l1, "big.txt") && hasLabel(l1, "sub")
+        Check.expect("view-outline-filtered-expanded-selection-and-neighbors", selectedBefore && accepted && settled && m.selected == nil && table.selectedRow == -1 && neighbors,
+                     "selectedBefore=\(selectedBefore) modelSelected=\(String(describing: m.selected)) selectedRow=\(table.selectedRow) neighbors=\(neighbors) expandedKept=\(m.expanded.contains(sdir)) (no poison in this fixture)")
+    }
 }
 
 /// Isolated native API guards, not actual keyboard-shortcut or IME proof.
@@ -2276,6 +2350,8 @@ final class BusyFlag: @unchecked Sendable {
         "view-outline-rows-mounted-match-published",
         "view-outline-selection-syncs-both-ways",
         "view-outline-removal-drops-row-and-clears-selection",
+        "view-outline-filtered-expanded-removal-readouts-coherent",
+        "view-outline-filtered-expanded-selection-and-neighbors",
         "view-poison-outline-cells-show-unavailable-not-stale-names",
         "view-poison-outline-latch-persists-in-mounted-table",
         "engine-old-tree-forget-advances-old-only-after-swap",
@@ -2345,6 +2421,7 @@ final class BusyFlag: @unchecked Sendable {
         await AsyncRemovalRegression.run()
         await MountedViewRegression.run()
         await MountedOutlineRegression.run()
+        await MountedOutlineRegression.runFiltered()
         var problems: [String] = []
         if Check.results.isEmpty { problems.append("no results recorded") }
         let fileOK = (try? String(contentsOfFile: Check.path, encoding: .utf8))?.isEmpty == false
