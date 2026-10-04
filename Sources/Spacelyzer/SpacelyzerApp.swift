@@ -1943,7 +1943,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
 
     /// UNCOMPILED/UNRUN until a Mac run. Deterministic: every step that must happen after another waits on a gate, not on a sleep.
     private static func reviewModelChecks() async {
-        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state", "review-model-refuses-and-drops-when-engine-untrusted", "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", "review-bare-model-selection-change-makes-no-review-request", "copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write", "csv-largest-quotes-exactly-and-marks-unrepresentable-paths", "csv-export-flow-refuses-blocked-toolarge-stale-and-writes-once-when-unchanged", "csv-export-real-model-wiring-leaves-removal-message-untouched", "engine-largest-folders-abi-and-forget-on-real-tree", "folders-model-publishes-real-list-drops-stale-and-clears-on-poison", "folders-model-clears-at-once-and-rejects-stale-version-with-bounded-retry", "folders-model-version-retry-is-bounded-and-ends-failed-with-no-rows", "derived-presentation-retains-only-for-filter-withholds-when-table-moved-or-poisoned", "folders-model-stored-poison-forces-failed-and-clears-rows"]
+        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state", "review-model-refuses-and-drops-when-engine-untrusted", "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", "review-bare-model-selection-change-makes-no-review-request", "copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write", "csv-largest-quotes-exactly-and-marks-unrepresentable-paths", "csv-export-flow-refuses-blocked-toolarge-stale-and-writes-once-when-unchanged", "csv-export-real-model-wiring-leaves-removal-message-untouched", "engine-largest-folders-abi-and-forget-on-real-tree", "folders-model-publishes-real-list-drops-stale-and-clears-on-poison", "folders-model-clears-at-once-and-rejects-stale-version-with-bounded-retry", "folders-model-version-retry-is-bounded-and-ends-failed-with-no-rows", "derived-presentation-retains-only-for-filter-withholds-when-table-moved-or-poisoned", "folders-model-stored-poison-forces-failed-and-clears-rows", "derived-publish-dropped-for-moved-table-retries-and-recovers-without-removed-row"]
         let d = fixture("review-model", [("a.bin", 30_000), ("b.bin", 20_000), ("c.bin", 10_000)])
         defer { try? FileManager.default.removeItem(at: d) }
         guard let t = await ScanSession(root: d.path, excludes: [])?.run({ _ in }), let a = node(t, "a.bin"), let b = node(t, "b.bin"), let c = node(t, "c.bin") else {
@@ -2180,6 +2180,33 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         am5.markPoisoned()
         let poisonFailed: Bool = { if case .failed = am5.folderLoad { return true }; return false }()
         Check.expect("folders-model-stored-poison-forces-failed-and-clears-rows", wasReady && poisonFailed && am5.folderIDs.isEmpty && am5.folderSizes.isEmpty && am5.folderVersion == nil, "wasReady=\(wasReady) failed=\(poisonFailed) rows=\(am5.folderIDs.count)")
+
+        // 7. A derived read whose table moved mid-read (a removal lands between the read and the publish) is not dropped silently:
+        // the keyed retry re-reads, and the final lists reflect the removal. The first publish attempt is the one that gets moved under.
+        let d7 = mk("derived-retry", [("p/a.bin", 90_000), ("q/b.bin", 30_000), ("r/c.bin", 10_000)])
+        defer { try? FileManager.default.removeItem(at: d7) }
+        if let t7 = await ScanSession(root: d7.path, excludes: [])?.run({ _ in }), let p7 = node(t7, "p/a.bin") ?? node(t7, "a.bin") {
+            let am7 = AppModel(); am7.tree = t7; am7.panicBaseline = EnginePanics.count
+            let fired = Box(0)
+            am7.beforePublish = { key, _, _ in
+                guard key == "derived" else { return }
+                fired.value += 1
+                if fired.value == 1 { _ = t7.forget(p7) }                         // the table moves under the first read
+            }
+            am7.refreshDerived()
+            var recovered = false
+            for _ in 0..<150 where !recovered {                                  // up to ~3 s; the first retry waits 100 ms
+                try? await Task.sleep(nanoseconds: 20_000_000)
+                recovered = am7.derivedVersion == t7.version && !am7.largestIDs.isEmpty
+            }
+            let dropped = !am7.largestIDs.contains(p7)
+            let ready = am7.derivedPresentation == .ready
+            // generation: an explicit retry after recovery re-reads once more and stays consistent (idempotent), never regressing the version.
+            am7.retryDerived()
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            let stable = am7.derivedVersion == t7.version && !am7.largestIDs.contains(p7)
+            Check.expect("derived-publish-dropped-for-moved-table-retries-and-recovers-without-removed-row", recovered && dropped && ready && stable && fired.value >= 2, "recovered=\(recovered) removedGone=\(dropped) ready=\(ready) stable=\(stable) publishAttempts=\(fired.value)")
+        } else { Check.expect("derived-publish-dropped-for-moved-table-retries-and-recovers-without-removed-row", false, "fixture 7") }
 
         Check.expect("folders-model-version-retry-is-bounded-and-ends-failed-with-no-rows", tries.value == AppModel.folderMaxAttempts && failedMsg != nil && am3.folderIDs.isEmpty && am3.folderVersion == nil, "tries=\(tries.value) failed=\(failedMsg ?? "nil") rows=\(am3.folderIDs.count)")
     }
@@ -2819,6 +2846,7 @@ final class BusyFlag: @unchecked Sendable {
         "folders-model-version-retry-is-bounded-and-ends-failed-with-no-rows",
         "derived-presentation-retains-only-for-filter-withholds-when-table-moved-or-poisoned",
         "folders-model-stored-poison-forces-failed-and-clears-rows",
+        "derived-publish-dropped-for-moved-table-retries-and-recovers-without-removed-row",
         "engine-scanned-identity-matches-lstat-on-fixture",
         "view-poison-outline-cells-show-unavailable-not-stale-names",
         "view-poison-outline-latch-persists-in-mounted-table",
