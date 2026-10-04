@@ -7,7 +7,7 @@ src = open('Sources/Spacelyzer/SpacelyzerApp.swift').read()
 m = re.search(r'static let required: \[String\] = \[(.*?)\n    \]', src, re.S)
 required = re.findall(r'"([^"]+)"', m.group(1))
 dup = {n for n in required if required.count(n) > 1}
-suites = ['PublicationRegression', 'CommitOrderingRegression', 'ZeroMatchRegression', 'AsyncRemovalRegression', 'MountedViewRegression']
+suites = ['PublicationRegression', 'CommitOrderingRegression', 'ZeroMatchRegression', 'AsyncRemovalRegression', 'MountedViewRegression', 'MountedOutlineRegression']
 declared, dynamic = set(), []
 for s in suites:
     b = re.search(r'enum %s\b.*?\n}\n' % s, src, re.S)
