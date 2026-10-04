@@ -1943,7 +1943,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
 
     /// UNCOMPILED/UNRUN until a Mac run. Deterministic: every step that must happen after another waits on a gate, not on a sleep.
     private static func reviewModelChecks() async {
-        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state", "review-model-refuses-and-drops-when-engine-untrusted", "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", "review-bare-model-selection-change-makes-no-review-request", "copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write", "csv-largest-quotes-exactly-and-marks-unrepresentable-paths", "csv-export-flow-refuses-blocked-toolarge-stale-and-writes-once-when-unchanged", "csv-export-real-model-wiring-leaves-removal-message-untouched"]
+        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state", "review-model-refuses-and-drops-when-engine-untrusted", "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", "review-bare-model-selection-change-makes-no-review-request", "copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write", "csv-largest-quotes-exactly-and-marks-unrepresentable-paths", "csv-export-flow-refuses-blocked-toolarge-stale-and-writes-once-when-unchanged", "csv-export-real-model-wiring-leaves-removal-message-untouched", "engine-largest-folders-abi-and-forget-on-real-tree", "folders-model-publishes-real-list-drops-stale-and-clears-on-poison"]
         let d = fixture("review-model", [("a.bin", 30_000), ("b.bin", 20_000), ("c.bin", 10_000)])
         defer { try? FileManager.default.removeItem(at: d) }
         guard let t = await ScanSession(root: d.path, excludes: [])?.run({ _ in }), let a = node(t, "a.bin"), let b = node(t, "b.bin"), let c = node(t, "c.bin") else {
@@ -2060,6 +2060,59 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         let formula = lines.contains("5,50,,path starts with a formula character")
         let none = lines.contains("6,60,,no path")
         Check.expect("csv-largest-quotes-exactly-and-marks-unrepresentable-paths", header && plain && quoted && newline && lossy && formula && none && marked == 3, "header=\(header) plain=\(plain) quoted=\(quoted) newline=\(newline) lossy=\(lossy) formula=\(formula) none=\(none) marked=\(marked)")
+    }
+
+    /// UNCOMPILED/UNRUN. Real engine and real AppModel; nothing is injected. Linux has the same engine behavior under tests/largest_dirs.rs.
+    private static func foldersChecks() async {
+        let names = ["engine-largest-folders-abi-and-forget-on-real-tree", "folders-model-publishes-real-list-drops-stale-and-clears-on-poison"]
+        func mk(_ tag: String, _ files: [(String, Int)]) -> URL {      // like fixture(), but creates the folders in each relative path
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("spz-\(tag)-\(UUID().uuidString)")
+            for (n, k) in files {
+                let f = root.appendingPathComponent(n)
+                try? FileManager.default.createDirectory(at: f.deletingLastPathComponent(), withIntermediateDirectories: true)
+                FileManager.default.createFile(atPath: f.path, contents: Data(repeating: 7, count: k))
+            }
+            return root
+        }
+        let d = mk("folders", [("big/inner/f.bin", 200_000), ("big/g.bin", 20_000), ("small/h.bin", 8_000)])
+        defer { try? FileManager.default.removeItem(at: d) }
+        guard let t = await ScanSession(root: d.path, excludes: [])?.run({ _ in }), let big = node(t, "big"), let inner = node(t, "inner"), let small = node(t, "small") else {
+            for n in names { Check.expect(n, false, "fixture") }; return
+        }
+        // 1. The C boundary, through Swift: root excluded, cumulative order, sizes equal the tree's own, and a removal drops the folder and its subfolders.
+        var engineOK = false; var engineDetail = "no snapshot"
+        if case .success(let s1) = t.largestFolders(count: 10) {
+            let order = s1.ids == [big, inner, small] && !s1.ids.contains(0)
+            let sizes = zip(s1.ids, s1.sizes).allSatisfy { t.info($0).size == $1 } && s1.version == t.version
+            _ = t.forget(big)
+            if case .success(let s2) = t.largestFolders(count: 10) {
+                let dropped = s2.ids == [small] && s2.version == t.version && s2.version > s1.version
+                engineOK = order && sizes && dropped
+                engineDetail = "order=\(order) sizes=\(sizes) droppedAfterForget=\(dropped)"
+            }
+        }
+        Check.expect("engine-largest-folders-abi-and-forget-on-real-tree", engineOK, engineDetail)
+
+        // 2. Real AppModel: refresh publishes the real list; a stale generation does not publish; a poisoned engine shows a problem, not rows.
+        let d2 = mk("folders-model", [("x/a.bin", 90_000), ("y/b.bin", 30_000)])
+        defer { try? FileManager.default.removeItem(at: d2) }
+        guard let t2 = await ScanSession(root: d2.path, excludes: [])?.run({ _ in }), let x = node(t2, "x"), let y = node(t2, "y") else {
+            Check.expect("folders-model-publishes-real-list-drops-stale-and-clears-on-poison", false, "fixture 2"); return
+        }
+        let am = AppModel(); am.tree = t2; am.panicBaseline = EnginePanics.count
+        am.refreshFolders(); await am.folderTask?.value
+        let published = am.folderIDs == [x, y] && am.folderVersion == t2.version && am.folderProblem == nil && am.folderSizes == [t2.info(x).size, t2.info(y).size]
+        // tree replaced while a refresh may still be in flight: its answer must not appear (the generation/tree guard; the refresh may already have finished, so this is a guard check, not a race proof)
+        am.refreshFolders()
+        let staleTask = am.folderTask
+        am.tree = nil; am.refreshFolders()                                   // tree gone: list cleared
+        await staleTask?.value
+        let clearedOnNoTree = am.folderIDs.isEmpty && am.folderVersion == nil
+        am.tree = t2
+        am.panicBaseline = EnginePanics.count &- 1                           // the engine now looks poisoned
+        am.refreshFolders(); await am.folderTask?.value
+        let poisonShown = am.folderIDs.isEmpty && am.folderProblem != nil && am.folderVersion == nil
+        Check.expect("folders-model-publishes-real-list-drops-stale-and-clears-on-poison", published && clearedOnNoTree && poisonShown, "published=\(published) clearedOnNoTree=\(clearedOnNoTree) poisonShown=\(poisonShown)")
     }
 
     private final class Box<T>: @unchecked Sendable {
@@ -2199,6 +2252,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         await reviewModelChecks()
         copyPathChecks()
         csvChecks()
+        await foldersChecks()
         await csvExportFlowChecks()
         // Real engine forget on the OLD tree handle after a second tree exists: only the old tree changes.
         let v1 = t1.version, v2 = t2.version, r1 = t1.info(0).size, r2 = t2.info(0).size, s1 = t1.info(f1).size, s2 = t1.info(f2).size, s3 = t1.info(f3).size
@@ -2690,6 +2744,8 @@ final class BusyFlag: @unchecked Sendable {
         "csv-largest-quotes-exactly-and-marks-unrepresentable-paths",
         "csv-export-flow-refuses-blocked-toolarge-stale-and-writes-once-when-unchanged",
         "csv-export-real-model-wiring-leaves-removal-message-untouched",
+        "engine-largest-folders-abi-and-forget-on-real-tree",
+        "folders-model-publishes-real-list-drops-stale-and-clears-on-poison",
         "engine-scanned-identity-matches-lstat-on-fixture",
         "view-poison-outline-cells-show-unavailable-not-stale-names",
         "view-poison-outline-latch-persists-in-mounted-table",
