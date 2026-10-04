@@ -353,8 +353,8 @@ struct KindsView: View {
                     Circle().fill(categoryColor(r.category)).frame(width: 10, height: 10)
                     Text(r.category.label)
                     Spacer()
-                    Text("\(r.items.formatted()) items").foregroundStyle(.secondary)
-                    Text(formatBytes(r.bytes)).monospacedDigit().frame(width: 90, alignment: .trailing)
+                    Text(model.enginePoisoned ? "\u{2014}" : "\(r.items.formatted()) items").foregroundStyle(.secondary)
+                    Text(model.enginePoisoned ? "\u{2014}" : formatBytes(r.bytes)).monospacedDigit().frame(width: 90, alignment: .trailing)
                     ShareBar(fraction: Double(r.bytes) / Double(total)).frame(width: 60, height: 6)
                 }
             }
@@ -428,7 +428,7 @@ struct LargestView: View {
                         Text(model.enginePoisoned ? "" : t.path(id)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
                     }
                     Spacer()
-                    Text(sizeOf[id].map(formatBytes) ?? "\u{2014}").monospacedDigit()   // a missing size is a visible placeholder, never 0 B
+                    Text(model.enginePoisoned ? "\u{2014}" : (sizeOf[id].map(formatBytes) ?? "\u{2014}")).monospacedDigit()   // a missing size, or a poisoned engine, is a visible placeholder, never 0 B or an old number
                 }.tag(id)
             }
             .overlay {
