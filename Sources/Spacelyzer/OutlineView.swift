@@ -297,6 +297,18 @@ private final class OutlineCell: NSTableCellView {
     }
 }
 
+/// Test-binary-only switch: lets CI run the SAME binary with the poison repaint disabled, to show the poison checks fail without it.
+/// In the shipped build this is constant true.
+private enum PoisonReloadSwitch {
+    static var enabled: Bool {
+        #if SPZ_CI_TESTS
+        return ProcessInfo.processInfo.environment["SPZ_CI_DISABLE_POISON_RELOAD"] == nil
+        #else
+        return true
+        #endif
+    }
+}
+
 private struct OutlineTable: NSViewRepresentable {
     let model: AppModel
     let tree: Tree
@@ -349,7 +361,8 @@ private struct OutlineTable: NSViewRepresentable {
         model.outlineKeyView = c.table
         model.connectOutlineFocusLoop()
         c.total = total
-        if c.shownRevision != revision || c.shownPoisoned != poisoned {
+        let poisonReload: Bool = PoisonReloadSwitch.enabled && c.shownPoisoned != poisoned
+        if c.shownRevision != revision || poisonReload {
             c.shownRevision = revision
             c.shownPoisoned = poisoned
             c.table?.reloadData()
