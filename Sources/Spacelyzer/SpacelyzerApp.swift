@@ -1931,14 +1931,12 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
 
     /// A parked read that a test can release. Sendable by lock, not by actor, so a test can open it from the main actor.
     private final class ReviewGate: @unchecked Sendable {
-        private let lock = NSLock(); private var cont: CheckedContinuation<Void, Never>?; private var opened = false
+        private let lock = NSLock(); private var opened = false
+        /// Bounded: returns when opened or after about 5 s, whichever is first. A gate nobody opens makes the check FAIL, never hang the run.
         func wait() async {
-            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-                lock.lock()
-                if opened { lock.unlock(); c.resume() } else { cont = c; lock.unlock() }
-            }
+            for _ in 0..<500 where !isOpen { try? await Task.sleep(nanoseconds: 10_000_000) }
         }
-        func open() { lock.lock(); opened = true; let c = cont; cont = nil; lock.unlock(); c?.resume() }
+        func open() { lock.lock(); opened = true; lock.unlock() }
         var isOpen: Bool { lock.lock(); defer { lock.unlock() }; return opened }
     }
     private static func settle(_ cond: () -> Bool) async { for _ in 0..<300 where !cond() { try? await Task.sleep(nanoseconds: 10_000_000) } }
@@ -1963,7 +1961,8 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         await settle { m1.processedTokens.contains(tok1) }
         Check.expect("review-model-version-change-drops-result-and-clears-progress", inFlightBefore && m1.processedTokens.contains(tok1) && m1.result == nil && !m1.inProgress && m1.outdated, "inFlightBefore=\(inFlightBefore) result=\(String(describing: m1.result)) inProgress=\(m1.inProgress) outdated=\(m1.outdated)")
 
-        // 2. A newer request wins; the older answer arriving later changes nothing. Waits are on the model's own "answer processed" signal.
+        // 2. A newer request wins; the older answer arriving later changes nothing. Waits are on the model's own "answer processed" signal (test builds only).
+        // This is token/staleness logic only: it does NOT prove cancellation reached anything (check 3 covers that for the real review).
         let gA = ReviewGate(), gB = ReviewGate()
         let m2 = ItemReviewModel(reviewer: { tree, id, v in if id == a { await gA.wait() } else { await gB.wait() }; return reviewTestAnswer(tree, id, v) })
         m2.request(tree: t, node: a); let tokA = m2.token
@@ -1981,9 +1980,10 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         let entered = ReviewGate(), sawCancel = ReviewGate()
         let real = Task { try await ItemReview.review(tree: t, id: a, version: t.version, parkForTest: {
             entered.open()
-            do { try await Task.sleep(nanoseconds: 60_000_000_000) } catch { sawCancel.open(); throw error }
+            do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { sawCancel.open(); throw error }
         }) }
-        await entered.wait()                          // the inner read is parked: the handler is genuinely exercised
+        await entered.wait()                          // bounded (5 s): the inner read is parked, so the handler is genuinely exercised
+        let enteredOK = entered.isOpen
         real.cancel()
         let outcome = await real.result
         let cancelled: Bool = { if case .failure(let e) = outcome { return e is CancellationError }; return false }()
@@ -1994,7 +1994,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         m3.invalidate()
         g3.open()
         await settle { m3.processedTokens.contains(tok3) }       // the late (cancelled) completion has been handled
-        Check.expect("review-cancel-reaches-the-inner-read-and-clears-state", cancelled && sawCancel.isOpen && inProgressBefore && m3.processedTokens.contains(tok3) && m3.result == nil && !m3.inProgress && !m3.outdated, "cancelled=\(cancelled) innerSawCancel=\(sawCancel.isOpen) inProgressBefore=\(inProgressBefore) processed=\(m3.processedTokens.contains(tok3)) result=\(m3.result == nil ? "nil" : "set") inProgress=\(m3.inProgress) outdated=\(m3.outdated)")
+        Check.expect("review-cancel-reaches-the-inner-read-and-clears-state", enteredOK && cancelled && sawCancel.isOpen && inProgressBefore && m3.processedTokens.contains(tok3) && m3.result == nil && !m3.inProgress && !m3.outdated, "cancelled=\(cancelled) innerSawCancel=\(sawCancel.isOpen) inProgressBefore=\(inProgressBefore) processed=\(m3.processedTokens.contains(tok3)) result=\(m3.result == nil ? "nil" : "set") inProgress=\(m3.inProgress) outdated=\(m3.outdated)")
     }
 
     private static func engine() async {
