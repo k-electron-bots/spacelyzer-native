@@ -6,17 +6,9 @@ use std::ffi::{CStr, OsStr};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-/// Creating a non-UTF-8 file name is refused by some filesystems (APFS returns EILSEQ, errno 92; the first hosted-macOS run failed here). That is a fixture
-/// limit, not an engine result: on those platforms the test reports SKIPPED and does not claim to have exercised anything. On Linux the creation must work,
-/// so a failure there still fails the test (no silent pass).
-#[allow(dead_code)]
-fn made(r: std::io::Result<()>) -> bool {
-    match r {
-        Ok(()) => true,
-        Err(e) if e.raw_os_error() == Some(92) && !cfg!(target_os = "linux") => { eprintln!("SKIPPED: this filesystem refuses non-UTF-8 names (EILSEQ); the case was NOT exercised"); false }
-        Err(e) => panic!("fixture creation failed: {e}"),
-    }
-}
+#[path = "common/mod.rs"]
+mod common;
+use common::made;
 
 fn fixture(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("spz-skip-{}-{}", std::process::id(), name));
