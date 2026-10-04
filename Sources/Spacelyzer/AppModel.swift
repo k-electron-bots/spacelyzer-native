@@ -189,6 +189,9 @@ final class AppModel {
     }
     /// Largest-files and per-kind lists are computed in Rust off the main thread, never inside a view body.
     var largestIDs: [UInt32] = []
+    /// Result words for the CSV export. Separate from `removalMessage`, which belongs to Trash (and its Undo button).
+    var exportMessage: String?
+    @ObservationIgnored var exportTask: Task<Void, Never>?
     /// Sizes for largestIDs, same engine capture (the Largest list never reads sizes live).
     var largestSizes: [UInt64] = []
     var kindRows: [KindRow] = []
@@ -533,6 +536,7 @@ final class AppModel {
                 outlineRows = []; outlineInfos = []; outlineShown = []; outlineIndex = [:]; outlineRevision += 1; expanded = []; largestIDs = []; largestSizes = []; kindRows = []; activeFilter = nil
                 outlineRootSize = 0; publishedTotalBytes = nil; outlineVersion = nil; derivedVersion = nil; layoutVersion = nil; layoutNotRenderableVersion = nil; requiredVersion = nil
                 pendingRemoval = nil
+                exportTask?.cancel()   // an export prepared for the old tree must not write
                 if fsEpoch != epochAtStart || mutatingAtStart || mutationPending || commitsInFlight > 0 {
                     markOutOfDate("Files were moved while this scan ran, so it may not match the disk. Rescan.")
                 } else { viewOutOfDate = false; outOfDateReason = nil }
