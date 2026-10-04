@@ -387,7 +387,17 @@ struct FoldersView: View {
             .overlay {
                 switch model.folderLoad {
                 case .idle, .loading: ProgressView("Loading folders…")
-                case .failed(let problem): ContentUnavailableView("Folders unavailable", systemImage: "exclamationmark.triangle", description: Text(problem))
+                case .failed(let problem):
+                    ContentUnavailableView {
+                        Label("Folders unavailable", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(problem)
+                    } actions: {
+                        // Explicit retry that needs no tree change. Starts a fresh bounded load and shows "Loading folders…" meanwhile.
+                        Button("Try Again") { model.refreshFolders() }
+                            .disabled(model.enginePoisoned)
+                            .accessibilityLabel("Try loading the folder list again")
+                    }
                 case .ready: if ids.isEmpty { ContentUnavailableView("No folders", systemImage: "folder", description: Text("The scan found no folder with any size.")) }
                 }
             }

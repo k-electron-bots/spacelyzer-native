@@ -40,3 +40,6 @@ on the same tree with a late old-generation answer, an answer for another tree, 
 Still PLANNED, needs a window: the loading/failed/ready overlays and header, selection disabled while loading, tab switching,
 the picker's fourth segment at minimum width, a removal while the tab is open, and Trash being refused for a Folders selection under a filter
 (read from source: removalBlockedReason and proposeRemoval still apply isOutsideFilter, filterUntrustedReason, destructiveBlocked and the protected-path list to any selected id).
+
+Folders retry button ("Try Again" in the failed overlay, disabled while the engine is poisoned) and `.task(id:)` refresh on tab show: source only, never rendered or clicked.
+Needs a window to test: clicking Try Again shows Loading then ready, the task refresh runs when the tab appears, and the overlay layout.

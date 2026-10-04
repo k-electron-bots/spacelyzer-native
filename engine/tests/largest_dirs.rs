@@ -93,7 +93,8 @@ fn equal_sizes_break_ties_by_id_and_packages_are_listed() {
     assert!(ids.windows(2).all(|w| w[0] < w[1]), "ties ordered by node id");
     let app = node(&t, &d.join("p3.app"));
     assert!(ids.contains(&app), "a package is listed like a folder");
-    eprintln!("p3.app kind on this platform: {:?}", t.kind(app));
+    assert!(t.kind(app) == spacelyzer_engine::tree::Kind::Package, "the scanner classifies .app by name, so this folder is a Package");
+    assert!(t.kind(node(&t, &d.join("p1"))) == spacelyzer_engine::tree::Kind::Directory);
 }
 
 #[test]
