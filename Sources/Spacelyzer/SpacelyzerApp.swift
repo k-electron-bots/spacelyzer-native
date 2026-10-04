@@ -1943,7 +1943,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
 
     /// UNCOMPILED/UNRUN until a Mac run. Deterministic: every step that must happen after another waits on a gate, not on a sleep.
     private static func reviewModelChecks() async {
-        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state", "review-model-refuses-and-drops-when-engine-untrusted", "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", "review-bare-model-selection-change-makes-no-review-request", "copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write", "csv-largest-quotes-exactly-and-marks-unrepresentable-paths", "csv-export-flow-refuses-blocked-toolarge-stale-and-writes-once-when-unchanged", "csv-export-real-model-wiring-leaves-removal-message-untouched", "engine-largest-folders-abi-and-forget-on-real-tree", "folders-model-publishes-real-list-drops-stale-and-clears-on-poison", "folders-model-clears-at-once-and-rejects-stale-version-with-bounded-retry", "folders-model-version-retry-is-bounded-and-ends-failed-with-no-rows", "derived-presentation-retains-only-for-filter-withholds-when-table-moved-or-poisoned", "folders-model-stored-poison-forces-failed-and-clears-rows", "derived-publish-dropped-for-moved-table-retries-and-recovers-without-removed-row", "derived-retry-exhaustion-ends-unavailable-with-reason-not-spinner", "derived-filter-version-drop-withholds-then-recovers-when-filter-rerun-requested"]
+        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state", "review-model-refuses-and-drops-when-engine-untrusted", "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", "review-bare-model-selection-change-makes-no-review-request", "copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write", "csv-largest-quotes-exactly-and-marks-unrepresentable-paths", "csv-export-flow-refuses-blocked-toolarge-stale-and-writes-once-when-unchanged", "csv-export-real-model-wiring-leaves-removal-message-untouched", "engine-largest-folders-abi-and-forget-on-real-tree", "folders-model-publishes-real-list-drops-stale-and-clears-on-poison", "folders-model-clears-at-once-and-rejects-stale-version-with-bounded-retry", "folders-model-version-retry-is-bounded-and-ends-failed-with-no-rows", "derived-presentation-retains-only-for-filter-withholds-when-table-moved-or-poisoned", "folders-model-stored-poison-forces-failed-and-clears-rows", "derived-publish-dropped-for-moved-table-retries-and-recovers-without-removed-row", "derived-retry-exhaustion-ends-unavailable-with-reason-not-spinner", "derived-stale-filter-self-recovers-through-automatic-filter-rerun"]
         let d = fixture("review-model", [("a.bin", 30_000), ("b.bin", 20_000), ("c.bin", 10_000)])
         defer { try? FileManager.default.removeItem(at: d) }
         guard let t = await ScanSession(root: d.path, excludes: [])?.run({ _ in }), let a = node(t, "a.bin"), let b = node(t, "b.bin"), let c = node(t, "c.bin") else {
@@ -2223,10 +2223,10 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
             Check.expect("derived-retry-exhaustion-ends-unavailable-with-reason-not-spinner", terminal && reasonShown && notSpinner && tries8.value == 6, "terminal=\(terminal) reason=\(reasonShown) notSpinner=\(notSpinner) tries=\(tries8.value)")
         } else { Check.expect("derived-publish-dropped-for-moved-table-retries-and-recovers-without-removed-row", false, "fixture 7"); Check.expect("derived-retry-exhaustion-ends-unavailable-with-reason-not-spinner", false, "fixture 7") }
 
-        // 8. Filter-version drop: an ACTIVE filter computed at an older table version makes refreshDerived drop its publication (silently, by design:
-        // the commit path queues a new filter run). Recovery is proven for the path where that rerun is requested (as a commit does); other
-        // callers are not covered by this check.
-        let d9 = mk("derived-filter-drop", [("m.bin", 90_000), ("n.bin", 30_000), ("o.bin", 10_000)])
+        // 8. Stale filter handle: the table moves under an ACTIVE filter. derivedSnapshot with the old filter reports STALE, and handleReadFailure
+        // schedules a new filter run by itself; no manual scheduleFilter here. Gated on the converged published state, not on time.
+        // (The separate silent post-read guard in refreshDerived, a filter swapped between read and publish, is NOT exercised here.)
+        let d9 = mk("derived-filter-stale", [("m.bin", 90_000), ("n.bin", 30_000), ("o.bin", 10_000)])
         defer { try? FileManager.default.removeItem(at: d9) }
         if let t9 = await ScanSession(root: d9.path, excludes: [])?.run({ _ in }), let m9 = node(t9, "m.bin") {
             let am9 = AppModel(); am9.tree = t9; am9.panicBaseline = EnginePanics.count
@@ -2234,20 +2234,18 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
             var published = false
             for _ in 0..<200 where !published { try? await Task.sleep(nanoseconds: 20_000_000); published = am9.activeFilter?.version == t9.version && am9.derivedVersion == t9.version && !am9.filterPending }
             let pre = published && am9.largestIDs.contains(m9)                      // positive precondition: the node is in the filtered list
-            _ = t9.forget(m9)                                                       // table moves; the filter is now one version behind
+            let revBefore = am9.filterRevision
+            _ = t9.forget(m9)                                                       // table moves; the filter handle is one version behind
             let filterBehind = am9.activeFilter.map { $0.version != t9.version } ?? false
-            let acks9 = Box(0)
-            am9.afterPublish = { key, _, _ in if key == "derived" || key == "filter" { acks9.value += 1 } }
-            am9.refreshDerived()                                                    // dropped: filter version != table version
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            let droppedNow = acks9.value == 0 && am9.derivedVersion != t9.version
-            let withheld: Bool = { if case .updating = am9.derivedPresentation { return true }; return false }()   // the removed row is not shown as live meanwhile
-            am9.scheduleFilter(immediate: true)                                     // what the commit path does
+            am9.refreshDerived()                                                    // STALE -> handleReadFailure -> filter rerun on its own
             var recovered9 = false
-            for _ in 0..<200 where !recovered9 { try? await Task.sleep(nanoseconds: 20_000_000); recovered9 = am9.derivedVersion == t9.version && am9.activeFilter?.version == t9.version && !am9.filterPending }
+            for _ in 0..<300 where !recovered9 {
+                try? await Task.sleep(nanoseconds: 20_000_000)
+                recovered9 = am9.filterRevision > revBefore && am9.activeFilter?.version == t9.version && am9.derivedVersion == t9.version && !am9.filterPending
+            }
             let gone = !am9.largestIDs.contains(m9) && am9.derivedPresentation == .ready
-            Check.expect("derived-filter-version-drop-withholds-then-recovers-when-filter-rerun-requested", pre && filterBehind && droppedNow && withheld && recovered9 && gone, "pre=\(pre) filterBehind=\(filterBehind) dropped=\(droppedNow) withheld=\(withheld) recovered=\(recovered9) gone=\(gone)")
-        } else { Check.expect("derived-filter-version-drop-withholds-then-recovers-when-filter-rerun-requested", false, "fixture 9") }
+            Check.expect("derived-stale-filter-self-recovers-through-automatic-filter-rerun", pre && filterBehind && recovered9 && gone, "pre=\(pre) filterBehind=\(filterBehind) recovered=\(recovered9) gone=\(gone)")
+        } else { Check.expect("derived-stale-filter-self-recovers-through-automatic-filter-rerun", false, "fixture 9") }
 
         Check.expect("folders-model-version-retry-is-bounded-and-ends-failed-with-no-rows", tries.value == AppModel.folderMaxAttempts && failedMsg != nil && am3.folderIDs.isEmpty && am3.folderVersion == nil, "tries=\(tries.value) failed=\(failedMsg ?? "nil") rows=\(am3.folderIDs.count)")
     }
@@ -2889,7 +2887,7 @@ final class BusyFlag: @unchecked Sendable {
         "folders-model-stored-poison-forces-failed-and-clears-rows",
         "derived-publish-dropped-for-moved-table-retries-and-recovers-without-removed-row",
         "derived-retry-exhaustion-ends-unavailable-with-reason-not-spinner",
-        "derived-filter-version-drop-withholds-then-recovers-when-filter-rerun-requested",
+        "derived-stale-filter-self-recovers-through-automatic-filter-rerun",
         "engine-scanned-identity-matches-lstat-on-fixture",
         "view-poison-outline-cells-show-unavailable-not-stale-names",
         "view-poison-outline-latch-persists-in-mounted-table",
