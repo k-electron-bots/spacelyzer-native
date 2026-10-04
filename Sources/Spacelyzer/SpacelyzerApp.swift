@@ -1943,7 +1943,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
 
     /// UNCOMPILED/UNRUN until a Mac run. Deterministic: every step that must happen after another waits on a gate, not on a sleep.
     private static func reviewModelChecks() async {
-        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state", "review-model-refuses-and-drops-when-engine-untrusted", "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", "review-bare-model-selection-change-makes-no-review-request", "copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write", "csv-largest-quotes-exactly-and-marks-unrepresentable-paths"]
+        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state", "review-model-refuses-and-drops-when-engine-untrusted", "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", "review-bare-model-selection-change-makes-no-review-request", "copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write", "csv-largest-quotes-exactly-and-marks-unrepresentable-paths", "csv-export-flow-refuses-blocked-toolarge-stale-and-writes-once-when-unchanged", "csv-export-outcomes-never-touch-removal-message"]
         let d = fixture("review-model", [("a.bin", 30_000), ("b.bin", 20_000), ("c.bin", 10_000)])
         defer { try? FileManager.default.removeItem(at: d) }
         guard let t = await ScanSession(root: d.path, excludes: [])?.run({ _ in }), let a = node(t, "a.bin"), let b = node(t, "b.bin"), let c = node(t, "c.bin") else {
@@ -2062,6 +2062,62 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         Check.expect("csv-largest-quotes-exactly-and-marks-unrepresentable-paths", header && plain && quoted && newline && lossy && formula && none && marked == 3, "header=\(header) plain=\(plain) quoted=\(quoted) newline=\(newline) lossy=\(lossy) formula=\(formula) none=\(none) marked=\(marked)")
     }
 
+    private final class Box<T>: @unchecked Sendable {
+        private let lock = NSLock(); private var v: T
+        init(_ v: T) { self.v = v }
+        var value: T { get { lock.lock(); defer { lock.unlock() }; return v } set { lock.lock(); v = newValue; lock.unlock() } }
+    }
+
+    /// UNCOMPILED/UNRUN. Drives the export flow with injected effects: no window, no panel, no disk, no tree.
+    private static func csvExportFlowChecks() async {
+        let tid = ObjectIdentifier(Box<Int>(0))
+        func snap(_ n: Int = 2) -> LargestExportSnapshot { LargestExportSnapshot(treeID: tid, treeVersion: 5, derivedVersion: 5, filterRevision: 1, revision: 1, ids: Array(0..<UInt32(n)), sizes: (0..<n).map { UInt64($0 + 1) * 100 }) }
+        let url = URL(fileURLWithPath: "/tmp/never-written.csv")
+        let paths: @Sendable (UInt32) -> String = { "/p/\($0)" }
+
+        // blocked: the panel is never asked and nothing is written
+        let cur = Box<LargestExportSnapshot?>(snap()); let writes = Box<[Data]>([]); let asked = Box(0)
+        let blocked = await LargestExport.run(blockedReason: { "still updating" }, snapshot: { cur.value }, askURL: { asked.value += 1; return url }, path: paths, write: { d, _ in writes.value.append(d) })
+        let blockedOK = blocked == .blocked("still updating") && asked.value == 0 && writes.value.isEmpty
+
+        // too large: refused before the panel
+        cur.value = snap(LargestExport.maxRows + 1)
+        let big = await LargestExport.run(blockedReason: { nil }, snapshot: { cur.value }, askURL: { asked.value += 1; return url }, path: paths, write: { d, _ in writes.value.append(d) })
+        let bigOK = big == .tooLarge(LargestExport.maxRows + 1) && asked.value == 0 && writes.value.isEmpty
+
+        // unchanged: written exactly once, with the rows
+        cur.value = snap()
+        let good = await LargestExport.run(blockedReason: { nil }, snapshot: { cur.value }, askURL: { asked.value += 1; return url }, path: paths, write: { d, _ in writes.value.append(d) })
+        let text = writes.value.first.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        let goodOK = good == .written(rows: 2, marked: 0) && asked.value == 1 && writes.value.count == 1 && text.contains("1,100,/p/0,") && text.contains("2,200,/p/1,")
+
+        // changed WHILE the panel is open (any one field): nothing is written
+        var staleOK = true
+        for change in [{ (s: inout LargestExportSnapshot) in s.treeID = ObjectIdentifier(Box<Int>(1)) }, { $0.treeVersion += 1 }, { $0.filterRevision += 1 }, { $0.revision += 1 }, { $0.ids[0] = 9 }, { $0.sizes[1] += 1 }] as [(inout LargestExportSnapshot) -> Void] {
+            cur.value = snap(); writes.value = []
+            let r = await LargestExport.run(blockedReason: { nil }, snapshot: { cur.value }, askURL: { var s = cur.value!; change(&s); cur.value = s; return url }, path: paths, write: { d, _ in writes.value.append(d) })
+            if r != .staleAfterPanel || !writes.value.isEmpty { staleOK = false }
+        }
+        // changed AFTER the panel but before the write (during preparation): nothing is written
+        cur.value = snap(); writes.value = []
+        let late = await LargestExport.run(blockedReason: { nil }, snapshot: { cur.value }, askURL: { url }, path: { id in var s = cur.value!; s.revision += 1; cur.value = s; return "/p/\(id)" }, write: { d, _ in writes.value.append(d) })
+        let lateOK = late == .staleAfterPanel && writes.value.isEmpty
+
+        // user dismissed the panel: nothing is written
+        cur.value = snap(); writes.value = []
+        let dismissed = await LargestExport.run(blockedReason: { nil }, snapshot: { cur.value }, askURL: { nil }, path: paths, write: { d, _ in writes.value.append(d) })
+        let dismissOK = dismissed == .cancelledByUser && writes.value.isEmpty
+
+        Check.expect("csv-export-flow-refuses-blocked-toolarge-stale-and-writes-once-when-unchanged", blockedOK && bigOK && goodOK && staleOK && lateOK && dismissOK, "blocked=\(blockedOK) tooLarge=\(bigOK) good=\(goodOK) staleDuringPanel=\(staleOK) staleDuringPrep=\(lateOK) dismissed=\(dismissOK)")
+
+        // Outcome words go to exportMessage only. removalMessage (Trash status and its Undo) is never set by any outcome.
+        let am = AppModel(); am.removalMessage = nil
+        let outcomes: [LargestExport.Outcome] = [.blocked("x"), .tooLarge(5000), .cancelledByUser, .staleAfterPanel, .cancelledTask, .written(rows: 3, marked: 1), .failed("disk full")]
+        for o in outcomes { am.exportMessage = AppModel.exportText(o) }
+        let words = AppModel.exportText(.staleAfterPanel)?.isEmpty == false && AppModel.exportText(.cancelledByUser) == nil && AppModel.exportText(.written(rows: 3, marked: 1))?.contains("marked") == true
+        Check.expect("csv-export-outcomes-never-touch-removal-message", am.removalMessage == nil && am.lastRemoved.isEmpty && words, "removalMessage=\(am.removalMessage ?? "nil") words=\(words)")
+    }
+
     private static func engine() async {
         let d1 = fixture("engine-old", [("f1.bin", 40_000), ("f2.bin", 24_000), ("f3.bin", 8_000)])
         let d2 = fixture("engine-new", [("g1.bin", 30_000), ("g2.bin", 10_000)])
@@ -2101,6 +2157,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         await reviewModelChecks()
         copyPathChecks()
         csvChecks()
+        await csvExportFlowChecks()
         // Real engine forget on the OLD tree handle after a second tree exists: only the old tree changes.
         let v1 = t1.version, v2 = t2.version, r1 = t1.info(0).size, r2 = t2.info(0).size, s1 = t1.info(f1).size, s2 = t1.info(f2).size, s3 = t1.info(f3).size
         let st = t1.forget(f1)
@@ -2589,6 +2646,8 @@ final class BusyFlag: @unchecked Sendable {
         "review-bare-model-selection-change-makes-no-review-request",
         "copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write",
         "csv-largest-quotes-exactly-and-marks-unrepresentable-paths",
+        "csv-export-flow-refuses-blocked-toolarge-stale-and-writes-once-when-unchanged",
+        "csv-export-outcomes-never-touch-removal-message",
         "engine-scanned-identity-matches-lstat-on-fixture",
         "view-poison-outline-cells-show-unavailable-not-stale-names",
         "view-poison-outline-latch-persists-in-mounted-table",
