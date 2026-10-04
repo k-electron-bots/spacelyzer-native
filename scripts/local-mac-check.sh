@@ -8,7 +8,7 @@
 # Every section prints RAN PASS / RAN FAIL / NOT-RUN so a log cannot imply a Mac pass it did not earn.
 # Logs go OUTSIDE the repo: ${SPZ_LOCAL_LOGS:-$HOME/spz-local-logs}/<UTC stamp>/.
 # Each driver launch can take up to ~6 minutes; it opens a real window and takes focus, so do not use the Mac meanwhile.
-# The app under test uses a unique bundle id and a unique path; only the PID launched from that path is ever killed.
+# Each launch uses its own bundle id and its own app path under a unique temp dir; only processes whose command line contains that temp dir are stopped (SIGTERM, bounded wait, SIGKILL), also on exit/interrupt.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 EXPECT_TREE=5b22de43198a254d7ff0a9b469432e07e3209eeb
@@ -25,8 +25,14 @@ fi
 
 OUT="${SPZ_LOCAL_LOGS:-$HOME/spz-local-logs}/$(date -u +%Y%m%dT%H%M%SZ)"; mkdir -p "$OUT"
 SUMMARY="$OUT/summary.txt"; FAILED=0
-WORK=$(mktemp -d /tmp/spz-local.XXXXXX); APP="$WORK/Spacelyzer.app"; OWNPID=""
-cleanup() { [ -n "$OWNPID" ] && kill "$OWNPID" 2>/dev/null; rm -rf "$WORK"; }
+WORK=$(mktemp -d /tmp/spz-local.XXXXXX); OWNPID=""
+# Terminate only processes whose command line contains our unique $WORK path: SIGTERM, bounded wait, then SIGKILL.
+kill_own() { local i
+  pkill -TERM -f "$WORK/" 2>/dev/null
+  for i in 1 2 3 4 5 6 7 8 9 10; do pgrep -f "$WORK/" >/dev/null || break; sleep 1; done
+  pkill -KILL -f "$WORK/" 2>/dev/null
+  for i in 1 2 3 4 5; do pgrep -f "$WORK/" >/dev/null || return 0; sleep 1; done; return 1; }
+cleanup() { kill_own; rm -rf "$WORK"; }
 trap cleanup EXIT INT TERM
 say() { echo "$*" | tee -a "$SUMMARY"; }
 fail_stop() { say "$*"; say "NOT-RUN   everything after this point"; exit 1; }
@@ -56,9 +62,23 @@ step manifest python3 scripts/check-ordering-manifest.py
 N=$(sed -n 's/^OK \([0-9]*\) required == \([0-9]*\) declared$/\1/p' "$OUT/manifest.log")
 [ -n "$N" ] || fail_stop "RAN FAIL  manifest-count (could not read N)"; say "pinned required count N=$N"
 step deps ./scripts/check-deps.sh
+# Drift guard: the inline engine build must use the same commands as scripts/build-engine.sh (sans --locked/--offline).
+drift_guard() { local a b
+  a=$(grep -E '^\s*(cargo build|lipo|    target/)' scripts/build-engine.sh | sed -n '1,4p' | sed -e 's/^ *//' -e 's/ \\$//' | tr -s ' ' | tr '\n' ' ')
+  b="cargo build --release -p spacelyzer-engine --target aarch64-apple-darwin --lib cargo build --release -p spacelyzer-engine --target x86_64-apple-darwin --lib lipo -create -output build/lib/libspacelyzer_engine.a target/aarch64-apple-darwin/release/libspacelyzer_engine.a "
+  [ "$a" = "$b" ] || { echo "build-engine.sh drifted from the inline build; got: $a"; return 1; }; }
+step engine-build-drift-guard drift_guard
 step build-engine build_engine
-step cargo-default cargo test --locked --offline --manifest-path engine/Cargo.toml
-step cargo-failpoints cargo test --locked --offline --manifest-path engine/Cargo.toml --features failpoints
+# Expected per-binary passed counts in output order (incl. zero-test binaries), taken from run 12 macOS logs for tree 5b22de43; the runner pin and these must be re-pinned together.
+EXPECT_RUST_DEFAULT="2 0 39 0 0 17 0"; EXPECT_RUST_FAILPOINTS="2 0 39 0 0 20 0"
+rust_counts() { local log="$1" want="$2" got
+  got=$(sed -n 's/^test result: ok\. \([0-9]*\) passed; 0 failed.*/\1/p' "$log" | tr '\n' ' ' | sed 's/ $//')
+  grep -qE 'FAILED|panicked|^error' "$log" && { echo "failure text in $log"; return 1; }
+  [ "$got" = "$want" ] || { echo "passed counts '$got' != expected '$want'"; return 1; }; }
+rust_default() { cargo test --locked --offline --manifest-path engine/Cargo.toml > "$OUT/cargo-default.raw" 2>&1; local rc=$?; [ $rc = 0 ] && rust_counts "$OUT/cargo-default.raw" "$EXPECT_RUST_DEFAULT"; }
+rust_failpoints() { cargo test --locked --offline --manifest-path engine/Cargo.toml --features failpoints > "$OUT/cargo-failpoints.raw" 2>&1; local rc=$?; [ $rc = 0 ] && rust_counts "$OUT/cargo-failpoints.raw" "$EXPECT_RUST_FAILPOINTS"; }
+step cargo-default rust_default
+step cargo-failpoints rust_failpoints
 TESTSBIN="$WORK/spz-tests-bin"
 swift_tests() { swift build -c release -Xswiftc -DSPZ_CI_TESTS --scratch-path "$WORK/build-tests" && cp "$(swift build -c release -Xswiftc -DSPZ_CI_TESTS --scratch-path "$WORK/build-tests" --show-bin-path)/Spacelyzer" "$TESTSBIN"; }
 NORMALBIN=""
@@ -77,7 +97,7 @@ if [ -f "$WORK/normalbin" ] && [ -x "$TESTSBIN" ]; then step normal-binary-tripw
 run_driver() { local label="$1"; shift
   local RES="$WORK/res-$label" FIX="$WORK/fix-$label"; mkdir -p "$RES" "$FIX/d"
   head -c 200000 /dev/zero > "$FIX/a.bin"; head -c 100000 /dev/zero > "$FIX/d/b.bin"
-  rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" && cp "$TESTSBIN" "$APP/Contents/MacOS/Spacelyzer" || return 1
+  local APP="$WORK/app-$label/Spacelyzer.app"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" && cp "$TESTSBIN" "$APP/Contents/MacOS/Spacelyzer" || return 1
   sed -e "s/__VERSION__/0.0.0-localcheck/g" -e "s|com.k-electron.spacelyzer-native|com.k-electron.spacelyzer-native.localcheck.$$|" Resources/Info.plist > "$APP/Contents/Info.plist"
   codesign --force --deep --sign - --entitlements Resources/Spacelyzer.entitlements "$APP" && codesign --verify --deep --strict "$APP" || return 1
   open -n "$APP" --stdout "$OUT/$label-stdout.log" --stderr "$OUT/$label-stderr.log" \
@@ -85,7 +105,7 @@ run_driver() { local label="$1"; shift
   for _ in $(seq 1 30); do OWNPID=$(pgrep -f "$APP/Contents/MacOS/Spacelyzer" | head -1); [ -n "$OWNPID" ] && break; sleep 1; done
   [ -n "$OWNPID" ] || { echo "own app process never appeared"; return 1; }
   for _ in $(seq 1 360); do [ -s "$RES/result.txt" ] && break; sleep 1; done
-  kill "$OWNPID" 2>/dev/null; OWNPID=""
+  kill_own || { echo "own process survived SIGKILL"; return 1; }; OWNPID=""
   mkdir -p "$OUT/$label" && cp "$RES"/* "$OUT/$label/" 2>/dev/null
   [ -s "$RES/assertions.txt" ]; }
 verdict_main() { local d="$OUT/main"
