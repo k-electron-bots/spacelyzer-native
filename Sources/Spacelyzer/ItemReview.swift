@@ -139,9 +139,11 @@ final class ItemReviewModel: ObservableObject {
     private var task: Task<Void, Never>?
     /// Id of the latest request. Read-only outside; tests use it to wait for a specific request's answer to be processed.
     private(set) var token = 0
-    /// Tokens whose reviewer has returned and whose answer has been through the acceptance logic below (accepted, dropped or superseded).
-    /// A test signal, so a check can wait for a late answer to be handled instead of sleeping.
+    #if SPZ_CI_TESTS
+    /// TEST BUILDS ONLY (compiled out of the shipping app, so nothing grows there). Tokens whose reviewer has returned and whose answer
+    /// has been through the acceptance logic below (accepted, dropped or superseded). Lets a check wait for a late answer instead of sleeping.
     private(set) var processedTokens: Set<Int> = []
+    #endif
     private var wanted: (tree: ObjectIdentifier, node: UInt32, version: UInt64)?
     private let reviewer: Reviewer
 
@@ -158,7 +160,9 @@ final class ItemReviewModel: ObservableObject {
         task = Task { [weak self] in
             let r: ItemReviewResult?
             do { r = try await reviewer(tree, node, version) } catch { r = nil }       // cancelled or failed: nothing is shown for it
+            #if SPZ_CI_TESTS
             defer { self?.processedTokens.insert(mine) }
+            #endif
             guard let self, mine == self.token else { return }                          // superseded or invalidated: the newer owner decides the state
             defer { self.inProgress = false }
             guard let r, let w = self.wanted, r.treeID == w.tree, r.node == w.node, r.treeVersion == w.version, tree.version == w.version else {
