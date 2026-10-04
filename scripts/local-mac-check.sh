@@ -64,7 +64,7 @@ N=$(sed -n 's/^OK \([0-9]*\) required == \([0-9]*\) declared$/\1/p' "$OUT/manife
 step deps ./scripts/check-deps.sh
 # Drift guard: the inline engine build must use the same commands as scripts/build-engine.sh (sans --locked/--offline).
 drift_guard() { local a b
-  a=$(grep -E '^\s*(cargo build|lipo|    target/)' scripts/build-engine.sh | sed -n '1,4p' | sed -e 's/^ *//' -e 's/ \\$//' | tr -s ' ' | tr '\n' ' ')
+  a=$(grep -E '^[[:space:]]*(cargo build|lipo|target/)' scripts/build-engine.sh | sed -n '1,4p' | sed -e 's/^ *//' -e 's/ \\$//' | tr -s ' ' | tr '\n' ' ')
   b="cargo build --release -p spacelyzer-engine --target aarch64-apple-darwin --lib cargo build --release -p spacelyzer-engine --target x86_64-apple-darwin --lib lipo -create -output build/lib/libspacelyzer_engine.a target/aarch64-apple-darwin/release/libspacelyzer_engine.a "
   [ "$a" = "$b" ] || { echo "build-engine.sh drifted from the inline build; got: $a"; return 1; }; }
 step engine-build-drift-guard drift_guard
