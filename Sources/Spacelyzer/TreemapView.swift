@@ -361,7 +361,12 @@ struct KindsView: View {
             }
             .opacity(presentation == .ready ? 1 : 0.5)
             .disabled(presentation != .ready)
-            .overlay { DerivedOverlay(presentation: presentation, retry: { model.retryDerived() }) }
+            .overlay { DerivedOverlay(presentation: presentation, retry: { model.retryDerived() }, rescan: model.canRescan ? { model.rescan() } : nil) }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if case .retained = presentation {
+                    Text("Updating filter; showing the prior snapshot").font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 4)
+                }
+            }
         }
     }
 }
@@ -370,11 +375,12 @@ struct KindsView: View {
 struct DerivedOverlay: View {
     let presentation: AppModel.DerivedPresentation
     var retry: () -> Void = {}
+    var rescan: (() -> Void)? = nil      // nil when no rescan is wired (no root path or already scanning)
     var body: some View {
         switch presentation {
         case .ready, .retained: EmptyView()
         case .updating(let why): VStack(spacing: 8) { ProgressView(why); Button("Try Again", action: retry) }
-        case .unavailable(let why): ContentUnavailableView("Unavailable", systemImage: "exclamationmark.triangle", description: Text(why))
+        case .unavailable(let why): ContentUnavailableView { Label("Unavailable", systemImage: "exclamationmark.triangle") } description: { Text(why) } actions: { if let rescan { Button("Rescan", action: rescan) } }
         }
     }
 }
@@ -453,7 +459,7 @@ struct LargestView: View {
             .opacity(presentation == .ready ? 1 : 0.5)
             .disabled(presentation != .ready)
             .overlay {
-                if presentation != .ready { DerivedOverlay(presentation: presentation, retry: { model.retryDerived() }) }
+                if presentation != .ready { DerivedOverlay(presentation: presentation, retry: { model.retryDerived() }, rescan: model.canRescan ? { model.rescan() } : nil) }
                 else if model.activeFilter != nil && ids.isEmpty {
                     ContentUnavailableView("No matches", systemImage: "line.3.horizontal.decrease.circle",
                                            description: Text("No file matches the current filter."))
