@@ -777,6 +777,18 @@ pub unsafe extern "C" fn spz_layout_version(l: *const Layout) -> u64 { if l.is_n
 pub struct SpzRowInfo {
     pub node: SpzNode,
     pub shown: u64,
+    /// Direct children the row shows when expanded (see `outline::visible_child_count_in`); equals `node.child_count` with no filter.
+    pub visible_children: u32,
+}
+
+/// Layout of `SpzRowInfo` as Rust sees it: [size, align, offset of node, offset of shown, offset of visible_children]. The Swift test
+/// binary compares it with the imported C struct, so a header/Rust drift fails loudly instead of misreading rows.
+#[no_mangle]
+pub unsafe extern "C" fn spz_row_info_layout(out: *mut u64) {
+    if out.is_null() { return; }
+    let v = [std::mem::size_of::<SpzRowInfo>() as u64, std::mem::align_of::<SpzRowInfo>() as u64,
+             std::mem::offset_of!(SpzRowInfo, node) as u64, std::mem::offset_of!(SpzRowInfo, shown) as u64, std::mem::offset_of!(SpzRowInfo, visible_children) as u64];
+    for (i, x) in v.iter().enumerate() { *out.add(i) = *x; }
 }
 
 /// Rows, per-row details, the displayed root's shown size and the whole tree's total in ONE capture. Returns the row
@@ -810,6 +822,7 @@ pub unsafe extern "C" fn spz_outline_snapshot_status(
                         kind: tr.kind(r.node) as u8, category: tr.category(r.node) as u8,
                     },
                     shown: shown(r.node),
+                    visible_children: crate::outline::visible_child_count_in(tr, &c.table, r.node, filter),
                 };
             }
         }

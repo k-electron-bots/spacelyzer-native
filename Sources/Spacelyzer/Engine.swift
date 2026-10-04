@@ -31,6 +31,8 @@ struct NodeInfo {
     var firstChild: UInt32
     var kind: NodeKind
     var category: FileCategory
+    /// Direct children shown when expanded: filtered snapshot count, nil outside an outline snapshot (use childCount).
+    var visibleChildren: Int? = nil
 }
 
 let noNode = UInt32.max
@@ -201,7 +203,7 @@ final class Tree: @unchecked Sendable {
             let n = Int(ex.withUnsafeBufferPointer { e in spz_outline_snapshot_status(ptr, root, e.baseAddress, UInt32(e.count), filter?.ptr, sort.rawValue, nil, nil, 0, UInt64.max, &v, &rs, &tot, &st) })
             guard st == 0 else { return .failure(EngineStatus(raw: st)) }
             var rows = [SpzRow](repeating: SpzRow(node: 0, depth: 0), count: n)
-            var raw = [SpzRowInfo](repeating: SpzRowInfo(node: SpzNode(size: 0, own_bytes: 0, parent: noNode, child_count: 0, first_child: noNode, kind: 0, category: 0), shown: 0), count: n)
+            var raw = [SpzRowInfo](repeating: SpzRowInfo(node: SpzNode(size: 0, own_bytes: 0, parent: noNode, child_count: 0, first_child: noNode, kind: 0, category: 0), shown: 0, visible_children: 0), count: n)
             var v2: UInt64 = 0, rs2: UInt64 = 0, tot2: UInt64 = 0, st2: Int32 = -1
             let got = Int(ex.withUnsafeBufferPointer { e in rows.withUnsafeMutableBufferPointer { rb in raw.withUnsafeMutableBufferPointer { ib in
                 spz_outline_snapshot_status(ptr, root, e.baseAddress, UInt32(e.count), filter?.ptr, sort.rawValue, rb.baseAddress, ib.baseAddress, UInt32(n), v, &v2, &rs2, &tot2, &st2) } } })
@@ -210,7 +212,8 @@ final class Tree: @unchecked Sendable {
             guard got == n, v2 == v else { return .failure(.internalError) }
             let infos = raw.map { r in NodeInfo(size: r.node.size, ownBytes: r.node.own_bytes, parent: r.node.parent == noNode ? nil : r.node.parent,
                                               childCount: Int(r.node.child_count), firstChild: r.node.first_child,
-                                              kind: NodeKind(rawValue: r.node.kind) ?? .file, category: FileCategory(rawValue: Int(r.node.category)) ?? .other) }
+                                              kind: NodeKind(rawValue: r.node.kind) ?? .file, category: FileCategory(rawValue: Int(r.node.category)) ?? .other,
+                                              visibleChildren: Int(r.visible_children)) }
             return .success(OutlineSnapshot(rows: rows, infos: infos, shown: raw.map { $0.shown }, version: v, rootSize: rs2, totalBytes: tot2))
         }
         return .failure(.stale)

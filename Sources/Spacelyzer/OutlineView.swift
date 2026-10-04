@@ -447,7 +447,11 @@ private struct OutlineTable: NSViewRepresentable {
             cell.toolTip = path
             cell.contrastOverride = Perf.on ? model.demoIncreaseContrast : nil
             cell.size.stringValue = poisoned ? "\u{2014}" : formatBytes(shown)
-            cell.count.stringValue = (!poisoned && isDir) ? "\(info.childCount.formatted()) item\(info.childCount == 1 ? "" : "s")" : ""
+            // Shown "V of T items" only when a filter hides some children (same snapshot as the rows); T is the structural live count that also drives the chevron.
+            let visibleKids: Int = info.visibleChildren ?? info.childCount
+            let countText: String = visibleKids == info.childCount ? "\(info.childCount.formatted()) item\(info.childCount == 1 ? "" : "s")"
+                                                                   : "\(visibleKids.formatted()) of \(info.childCount.formatted()) item\(info.childCount == 1 ? "" : "s")"
+            cell.count.stringValue = (!poisoned && isDir) ? countText : ""
             cell.bar.fraction = poisoned ? 0 : Double(shown) / Double(max(1, total))
             cell.bar.isHidden = poisoned
             let node = r.node
@@ -456,7 +460,7 @@ private struct OutlineTable: NSViewRepresentable {
             cell.chevron.setAccessibilityHelp("Show or hide this folder's children")
             cell.bar.setAccessibilityElement(false)
             cell.icon.setAccessibilityElement(false)
-            cell.setAccessibilityLabel(poisoned ? "Unavailable, engine error, rescan needed" : "\(nm), \(isDir ? "folder" : "item"), \(formatBytes(shown))\(isDir ? ", \(info.childCount) items" : "")")
+            cell.setAccessibilityLabel(poisoned ? "Unavailable, engine error, rescan needed" : "\(nm), \(isDir ? "folder" : "item"), \(formatBytes(shown))\(isDir ? (visibleKids == info.childCount ? ", \(info.childCount) items" : ", \(visibleKids) of \(info.childCount) items match filter") : "")")
             cell.setAccessibilityValue(cell.hasChildren ? (expanded ? "expanded" : "collapsed") : nil)
             cell.needsLayout = true
             return cell

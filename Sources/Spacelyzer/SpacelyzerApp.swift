@@ -1,3 +1,4 @@
+import CSpacelyzer
 import SwiftUI
 
 @main
@@ -1704,13 +1705,7 @@ private actor PublicationBarrier {
 
     /// Filtered + expanded slice. V = read from the mounted NSTableView (labels, visible chevrons). M = model readouts (kindRows, largestIDs): the
     /// Kinds and Largest panes are NOT mounted here. Poison is not part of this fixture and is not covered by it.
-    private static func childCount(_ l: [String], _ name: String) -> Int? {
-        guard let row = l.first(where: { $0.hasPrefix(name + ", folder") }) else { return nil }
-        for part in row.components(separatedBy: ", ") where part.hasSuffix(" items") || part.hasSuffix(" item") {
-            return Int(part.split(separator: " ")[0])
-        }
-        return nil
-    }
+    private static func folderLabel(_ l: [String], _ name: String) -> String? { l.first { $0.hasPrefix(name + ", folder") } }
     static func runFiltered() async {
         let dir = fixture("mounted-outline-filtered", [("big.txt", 600_000), ("keep.log", 70_000)])
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -1747,12 +1742,12 @@ private actor PublicationBarrier {
         let v0state = visibleCellState(table)
         snapshot(host, "outline-filtered-before-removal.png")
         let stay = node(tree, "stay.txt"), bigID = node(tree, "big.txt")
-        let before = (count: childCount(l0, "sub"), chevrons: v0state.chevronsVisible, kindItems: m.kindRows.reduce(UInt64(0)) { $0 + $1.items },
+        let before = (sub: folderLabel(l0, "sub"), texts: v0state.texts, chevrons: v0state.chevronsVisible, kindItems: m.kindRows.reduce(UInt64(0)) { $0 + $1.items },
                       largestHas: m.largestIDs.contains(gone), largestSurvivors: stay.map { m.largestIDs.contains($0) } == true && bigID.map { m.largestIDs.contains($0) } == true,
                       derivedCurrent: m.derivedVersion == m.tree?.version)
         // Positive controls: the filter is really applied in the view and the folder is really expanded.
         let controls: Bool = hasLabel(l0, "gone.txt") && hasLabel(l0, "stay.txt") && hasLabel(l0, "big.txt") && !hasLabel(l0, "keep.log") && !hasLabel(l0, "hidden.log")
-            && before.count == 3 && before.chevrons >= 1 && before.largestHas && before.largestSurvivors && before.derivedCurrent && before.kindItems == 3
+            && before.sub == "sub, folder, 184 KB, 2 of 3 items match filter" && before.texts.contains("2 of 3 items") && before.chevrons >= 1 && before.largestHas && before.largestSurvivors && before.derivedCurrent && before.kindItems == 3
 
         m.selected = gone
         let selectedBefore: Bool = await PublicationRegression.wait { if let i = m.outlineIndex[gone] { return table.selectedRow == i }; return false }
@@ -1765,20 +1760,78 @@ private actor PublicationBarrier {
         let l1 = labels(table)
         let v1state = visibleCellState(table)
         snapshot(host, "outline-filtered-after-removal.png")
-        let after = (count: childCount(l1, "sub"), chevrons: v1state.chevronsVisible, kindItems: m.kindRows.reduce(UInt64(0)) { $0 + $1.items },
+        let after = (sub: folderLabel(l1, "sub"), texts: v1state.texts, chevrons: v1state.chevronsVisible, kindItems: m.kindRows.reduce(UInt64(0)) { $0 + $1.items },
                      largestHas: m.largestIDs.contains(gone), largestSurvivors: stay.map { m.largestIDs.contains($0) } == true && bigID.map { m.largestIDs.contains($0) } == true,
                      derivedCurrent: derivedAfter)
         let goneRowGone: Bool = !hasLabel(l1, "gone.txt")
-        let countDropped: Bool = before.count == 3 && after.count == 2   // direct live children, NOT filtered (the filter hides hidden.log and keep.log)
+        // "V of T items": V = visible direct children under the filter, T = structural live children (hidden.log is the third). Exact AX and visible text.
+        let countDropped: Bool = after.sub == "sub, folder, 61 KB, 1 of 2 items match filter" && after.texts.contains("1 of 2 items") && !after.texts.contains("2 of 3 items")
         let kindsDropped: Bool = before.kindItems == 3 && after.kindItems == 2   // filtered Kinds total, a separate readout
         let largestOK: Bool = after.derivedCurrent && after.largestSurvivors && !after.largestHas
-        let viewV = "V[rowGone=\(goneRowGone) subDirectLiveChildCountUnfiltered=\(String(describing: before.count))->\(String(describing: after.count)) chevrons=\(before.chevrons)->\(after.chevrons) labels=\(l1)]"
+        let viewV = "V[rowGone=\(goneRowGone) subAX=\(String(describing: before.sub))->\(String(describing: after.sub)) visibleTexts=\(before.texts.filter { $0.contains("item") })->\(after.texts.filter { $0.contains("item") }) chevrons=\(before.chevrons)->\(after.chevrons) labels=\(l1)]"
         let modelM = "M[filteredKindItems=\(before.kindItems)->\(after.kindItems) largestHadGone=\(before.largestHas)->\(after.largestHas) largestSurvivorsBigStay=\(before.largestSurvivors)->\(after.largestSurvivors) derivedCurrent=\(after.derivedCurrent)] (Kinds/Largest panes not mounted)"
         Check.expect("view-outline-filtered-expanded-removal-readouts-coherent", controls && accepted && settled && goneRowGone && countDropped && after.chevrons >= 1 && kindsDropped && largestOK,
                      "controls=\(controls) accepted=\(accepted) settled=\(settled) \(viewV) \(modelM) l0=\(l0)")
         let neighbors: Bool = hasLabel(l1, "stay.txt") && hasLabel(l1, "big.txt") && hasLabel(l1, "sub")
         Check.expect("view-outline-filtered-expanded-selection-and-neighbors", selectedBefore && accepted && settled && m.selected == nil && table.selectedRow == -1 && neighbors && m.expanded.contains(sdir),
                      "selectedBefore=\(selectedBefore) modelSelected=\(String(describing: m.selected)) selectedRow=\(table.selectedRow) neighbors=\(neighbors) expandedKept=\(m.expanded.contains(sdir)) (asserted; no poison in this fixture)")
+    }
+
+    /// "V of T items" false pair and last-match semantics in the mounted outline. zf: a 0-byte match and a 0-byte non-match (filtered size == structural size,
+    /// so a size heuristic cannot tell it is filtered). all: every child matches (plain "2 items"). lone: no matching descendant (no row at all).
+    static func runFilteredCounts() async {
+        let dir = fixture("mounted-outline-counts", [("top.txt", 100_000)])
+        defer { try? FileManager.default.removeItem(at: dir) }
+        func make(_ rel: String, _ bytes: Int) {
+            let u = dir.appendingPathComponent(rel)
+            try? FileManager.default.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true)
+            FileManager.default.createFile(atPath: u.path, contents: Data(repeating: 7, count: bytes))
+        }
+        make("zf/m.txt", 0); make("zf/n.log", 0); make("all/p.txt", 10_000); make("all/q.txt", 10_000); make("lone/r.log", 5_000)
+        let m = AppModel(); m.scan(dir.path)
+        guard await PublicationRegression.ready(m) != nil, let tree = m.tree, let zf = node(tree, "zf"), let mfile = node(tree, "m.txt") else {
+            Check.expect("view-outline-filtered-count-v-of-t-false-pair-and-all-match", false, "fixture: model never ready"); Check.expect("view-outline-last-match-removal-hides-folder", false, "fixture: model never ready"); return
+        }
+        m.trashItem = { $0 }
+        m.tab = .kinds
+        let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: 520, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.title = "CI mounted outline counts (ordering driver)"
+        let host = NSHostingView(rootView: OutlineView().environment(m))
+        window.contentView = host; window.center(); window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        let mounted: Bool = await PublicationRegression.wait { if let t = findTable(host) { return t.numberOfRows > 0 && t.numberOfRows == m.outlineRows.count && hasLabel(labels(t), "lone") }; return false }
+        guard mounted, let table = findTable(host) else {
+            Check.expect("view-outline-filtered-count-v-of-t-false-pair-and-all-match", false, "never mounted unfiltered"); Check.expect("view-outline-last-match-removal-hides-folder", false, "never mounted unfiltered"); return
+        }
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        let lU = labels(table)
+        let unfilteredOK: Bool = (folderLabel(lU, "zf")?.hasSuffix(", 2 items") ?? false) && (folderLabel(lU, "all")?.hasSuffix(", 2 items") ?? false) && hasLabel(lU, "lone")
+        m.filterExt = "txt"
+        let on: Bool = await PublicationRegression.wait { m.activeFilter != nil }
+        let ready: Bool = await PublicationRegression.ready(m) != nil
+        m.expanded = [zf]; m.refreshOutline()
+        let shown: Bool = await PublicationRegression.wait { if let t = findTable(host) { return t.numberOfRows == m.outlineRows.count && hasLabel(labels(t), "m.txt") }; return false }
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        let lF = labels(table)
+        let tF = visibleCellState(table).texts
+        snapshot(host, "outline-counts-filtered.png")
+        let zfL = folderLabel(lF, "zf"), allL = folderLabel(lF, "all")
+        let zfOK: Bool = (zfL?.hasSuffix(", 1 of 2 items match filter") ?? false) && tF.contains("1 of 2 items")
+        let allOK: Bool = (allL?.hasSuffix(", 2 items") ?? false) && !(allL?.contains("match filter") ?? true) && tF.contains("2 items")
+        let loneHidden: Bool = !hasLabel(lF, "lone")
+        Check.expect("view-outline-filtered-count-v-of-t-false-pair-and-all-match", unfilteredOK && on && ready && shown && zfOK && allOK && loneHidden,
+                     "unfilteredOK=\(unfilteredOK) zfAX=\(String(describing: zfL)) allAX=\(String(describing: allL)) loneHidden=\(loneHidden) texts=\(tF.filter { $0.contains("item") }) labels=\(lF)")
+        // Last match: removing the only matching descendant removes the folder row from the filtered outline (existing hide-by-match-count rule).
+        m.selected = mfile
+        let v0 = m.tree?.version ?? 0
+        m.pendingRemoval = mfile; m.confirmRemoval()
+        let accepted: Bool = m.removalInFlight
+        let settled: Bool = await PublicationRegression.wait { !m.removalInFlight && m.commitsInFlight == 0 && (m.tree?.version ?? 0) > v0 && !m.rowsPending && table.numberOfRows == m.outlineRows.count }
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        let lA = labels(table)
+        snapshot(host, "outline-counts-after-last-match.png")
+        Check.expect("view-outline-last-match-removal-hides-folder", accepted && settled && !hasLabel(lA, "zf") && !hasLabel(lA, "m.txt") && hasLabel(lA, "all") && hasLabel(lA, "top.txt"),
+                     "accepted=\(accepted) settled=\(settled) zfRowGone=\(!hasLabel(lA, "zf")) labels=\(lA)")
     }
 }
 
@@ -1881,6 +1934,13 @@ private actor PublicationBarrier {
               let f1 = node(t1, "f1.bin"), let f2 = node(t1, "f2.bin"), let f3 = node(t1, "f3.bin") else {
             Check.expect("engine-old-tree-forget-advances-old-only-after-swap", false, "fixture"); Check.expect("engine-concurrent-forgets-on-one-tree-no-lost-update", false, "fixture"); return
         }
+        // ABI: the imported C struct must match Rust's layout exactly (size, alignment, field offsets), or a drift fails here loudly.
+        var lay = [UInt64](repeating: 0, count: 5)
+        lay.withUnsafeMutableBufferPointer { spz_row_info_layout($0.baseAddress) }
+        let abiOK: Bool = lay[0] == UInt64(MemoryLayout<SpzRowInfo>.size) && lay[1] == UInt64(MemoryLayout<SpzRowInfo>.alignment)
+            && lay[2] == UInt64(MemoryLayout<SpzRowInfo>.offset(of: \.node) ?? 9999) && lay[3] == UInt64(MemoryLayout<SpzRowInfo>.offset(of: \.shown) ?? 9999)
+            && lay[4] == UInt64(MemoryLayout<SpzRowInfo>.offset(of: \.visible_children) ?? 9999)
+        Check.expect("engine-row-info-abi-matches-rust", abiOK, "rust[size,align,node,shown,visible]=\(lay) swift[size=\(MemoryLayout<SpzRowInfo>.size) align=\(MemoryLayout<SpzRowInfo>.alignment) stride=\(MemoryLayout<SpzRowInfo>.stride) node=\(String(describing: MemoryLayout<SpzRowInfo>.offset(of: \.node))) shown=\(String(describing: MemoryLayout<SpzRowInfo>.offset(of: \.shown))) visible=\(String(describing: MemoryLayout<SpzRowInfo>.offset(of: \.visible_children)))]")
         // Real engine forget on the OLD tree handle after a second tree exists: only the old tree changes.
         let v1 = t1.version, v2 = t2.version, r1 = t1.info(0).size, r2 = t2.info(0).size, s1 = t1.info(f1).size, s2 = t1.info(f2).size, s3 = t1.info(f3).size
         let st = t1.forget(f1)
@@ -2357,6 +2417,9 @@ final class BusyFlag: @unchecked Sendable {
         "view-outline-removal-drops-row-and-clears-selection",
         "view-outline-filtered-expanded-removal-readouts-coherent",
         "view-outline-filtered-expanded-selection-and-neighbors",
+        "view-outline-filtered-count-v-of-t-false-pair-and-all-match",
+        "view-outline-last-match-removal-hides-folder",
+        "engine-row-info-abi-matches-rust",
         "view-poison-outline-cells-show-unavailable-not-stale-names",
         "view-poison-outline-latch-persists-in-mounted-table",
         "engine-old-tree-forget-advances-old-only-after-swap",
@@ -2427,6 +2490,7 @@ final class BusyFlag: @unchecked Sendable {
         await MountedViewRegression.run()
         await MountedOutlineRegression.run()
         await MountedOutlineRegression.runFiltered()
+        await MountedOutlineRegression.runFilteredCounts()
         var problems: [String] = []
         if Check.results.isEmpty { problems.append("no results recorded") }
         let fileOK = (try? String(contentsOfFile: Check.path, encoding: .utf8))?.isEmpty == false
