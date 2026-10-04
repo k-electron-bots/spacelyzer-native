@@ -581,6 +581,20 @@ final class AppModel {
         folderLoad = .idle
     }
 
+    /// What the Largest and Kinds lists may show right now. They keep their previous publication in the MODEL while a change settles, but the
+    /// VIEW shows rows only when that publication is the current table's, so a removed item or an old total is never presented as live
+    /// and cannot be selected from a list.
+    enum DerivedPresentation: Equatable { case ready, updating, unavailable(String) }
+    var derivedPresentation: DerivedPresentation {
+        guard let tree else { return .updating }
+        if enginePoisoned { return .unavailable("The engine reported an internal error. Rescan to continue.") }
+        if viewOutOfDate { return .unavailable(outOfDateReason ?? "The results may be out of date. Rescan to refresh.") }
+        if rowsPending || filterPending { return .updating }
+        if let f = activeFilter, f.version != tree.version { return .updating }
+        guard let v = derivedVersion, v == tree.version else { return .updating }
+        return .ready
+    }
+
     func refreshFolders() { startFolderLoad(attempt: 0) }
 
     /// Reads the largest folders off the main actor and publishes only if the generation, the tree and the table version still match.
