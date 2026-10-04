@@ -19,6 +19,8 @@ fn check(t: &Tree, id: u32) -> i32 { unsafe { spz_tree_check_identity(t as *cons
 
 #[test]
 fn unchanged_items_are_same_including_root() {
+    #[cfg(feature = "failpoints")]
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let d = fixture("same"); std::fs::create_dir(d.join("sub")).unwrap(); std::fs::write(d.join("sub/f"), b"abc").unwrap();
     let t = scanned(&d);
     assert_eq!(check(&t, 0), C::Same as i32);
@@ -28,6 +30,8 @@ fn unchanged_items_are_same_including_root() {
 
 #[test]
 fn same_kind_replacement_with_new_inode_is_different_not_same() {
+    #[cfg(feature = "failpoints")]
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let d = fixture("repl"); std::fs::write(d.join("f"), b"abc").unwrap();
     let t = scanned(&d); let id = node(&t, &d.join("f"));
     // Same name, same kind, same size and a fresh file: only the inode tells them apart. Keep the old inode alive so it cannot be reused.
@@ -39,6 +43,8 @@ fn same_kind_replacement_with_new_inode_is_different_not_same() {
 
 #[test]
 fn kind_swap_gone_and_ancestor_symlink_are_refused_distinctly() {
+    #[cfg(feature = "failpoints")]
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let d = fixture("kinds");
     std::fs::create_dir_all(d.join("a/b")).unwrap(); std::fs::write(d.join("a/b/f"), b"1").unwrap(); std::fs::write(d.join("g"), b"1").unwrap(); std::fs::write(d.join("h"), b"1").unwrap();
     let t = scanned(&d);
@@ -53,6 +59,8 @@ fn kind_swap_gone_and_ancestor_symlink_are_refused_distinctly() {
 
 #[test]
 fn hard_link_dedup_does_not_make_either_link_look_changed() {
+    #[cfg(feature = "failpoints")]
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let d = fixture("hl"); std::fs::write(d.join("a"), vec![1u8; 9000]).unwrap(); std::fs::hard_link(d.join("a"), d.join("b")).unwrap();
     let t = scanned(&d);
     let (a, b) = (node(&t, &d.join("a")), node(&t, &d.join("b")));
@@ -61,6 +69,8 @@ fn hard_link_dedup_does_not_make_either_link_look_changed() {
 
 #[test]
 fn non_utf8_name_is_unaddressable_and_errors_are_distinct() {
+    #[cfg(feature = "failpoints")]
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let d = fixture("lossy");
     let bad = d.join(std::ffi::OsStr::from_bytes(b"bad\xff"));
     if std::fs::write(&bad, b"x").is_err() { return; } // filesystem refuses non-UTF-8 names: nothing to test here
@@ -78,6 +88,8 @@ fn sentinel() -> Inspect { let mut s = zeroed(); s.allocated = 0xAAAA; s.ino = 0
 
 #[test]
 fn inspect_path_boundary_contract() {
+    #[cfg(feature = "failpoints")]
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let d = fixture("abi"); std::fs::write(d.join("f"), b"hello").unwrap();
     let p = CString::new(d.join("f").as_os_str().as_bytes()).unwrap();
     let mut out = sentinel();
@@ -104,6 +116,8 @@ fn inspect_path_boundary_contract() {
 
 #[test]
 fn layout_export_matches_rust_struct_and_header_numbers() {
+    #[cfg(feature = "failpoints")]
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let mut v = [0u64; 7]; unsafe { spz_inspect_layout(v.as_mut_ptr()); }
     assert_eq!(v, [48, 8, 16, 24, 32, 40, 44]);
     unsafe { spz_inspect_layout(std::ptr::null_mut()); } // must not crash
@@ -133,6 +147,8 @@ fn review(t: &Tree, id: u32) -> (i32, spacelyzer_engine::inspect::SpzReview) {
 
 #[test]
 fn review_carries_live_data_only_when_the_leaf_was_observed_and_labels_the_item() {
+    #[cfg(feature = "failpoints")]
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let d = fixture("review"); std::fs::create_dir_all(d.join("a")).unwrap(); std::fs::write(d.join("f"), b"abcd").unwrap(); std::fs::write(d.join("g"), b"x").unwrap(); std::fs::write(d.join("h"), b"y").unwrap(); std::fs::write(d.join("a/z"), b"z").unwrap();
     let t = scanned(&d); let (f, g, h, z) = (node(&t, &d.join("f")), node(&t, &d.join("g")), node(&t, &d.join("h")), node(&t, &d.join("a/z")));
     // Same: live data comes from the same lstat, equal to a direct inspect.
@@ -154,6 +170,8 @@ fn review_carries_live_data_only_when_the_leaf_was_observed_and_labels_the_item(
 
 #[test]
 fn review_of_lossy_name_and_missing_identity_never_inspects() {
+    #[cfg(feature = "failpoints")]
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let d = fixture("review2"); let bad = d.join(std::ffi::OsStr::from_bytes(b"q\xff")); if std::fs::write(&bad, b"x").is_err() { return; }
     let t = scanned(&d); let id = (1..t.len() as u32).find(|&i| t.name(i).contains('\u{FFFD}')).unwrap();
     let (rc, r) = review(&t, id); assert_eq!(rc, C::Unaddressable as i32); assert_eq!((r.live_state, r.live.ino), (0, 0));
@@ -162,6 +180,8 @@ fn review_of_lossy_name_and_missing_identity_never_inspects() {
 
 #[test]
 fn review_layout_matches_header_numbers() {
+    #[cfg(feature = "failpoints")]
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let mut v = [0u64; 4]; unsafe { spz_review_layout(v.as_mut_ptr()); } assert_eq!(v, [56, 8, 48, 0]);
     unsafe { spz_review_layout(std::ptr::null_mut()); }
 }
@@ -178,6 +198,8 @@ fn review_caught_panic_returns_minus_two_and_leaves_out_untouched() {
 
 #[test]
 fn review_of_a_same_kind_new_inode_is_different_with_the_new_files_own_metadata() {
+    #[cfg(feature = "failpoints")]
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let d = fixture("review4"); std::fs::write(d.join("f"), b"abc").unwrap();
     let t = scanned(&d); let id = node(&t, &d.join("f"));
     let old = spacelyzer_engine::inspect::inspect(&d.join("f")).unwrap();
