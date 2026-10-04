@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Hues spaced by the golden angle keep neighbouring branches far apart in colour.
@@ -293,6 +294,10 @@ struct SelectionBar: View {
             Button("Show in Finder") { model.reveal(id) }
                 .help("Reveal the selected item in Finder")
                 .accessibilityLabel("Show selected item in Finder")
+            Button("Copy Path") { copyPath() }
+                .disabled(model.enginePoisoned || tree.path(id).contains("\u{FFFD}"))
+                .help(tree.path(id).contains("\u{FFFD}") ? "This name has bytes the scan could not keep exactly, so a copied path could point somewhere else" : "Copy the full path of the selected item")
+                .accessibilityLabel("Copy path of selected item")
             Button("Check on disk…") { showReview = true }
                 .disabled(model.enginePoisoned || model.mutationPending)
                 .help("Read only: compare this item on disk with the scan")
@@ -306,6 +311,15 @@ struct SelectionBar: View {
             .onChange(of: id) { _, _ in showReview = false }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Selected item: \(title), \(detail)")
+    }
+}
+
+extension SelectionBar {
+    /// Read only: puts the scanned path on the clipboard as plain text. Does not touch the disk, the tree or the selection.
+    fileprivate func copyPath() {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(tree.path(id), forType: .string)
     }
 }
 
