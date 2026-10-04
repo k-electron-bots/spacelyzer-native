@@ -38,6 +38,37 @@ impl SizeTable {
         SizeTable { version, sizes, forgotten }
     }
 }
+impl SizeTable {
+    /// How many removed roots lie inside `r` (a node's child range). O(log forgotten).
+    pub fn forgotten_in(&self, r: std::ops::Range<NodeId>) -> u32 {
+        let lo = self.forgotten.partition_point(|&x| x < r.start);
+        let hi = self.forgotten.partition_point(|&x| x < r.end);
+        (hi - lo) as u32
+    }
+    /// True when `id` or any ancestor was removed. O(depth * log forgotten); free when nothing was removed.
+    pub fn is_dead(&self, tree: &Tree, id: NodeId) -> bool {
+        if self.forgotten.is_empty() { return false; }
+        let mut cur = Some(id);
+        while let Some(n) = cur {
+            if self.forgotten.binary_search(&n).is_ok() { return true; }
+            cur = tree.parent(n);
+        }
+        false
+    }
+    /// True for every node that was removed or sits below a removed node. `None` when nothing was removed (no cost on the
+    /// normal path). Parents precede children in the arena, so one forward sweep is enough.
+    pub fn dead_mask(&self, tree: &Tree) -> Option<Vec<bool>> {
+        if self.forgotten.is_empty() { return None; }
+        let n = tree.len();
+        let mut dead = vec![false; n];
+        for &f in &self.forgotten { if (f as usize) < n { dead[f as usize] = true; } }
+        for i in 1..n {
+            let p = tree.parent[i];
+            if p != NO_NODE && (p as usize) < n && dead[p as usize] { dead[i] = true; }
+        }
+        Some(dead)
+    }
+}
 impl Default for SizeTable {
     fn default() -> SizeTable { SizeTable::new(0, Vec::new(), Vec::new()) }
 }
@@ -71,7 +102,7 @@ pub enum MutationError {
     Panicked,
 }
 
-/// Test-only failure injection (feature `failpoints`): 1 = after reserve, 2 = after apply, 3 = immediately before the swap.
+/// Test-only failure injection (feature `failpoints`): 1 = after reserve, 2 = after apply, 3 = immediately before the swap, 4 = after the removal list is built and before the size copy is reserved.
 #[cfg(feature = "failpoints")]
 static FAILPOINT: AtomicU8 = AtomicU8::new(0);
 #[cfg(feature = "failpoints")]
@@ -204,6 +235,11 @@ impl Tree {
     pub fn child_count(&self, id: NodeId) -> u32 {
         self.child_count[id as usize]
     }
+    /// Children that are still present in `tab`: the arena child count minus removed children. Genuine empty folders and
+    /// zero-byte files are still counted.
+    pub fn live_child_count_in(&self, tab: &SizeTable, id: NodeId) -> u32 {
+        self.child_count[id as usize].saturating_sub(tab.forgotten_in(self.children(id)))
+    }
     pub fn children(&self, id: NodeId) -> std::ops::Range<NodeId> {
         let f = self.first_child[id as usize];
         if f == NO_NODE {
@@ -247,9 +283,10 @@ impl Tree {
     }
     pub fn category_totals_in(&self, tab: &SizeTable) -> [(u64, u64); CATEGORY_COUNT] {
         let mut out = [(0u64, 0u64); CATEGORY_COUNT];
+        let dead = tab.dead_mask(self);
         for i in 0..self.len() {
             let k = self.kind[i];
-            if k == Kind::Directory as u8 {
+            if k == Kind::Directory as u8 || dead.as_ref().map_or(false, |d| d[i]) {
                 continue;
             }
             // Packages are aggregated by the whole bundle's size; their inner files are
@@ -323,8 +360,9 @@ impl Tree {
     }
     pub fn largest_files_in(&self, tab: &SizeTable, n: usize) -> Vec<NodeId> {
         let sizes = &tab.sizes;
+        let dead = tab.dead_mask(self);
         let mut v: Vec<NodeId> = (0..self.len() as NodeId)
-            .filter(|&i| self.kind[i as usize] == Kind::File as u8)
+            .filter(|&i| self.kind[i as usize] == Kind::File as u8 && !dead.as_ref().map_or(false, |d| d[i as usize]))
             .collect();
         let n = n.min(v.len());
         if n == 0 {
@@ -371,6 +409,7 @@ impl Tree {
         gone.extend_from_slice(&cur.forgotten);
         let at = gone.binary_search(&id).unwrap_or_else(|i| i);
         gone.insert(at, id);   // capacity reserved above: no allocation
+        failpoint(4);
         let mut copy: Vec<u64> = Vec::new();
         copy.try_reserve_exact(cur.sizes.len()).map_err(|_| MutationError::AllocFailed)?;
         failpoint(1);

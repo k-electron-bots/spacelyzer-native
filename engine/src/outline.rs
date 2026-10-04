@@ -15,12 +15,15 @@ pub struct Row {
 /// A filter hides nodes with no matching files (by match count, so zero-byte matches stay visible). Nothing is capped.
 pub fn visible_rows(tree: &Tree, root: NodeId, expanded: &HashSet<NodeId>, filter: Option<&FilterResult>) -> Vec<Row> {
     let mut out = Vec::new();
+    let tab = tree.table();
+    if tab.is_dead(tree, root) { return Vec::new(); }
     let mut stack: Vec<(std::ops::Range<NodeId>, u32)> = vec![(tree.children(root), 0)];
     while let Some((range, depth)) = stack.last_mut() {
         let Some(id) = range.next() else {
             stack.pop();
             continue;
         };
+        if tab.forgotten.binary_search(&id).is_ok() { continue; }
         if let Some(f) = filter {
             if f.counts[id as usize] == 0 {
                 continue;
@@ -28,7 +31,7 @@ pub fn visible_rows(tree: &Tree, root: NodeId, expanded: &HashSet<NodeId>, filte
         }
         let d = *depth;
         out.push(Row { node: id, depth: d });
-        if expanded.contains(&id) && tree.child_count(id) > 0 {
+        if expanded.contains(&id) && tree.live_child_count_in(&tab, id) > 0 {
             stack.push((tree.children(id), d + 1));
         }
     }
@@ -57,10 +60,10 @@ impl SortMode {
     }
 }
 
-fn ordered_children(tree: &Tree, tab: &[u64], id: NodeId, mode: SortMode, filter: Option<&FilterResult>) -> Vec<NodeId> {
+fn ordered_children(tree: &Tree, tab: &crate::tree::SizeTable, id: NodeId, mode: SortMode, filter: Option<&FilterResult>) -> Vec<NodeId> {
     let sizes = filter.map(|f| f.sizes.as_slice());
     let mut v: Vec<NodeId> = tree.children(id).collect();
-    let key_size = |n: NodeId| sizes.map(|s| s[n as usize]).unwrap_or_else(|| tab[n as usize]);
+    let key_size = |n: NodeId| sizes.map(|s| s[n as usize]).unwrap_or_else(|| tab.sizes[n as usize]);
     match mode {
         SortMode::SizeDesc => {
             if sizes.is_some() {
@@ -69,7 +72,7 @@ fn ordered_children(tree: &Tree, tab: &[u64], id: NodeId, mode: SortMode, filter
         }
         SortMode::SizeAsc => v.sort_by_key(|&n| key_size(n)),
         SortMode::NameAsc => v.sort_by_cached_key(|&n| tree.name(n).to_lowercase()),
-        SortMode::ItemsDesc => v.sort_by_key(|&n| std::cmp::Reverse(tree.child_count(n))),
+        SortMode::ItemsDesc => v.sort_by_key(|&n| std::cmp::Reverse(tree.live_child_count_in(tab, n))),
         SortMode::ModifiedDesc => v.sort_by_key(|&n| std::cmp::Reverse(tree.mtime(n))),
     }
     v
@@ -84,8 +87,9 @@ pub fn visible_rows_sorted(tree: &Tree, root: NodeId, expanded: &HashSet<NodeId>
 /// One captured table is used for every expanded directory in this call.
 pub fn visible_rows_sorted_in(tree: &Tree, tab: &crate::tree::SizeTable, root: NodeId, expanded: &HashSet<NodeId>, filter: Option<&FilterResult>, mode: SortMode) -> Vec<Row> {
     let gone = tab.forgotten.as_slice();
-    let tab = tab.sizes.as_slice();
     let mut out = Vec::new();
+    // A displayed root that was removed, or sits inside a removed folder, has no rows (its children are not tombstoned themselves).
+    if tab.is_dead(tree, root) { return out; }
     let mut stack: Vec<(std::vec::IntoIter<NodeId>, u32)> = vec![(ordered_children(tree, tab, root, mode, filter).into_iter(), 0)];
     while let Some((it, depth)) = stack.last_mut() {
         let Some(id) = it.next() else {
@@ -101,7 +105,7 @@ pub fn visible_rows_sorted_in(tree: &Tree, tab: &crate::tree::SizeTable, root: N
         }
         let d = *depth;
         out.push(Row { node: id, depth: d });
-        if expanded.contains(&id) && tree.child_count(id) > 0 {
+        if expanded.contains(&id) && tree.live_child_count_in(tab, id) > 0 {
             stack.push((ordered_children(tree, tab, id, mode, filter).into_iter(), d + 1));
         }
     }

@@ -64,6 +64,7 @@ pub fn apply(tree: &Tree, f: &Filter) -> FilterResult {
 pub fn apply_in(tree: &Tree, tab: &crate::tree::SizeTable, f: &Filter) -> FilterResult {
     let n = tree.len();
     let sizes_in = &tab.sizes;
+    let dead = tab.dead_mask(tree);   // removed nodes and everything below them never match
     let text = f.text.to_lowercase();
     let ext = f.extension.trim_start_matches('.').to_lowercase();
     let min = f.min_size.unwrap_or(0);
@@ -76,6 +77,9 @@ pub fn apply_in(tree: &Tree, tab: &crate::tree::SizeTable, f: &Filter) -> Filter
         .map(|i| {
             let kind = tree.kind[i];
             if kind == Kind::Directory as u8 {
+                return (0, 0);
+            }
+            if dead.as_ref().map_or(false, |d| d[i]) {
                 return (0, 0);
             }
             // A package or file counts by its own bytes; a package is one item.

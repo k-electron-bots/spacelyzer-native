@@ -609,3 +609,67 @@ fn outline_hides_forgotten_rows_but_keeps_zero_byte_files() {
     assert_eq!(tree.table().version, v);
     assert_eq!(tree.table().forgotten.len(), 3);
 }
+
+/// Every readout agrees about removed nodes: child counts, filters, largest files, category totals, descendants, item sort.
+#[test]
+fn removed_nodes_are_consistent_across_counts_filters_and_totals() {
+    let t = tempdir::T::new();
+    let r = t.path();
+    fs::create_dir_all(r.join("dir/gonesub/deep")).unwrap();
+    fs::write(r.join("dir/keep.bin"), vec![1u8; 20_000]).unwrap();
+    fs::write(r.join("dir/gone.bin"), vec![2u8; 30_000]).unwrap();
+    fs::write(r.join("dir/empty.txt"), b"").unwrap();
+    fs::write(r.join("dir/gonesub/inner.bin"), vec![3u8; 10_000]).unwrap();
+    fs::write(r.join("dir/gonesub/deep/deeper.bin"), vec![4u8; 12_000]).unwrap();
+    fs::create_dir_all(r.join("lonely")).unwrap();      // genuine empty folder
+    fs::create_dir_all(r.join("allgone")).unwrap();
+    fs::write(r.join("allgone/only.bin"), vec![5u8; 8_000]).unwrap();
+    let tree = scan(r, &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    let id = |n: &str| tree.find(&format!("{}/{}", tree.root_path(), n)).unwrap();
+    let dir = id("dir");
+    let live = |n: u32| tree.live_child_count_in(&tree.table(), n);
+    assert_eq!(live(dir), 4); // keep.bin, gone.bin, empty.txt, gonesub
+    let all = Filter::default();
+    let f0 = apply_filter(&tree, &all);
+    let files0 = f0.counts[0];
+    let totals0: u64 = tree.category_totals().iter().map(|c| c.1).sum();
+    let largest0 = tree.largest_files(100).len();
+    assert_eq!(files0 as usize, largest0);
+    // Remove a file, a folder with nested files, and the only child of a folder.
+    tree.forget(id("dir/gone.bin")).unwrap();
+    tree.forget(id("dir/gonesub")).unwrap();
+    tree.forget(id("allgone/only.bin")).unwrap();
+    let tab = tree.table();
+    assert_eq!(live(dir), 2, "keep.bin and empty.txt remain");
+    assert_eq!(live(id("allgone")), 0, "a folder whose only child was removed reads as empty");
+    assert_eq!(live(id("lonely")), 0);
+    // Filter: removed files and everything below a removed folder never match; the genuine zero-byte file still does.
+    let f1 = apply_filter(&tree, &all);
+    assert_eq!(f1.counts[0], files0 - 4, "gone.bin, inner.bin, deeper.bin, only.bin");
+    let ids: Vec<u32> = tree.largest_files(100);
+    for n in ["dir/gone.bin", "dir/gonesub/inner.bin", "dir/gonesub/deep/deeper.bin", "allgone/only.bin"] { assert!(!ids.contains(&id(n)), "{n} listed as a largest file"); }
+    assert!(ids.contains(&id("dir/empty.txt")) && ids.contains(&id("dir/keep.bin")));
+    assert_eq!(ids.len(), largest0 - 4);
+    let totals1: u64 = tree.category_totals().iter().map(|c| c.1).sum();
+    assert_eq!(totals1, totals0 - 4, "item counts per kind exclude removed files");
+    assert_eq!(filter::largest_files(&tree, &f1, 100).len(), largest0 - 4);
+    // Outline: a removed folder's descendants cannot appear even when it is expanded; item-count sort uses live counts.
+    let mut open = std::collections::HashSet::new();
+    open.insert(dir); open.insert(id("dir/gonesub")); open.insert(id("allgone"));
+    let rows = outline::visible_rows_sorted_in(&tree, &tab, 0, &open, None, outline::SortMode::ItemsDesc);
+    let names: Vec<String> = rows.iter().map(|r| tree.name(r.node).to_string()).collect();
+    for n in ["gone.bin", "gonesub", "inner.bin", "deep", "deeper.bin", "only.bin"] { assert!(!names.contains(&n.to_string()), "{n} listed: {names:?}"); }
+    for n in ["keep.bin", "empty.txt", "lonely", "allgone", "dir"] { assert!(names.contains(&n.to_string()), "{n} missing: {names:?}"); }
+    let pos = |n: &str| names.iter().position(|x| x == n).unwrap();
+    assert!(pos("dir") < pos("allgone"), "dir (2 live items) sorts before allgone (0): {names:?}");
+    // A displayed root that was removed, or lies inside a removed folder, lists nothing (children are not tombstoned themselves).
+    let inside = outline::visible_rows_sorted_in(&tree, &tab, id("dir/gonesub"), &Default::default(), None, outline::SortMode::SizeDesc);
+    let deeper = outline::visible_rows_sorted_in(&tree, &tab, id("dir/gonesub/deep"), &Default::default(), None, outline::SortMode::SizeDesc);
+    assert!(inside.is_empty() && deeper.is_empty(), "rows listed under a removed root");
+    assert!(tab.is_dead(&tree, id("dir/gonesub/deep/deeper.bin")) && !tab.is_dead(&tree, id("dir/keep.bin")) && !tab.is_dead(&tree, id("lonely")));
+    // Genuine empty controls with a filter that needs 0-byte files: the zero-byte file still matches, the empty folder stays listed.
+    let f2 = apply_filter(&tree, &Filter { max_size: Some(0), ..Default::default() });
+    assert_eq!(f2.counts[id("dir/empty.txt") as usize], 1);
+    assert_eq!(f2.counts[id("dir/gone.bin") as usize], 0);
+    assert_eq!(f2.counts[id("dir/gonesub/deep/deeper.bin") as usize], 0);
+}

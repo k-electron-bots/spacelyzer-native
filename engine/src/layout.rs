@@ -127,7 +127,7 @@ pub fn layout_in(tree: &Tree, tab: &crate::tree::SizeTable, root: NodeId, opts: 
                 Some(c) => {
                     let b = if branch == u32::MAX { idx as u32 } else { branch };
                     let descend = tree.kind(c) == Kind::Directory
-                        && tree.child_count(c) > 0
+                        && tree.live_child_count_in(tab, c) > 0
                         && depth + 1 < opts.max_depth
                         && rw > opts.min_edge * 3.0
                         && rh > opts.min_edge * 3.0;

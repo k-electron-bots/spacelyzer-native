@@ -1788,8 +1788,9 @@ private actor PublicationBarrier {
         let oldRootOK: Bool = t1.info(0).size == r1 - s1
         let oldNodeZero: Bool = t1.info(f1).size == 0
         let newUntouched: Bool = t2.version == v2 && t2.info(0).size == r2
-        let okSwap: Bool = st == .ok && oldAdvanced && oldRootOK && oldNodeZero && newUntouched
-        Check.expect("engine-old-tree-forget-advances-old-only-after-swap", okSwap, "status=\(st) oldVersion \(v1)->\(t1.version) oldRoot \(r1)->\(t1.info(0).size) (forgot \(s1)) newTreeVersion \(v2)->\(t2.version) newTreeRoot \(r2)->\(t2.info(0).size)")
+        let oldKidsLive: Bool = t1.info(0).childCount == 2 && t2.info(0).childCount == 2   // removed child no longer counted; the other tree keeps its own
+        let okSwap: Bool = st == .ok && oldAdvanced && oldRootOK && oldNodeZero && newUntouched && oldKidsLive
+        Check.expect("engine-old-tree-forget-advances-old-only-after-swap", okSwap, "liveChildCount old=\(t1.info(0).childCount) new=\(t2.info(0).childCount) status=\(st) oldVersion \(v1)->\(t1.version) oldRoot \(r1)->\(t1.info(0).size) (forgot \(s1)) newTreeVersion \(v2)->\(t2.version) newTreeRoot \(r2)->\(t2.info(0).size)")
         // Two real forgets on two DISTINCT live files of one real tree, issued from two concurrent tasks. Bounded and small:
         // it shows neither update is lost (exact sum, version +2, both OK); it is not a stress test.
         let vA = t1.version, rA = t1.info(0).size
@@ -1799,8 +1800,9 @@ private actor PublicationBarrier {
         let nodesZero: Bool = t1.info(f2).size == 0 && t1.info(f3).size == 0
         let rootOK: Bool = t1.info(0).size == rA - s2 - s3
         let versionOK: Bool = t1.version == vA + 2
-        let okDbl: Bool = sa == .ok && sb == .ok && nodesZero && rootOK && versionOK
-        Check.expect("engine-concurrent-forgets-on-one-tree-no-lost-update", okDbl, "statuses \(sa)/\(sb) root \(rA)->\(t1.info(0).size) expected \(rA - s2 - s3) version \(vA)->\(t1.version) expected \(vA + 2)")
+        let noKidsLeft: Bool = t1.info(0).childCount == 0
+        let okDbl: Bool = sa == .ok && sb == .ok && nodesZero && rootOK && versionOK && noKidsLeft
+        Check.expect("engine-concurrent-forgets-on-one-tree-no-lost-update", okDbl, "liveChildCount=\(t1.info(0).childCount) statuses \(sa)/\(sb) root \(rA)->\(t1.info(0).size) expected \(rA - s2 - s3) version \(vA)->\(t1.version) expected \(vA + 2)")
     }
 }
 

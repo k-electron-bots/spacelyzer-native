@@ -94,18 +94,20 @@ fn panic_at_each_failpoint_leaves_table_unchanged_and_later_commits_work() {
     let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let t = Tree::synthetic(50_000);
     let id = some_dirs(&t, 1)[0];
-    for fp in 1..=3u8 {
+    for fp in 1..=4u8 {
         let before = t.table();
         spacelyzer_engine::tree::set_failpoint(fp);
         assert_eq!(t.forget(id), Err(MutationError::Panicked), "failpoint {fp}");
         let after = t.table();
         assert_eq!(before.version, after.version);
         assert_eq!(before.sizes, after.sizes);
+        assert_eq!(before.forgotten, after.forgotten, "removal list changed at failpoint {fp}");
     }
     // writer mutex was poisoned? it is released before unwind escapes, but recovery is also exercised via into_inner
     assert!(t.forget(id).is_ok());
     assert_eq!(t.table().version, 1);
     assert_eq!(t.table().sizes[id as usize], 0);
+    assert_eq!(t.table().forgotten, vec![id]);
 }
 
 #[test]
@@ -468,4 +470,46 @@ fn panic_on_a_rayon_worker_becomes_a_failed_scan_and_bumps_the_counter() {
     assert!(w >= 0, "the panic must have run on a rayon pool thread (index {w}); -1 = not a pool thread, -2 = never fired");
     unsafe { spz_scan_free(sc); }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Concurrent removals of distinct nodes with readers: every captured table is internally consistent
+/// (removal list sorted and unique, one entry per version step), and the final state has every removal exactly once.
+#[test]
+fn concurrent_forgets_keep_the_removal_list_consistent_for_readers() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let t = Arc::new(Tree::synthetic(30_000));
+    let ids = disjoint_dirs(&t, 40);
+    let stop = Arc::new(AtomicBool::new(false));
+    let readers: Vec<_> = (0..2).map(|_| {
+        let (t, stop) = (t.clone(), stop.clone());
+        std::thread::spawn(move || {
+            let mut n = 0u64;
+            while !stop.load(Ordering::Relaxed) {
+                let c = t.capture().expect("admission");
+                let f = &c.table.forgotten;
+                assert!(f.windows(2).all(|w| w[0] < w[1]), "removal list not sorted/unique");
+                assert_eq!(f.len() as u64, c.table.version, "one removal per version step");
+                assert!(f.iter().all(|&i| c.table.sizes[i as usize] == 0));
+                n += 1;
+            }
+            n
+        })
+    }).collect();
+    let writers: Vec<_> = ids.chunks(20).map(|chunk| {
+        let (t, chunk) = (t.clone(), chunk.to_vec());
+        std::thread::spawn(move || for i in chunk { t.forget(i).unwrap(); })
+    }).collect();
+    for w in writers { w.join().unwrap(); }
+    stop.store(true, Ordering::Relaxed);
+    let checks: u64 = readers.into_iter().map(|h| h.join().unwrap()).sum();
+    assert!(checks > 0);
+    let tab = t.table();
+    let mut want = ids.clone(); want.sort_unstable();
+    assert_eq!(tab.forgotten, want);
+    assert_eq!(tab.version, ids.len() as u64);
+    // Repeated forget of an already removed id changes nothing, including the version.
+    assert!(t.forget(ids[0]).is_ok());
+    assert_eq!(t.table().version, ids.len() as u64);
+    assert_eq!(t.table().forgotten.len(), ids.len());
+    assert_eq!(t.running(), 0);
 }
