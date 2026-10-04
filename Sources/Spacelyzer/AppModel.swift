@@ -152,7 +152,7 @@ final class AppModel {
             if Task.isCancelled { return }
             if let failure {
                 // BUSY (admission) or any other status: keep the previous result, never publish an empty one.
-                await MainActor.run {
+                await MainActor.run { [weak self] in
                     guard let self, self.filterGeneration == generation, self.tree === tree else { return }
                     if failure == .busy {
                         // Pending stays true (visible), retries are bounded and keyed; the retry re-reads the current filter inputs.
@@ -167,7 +167,7 @@ final class AppModel {
             let publication = UUID()
             let rFinal = r   // frozen copy: the main-actor closure must not capture the mutable var
             await barrier?("filter", generation, publication)
-            await MainActor.run {
+            await MainActor.run { [weak self] in
                 guard let self, !Task.isCancelled, self.filterGeneration == generation, self.tree === tree,
                       (rFinal == nil || rFinal!.version == tree.version) else {
                     // computed on a table that a commit has since replaced: a newer filter run is queued by that commit
@@ -222,7 +222,7 @@ final class AppModel {
             let result = tree.derivedSnapshot(filter: flt, count: 200)
             if Task.isCancelled { return }
             guard case .success(let snap) = result else {
-                await MainActor.run {
+                await MainActor.run { [weak self] in
                     guard let self, self.derivedGeneration == generation, self.tree === tree else { return }
                     self.handleReadFailure(result.failureStatus, key: "derived", inputs: self.derivedInputKey) { [weak self] in self?.refreshDerived() }
                 }
@@ -231,7 +231,7 @@ final class AppModel {
             Perf.log("derived largest=\(snap.ids.count) kinds=\(snap.kinds.count) filtered=\(flt != nil) rust_ms=\(String(format: "%.2f", Perf.ms(since: t0)))")
             let publication = UUID()
             await barrier?("derived", generation, publication)
-            await MainActor.run {
+            await MainActor.run { [weak self] in
                 // Full key: tree identity, generation, and the table version the data was read at (the engine's stamp).
                 guard let self, !Task.isCancelled, self.derivedGeneration == generation, self.tree === tree else { return }
                 // The table moved while this read ran: the result is dropped, but never silently. Bounded keyed retry (ends in the explicit out-of-date state).
@@ -285,7 +285,7 @@ final class AppModel {
             let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
             if Task.isCancelled { return }
             guard case .success(let snap) = result else {
-                await MainActor.run {
+                await MainActor.run { [weak self] in
                     guard let self, self.outlineGeneration == generation, self.tree === tree else { return }
                     self.handleReadFailure(result.failureStatus, key: "outline", inputs: self.outlineInputKey) { [weak self] in self?.refreshOutline() }
                 }
@@ -294,8 +294,9 @@ final class AppModel {
             var index = [UInt32: Int](minimumCapacity: snap.rows.count)
             for (i, r) in snap.rows.enumerated() { index[r.node] = i }
             let publication = UUID()
+            let indexFinal = index   // frozen copy: the main-actor closure must not capture the mutable var
             await barrier?("outline", generation, publication)
-            await MainActor.run {
+            await MainActor.run { [weak self] in
                 // Full key: tree identity, generation, table version of the read, and the filter's own version.
                 guard let self, !Task.isCancelled, self.outlineGeneration == generation, self.tree === tree, snap.version == tree.version, flt == nil || flt!.version == snap.version else { return }
                 if self.enginePoisoned { self.markPoisoned(); return }   // a caught panic makes this publication untrustworthy
@@ -304,7 +305,7 @@ final class AppModel {
                 // so cells never mix rows from one version with sizes from another.
                 self.outlineRows = snap.rows; self.outlineInfos = snap.infos; self.outlineShown = snap.shown; self.outlineRootSize = snap.rootSize
                 self.publishedTotalBytes = snap.totalBytes; self.outlineVersion = snap.version
-                self.outlineIndex = index; self.outlineRevision += 1; self.outlineMillis = ms
+                self.outlineIndex = indexFinal; self.outlineRevision += 1; self.outlineMillis = ms
                 self.surfaceCheck()
             }
             await completed?("outline", generation, publication)
@@ -623,7 +624,7 @@ final class AppModel {
             if Task.isCancelled { return }
             let result = await loader(tree, AppModel.folderCount)
             if Task.isCancelled { return }
-            await MainActor.run { self?.applyFolderResult(result, tree: tree, generation: generation, attempt: attempt) }
+            await MainActor.run { [weak self] in self?.applyFolderResult(result, tree: tree, generation: generation, attempt: attempt) }
         }
     }
 
