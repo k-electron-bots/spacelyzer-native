@@ -132,4 +132,11 @@ void spz_dup_report_free(SpzDupReport *r);
 void spz_tree_skipped_counts_status(const SpzTree *t, uint32_t *out, int32_t *status);
 char *spz_tree_skipped_item_status(const SpzTree *t, uint32_t i, uint8_t *reason, uint8_t *lossy, int32_t *status);
 
+/* Volume capacity of the filesystem holding a path (statvfs). RAW kernel numbers: no APFS purgeable space, snapshots or container sharing, so total-free is
+   NOT "used by files" and not reclaimable. status: 0 OK, 3 INVALID (null path/out), 6 OS_ERROR (os_errno set, out zeroed except os_errno). flags: bit0 read-only,
+   bit1 a figure saturated at UINT64_MAX. Blocks on the caller's thread. Linux-tested only; no Swift consumer. */
+typedef struct { uint64_t total_bytes; uint64_t free_bytes; uint64_t available_bytes; uint64_t block_size; int32_t os_errno; uint32_t flags; } SpzVolume;
+_Static_assert(sizeof(SpzVolume) == 40 && offsetof(SpzVolume, block_size) == 24 && offsetof(SpzVolume, os_errno) == 32 && offsetof(SpzVolume, flags) == 36, "SpzVolume layout");
+void spz_volume_info_status(const char *path, SpzVolume *out, int32_t *status);
+
 #endif
