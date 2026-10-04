@@ -131,7 +131,7 @@ struct OutlineView: View {
     var body: some View {
         if let tree = model.tree {
             let total = max(1, model.outlineRootSize)   // same publication and table version as the rows
-            OutlineTable(model: model, tree: tree, total: total, revision: model.outlineRevision, selected: model.selected)
+            OutlineTable(model: model, tree: tree, total: total, revision: model.outlineRevision, selected: model.selected, poisoned: model.enginePoisoned)
                 .overlay {
                     if model.activeFilter != nil && model.outlineRows.isEmpty {
                         ContentUnavailableView("No matches", systemImage: "line.3.horizontal.decrease.circle",
@@ -303,6 +303,7 @@ private struct OutlineTable: NSViewRepresentable {
     let total: UInt64
     let revision: Int
     let selected: UInt32?
+    let poisoned: Bool   // a latched engine panic must repaint visible cells, not wait for the next row publication
 
     func makeCoordinator() -> Coordinator { Coordinator(model) }
 
@@ -348,8 +349,9 @@ private struct OutlineTable: NSViewRepresentable {
         model.outlineKeyView = c.table
         model.connectOutlineFocusLoop()
         c.total = total
-        if c.shownRevision != revision {
+        if c.shownRevision != revision || c.shownPoisoned != poisoned {
             c.shownRevision = revision
+            c.shownPoisoned = poisoned
             c.table?.reloadData()
         }
         c.syncSelection(selected)
@@ -369,6 +371,7 @@ private struct OutlineTable: NSViewRepresentable {
         var tree: Tree?
         var total: UInt64 = 1
         var shownRevision = -1
+        var shownPoisoned = false
         private var suppress = false
         init(_ m: AppModel) { model = m }
 
