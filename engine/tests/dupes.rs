@@ -125,3 +125,45 @@ fn result_is_deterministic_across_runs() {
     for _ in 0..5 { assert_eq!(find(&t), first); }
     assert!(!first.groups.is_empty());
 }
+
+#[test]
+fn progress_counts_candidates_examined_and_bytes_and_a_complete_pass_examines_all() {
+    let d = fixture("progress");
+    for n in ["a", "b", "c"] { std::fs::write(d.join(n), vec![1u8; 100_000]).unwrap(); }
+    std::fs::write(d.join("lone"), vec![2u8; 70_000]).unwrap();       // no same-size partner: never a candidate
+    let t = scanned(&d);
+    let pr = DupProgress::default();
+    let r = find_duplicates_with(&t, 1, &AtomicBool::new(false), &pr);
+    use std::sync::atomic::Ordering::Relaxed;
+    assert_eq!(r.groups.len(), 1);
+    assert_eq!(pr.candidates.load(Relaxed), 3);
+    assert_eq!(pr.examined.load(Relaxed), 3);
+    let b = pr.bytes_read.load(Relaxed);
+    // prefix (3 x 4096) + full hash (3 x 100000) + compares against the one representative (2 x 2 x 100000)
+    assert_eq!(b, 3 * 4096 + 3 * 100_000 + 2 * 2 * 100_000, "bytes_read counts every read stage");
+}
+
+#[test]
+fn cancel_in_the_middle_stops_reading_and_reports_only_proven_groups() {
+    let d = fixture("midcancel");
+    // group 1: three 600 KB copies (one size); group 2: two 300 KB copies. Sizes differ, so they are separate work items.
+    for n in ["x1", "x2", "x3"] { std::fs::write(d.join(n), vec![1u8; 600_000]).unwrap(); }
+    for n in ["y1", "y2"] { std::fs::write(d.join(n), vec![2u8; 300_000]).unwrap(); }
+    let t = scanned(&d);
+    let full = find_duplicates(&t, 1, &AtomicBool::new(false));
+    assert_eq!(full.groups.len(), 2);
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let c2 = cancel.clone();
+    let mut pr = DupProgress::default();
+    // the first read past the prefix stage trips the cancel: deterministic, no timing
+    pr.on_read = Some(Box::new(move |total| if total > 4096 * 5 { c2.store(true, std::sync::atomic::Ordering::SeqCst); }));
+    let r = find_duplicates_with(&t, 1, &cancel, &pr);
+    use std::sync::atomic::Ordering::Relaxed;
+    assert!(r.cancelled, "{:?}", r);
+    let total_work = pr.bytes_read.load(Relaxed);
+    let full_pr = DupProgress::default(); let _ = find_duplicates_with(&t, 1, &AtomicBool::new(false), &full_pr);
+    assert!(total_work < full_pr.bytes_read.load(Relaxed), "stopped early: {} < {}", total_work, full_pr.bytes_read.load(Relaxed));
+    for g in &r.groups { assert!(full.groups.contains(g), "a cancelled pass may omit groups but never invents or truncates one: {:?}", g); }
+    assert_eq!(r.wasted, r.groups.iter().map(|g| g.size * (g.ids.len() as u64 - 1)).sum::<u64>());
+    assert_eq!((r.unreadable, r.changed), (0, 0), "a cancel is not counted as unreadable files: {:?}", r);
+}
