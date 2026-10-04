@@ -863,3 +863,30 @@ pub unsafe extern "C" fn spz_tree_check_identity(t: *const Tree, id: NodeId) -> 
         match crate::inspect::check_scanned(&*t, id) { Ok(c) => c as i32, Err(Some(e)) if e > 0 => -(1000 + e), Err(_) => -3 }
     })
 }
+
+/// Verdict plus live metadata from ONE lstat of the leaf. Return codes are those of `spz_tree_check_identity`. `out` is written only when
+/// the return value is >= 0. `out->live_state`: 0 no live data (not observed), 1 live data describes the scanned item (Same), 2 live data
+/// describes a DIFFERENT item now at the path. The caller must label state 2 data as "what is at this path now", never as the reviewed item.
+#[no_mangle]
+pub unsafe extern "C" fn spz_tree_review(t: *const Tree, id: NodeId, out: *mut crate::inspect::SpzReview) -> i32 {
+    legacy(-2, || {
+        if out.is_null() || !valid(t, id) { return -1; }
+        match crate::inspect::review_scanned(&*t, id) {
+            Ok(r) => {
+                let live = r.live.unwrap_or(crate::inspect::Inspect { allocated: 0, logical: 0, mtime: 0, dev: 0, ino: 0, nlink: 0, kind: 0, _pad: [0; 3] });
+                *out = crate::inspect::SpzReview { live, live_state: r.live_state, _pad: [0; 7] };
+                r.check as i32
+            }
+            Err(Some(e)) if e > 0 => -(1000 + e),
+            Err(_) => -3,
+        }
+    })
+}
+/// [size, align, offset of live_state] of `SpzReview`, for a startup compare against the imported C struct.
+#[no_mangle]
+pub unsafe extern "C" fn spz_review_layout(out: *mut u64) {
+    if out.is_null() { return; }
+    use crate::inspect::SpzReview; use std::mem::{offset_of, size_of, align_of};
+    let v = [size_of::<SpzReview>(), align_of::<SpzReview>(), offset_of!(SpzReview, live_state)];
+    for (i, x) in v.iter().enumerate() { *out.add(i) = *x as u64; }
+}

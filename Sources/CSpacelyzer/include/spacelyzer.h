@@ -88,6 +88,10 @@ uint32_t spz_outline_snapshot_status(const SpzTree *t, uint32_t root, const uint
 typedef struct SpzInspect { uint64_t allocated; uint64_t logical; int64_t mtime; uint64_t dev; uint64_t ino; uint32_t nlink; uint8_t kind; uint8_t pad[3]; } SpzInspect;
 int32_t spz_inspect_path(const char *path, SpzInspect *out); /* 0 ok, >0 errno, -1 null arg, -2 panic, -3 no errno */
 void spz_inspect_layout(uint64_t *out); /* [size, align, off mtime, off dev, off ino, off nlink, off kind]; Swift must compare with MemoryLayout at startup (not written yet) */
+typedef struct SpzReview { SpzInspect live; uint8_t live_state; uint8_t pad[7]; } SpzReview;
+/* Verdict plus live metadata from ONE lstat. Codes as spz_tree_check_identity; out written only when the return is >= 0. live_state: 0 none, 1 describes the scanned item (Same), 2 describes a DIFFERENT item now at the path (label it so). */
+int32_t spz_tree_review(const SpzTree *t, uint32_t id, SpzReview *out);
+void spz_review_layout(uint64_t *out); /* [size, align, offset of live_state] */
 int32_t spz_tree_check_identity(const SpzTree *t, uint32_t id); /* 0 same, 1 different, 2 none scanned, 3 lossy name, 4 ancestor symlink, 5 gone; <0 error: -1 arg, -2 panic, -3 no errno, <=-1000 -(1000+errno) */
 
 /* Sticky count of panics caught at any FFI boundary. A legacy call returning 0/null/empty may be a caught-panic fallback; compare before/after a publication. */
