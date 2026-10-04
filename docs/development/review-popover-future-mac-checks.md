@@ -22,3 +22,12 @@ yet, so no count in any report includes them. Nothing below has been observed.
 8. Concurrency: `tree_review` against `forget` has a Rust stress test (`reviews_run_concurrently_with_forgets_and_never_change_their_answer`)
    and a source argument (review reads only fields written once at scan time, forget replaces only the size table through `&self`).
    Neither proves the absence of a race, and the caller's version check is a staleness guard, not a race-freedom proof.
+
+## CSV export (source only, UNCOMPILED/UNRUN)
+Written and declared: `csv-largest-quotes-exactly-and-marks-unrepresentable-paths` (formatting),
+`csv-export-flow-refuses-blocked-toolarge-stale-and-writes-once-when-unchanged` (the flow with injected panel, path and write; stale in
+each of treeID, version, filter, revision, ids, sizes; stale during preparation; panel dismissed),
+`csv-export-outcomes-never-touch-removal-message` (weak: it shows only that outcome text goes to a separate property).
+Still PLANNED, needs a Mac and a window: the real NSSavePanel and its overwrite confirmation, a real file written and read back,
+Excel/Numbers opening a UTF-8 file with non-ASCII names, a rescan or removal while the panel is open, cancellation by a rescan
+(AppModel cancels exportTask on a new tree), and the toolbar layout.

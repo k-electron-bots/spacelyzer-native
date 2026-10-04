@@ -1,8 +1,12 @@
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
 
 // UNCOMPILED and UNRUN until a Mac run. Read-only export of the Largest list as the scan recorded it. It reads nothing from the disk
 // and touches no file except the one the user chooses in the save panel.
+// Format, a deliberate choice: UTF-8 WITHOUT a byte order mark, CRLF line ends. Names are written byte-exact. Excel may misread non-ASCII
+// names when it opens the file directly; "Data > From Text/CSV" with UTF-8 selected reads it right. Nothing here has been tested in Excel.
+// Bound: the Largest list is built with count 200 (AppModel.refreshDerived), and export refuses more than `maxRows` as a defensive limit.
 
 enum LargestCSV {
     /// RFC 4180 quoting: a field is quoted when it holds a comma, quote, CR or LF, and quotes are doubled. A path that would start with a
@@ -34,6 +38,59 @@ enum LargestCSV {
     }
 }
 
+/// Everything an export depends on, captured BEFORE the save panel opens and compared again after it closes.
+struct LargestExportSnapshot: Sendable, Equatable {
+    var treeID: ObjectIdentifier
+    var treeVersion: UInt64
+    var derivedVersion: UInt64?
+    var filterRevision: Int
+    var revision: Int
+    var ids: [UInt32]
+    var sizes: [UInt64]
+}
+
+enum LargestExport {
+    static let maxRows = 1000
+    enum Outcome: Sendable, Equatable {
+        case blocked(String)            // not started: panel never opened
+        case tooLarge(Int)
+        case cancelledByUser            // panel dismissed
+        case staleAfterPanel            // anything changed while the panel was open or the data was prepared: nothing written
+        case cancelledTask              // the task was cancelled: nothing written
+        case written(rows: Int, marked: Int)
+        case failed(String)
+    }
+
+    /// The whole flow with every effect injected, so a test can drive it without a window or a disk.
+    /// Order: blocked? -> snapshot -> panel -> unchanged? -> build off the main actor -> unchanged? -> write. Any change: nothing is written.
+    @MainActor
+    static func run(blockedReason: () -> String?, snapshot: () -> LargestExportSnapshot?, askURL: () -> URL?,
+                    path: @escaping @Sendable (UInt32) -> String, write: @escaping @Sendable (Data, URL) throws -> Void) async -> Outcome {
+        if let r = blockedReason() { return .blocked(r) }
+        guard let snap = snapshot() else { return .blocked("Nothing has been scanned.") }
+        if snap.ids.count > maxRows { return .tooLarge(snap.ids.count) }
+        guard let url = askURL() else { return .cancelledByUser }
+        if snapshot() != snap || blockedReason() != nil { return .staleAfterPanel }
+        let built: (text: String, markedRows: Int)? = await Task.detached(priority: .userInitiated) { () -> (String, Int)? in
+            var rows: [LargestCSV.Row] = []
+            rows.reserveCapacity(snap.ids.count)
+            for (id, bytes) in zip(snap.ids, snap.sizes) {
+                if Task.isCancelled { return nil }
+                rows.append(.init(path: path(id), bytes: bytes))
+            }
+            return LargestCSV.csv(rows)
+        }.value
+        guard let built else { return .cancelledTask }
+        if Task.isCancelled { return .cancelledTask }
+        if snapshot() != snap || blockedReason() != nil { return .staleAfterPanel }          // re-check right before the write
+        let data = Data(built.text.utf8)
+        do {
+            try await Task.detached(priority: .utility) { try write(data, url) }.value
+            return .written(rows: snap.ids.count, marked: built.markedRows)
+        } catch { return .failed(error.localizedDescription) }
+    }
+}
+
 extension AppModel {
     /// Disabled-state reason, or nil when the Largest list is current and trustworthy.
     var largestExportBlockedReason: String? {
@@ -45,26 +102,43 @@ extension AppModel {
         return nil
     }
 
-    /// Builds rows from one consistent read of the published arrays, then asks where to save. Writes only to the chosen file.
-    func exportLargestCSV() {
-        guard largestExportBlockedReason == nil, let tree else { return }
-        let ids = largestIDs, sizes = largestSizes, gen = tree
-        let rows = zip(ids, sizes).map { LargestCSV.Row(path: UInt64($0) < gen.nodeCount ? gen.path($0) : "", bytes: $1) }
-        let (text, marked) = LargestCSV.csv(rows)
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = "spacelyzer-largest.csv"
-        panel.allowedContentTypes = [.commaSeparatedText]
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        guard self.tree === gen, largestExportBlockedReason == nil else {     // results changed while the panel was open: write nothing
-            removalMessage = "The results changed while the save panel was open, so nothing was exported. Try again."
-            return
+    func largestExportSnapshot() -> LargestExportSnapshot? {
+        guard let tree else { return nil }
+        return LargestExportSnapshot(treeID: ObjectIdentifier(tree), treeVersion: tree.version, derivedVersion: derivedVersion,
+                                     filterRevision: filterRevision, revision: revision, ids: largestIDs, sizes: largestSizes)
+    }
+
+    /// Words for an outcome. A separate message from `removalMessage`, which belongs to Trash and its Undo button.
+    static func exportText(_ o: LargestExport.Outcome) -> String? {
+        switch o {
+        case .cancelledByUser, .cancelledTask: return nil
+        case .blocked(let r): return r
+        case .tooLarge(let n): return "The list has \(n) items, more than the \(LargestExport.maxRows) this export allows. Nothing was exported."
+        case .staleAfterPanel: return "The results changed while exporting, so nothing was written. Try again."
+        case .written(let n, let m):
+            let base = "Exported \(n) items (UTF-8, no byte order mark). Sizes are what the scan recorded, not a check of the disk now."
+            return m == 0 ? base : base + " \(m) with a path that could not be written exactly are marked in the note column."
+        case .failed(let e): return "Could not write the file: \(e)"
         }
-        do {
-            try Data(text.utf8).write(to: url, options: .atomic)
-            removalMessage = marked == 0 ? "Exported \(rows.count) items. Sizes are what the scan recorded, not a check of the disk now."
-                : "Exported \(rows.count) items; \(marked) with a path that could not be written exactly are marked in the note column. Sizes are what the scan recorded."
-        } catch {
-            removalMessage = "Could not write the file: \(error.localizedDescription)"
+    }
+
+    func exportLargestCSV() {
+        guard exportTask == nil, let tree else { return }
+        exportTask = Task { [weak self] in
+            guard let self else { return }
+            let outcome = await LargestExport.run(
+                blockedReason: { [weak self] in self?.largestExportBlockedReason },
+                snapshot: { [weak self] in self?.largestExportSnapshot() },
+                askURL: {
+                    let panel = NSSavePanel()          // the panel confirms before replacing an existing file (native behavior, not verified here)
+                    panel.nameFieldStringValue = "spacelyzer-largest.csv"
+                    panel.allowedContentTypes = [.commaSeparatedText]
+                    return panel.runModal() == .OK ? panel.url : nil
+                },
+                path: { tree.path($0) },
+                write: { data, url in try data.write(to: url, options: .atomic) })
+            self.exportMessage = Self.exportText(outcome)
+            self.exportTask = nil
         }
     }
 }
