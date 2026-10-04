@@ -904,3 +904,121 @@ pub unsafe extern "C" fn spz_review_layout(out: *mut u64) {
     let v = [size_of::<SpzReview>(), align_of::<SpzReview>(), offset_of!(SpzReview, live_state), offset_of!(SpzReview, live)];
     for (i, x) in v.iter().enumerate() { *out.add(i) = *x as u64; }
 }
+
+// ---- Duplicate finder (read-only). A blocking pass on the caller's thread, so no background thread can outlive the tree. ----
+// Statuses as everywhere: 0 OK, 1 STALE, 3 INVALID, 4 BUSY, 5 INTERNAL. The tree must stay alive and must not be freed while a pass runs (as for
+// every other read); the CONTROL is separate and refcounted, so it may be cancelled or read from another thread and freed even while a pass that
+// uses it is still running. A control is single use: its cancel flag is sticky and its progress describes one pass.
+
+struct DupCtl { cancel: std::sync::atomic::AtomicBool, progress: crate::dupes::DupProgress }
+pub struct DupControl(Arc<DupCtl>);
+pub struct DupReportHandle { report: crate::dupes::DupReport, uid: u64 }
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct SpzDupProgress { pub candidates: u64, pub examined: u64, pub bytes_read: u64, pub cancelled: u8, pub budget_hit: u8 }
+/// flags: bit0 cancelled, bit1 incomplete, bit2 budget_exhausted, bit3 groups_truncated.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct SpzDupSummary { pub version: u64, pub duplicate_allocated_bytes: u64, pub groups_total: u32, pub groups_listed: u32, pub unreadable: u32, pub changed: u32, pub hardlink_aliases: u32, pub flags: u32 }
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct SpzDupGroup { pub size: u64, pub member_count: u32, pub ids_listed: u32, pub linked: u32 }
+
+#[no_mangle]
+pub unsafe extern "C" fn spz_dup_control_new() -> *mut DupControl {
+    legacy(std::ptr::null_mut(), || Box::into_raw(Box::new(DupControl(Arc::new(DupCtl { cancel: Default::default(), progress: Default::default() })))))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn spz_dup_control_cancel(c: *const DupControl) {
+    legacy((), || { if !c.is_null() { let c = &*c; c.0.cancel.store(true, Ordering::SeqCst); } })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn spz_dup_control_progress(c: *const DupControl) -> SpzDupProgress {
+    legacy(SpzDupProgress::default(), || {
+        if c.is_null() { return SpzDupProgress::default(); }
+        let c = &(*c).0;
+        SpzDupProgress {
+            candidates: c.progress.candidates.load(Ordering::Relaxed), examined: c.progress.examined.load(Ordering::Relaxed),
+            bytes_read: c.progress.bytes_read.load(Ordering::Relaxed),
+            cancelled: c.cancel.load(Ordering::Relaxed) as u8, budget_hit: c.progress.budget_hit.load(Ordering::Relaxed) as u8,
+        }
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn spz_dup_control_free(c: *mut DupControl) { if !c.is_null() { drop(Box::from_raw(c)); } }
+
+/// Run a duplicate pass on the calling thread. `expected` is a table version the caller holds (u64::MAX = any): a different one returns null + STALE
+/// before any file is read. The pass reads without holding a table capture; if the table changed (a removal) while it ran, the result is dropped
+/// (null + STALE) because a removed file could otherwise be listed. `ctl` may be null. Caps are REPORT-ONLY (see dupes.rs): a capped report is not
+/// "all duplicates". `max_groups`/`max_members` 0 = unlimited; `max_read_bytes` 0 = unbounded and bounds disk reads.
+#[no_mangle]
+pub unsafe extern "C" fn spz_dup_find_status(t: *const Tree, min_size: u64, max_groups: u32, max_members: u32, max_read_bytes: u64, ctl: *const DupControl, expected: u64, status: *mut i32) -> *mut DupReportHandle {
+    guarded(status, std::ptr::null_mut(), || {
+        let set = |s: i32| if !status.is_null() { *status = s };
+        if t.is_null() { set(3); return std::ptr::null_mut(); }
+        let start = {
+            let Some(c) = (*t).capture() else { set(4); return std::ptr::null_mut() };
+            if expected != ANY_VERSION && c.table.version != expected { set(1); return std::ptr::null_mut(); }
+            c.table.version
+        };                                                                     // the capture is released here: a long pass must not block mutations
+        let held: Arc<DupCtl> = if ctl.is_null() { Arc::new(DupCtl { cancel: Default::default(), progress: Default::default() }) } else { (*ctl).0.clone() };
+        let opts = crate::dupes::DupOptions { min_size, max_read_bytes, max_groups: max_groups as usize, max_members_per_group: max_members as usize };
+        let report = crate::dupes::find_duplicates_opts(&*t, opts, &held.cancel, &held.progress);
+        if report.version != start || (*t).table().version != start { set(1); return std::ptr::null_mut(); }
+        set(0);
+        Box::into_raw(Box::new(DupReportHandle { report, uid: (*t).uid }))
+    })
+}
+
+/// 0 OK (same tree, table version unchanged since the pass), 1 STALE, 3 INVALID (null or another tree).
+#[no_mangle]
+pub unsafe extern "C" fn spz_dup_report_status(t: *const Tree, r: *const DupReportHandle) -> i32 {
+    legacy(5, || {
+        if t.is_null() || r.is_null() || (*r).uid != (*t).uid { return 3; }
+        if (*r).report.version != (*t).table().version { 1 } else { 0 }
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn spz_dup_report_summary(r: *const DupReportHandle, out: *mut SpzDupSummary, status: *mut i32) {
+    guarded(status, (), || {
+        if r.is_null() || out.is_null() { if !status.is_null() { *status = 3; } return; }
+        let x = &(*r).report;
+        *out = SpzDupSummary {
+            version: x.version, duplicate_allocated_bytes: x.duplicate_allocated_bytes, groups_total: x.groups_total, groups_listed: x.groups.len() as u32,
+            unreadable: x.unreadable, changed: x.changed, hardlink_aliases: x.hardlink_aliases,
+            flags: (x.cancelled as u32) | ((x.incomplete as u32) << 1) | ((x.budget_exhausted as u32) << 2) | ((x.groups_truncated as u32) << 3),
+        };
+        if !status.is_null() { *status = 0; }
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn spz_dup_report_group(r: *const DupReportHandle, index: u32, out: *mut SpzDupGroup, status: *mut i32) {
+    guarded(status, (), || {
+        if r.is_null() || out.is_null() || index as usize >= (*r).report.groups.len() { if !status.is_null() { *status = 3; } return; }
+        let rr = &*r; let g = &rr.report.groups[index as usize];
+        *out = SpzDupGroup { size: g.size, member_count: g.member_count, ids_listed: g.ids.len() as u32, linked: g.linked };
+        if !status.is_null() { *status = 0; }
+    })
+}
+
+/// Writes up to `cap` of the group's listed ids (ascending NodeId) and returns how many it wrote; the group's `ids_listed` is the most it can hold.
+#[no_mangle]
+pub unsafe extern "C" fn spz_dup_report_ids(r: *const DupReportHandle, index: u32, out: *mut NodeId, cap: u32, status: *mut i32) -> u32 {
+    guarded(status, 0, || {
+        if r.is_null() || index as usize >= (*r).report.groups.len() || (out.is_null() && cap > 0) { if !status.is_null() { *status = 3; } return 0; }
+        let rr = &*r; let g = &rr.report.groups[index as usize];
+        let n = g.ids.len().min(cap as usize);
+        for i in 0..n { *out.add(i) = g.ids[i]; }
+        if !status.is_null() { *status = 0; }
+        n as u32
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn spz_dup_report_free(r: *mut DupReportHandle) { if !r.is_null() { drop(Box::from_raw(r)); } }

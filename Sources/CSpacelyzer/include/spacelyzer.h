@@ -5,6 +5,8 @@
 typedef struct SpzScan SpzScan;
 typedef struct SpzTree SpzTree;
 typedef struct SpzLayout SpzLayout;
+typedef struct SpzDupControl SpzDupControl;
+typedef struct SpzDupReport SpzDupReport;
 
 typedef struct { uint64_t items; uint64_t bytes; uint8_t finished; uint8_t failed; } SpzProgress;
 typedef struct {
@@ -98,5 +100,23 @@ int32_t spz_tree_check_identity(const SpzTree *t, uint32_t id); /* 0 same, 1 dif
 
 /* Sticky count of panics caught at any FFI boundary. A legacy call returning 0/null/empty may be a caught-panic fallback; compare before/after a publication. */
 uint64_t spz_engine_panic_count(void);
+
+
+/* Duplicate finder (read-only; Rust/Linux-tested, no Swift consumer yet). A blocking pass on the caller's thread. Caps are REPORT-ONLY: a capped report is
+   not "all duplicates" and must never drive removal. wasted-style bytes are allocated sizes, NOT reclaimable space. A control is single use. */
+typedef struct { uint64_t candidates; uint64_t examined; uint64_t bytes_read; uint8_t cancelled; uint8_t budget_hit; } SpzDupProgress;
+/* flags: bit0 cancelled, bit1 incomplete, bit2 budget_exhausted, bit3 groups_truncated */
+typedef struct { uint64_t version; uint64_t duplicate_allocated_bytes; uint32_t groups_total; uint32_t groups_listed; uint32_t unreadable; uint32_t changed; uint32_t hardlink_aliases; uint32_t flags; } SpzDupSummary;
+typedef struct { uint64_t size; uint32_t member_count; uint32_t ids_listed; uint32_t linked; } SpzDupGroup;
+SpzDupControl *spz_dup_control_new(void);
+void spz_dup_control_cancel(const SpzDupControl *c);
+SpzDupProgress spz_dup_control_progress(const SpzDupControl *c);
+void spz_dup_control_free(SpzDupControl *c);
+SpzDupReport *spz_dup_find_status(const SpzTree *t, uint64_t min_size, uint32_t max_groups, uint32_t max_members, uint64_t max_read_bytes, const SpzDupControl *ctl, uint64_t expected, int32_t *status);
+int32_t spz_dup_report_status(const SpzTree *t, const SpzDupReport *r);
+void spz_dup_report_summary(const SpzDupReport *r, SpzDupSummary *out, int32_t *status);
+void spz_dup_report_group(const SpzDupReport *r, uint32_t index, SpzDupGroup *out, int32_t *status);
+uint32_t spz_dup_report_ids(const SpzDupReport *r, uint32_t index, uint32_t *out, uint32_t cap, int32_t *status);
+void spz_dup_report_free(SpzDupReport *r);
 
 #endif

@@ -18,7 +18,7 @@ Karim approved safe big-file cleanup first on October3, ahead of hidden macOS sp
 | E3 Volume accounting | Used/free/purgeable space, snapshots, unaccounted space | Planned |
 | E4 Inspect and remove | Item details and Quick Look, then batch removal/history | Planned; batch work depends on details and safety |
 | E5 Scan control | Persistent exclusions, reviewable unreadable list, Full Disk Access detection | Planned |
-| E6 Duplicates | Rust duplicate finding and review/removal UI | Rust finder `engine/src/dupes.rs` exists with Linux tests only (read-only; no FFI, no UI, no removal path). Swift/UI and Mac behavior unverified; depends on E4 for review/removal |
+| E6 Duplicates | Rust duplicate finding and review/removal UI | Rust finder `engine/src/dupes.rs` and its C ABI (`spz_dup_*`, header only, no Swift consumer) exist with Linux tests only (read-only; no UI, no removal path; caps are report-only; sizes are allocated bytes, not reclaimable space). Swift/UI and Mac behavior unverified; depends on E4 for review/removal |
 | E7 Polish and endurance | App icon, decimal/binary units, cold first-click investigation, long-session soak/leaks | Planned; stability is cross-cutting |
 
 ## Release gates across epics
