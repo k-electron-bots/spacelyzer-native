@@ -60,6 +60,16 @@ impl SortMode {
     }
 }
 
+/// Direct children `id` would show as outline rows when expanded: live (not removed) children, and under a filter only those with
+/// at least one matching file (the same match-count predicate the rows use, so a zero-byte match counts and a non-match does not).
+/// Unfiltered it equals `live_child_count_in`. This is a display count; `live_child_count_in` stays the structural count for navigation.
+pub fn visible_child_count_in(tree: &Tree, tab: &crate::tree::SizeTable, id: NodeId, filter: Option<&FilterResult>) -> u32 {
+    match filter {
+        None => tree.live_child_count_in(tab, id),
+        Some(f) => tree.children(id).filter(|&c| tab.forgotten.binary_search(&c).is_err() && f.counts[c as usize] != 0).count() as u32,
+    }
+}
+
 fn ordered_children(tree: &Tree, tab: &crate::tree::SizeTable, id: NodeId, mode: SortMode, filter: Option<&FilterResult>) -> Vec<NodeId> {
     let sizes = filter.map(|f| f.sizes.as_slice());
     let mut v: Vec<NodeId> = tree.children(id).collect();
@@ -72,7 +82,8 @@ fn ordered_children(tree: &Tree, tab: &crate::tree::SizeTable, id: NodeId, mode:
         }
         SortMode::SizeAsc => v.sort_by_key(|&n| key_size(n)),
         SortMode::NameAsc => v.sort_by_cached_key(|&n| tree.name(n).to_lowercase()),
-        SortMode::ItemsDesc => v.sort_by_key(|&n| std::cmp::Reverse(tree.live_child_count_in(tab, n))),
+        // Items count what the row displays: visible children under a filter (live total breaks ties), the live count otherwise. Stable.
+        SortMode::ItemsDesc => v.sort_by_cached_key(|&n| (std::cmp::Reverse(visible_child_count_in(tree, tab, n, filter)), std::cmp::Reverse(tree.live_child_count_in(tab, n)))),
         SortMode::ModifiedDesc => v.sort_by_key(|&n| std::cmp::Reverse(tree.mtime(n))),
     }
     v

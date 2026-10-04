@@ -673,3 +673,133 @@ fn removed_nodes_are_consistent_across_counts_filters_and_totals() {
     assert_eq!(f2.counts[id("dir/gone.bin") as usize], 0);
     assert_eq!(f2.counts[id("dir/gonesub/deep/deeper.bin") as usize], 0);
 }
+
+// ---- Visible-children display count (filtered "V of T items"), see outline::visible_child_count_in ----
+
+fn vis_fixture() -> (tempdir::T, Tree) {
+    let t = tempdir::T::new();
+    let r = t.path();
+    fs::create_dir_all(r.join("dir/sub/deep")).unwrap();
+    fs::create_dir_all(r.join("dir/nomatch")).unwrap();
+    fs::write(r.join("dir/a.txt"), vec![1u8; 20_000]).unwrap();
+    fs::write(r.join("dir/b.log"), vec![2u8; 10_000]).unwrap();
+    fs::write(r.join("dir/z.txt"), b"").unwrap();                       // zero-byte MATCH
+    fs::write(r.join("dir/gone.txt"), vec![3u8; 30_000]).unwrap();
+    fs::write(r.join("dir/sub/deep/x.txt"), vec![4u8; 5_000]).unwrap();   // only a deep match under sub
+    fs::write(r.join("dir/nomatch/only.log"), vec![5u8; 7_000]).unwrap();
+    fs::create_dir_all(r.join("zf")).unwrap();                           // filtered size == structural size (both 0), count differs
+    fs::write(r.join("zf/m.txt"), b"").unwrap();
+    fs::write(r.join("zf/n.log"), b"").unwrap();
+    let tree = scan(r, &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    (t, tree)
+}
+
+#[test]
+fn visible_children_unfiltered_equals_live_and_filtered_counts_rows_not_sizes() {
+    let (_t, tree) = vis_fixture();
+    let id = |n: &str| tree.find(&format!("{}/{}", tree.root_path(), n)).unwrap();
+    let (dir, zf, sub, nomatch) = (id("dir"), id("zf"), id("dir/sub"), id("dir/nomatch"));
+    let tab = tree.table();
+    for n in [dir, zf, sub, nomatch] {
+        assert_eq!(outline::visible_child_count_in(&tree, &tab, n, None), tree.live_child_count_in(&tab, n), "unfiltered must equal the live count");
+    }
+    assert_eq!(tree.live_child_count_in(&tab, dir), 6);
+    let f = apply_filter(&tree, &Filter { extension: "txt".into(), ..Default::default() });
+    // a.txt, z.txt (zero-byte match), sub (deep match), gone.txt are shown; b.log and nomatch are not.
+    assert_eq!(outline::visible_child_count_in(&tree, &tab, dir, Some(&f)), 4);
+    assert_eq!(outline::visible_child_count_in(&tree, &tab, sub, Some(&f)), 1, "a folder with only a deep match is visible");
+    assert_eq!(outline::visible_child_count_in(&tree, &tab, nomatch, Some(&f)), 0);
+    // False pair: filtered size equals structural size (0 == 0), the count must still differ.
+    assert_eq!(f.sizes[zf as usize], tab.sizes[zf as usize]);
+    assert_eq!(outline::visible_child_count_in(&tree, &tab, zf, Some(&f)), 1);
+    assert_eq!(tree.live_child_count_in(&tab, zf), 2);
+    // The folder with no matching descendant has no row; the visible count agrees with the rows themselves.
+    let rows = outline::visible_rows_sorted_in(&tree, &tab, 0, &[dir].into_iter().collect(), Some(&f), SortMode::NameAsc);
+    let names: Vec<String> = rows.iter().map(|r| tree.name(r.node).to_string()).collect();
+    assert!(!names.contains(&"nomatch".to_string()) && !names.contains(&"b.log".to_string()), "{names:?}");
+    let under_dir = rows.iter().filter(|r| r.depth == 1).count();
+    assert_eq!(under_dir as u32, outline::visible_child_count_in(&tree, &tab, dir, Some(&f)), "rows shown when expanded == visible count");
+}
+
+#[test]
+fn visible_children_after_removal_use_the_new_capture_and_stale_filters_are_refused() {
+    use spacelyzer_engine::ffi::*;
+    let (_t, tree) = vis_fixture();
+    let id = |n: &str| tree.find(&format!("{}/{}", tree.root_path(), n)).unwrap();
+    let (dir, gone) = (id("dir"), id("dir/gone.txt"));
+    let f0 = apply_filter(&tree, &Filter { extension: "txt".into(), ..Default::default() });
+    assert_eq!(outline::visible_child_count_in(&tree, &tree.table(), dir, Some(&f0)), 4);
+    tree.forget(gone).unwrap();
+    let tab = tree.table();
+    assert_eq!(tree.live_child_count_in(&tab, dir), 5);
+    // Fresh filter on the new table: removed match is neither visible nor counted.
+    let f1 = apply_filter(&tree, &Filter { extension: "txt".into(), ..Default::default() });
+    assert_eq!(outline::visible_child_count_in(&tree, &tab, dir, Some(&f1)), 3);
+    // Even with the OLD filter result, the removal list excludes the removed child (never a ghost row in the count).
+    assert_eq!(outline::visible_child_count_in(&tree, &tab, dir, Some(&f0)), 3);
+    // Through the FFI snapshot: rows, infos and visible_children come from one capture; an old filter handle is refused (status 1).
+    unsafe {
+        let tp = &tree as *const Tree;
+        let ext = std::ffi::CString::new("txt").unwrap();
+        let h_new = spz_filter_apply(tp, std::ptr::null(), ext.as_ptr(), std::mem::zeroed());
+        let (mut v, mut rs, mut tot, mut st) = (0u64, 0u64, 0u64, -1i32);
+        let ex = [dir];
+        let n = spz_outline_snapshot_status(tp, 0, ex.as_ptr(), 1, h_new, 0, std::ptr::null_mut(), std::ptr::null_mut(), 0, u64::MAX, &mut v, &mut rs, &mut tot, &mut st);
+        assert_eq!(st, 0);
+        let mut rows = vec![outline::Row { node: 0, depth: 0 }; n as usize];
+        let mut infos: Vec<SpzRowInfo> = Vec::new();
+        for _ in 0..n { infos.push(std::mem::zeroed()); }
+        let (mut v2, mut rs2, mut tot2, mut st2) = (0u64, 0u64, 0u64, -1i32);
+        let got = spz_outline_snapshot_status(tp, 0, ex.as_ptr(), 1, h_new, 0, rows.as_mut_ptr(), infos.as_mut_ptr(), n, v, &mut v2, &mut rs2, &mut tot2, &mut st2);
+        assert_eq!((got, st2, v2), (n, 0, v));
+        let i = rows.iter().position(|r| r.node == dir).unwrap();
+        assert_eq!((infos[i].visible_children, infos[i].node.child_count), (3, 5));
+        let zf = rows.iter().position(|r| r.node == id("zf")).unwrap();
+        assert_eq!((infos[zf].visible_children, infos[zf].node.child_count), (1, 2), "false pair through the FFI");
+        // A handle computed before the removal is stale: refused, nothing written.
+        let h_stale = spz_filter_apply(tp, std::ptr::null(), ext.as_ptr(), std::mem::zeroed());
+        tree.forget(id("dir/a.txt")).unwrap();
+        let (mut v3, mut rs3, mut tot3, mut st3) = (0u64, 0u64, 0u64, -1i32);
+        let mut infos2: Vec<SpzRowInfo> = Vec::new();
+        for _ in 0..n { infos2.push(std::mem::zeroed()); }
+        let _ = spz_outline_snapshot_status(tp, 0, ex.as_ptr(), 1, h_stale, 0, rows.as_mut_ptr(), infos2.as_mut_ptr(), n, u64::MAX, &mut v3, &mut rs3, &mut tot3, &mut st3);
+        assert_eq!(st3, 1, "a filter handle older than the table is refused as STALE");
+        spz_filter_free(h_new); spz_filter_free(h_stale);
+    }
+}
+
+#[test]
+fn items_sort_under_a_filter_uses_visible_count_with_live_total_as_tiebreak() {
+    let t = tempdir::T::new();
+    let r = t.path();
+    // A: 3 children, 1 matches. B: 2 children, 2 match. C: 4 children, 1 matches. D: 3 children, 1 matches (ties with A on both counts).
+    for (d, files) in [("A", vec!["1.txt", "2.log", "3.log"]), ("B", vec!["1.txt", "2.txt"]), ("C", vec!["1.txt", "2.log", "3.log", "4.log"]), ("D", vec!["1.txt", "2.log", "3.log"])] {
+        fs::create_dir_all(r.join(d)).unwrap();
+        for f in files { fs::write(r.join(d).join(f), b"x").unwrap(); }
+    }
+    let tree = scan(r, &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    let tab = tree.table();
+    let order = |f: Option<&FilterResult>| -> Vec<String> {
+        outline::visible_rows_sorted_in(&tree, &tab, 0, &HashSet::new(), f, SortMode::ItemsDesc).iter().map(|r| tree.name(r.node).to_string()).collect()
+    };
+    let unfiltered = order(None);
+    assert_eq!(unfiltered[0], "C", "unfiltered: most live children first: {unfiltered:?}");
+    let f = apply_filter(&tree, &Filter { extension: "txt".into(), ..Default::default() });
+    let filtered = order(Some(&f));
+    assert_eq!(filtered[0], "B", "filtered: 2 visible beats 1 visible: {filtered:?}");
+    let pos = |n: &str| filtered.iter().position(|x| x == n).unwrap();
+    assert!(pos("C") < pos("A"), "equal visible count: larger live total first: {filtered:?}");
+    let rel = |v: &Vec<String>| v.iter().position(|x| x == "A").unwrap() < v.iter().position(|x| x == "D").unwrap();
+    assert_eq!(rel(&filtered), rel(&unfiltered), "full ties keep the native order (stable): {filtered:?} vs {unfiltered:?}");
+}
+
+#[test]
+fn row_info_abi_layout_is_exactly_what_the_header_declares() {
+    use spacelyzer_engine::ffi::*;
+    let mut l = [0u64; 5];
+    unsafe { spz_row_info_layout(l.as_mut_ptr()); }
+    assert_eq!(l[0] % l[1], 0, "size is a multiple of align");
+    assert!(l[2] == 0 && l[3] >= std::mem::size_of::<SpzNode>() as u64 && l[4] >= l[3] + 8, "field order node, shown, visible_children: {l:?}");
+    assert_eq!(l[4] % 4, 0);
+    assert!(l[0] >= l[4] + 4);
+}
