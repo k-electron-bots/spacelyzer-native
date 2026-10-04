@@ -42,6 +42,8 @@ impl ScanProgress {
 
 pub(crate) struct RawEntry {
     pub name: Box<str>,
+    /// The real name is not valid UTF-8, so `name` is a lossy rendering that can collide with sibling names and cannot be used to reopen the entry.
+    pub name_lossy: bool,
     pub kind: Kind,
     pub alloc: u64,
     pub nlink: u32,
@@ -177,6 +179,12 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
     let mut local_bytes = 0u64;
     let mut last_dev: (u64, u8) = (0, crate::tree::DEV_UNKNOWN);
     for r in raw {
+        if r.name_lossy {
+            // Fail closed: a node must never carry a name that can alias a sibling or point at a different real entry (removal/reveal/rescan build
+            // paths from names). Left out of the tree and listed as unreadable with the lossy flag; its bytes are NOT in any total.
+            ctx.skipped.lock().unwrap().push(Skipped::new(&dir.join(&*r.name), SkipReason::Unreadable));
+            continue;
+        }
         match r.kind {
             Kind::Directory => {
                 let path = dir.join(&*r.name);
@@ -309,6 +317,7 @@ pub(crate) fn enumerate_portable(dir: &Path) -> std::io::Result<Vec<RawEntry>> {
             Kind::File
         };
         out.push(RawEntry {
+            name_lossy: e.file_name().to_str().is_none(),
             name: e.file_name().to_string_lossy().into_owned().into_boxed_str(),
             kind,
             alloc: md.blocks() * 512,

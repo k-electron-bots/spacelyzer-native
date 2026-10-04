@@ -133,6 +133,7 @@ fn parse_record(rec: &[u8]) -> Option<RawEntry> {
     let _ret_fork = c.u32()?;
 
     let mut name: Option<Box<str>> = None;
+    let mut name_lossy = false;
     let (mut dev, mut ino, mut objtype) = (0u64, 0u64, 0u32);
     let (mut nlink, mut alloc) = (1u32, 0u64);
     let mut mtime = 0i64;
@@ -144,6 +145,7 @@ fn parse_record(rec: &[u8]) -> Option<RawEntry> {
         let start = (ref_pos as isize + off) as usize;
         let raw = rec.get(start..start + len)?;
         let raw = raw.strip_suffix(&[0]).unwrap_or(raw);
+        name_lossy = std::str::from_utf8(raw).is_err();
         name = Some(String::from_utf8_lossy(raw).into_owned().into_boxed_str());
     }
     if ret_common & ATTR_CMN_DEVID != 0 {
@@ -172,5 +174,5 @@ fn parse_record(rec: &[u8]) -> Option<RawEntry> {
         VREG => Kind::File,
         _ => Kind::File, // devices, sockets, fifos: recorded as files with whatever size they report
     };
-    Some(RawEntry { name, kind, alloc, nlink, dev, ino, mtime })
+    Some(RawEntry { name, name_lossy, kind, alloc, nlink, dev, ino, mtime })
 }
