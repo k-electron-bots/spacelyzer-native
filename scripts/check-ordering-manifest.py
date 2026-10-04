@@ -24,7 +24,7 @@ for n in dynamic:
         print('UNEXPANDED dynamic name (edit this script and required together):', n); sys.exit(1)
 declared |= expanded
 # Names emitted ONLY as a failure (setup could not run). Deliberately not required; the driver reports them as unlisted FAIL.
-declared -= {'async-removal-fixture'}
+declared -= {'async-removal-fixture', 'commit-order-fixture-ready', 'commit-order-removal-accepted'}
 req = set(required)
 ok = True
 for n in sorted(declared - req): print('declared in source, not in required:', n); ok = False
