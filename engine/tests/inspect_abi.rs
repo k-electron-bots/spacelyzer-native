@@ -111,7 +111,7 @@ fn inspect_path_boundary_contract() {
     // success writes the struct. A non-UTF-8 path is used byte-for-byte.
     assert_eq!(unsafe { spz_inspect_path(p.as_ptr(), &mut out) }, 0); assert_eq!(out.logical, 5);
     let weird = d.join(std::ffi::OsStr::from_bytes(b"w\xfe\xff"));
-    if common::made(std::fs::write(&weird, b"xy")) {   // Linux: a failed create panics. Elsewhere EILSEQ fails unless SPZ_ALLOW_PLATFORM_SKIP=1 records it in the skip manifest.
+    if common::made(std::fs::write(&weird, b"xy")) {   // Skips ONLY this non-UTF-8-path success check (the checks above it always run). Linux: a failed create panics. Elsewhere EILSEQ fails unless SPZ_ALLOW_PLATFORM_SKIP=1, which records this whole test name in the manifest even though its other assertions ran.
         let wp = CString::new(weird.as_os_str().as_bytes()).unwrap(); let mut o2 = zeroed();
         assert_eq!(unsafe { spz_inspect_path(wp.as_ptr(), &mut o2) }, 0); assert_eq!(o2.logical, 2);
     }
