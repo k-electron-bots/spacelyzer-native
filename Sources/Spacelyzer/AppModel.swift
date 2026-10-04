@@ -192,6 +192,8 @@ final class AppModel {
     /// Result words for the CSV export. Separate from `removalMessage`, which belongs to Trash (and its Undo button).
     var exportMessage: String?
     @ObservationIgnored var exportTask: Task<Void, Never>?
+    /// Last export outcome, kept for tests and logs.
+    @ObservationIgnored var lastExportOutcome: LargestExport.Outcome?
     /// Sizes for largestIDs, same engine capture (the Largest list never reads sizes live).
     var largestSizes: [UInt64] = []
     var kindRows: [KindRow] = []

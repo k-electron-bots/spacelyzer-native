@@ -27,7 +27,7 @@ yet, so no count in any report includes them. Nothing below has been observed.
 Written and declared: `csv-largest-quotes-exactly-and-marks-unrepresentable-paths` (formatting),
 `csv-export-flow-refuses-blocked-toolarge-stale-and-writes-once-when-unchanged` (the flow with injected panel, path and write; stale in
 each of treeID, version, filter, revision, ids, sizes; stale during preparation; panel dismissed),
-`csv-export-outcomes-never-touch-removal-message` (weak: it shows only that outcome text goes to a separate property).
+`csv-export-real-model-wiring-leaves-removal-message-untouched` (real AppModel and its real export wiring; only the panel and the write are injected; removalMessage holds a sentinel).
 Still PLANNED, needs a Mac and a window: the real NSSavePanel and its overwrite confirmation, a real file written and read back,
 Excel/Numbers opening a UTF-8 file with non-ASCII names, a rescan or removal while the panel is open, cancellation by a rescan
 (AppModel cancels exportTask on a new tree), and the toolbar layout.

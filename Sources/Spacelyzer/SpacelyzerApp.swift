@@ -1943,7 +1943,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
 
     /// UNCOMPILED/UNRUN until a Mac run. Deterministic: every step that must happen after another waits on a gate, not on a sleep.
     private static func reviewModelChecks() async {
-        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state", "review-model-refuses-and-drops-when-engine-untrusted", "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", "review-bare-model-selection-change-makes-no-review-request", "copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write", "csv-largest-quotes-exactly-and-marks-unrepresentable-paths", "csv-export-flow-refuses-blocked-toolarge-stale-and-writes-once-when-unchanged", "csv-export-outcomes-never-touch-removal-message"]
+        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state", "review-model-refuses-and-drops-when-engine-untrusted", "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", "review-bare-model-selection-change-makes-no-review-request", "copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write", "csv-largest-quotes-exactly-and-marks-unrepresentable-paths", "csv-export-flow-refuses-blocked-toolarge-stale-and-writes-once-when-unchanged", "csv-export-real-model-wiring-leaves-removal-message-untouched"]
         let d = fixture("review-model", [("a.bin", 30_000), ("b.bin", 20_000), ("c.bin", 10_000)])
         defer { try? FileManager.default.removeItem(at: d) }
         guard let t = await ScanSession(root: d.path, excludes: [])?.run({ _ in }), let a = node(t, "a.bin"), let b = node(t, "b.bin"), let c = node(t, "c.bin") else {
@@ -2089,7 +2089,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         cur.value = snap()
         let good = await LargestExport.run(blockedReason: { nil }, snapshot: { cur.value }, askURL: { asked.value += 1; return url }, path: paths, write: { d, _ in writes.value.append(d) })
         let text = writes.value.first.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-        let goodOK = good == .written(rows: 2, marked: 0) && asked.value == 1 && writes.value.count == 1 && text.contains("1,100,/p/0,") && text.contains("2,200,/p/1,")
+        let goodOK = good == .written(rows: 2, marked: 0, changedDuringWrite: false) && asked.value == 1 && writes.value.count == 1 && text.contains("1,100,/p/0,") && text.contains("2,200,/p/1,")
 
         // changed WHILE the panel is open (any one field): nothing is written
         var staleOK = true
@@ -2108,14 +2108,56 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         let dismissed = await LargestExport.run(blockedReason: { nil }, snapshot: { cur.value }, askURL: { nil }, path: paths, write: { d, _ in writes.value.append(d) })
         let dismissOK = dismissed == .cancelledByUser && writes.value.isEmpty
 
-        Check.expect("csv-export-flow-refuses-blocked-toolarge-stale-and-writes-once-when-unchanged", blockedOK && bigOK && goodOK && staleOK && lateOK && dismissOK, "blocked=\(blockedOK) tooLarge=\(bigOK) good=\(goodOK) staleDuringPanel=\(staleOK) staleDuringPrep=\(lateOK) dismissed=\(dismissOK)")
+        // cancelled during preparation: the caller's cancel is forwarded to the detached build, which stops at its next row; nothing is written.
+        // (This says nothing about interrupting a write that has already started.)
+        cur.value = snap(50); writes.value = []
+        let handle = Box<Task<LargestExport.Outcome, Never>?>(nil)
+        let cancelTask = Task { @MainActor in
+            await LargestExport.run(blockedReason: { nil }, snapshot: { cur.value }, askURL: { url },
+                                    path: { id in if id == 0 { handle.value?.cancel() }; return "/p/\(id)" }, write: { d, _ in writes.value.append(d) })
+        }
+        handle.value = cancelTask
+        let cancelled = await cancelTask.value
+        let cancelOK = cancelled == .cancelledTask && writes.value.isEmpty
 
-        // Outcome words go to exportMessage only. removalMessage (Trash status and its Undo) is never set by any outcome.
-        let am = AppModel(); am.removalMessage = nil
-        let outcomes: [LargestExport.Outcome] = [.blocked("x"), .tooLarge(5000), .cancelledByUser, .staleAfterPanel, .cancelledTask, .written(rows: 3, marked: 1), .failed("disk full")]
-        for o in outcomes { am.exportMessage = AppModel.exportText(o) }
-        let words = AppModel.exportText(.staleAfterPanel)?.isEmpty == false && AppModel.exportText(.cancelledByUser) == nil && AppModel.exportText(.written(rows: 3, marked: 1))?.contains("marked") == true
-        Check.expect("csv-export-outcomes-never-touch-removal-message", am.removalMessage == nil && am.lastRemoved.isEmpty && words, "removalMessage=\(am.removalMessage ?? "nil") words=\(words)")
+        // write error: reported as a failure with the system's words, and the flow does not claim success
+        cur.value = snap(); writes.value = []
+        struct DiskFull: LocalizedError { var errorDescription: String? { "disk full" } }
+        let failed = await LargestExport.run(blockedReason: { nil }, snapshot: { cur.value }, askURL: { url }, path: paths, write: { _, _ in throw DiskFull() })
+        let failOK = failed == .failed("disk full")
+
+        // a change DURING the write cannot undo it: reported as written with the flag set
+        cur.value = snap(); writes.value = []
+        let during = await LargestExport.run(blockedReason: { nil }, snapshot: { cur.value }, askURL: { url }, path: paths, write: { d, _ in writes.value.append(d); var s = cur.value!; s.revision += 1; cur.value = s })
+        let duringOK = during == .written(rows: 2, marked: 0, changedDuringWrite: true) && writes.value.count == 1
+
+        Check.expect("csv-export-flow-refuses-blocked-toolarge-stale-and-writes-once-when-unchanged", blockedOK && bigOK && goodOK && staleOK && lateOK && dismissOK && cancelOK && failOK && duringOK, "blocked=\(blockedOK) tooLarge=\(bigOK) good=\(goodOK) staleDuringPanel=\(staleOK) staleDuringPrep=\(lateOK) dismissed=\(dismissOK) cancelledTask=\(cancelOK) writeError=\(failOK) changedDuringWrite=\(duringOK)")
+
+        // Real AppModel wiring (panel and write injected, everything else real): export outcomes go to exportMessage and never touch
+        // removalMessage or lastRemoved. removalMessage holds a sentinel so "untouched" is observable.
+        let d = fixture("csv-export", [("a.bin", 30_000), ("b.bin", 20_000)])
+        defer { try? FileManager.default.removeItem(at: d) }
+        guard let t = await ScanSession(root: d.path, excludes: [])?.run({ _ in }), let a = node(t, "a.bin"), let b = node(t, "b.bin") else {
+            Check.expect("csv-export-real-model-wiring-leaves-removal-message-untouched", false, "fixture"); return
+        }
+        let am = AppModel(); am.tree = t; am.panicBaseline = EnginePanics.count
+        am.largestIDs = [a, b]; am.largestSizes = [t.info(a).size, t.info(b).size]
+        am.removalMessage = "sentinel-trash-status"
+        let blockedNow = am.largestExportBlockedReason
+        let wrote = Box<[Data]>([])
+        await am.exportLargest(askURL: { url }, write: { d, _ in wrote.value.append(d) })
+        let okMsg = am.exportMessage ?? ""
+        let okText = wrote.value.first.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        let ok = blockedNow == nil && wrote.value.count == 1 && okMsg.hasPrefix("Exported 2 items") && okText.contains(t.path(a)) && okText.contains(t.path(b))
+        am.exportMessage = nil
+        await am.exportLargest(askURL: { url }, write: { _, _ in throw DiskFull() })
+        let errMsg = am.exportMessage ?? ""
+        am.exportMessage = nil; wrote.value = []
+        await am.exportLargest(askURL: { am.revision += 1; return url }, write: { d, _ in wrote.value.append(d) })   // the model changes while the panel is open
+        let staleMsg = am.exportMessage ?? ""
+        let untouched = am.removalMessage == "sentinel-trash-status" && am.lastRemoved.isEmpty && am.pendingRemoval == nil
+        Check.expect("csv-export-real-model-wiring-leaves-removal-message-untouched", ok && errMsg.contains("Could not write the file") && staleMsg.contains("changed while exporting") && wrote.value.isEmpty && untouched,
+                     "ok=\(ok) writeError=\(errMsg.contains("Could not write the file")) stale=\(staleMsg.contains("changed while exporting")) staleWrites=\(wrote.value.count) removalUntouched=\(untouched)")
     }
 
     private static func engine() async {
@@ -2647,7 +2689,7 @@ final class BusyFlag: @unchecked Sendable {
         "copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write",
         "csv-largest-quotes-exactly-and-marks-unrepresentable-paths",
         "csv-export-flow-refuses-blocked-toolarge-stale-and-writes-once-when-unchanged",
-        "csv-export-outcomes-never-touch-removal-message",
+        "csv-export-real-model-wiring-leaves-removal-message-untouched",
         "engine-scanned-identity-matches-lstat-on-fixture",
         "view-poison-outline-cells-show-unavailable-not-stale-names",
         "view-poison-outline-latch-persists-in-mounted-table",
