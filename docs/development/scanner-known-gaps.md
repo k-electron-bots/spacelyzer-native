@@ -1,0 +1,10 @@
+# Scanner known gaps (engine, as of this note)
+
+Verified on Linux with the portable enumerator only. None of this is verified on macOS, and the macOS bulk backend (`scan_macos.rs`) is not compiled in Linux CI.
+
+- **Unreadable entries on macOS are still silently dropped.** The portable enumerator now records an entry whose metadata cannot be read (and an iterator failure) in the skipped list. The macOS `getattrlistbulk` enumerator never reports per-entry failures (`failed` is always 0), so on macOS such entries can still vanish from totals with no disclosure. Not fixed, not testable here.
+- **Non-UTF-8 names are left out of the tree and listed as unreadable (lossy).** Their bytes are not in any total. A non-UTF-8 scan root is refused. This is a recall limit, not raw-path identity. macOS Unicode normalization (NFC/NFD) behavior is unaudited.
+- **Skipped paths with U+FFFD are flagged lossy**, including a real name that contains that character.
+- **Symlink targets are never read.** Ancestor symlinks above the canonicalized root, and swapped ancestors below it, are resolved by the OS at call time (see `inspect.rs`).
+- **Separate volumes (`SeparateVolume`) are untested** (needs a second filesystem). The Swift footer "unreadable" count still includes user-excluded and separate-volume entries until Swift consumes the counts-by-reason ABI.
+- **Volume capacity** (`spz_volume_info_status`) is raw statvfs: no purgeable space, snapshots or container sharing. It can block on a hung mount, so a consumer must call it off the UI thread.
