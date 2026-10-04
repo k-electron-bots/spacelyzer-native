@@ -142,7 +142,7 @@ fn is_package(name: &str) -> bool {
 }
 
 /// Intern a device id into the shared table (normally 1-2 entries; the lock is taken only when a directory's device changes).
-/// More than 254 distinct devices map to DEV_UNKNOWN, which the tree reads as "no scanned identity".
+/// Up to 255 distinct devices get indexes 0..=254; the 256th and later map to DEV_UNKNOWN (255), which the tree reads as "no scanned identity".
 fn dev_index(ctx: &Ctx, last: &mut (u64, u8), dev: u64) -> u8 { intern_dev(&ctx.devs, last, dev) }
 fn intern_dev(devs: &Mutex<Vec<u64>>, last: &mut (u64, u8), dev: u64) -> u8 {
     if last.1 != crate::tree::DEV_UNKNOWN && last.0 == dev { return last.1; }
