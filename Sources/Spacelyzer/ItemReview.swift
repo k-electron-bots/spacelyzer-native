@@ -202,3 +202,33 @@ struct ItemDetailsView: View {
         }
     }
 }
+
+/// Read-only popover opened by an explicit click on "Check on disk". It does no I/O until it appears, and it never reaches Trash.
+/// It is dismissed (by its owner) when the selection or the tree changes, and it cancels its read when it disappears.
+/// UNCOMPILED/UNRUN until a Mac build.
+struct ItemReviewPopover: View {
+    @Environment(AppModel.self) private var model
+    let tree: Tree
+    let id: UInt32
+    let dismiss: () -> Void
+    @StateObject private var review = ItemReviewModel()
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let r = review.result {
+                ItemDetailsView(result: r)
+            } else if review.outdated {
+                Text("The results changed while this was being checked. Close this and check again.").font(.caption).foregroundStyle(.orange)
+            } else if review.inProgress {
+                ProgressView("Checking…").controlSize(.small)
+            }
+            Text("Read only. This compares the item on disk with what the scan recorded at this moment. It does not make a later removal safe.")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+        .padding(12).frame(width: 360, alignment: .leading)
+        .onAppear { review.request(tree: tree, node: id) }
+        .onDisappear { review.invalidate() }
+        .onChange(of: model.revision) { _, _ in review.invalidate(); dismiss() }       // tree changed or replaced
+        .onChange(of: model.selected) { _, _ in review.invalidate(); dismiss() }       // selection moved
+        .onChange(of: model.filterRevision) { _, _ in review.invalidate(); dismiss() } // filter result changed
+    }
+}
