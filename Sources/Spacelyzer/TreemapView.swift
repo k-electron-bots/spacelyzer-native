@@ -345,7 +345,7 @@ extension CopyPathPolicy.Decision {
 struct KindsView: View {
     @Environment(AppModel.self) private var model
     var body: some View {
-        if let t = model.tree {
+        if model.tree != nil {
             let presentation = model.derivedPresentation
             let rows: [KindRow] = { switch presentation { case .ready, .retained: return model.kindRows; default: return [] } }()      // only current or filter-pending rows; withheld when updating/poisoned
             let total = max(1, rows.reduce(0) { $0 + $1.bytes })
