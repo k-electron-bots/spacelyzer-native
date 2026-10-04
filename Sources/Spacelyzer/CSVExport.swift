@@ -149,7 +149,8 @@ extension AppModel {
         lastExportOutcome = outcome
     }
 
-    /// Production entry. While the save panel is open the main actor is blocked, so a second export cannot start until it is dismissed.
+    /// Production entry. `runModal` runs a nested run loop, so other main-actor work (including a rescan or removal) CAN run while the panel is
+    /// open; the post-panel snapshot comparison is what catches that. A second export is refused only by the `exportTask != nil` guard.
     func exportLargestCSV() {
         guard exportTask == nil else { return }
         exportTask = Task { [weak self] in
