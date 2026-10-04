@@ -5,6 +5,18 @@ use spacelyzer_engine::tree::Tree;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
+/// Creating a non-UTF-8 file name is refused by some filesystems (APFS returns EILSEQ, errno 92; the first hosted-macOS run failed here). That is a fixture
+/// limit, not an engine result: on those platforms the test reports SKIPPED and does not claim to have exercised anything. On Linux the creation must work,
+/// so a failure there still fails the test (no silent pass).
+#[allow(dead_code)]
+fn made(r: std::io::Result<()>) -> bool {
+    match r {
+        Ok(()) => true,
+        Err(e) if e.raw_os_error() == Some(92) && !cfg!(target_os = "linux") => { eprintln!("SKIPPED: this filesystem refuses non-UTF-8 names (EILSEQ); the case was NOT exercised"); false }
+        Err(e) => panic!("fixture creation failed: {e}"),
+    }
+}
+
 fn fixture(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("spz-dupes-{}-{}", std::process::id(), name));
     let _ = std::fs::remove_dir_all(&d); std::fs::create_dir_all(&d).unwrap(); d.canonicalize().unwrap()
@@ -419,7 +431,7 @@ fn randomized_differential_against_a_brute_force_oracle() {
 fn non_utf8_names_are_left_out_of_the_tree_so_they_are_never_grouped_or_aliased() {
     use std::os::unix::ffi::OsStrExt;
     let d = fixture("nonutf8");
-    for n in [&b"dup\xff1"[..], &b"dup\xff2"[..]] { std::fs::write(d.join(std::ffi::OsStr::from_bytes(n)), vec![8u8; 40_000]).unwrap(); }
+    for n in [&b"dup\xff1"[..], &b"dup\xff2"[..]] { if !made(std::fs::write(d.join(std::ffi::OsStr::from_bytes(n)), vec![8u8; 40_000])) { return; } }
     std::fs::write(d.join("ok1"), vec![8u8; 40_000]).unwrap(); std::fs::write(d.join("ok2"), vec![8u8; 40_000]).unwrap();
     let t = scanned(&d);
     let r = find(&t);
