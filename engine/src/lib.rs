@@ -3,6 +3,7 @@
 //! this crate through the C ABI in `ffi`.
 
 pub mod category;
+pub mod dupes;
 pub mod filter;
 pub mod inspect;
 pub mod outline;
