@@ -829,3 +829,14 @@ pub unsafe extern "C" fn spz_outline_snapshot_status(
         rows.len() as u32
     })
 }
+
+/// Live lstat of `path` into `out`. Returns 0 on success, a positive OS errno on failure (2 = gone), -1 for a null/invalid argument,
+/// -2 after a caught panic. `out` is only written on success.
+#[no_mangle]
+pub unsafe extern "C" fn spz_inspect_path(path: *const c_char, out: *mut crate::inspect::Inspect) -> i32 {
+    legacy(-2, || {
+        if path.is_null() || out.is_null() { return -1; }
+        let Ok(s) = std::ffi::CStr::from_ptr(path).to_str() else { return -1 };
+        match crate::inspect::inspect(std::path::Path::new(s)) { Ok(i) => { *out = i; 0 } Err(e) => e.max(1) }
+    })
+}
