@@ -28,12 +28,67 @@ pub struct Inspect {
     pub _pad: [u8; 3],
 }
 
-/// Inspect `path` without following a final symlink. `Err` carries the OS error code (ENOENT = 2 when it is gone).
-pub fn inspect(path: &Path) -> Result<Inspect, i32> {
-    let m = std::fs::symlink_metadata(path).map_err(|e| e.raw_os_error().unwrap_or(-1))?;
+/// Inspect `path` without following a final symlink. `Err(Some(errno))` is the OS error (ENOENT = 2 when it is gone);
+/// `Err(None)` is a failure that carries no errno.
+pub fn inspect(path: &Path) -> Result<Inspect, Option<i32>> {
+    let m = std::fs::symlink_metadata(path).map_err(|e| e.raw_os_error())?;
     let ft = m.file_type();
     let kind = if ft.is_symlink() { InspectKind::Symlink } else if ft.is_dir() { InspectKind::Dir } else if ft.is_file() { InspectKind::File } else { InspectKind::Other };
     Ok(Inspect { allocated: m.blocks() * 512, logical: m.len(), mtime: m.mtime(), dev: m.dev(), ino: m.ino(), nlink: m.nlink() as u32, kind: kind as u8, _pad: [0; 3] })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(i32)]
+pub enum IdentityCheck {
+    /// Live (dev, ino) and kind class equal the scanned ones.
+    Same = 0,
+    /// Live item exists but its (dev, ino) or kind class differs from the scanned one: replaced. Refuse.
+    Different = 1,
+    /// The tree holds no scanned identity for this node (synthetic tree, or more than 255 devices). Refuse: nothing to compare.
+    NoScannedIdentity = 2,
+    /// The scanned name had non-UTF-8 bytes that the scanner replaced with U+FFFD, so the stored path cannot address the real item. Refuse.
+    Unaddressable = 3,
+    /// A directory between the scan root and the item is now a symlink. Refuse.
+    AncestorSymlink = 4,
+    /// The path no longer exists (ENOENT).
+    Gone = 5,
+}
+
+/// Device ids compare on the low 32 bits on macOS, where the bulk scanner reads a 32-bit dev_t and lstat sign-extends one.
+/// That widening agreement is argued from the code, NOT measured on a Mac.
+fn dev_eq(a: u64, b: u64) -> bool { if cfg!(target_os = "macos") { a as u32 == b as u32 } else { a == b } }
+
+/// Compare the live item behind `id` to the identity the scan recorded. Compares only (dev, ino) and a kind class: never
+/// size or mtime (hard-link dedup makes scanned bytes differ from live allocation, and size/mtime narrowing is not identity).
+/// Not atomic: the path can change right after this returns. Ancestors BELOW the scan root are checked for symlinks; the scan root
+/// itself and its own ancestors are taken as given.
+pub fn check_scanned(tree: &crate::tree::Tree, id: crate::tree::NodeId) -> Result<IdentityCheck, Option<i32>> {
+    use crate::tree::Kind;
+    if id as usize >= tree.len() { return Err(None); }
+    let Some((dev, ino)) = tree.scanned_identity(id) else { return Ok(IdentityCheck::NoScannedIdentity) };
+    let path = tree.path(id);
+    if path.contains('\u{FFFD}') { return Ok(IdentityCheck::Unaddressable); }
+    let root = tree.root_path.trim_end_matches('/');
+    if let Some(rel) = path.strip_prefix(root).filter(|_| id != 0) {
+        let mut cur = std::path::PathBuf::from(if root.is_empty() { "/" } else { root });
+        let comps: Vec<&str> = rel.split('/').filter(|c| !c.is_empty()).collect();
+        for c in &comps[..comps.len().saturating_sub(1)] {
+            cur.push(c);
+            match inspect(&cur) {
+                Ok(i) if i.kind == InspectKind::Symlink as u8 => return Ok(IdentityCheck::AncestorSymlink),
+                Ok(_) => {}
+                Err(Some(2)) => return Ok(IdentityCheck::Gone),
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    let live = match inspect(Path::new(&path)) { Ok(i) => i, Err(Some(2)) => return Ok(IdentityCheck::Gone), Err(e) => return Err(e) };
+    let kind_ok = match tree.kind(id) {
+        Kind::File => live.kind == InspectKind::File as u8 || live.kind == InspectKind::Other as u8,
+        Kind::Directory | Kind::Package => live.kind == InspectKind::Dir as u8,
+        Kind::Symlink => live.kind == InspectKind::Symlink as u8,
+    };
+    Ok(if kind_ok && dev_eq(dev, live.dev) && ino == live.ino { IdentityCheck::Same } else { IdentityCheck::Different })
 }
 
 #[cfg(test)]
@@ -78,7 +133,7 @@ mod tests {
     }
     #[test]
     fn missing_path_reports_enoent_and_replacement_changes_identity() {
-        let p = tmp("gone"); assert_eq!(inspect(&p), Err(2));
+        let p = tmp("gone"); assert_eq!(inspect(&p), Err(Some(2)));
         std::fs::write(&p, b"1").unwrap(); let first = inspect(&p).unwrap();
         std::fs::remove_file(&p).unwrap(); std::fs::create_dir(&p).unwrap();
         let second = inspect(&p).unwrap(); assert_ne!(first.kind, second.kind);
