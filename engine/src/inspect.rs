@@ -1,6 +1,11 @@
 //! Live item inspection for the review-before-Trash flow. This reads the filesystem NOW (lstat, never following a
 //! symlink), so the answer describes what is on disk at this moment and can differ from the scanned tree. Callers
 //! compare `dev`/`ino`/`kind` against the scanned identity before acting on an item.
+//!
+//! LIMITS (do not read this as a safety guarantee): only the FINAL path component is not followed. Every ancestor directory
+//! is resolved by the OS at call time, so a symlinked or swapped ancestor makes the answer describe a different file than
+//! the scanned one (see `ancestor_symlink_is_followed`). The result is also a point-in-time reading: the path can change
+//! between this call and any later Trash call (TOCTOU). A pre-check narrows that window but does not close it.
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
@@ -60,6 +65,15 @@ mod tests {
         let d = tmp("hl"); std::fs::create_dir(&d).unwrap(); let a = d.join("a"); std::fs::write(&a, b"hello").unwrap(); let b = d.join("b"); std::fs::hard_link(&a, &b).unwrap();
         let (x, y) = (inspect(&a).unwrap(), inspect(&b).unwrap());
         assert_eq!((x.dev, x.ino), (y.dev, y.ino)); assert_eq!(x.nlink, 2);
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+    #[test]
+    fn ancestor_symlink_is_followed() {
+        // Documents a limit: lstat does not protect against a symlinked ancestor. The inspected file is the other directory's file.
+        let d = tmp("anc"); std::fs::create_dir_all(d.join("real")).unwrap(); std::fs::write(d.join("real/f"), b"abc").unwrap();
+        std::os::unix::fs::symlink(d.join("real"), d.join("link")).unwrap();
+        let (via, direct) = (inspect(&d.join("link/f")).unwrap(), inspect(&d.join("real/f")).unwrap());
+        assert_eq!((via.dev, via.ino, via.kind), (direct.dev, direct.ino, InspectKind::File as u8));
         std::fs::remove_dir_all(&d).unwrap();
     }
     #[test]
