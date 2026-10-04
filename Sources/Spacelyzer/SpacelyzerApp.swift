@@ -1610,6 +1610,7 @@ private actor PublicationBarrier {
             Check.expect("view-outline-rows-mounted-match-published", false, "fixture: model never ready"); Check.expect("view-outline-selection-syncs-both-ways", false, "fixture: model never ready"); Check.expect("view-outline-removal-drops-row-and-clears-selection", false, "fixture: model never ready"); Check.expect("view-poison-outline-cells-show-unavailable-not-stale-names", false, "fixture: model never ready"); Check.expect("view-poison-outline-latch-persists-in-mounted-table", false, "fixture: model never ready"); return
         }
         m.trashItem = { $0 }
+        m.tab = .kinds   // the default tab is the treemap, which is not mounted here; its layout surface would never publish and the removal gate could not release
         let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: 520, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.title = "CI mounted outline (ordering driver)"
         let host = NSHostingView(rootView: OutlineView().environment(m))
@@ -1638,6 +1639,9 @@ private actor PublicationBarrier {
         // Real removal flow with the Trash mocked: row disappears from the mounted table, selection must not point at it.
         m.selected = big
         let selectedBeforeRemoval = await PublicationRegression.wait { if let i = m.outlineIndex[big] { return table.selectedRow == i }; return false }
+        var lateSync = false
+        if !selectedBeforeRemoval { try? await Task.sleep(nanoseconds: 1_000_000_000); if let i = m.outlineIndex[big] { lateSync = table.selectedRow == i } }
+        let selDiag = "modelSelected=\(String(describing: m.selected)) big=\(big) bigIndex=\(String(describing: m.outlineIndex[big])) tableRow=\(table.selectedRow) lateSync=\(lateSync)"
         let v0 = m.tree?.version ?? 0
         m.pendingRemoval = big; m.confirmRemoval()
         let accepted: Bool = m.removalInFlight
@@ -1648,7 +1652,7 @@ private actor PublicationBarrier {
         let gone: Bool = !hasLabel(l1, "big.bin")
         let others: Bool = ["mid.bin", "small.bin", "tiny.bin"].allSatisfy { hasLabel(l1, $0) }
         let selClear: Bool = m.selected != big && (table.selectedRow < 0 || table.selectedRow >= l1.count || !l1[table.selectedRow].hasPrefix("big.bin,"))
-        Check.expect("view-outline-removal-drops-row-and-clears-selection", selectedBeforeRemoval && accepted && settled && gone && others && selClear, "selectedBeforeRemoval=\(selectedBeforeRemoval) accepted=\(accepted) settled=\(settled) bigRowGone=\(gone) othersPresent=\(others) selection=\(String(describing: m.selected)) selectedRow=\(table.selectedRow) labels=\(l1)")
+        Check.expect("view-outline-removal-drops-row-and-clears-selection", selectedBeforeRemoval && accepted && settled && gone && others && selClear, "selectedBeforeRemoval=\(selectedBeforeRemoval) [\(selDiag)] accepted=\(accepted) settled=\(settled) bigRowGone=\(gone) othersPresent=\(others) selection=\(String(describing: m.selected)) selectedRow=\(table.selectedRow) labels=\(l1)")
 
         // Slice 3: poison in the mounted outline. A moved panic counter must replace every realized row's name and path with
         // "Unavailable" in the actual table (not just in the model), and the out-of-date state must be set.

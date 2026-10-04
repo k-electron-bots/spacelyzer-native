@@ -83,6 +83,7 @@ pub fn visible_rows_sorted(tree: &Tree, root: NodeId, expanded: &HashSet<NodeId>
 
 /// One captured table is used for every expanded directory in this call.
 pub fn visible_rows_sorted_in(tree: &Tree, tab: &crate::tree::SizeTable, root: NodeId, expanded: &HashSet<NodeId>, filter: Option<&FilterResult>, mode: SortMode) -> Vec<Row> {
+    let gone = tab.forgotten.as_slice();
     let tab = tab.sizes.as_slice();
     let mut out = Vec::new();
     let mut stack: Vec<(std::vec::IntoIter<NodeId>, u32)> = vec![(ordered_children(tree, tab, root, mode, filter).into_iter(), 0)];
@@ -91,6 +92,8 @@ pub fn visible_rows_sorted_in(tree: &Tree, tab: &crate::tree::SizeTable, root: N
             stack.pop();
             continue;
         };
+        // A removed subtree stays in the arena with size 0; hide it by the table's removal list (zero-byte files stay visible).
+        if gone.binary_search(&id).is_ok() { continue; }
         if let Some(f) = filter {
             if f.counts[id as usize] == 0 {
                 continue;

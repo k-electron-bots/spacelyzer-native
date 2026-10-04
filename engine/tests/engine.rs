@@ -573,3 +573,39 @@ fn unicode_name_and_extension_lowercase_contract() {
         assert_eq!(r.total_count, 1);
     }
                             }
+
+/// A removed node stays in the arena with size 0, so size alone cannot tell it from a real zero-byte file.
+/// The outline hides removed rows by the table's removal list and keeps genuine empty files and empty folders.
+#[test]
+fn outline_hides_forgotten_rows_but_keeps_zero_byte_files() {
+    let t = tempdir::T::new();
+    let r = t.path();
+    fs::write(r.join("keep.bin"), vec![1u8; 20_000]).unwrap();
+    fs::write(r.join("gone.bin"), vec![2u8; 30_000]).unwrap();
+    fs::write(r.join("empty.txt"), b"").unwrap();
+    fs::create_dir_all(r.join("emptydir")).unwrap();
+    fs::create_dir_all(r.join("gonedir")).unwrap();
+    fs::write(r.join("gonedir/inner.bin"), vec![3u8; 10_000]).unwrap();
+    fs::create_dir_all(r.join("gonezero")).unwrap();   // an empty folder that is then removed
+    let tree = scan(r, &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    let id = |n: &str| tree.find(&format!("{}/{}", tree.root_path(), n)).unwrap();
+    let names = |t: &Tree| -> Vec<String> {
+        let tab = t.table();
+        outline::visible_rows_sorted_in(t, &tab, 0, &Default::default(), None, outline::SortMode::NameAsc).iter().map(|r| t.name(r.node).to_string()).collect()
+    };
+    let before = names(&tree);
+    for n in ["keep.bin", "gone.bin", "empty.txt", "emptydir", "gonedir", "gonezero"] { assert!(before.contains(&n.to_string()), "missing {n} before"); }
+    let v0 = tree.table().version;
+    assert!(tree.forget(id("gone.bin")).is_ok());
+    assert!(tree.forget(id("gonedir")).is_ok());
+    assert!(tree.forget(id("gonezero")).is_ok());   // zero-size directory: still removed from the outline
+    let after = names(&tree);
+    for n in ["gone.bin", "gonedir", "gonezero"] { assert!(!after.contains(&n.to_string()), "{n} still listed: {after:?}"); }
+    for n in ["keep.bin", "empty.txt", "emptydir"] { assert!(after.contains(&n.to_string()), "{n} wrongly hidden: {after:?}"); }
+    assert_eq!(tree.table().version, v0 + 3);
+    // Forgetting an already removed node changes nothing, including the version.
+    let v = tree.table().version;
+    assert!(tree.forget(id("gone.bin")).is_ok());
+    assert_eq!(tree.table().version, v);
+    assert_eq!(tree.table().forgotten.len(), 3);
+}
