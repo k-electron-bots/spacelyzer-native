@@ -263,6 +263,7 @@ struct TrailingPane: View {
                 TreemapView().padding([.horizontal, .bottom], 8)
             case .kinds: KindsView().frame(maxHeight: .infinity)
             case .largest: LargestView().frame(maxHeight: .infinity)
+            case .folders: FoldersView().frame(maxHeight: .infinity)
             }
             if let id = model.selected, let t = model.tree { SelectionBar(tree: t, id: id).fixedSize(horizontal: false, vertical: true).layoutPriority(1) }
         }
@@ -357,6 +358,42 @@ struct KindsView: View {
                     ShareBar(fraction: Double(r.bytes) / Double(total)).frame(width: 60, height: 6)
                 }
             }
+        }
+    }
+}
+
+/// Largest folders by cumulative size, as the scan recorded them (not a check of the disk now). A folder and its parent can both appear.
+/// Read only. Not filtered: the engine ranks all folders, and the note says so when a filter is active.
+struct FoldersView: View {
+    @Environment(AppModel.self) private var model
+    private struct LoadKey: Hashable { var tree: ObjectIdentifier?; var revision: Int }
+    var body: some View {
+        if let t = model.tree {
+            let ids = model.folderIDs
+            let sizes = model.folderSizes
+            let sizeOf = Dictionary(zip(ids, sizes), uniquingKeysWith: { a, _ in a })
+            List(ids, id: \.self, selection: Bindable(model).selected) { id in
+                HStack {
+                    VStack(alignment: .leading) {
+                        Text(model.enginePoisoned ? "Unavailable" : t.name(id)).lineLimit(1)
+                        Text(model.enginePoisoned ? "" : t.path(id)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+                    }
+                    Spacer()
+                    Text(sizeOf[id].map(formatBytes) ?? "\u{2014}").monospacedDigit()
+                }.tag(id)
+            }
+            .overlay {
+                if let problem = model.folderProblem {
+                    ContentUnavailableView("Folders unavailable", systemImage: "exclamationmark.triangle", description: Text(problem))
+                } else if ids.isEmpty && model.folderVersion != nil {
+                    ContentUnavailableView("No folders", systemImage: "folder", description: Text("The scan found no folder with any size."))
+                }
+            }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                Text((ids.count >= AppModel.folderCount ? "Showing the \(AppModel.folderCount) largest folders, by total size inside" : "\(ids.count.formatted()) folders, by total size inside") + (model.filterIsActive ? ". Not filtered." : ""))
+                    .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 4)
+            }
+            .task(id: LoadKey(tree: model.tree.map(ObjectIdentifier.init), revision: model.revision)) { model.refreshFolders() }
         }
     }
 }
