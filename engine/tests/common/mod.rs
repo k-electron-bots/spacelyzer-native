@@ -4,10 +4,10 @@
 //! Rust has no runtime "skipped" state, so a bare early `return` is reported `ok`. To keep that from reading as a pass:
 //!  * Linux: any creation failure panics. A fixture that cannot be built is a failure, never a skip.
 //!  * Elsewhere, EILSEQ panics UNLESS `SPZ_ALLOW_PLATFORM_SKIP=1`. Then `SPZ_SKIP_MANIFEST` MUST name an ABSOLUTE path to a file that
-//!    the caller created (empty) for THIS run; the helper never creates or defaults it, so a stale file from an earlier run cannot be
-//!    silently reused (a missing, relative or unset path panics). Each skip appends one complete line `<test name>\t<reason>\n`
-//!    with a single `write_all` on an O_APPEND handle (one write syscall per record, so records from concurrent test threads and
-//!    processes do not interleave) under an in-process mutex. cargo still prints `ok` for the skipped test. A consumer must read the
+//!    the caller created (empty) for THIS run. The helper never creates or defaults it (a missing, relative or unset path panics), but it
+//!    does NOT detect a stale file: freshness is the caller's responsibility. Each skip appends one complete line `<test name>\t<reason>\n`
+//!    with a single `write_all` on an O_APPEND handle under an in-process mutex. `write_all` may loop over several writes, so there is no
+//!    guarantee of a single syscall or of non-interleaving across processes (only a simulation on Linux was run; nothing on APFS or network filesystems). cargo still prints `ok` for the skipped test. A consumer must read the
 //!    manifest, list the names, and subtract them from the raw pass total; the raw "N passed" is not the exercised count.
 #![allow(dead_code)]
 use std::io::Write;
