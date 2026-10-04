@@ -44,6 +44,7 @@ fn build(root: &Path, r: &mut Rng, depth: u32, links: bool, files: &mut Vec<Path
     }
 }
 
+static LINKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static ITEMS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn run(seed: u64, links: bool) {
@@ -56,6 +57,12 @@ fn run(seed: u64, links: bool) {
     let (mut out, mut items, mut seen) = (BTreeMap::new(), 0u64, HashSet::new());
     let total = oracle(&root, &mut seen, &mut out, &mut items);
     ITEMS.fetch_add(items, std::sync::atomic::Ordering::Relaxed);
+    if links {
+        // Non-vacuity: count entries that really are extra hard links of an inode (nlink > 1) in this fixture.
+        let mut n = 0; let mut stack = vec![root.clone()];
+        while let Some(d) = stack.pop() { for e in fs::read_dir(&d).unwrap() { let p = e.unwrap().path(); let md = fs::symlink_metadata(&p).unwrap(); if md.is_dir() { stack.push(p) } else if md.nlink() > 1 { n += 1 } } }
+        LINKED.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
+    }
     for (threads, portable) in [(1usize, true), (4, true), (0, false)] {
         let t = scan(&root, &ScanOptions { threads, force_portable: portable, ..Default::default() }, &ScanProgress::default()).unwrap();
         assert_eq!(t.size(0), total, "seed {seed} links {links} threads {threads}: root total");
@@ -76,4 +83,4 @@ fn run(seed: u64, links: bool) {
 }
 
 #[test] fn random_trees_without_hardlinks_match_the_oracle_per_node() { for s in 1..=40 { run(s, false); } assert!(ITEMS.load(std::sync::atomic::Ordering::Relaxed) > 200, "precondition: the generator produced real trees"); }
-#[test] fn random_trees_with_hardlinks_match_the_oracle_total() { for s in 101..=140 { run(s, true); } }
+#[test] fn random_trees_with_hardlinks_match_the_oracle_total() { for s in 101..=140 { run(s, true); } assert!(LINKED.load(std::sync::atomic::Ordering::Relaxed) >= 20, "precondition: the hardlink variant really created hard-linked entries"); }
