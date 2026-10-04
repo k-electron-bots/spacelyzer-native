@@ -81,3 +81,22 @@ fn permission_denied_directories_are_counted_when_the_test_user_cannot_read_them
     if readable_anyway { assert_eq!(c, [0, 0, 0, 0], "running as a user that can read it (e.g. root): nothing to skip, assertion on the denied path not exercised"); }
     else { assert_eq!(c, [1, 0, 0, 0]); let (p, r, l, st) = item(&t, 0); assert!(p.unwrap().ends_with("/locked")); assert_eq!((r, l, st), (SkipReason::PermissionDenied as u8, 0, 0)); }
 }
+
+/// Verifier repro: siblings `a\xff`, `a\xfe` and a literal `a<U+FFFD>` used to collapse to one lossy node name (the literal directory was then walked three
+/// times and its contents counted three times). Now the two non-UTF-8 entries are left out and listed, and only the real literal directory is a node.
+#[test]
+fn lossy_name_siblings_cannot_alias_a_real_node_or_overmatch_an_exclusion() {
+    use std::os::unix::ffi::OsStrExt;
+    let d = std::env::temp_dir().join(format!("skp-lossy-{}", std::process::id())); let _ = std::fs::remove_dir_all(&d); std::fs::create_dir_all(&d).unwrap(); let d = d.canonicalize().unwrap();
+    for n in [&b"a\xff"[..], &b"a\xfe"[..], "a\u{FFFD}".as_bytes()] { let p = d.join(std::ffi::OsStr::from_bytes(n)); std::fs::create_dir_all(&p).unwrap(); std::fs::write(p.join("f"), vec![1u8; 5000]).unwrap(); }
+    let t = scan(&d, &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    let fs = (1..t.len() as u32).filter(|&i| t.name(i) == "f").count();
+    assert_eq!(fs, 1, "only the real literal directory is walked, once");
+    assert_eq!((1..t.len() as u32).filter(|&i| t.name(i).starts_with('a')).count(), 1);
+    assert_eq!(t.skipped.iter().filter(|s| s.lossy).count(), 2);
+    assert_eq!(t.skipped_counts()[1], 2);
+    let t2 = scan(&d, &ScanOptions { exclude: vec![d.join("a\u{FFFD}")], ..Default::default() }, &ScanProgress::default()).unwrap();
+    assert_eq!(t2.skipped.iter().filter(|s| s.reason as u8 == 3).count(), 1, "the literal exclusion matches the one real directory only");
+    assert_eq!((1..t2.len() as u32).filter(|&i| t2.name(i) == "f").count(), 0);
+    let _ = std::fs::remove_dir_all(&d);
+}
