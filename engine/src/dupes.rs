@@ -25,8 +25,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 pub struct DupGroup {
     /// Scanned (allocated) size of one member.
     pub size: u64,
-    /// Members, ascending NodeId, at least 2.
+    /// Members, ascending NodeId, at least 2. When `DupOptions::max_members_per_group` applies this is the LOWEST ids only; `member_count` is the truth.
     pub ids: Vec<NodeId>,
+    /// All members found, even when `ids` was capped.
+    pub member_count: u32,
     /// How many members had a link count above 1 when opened (another path to the same storage may exist outside the scan, so removing
     /// that member would not free its bytes). 0 means none was seen, not that sharing is impossible (clones are invisible here).
     pub linked: u32,
@@ -43,6 +45,10 @@ pub struct DupReport {
     /// Candidates the pass did not finish: set when `cancelled` or `budget_exhausted`.
     pub incomplete: bool,
     pub budget_exhausted: bool,
+    /// Groups found before `max_groups` was applied. `duplicate_allocated_bytes` is over ALL of them, not just the listed ones.
+    pub groups_total: u32,
+    /// True when `max_groups` dropped smallest groups (so `groups.len() < groups_total`).
+    pub groups_truncated: bool,
     pub unreadable: u32,
     pub changed: u32,
     pub hardlink_aliases: u32,
@@ -84,6 +90,8 @@ struct Opened { f: File, len: u64, nlink: u64 }
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Fail { Unreadable, Changed, Stopped }
 
+fn read_fail(e: &std::io::Error) -> Fail { if e.kind() == std::io::ErrorKind::UnexpectedEof { Fail::Changed } else { Fail::Unreadable } }   // the file got shorter than it was when opened
+
 fn open_checked(tree: &Tree, id: NodeId) -> Result<Opened, Fail> {
     let path = tree.path(id);
     let f = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(&path).map_err(|_| Fail::Unreadable)?;
@@ -95,7 +103,7 @@ fn open_checked(tree: &Tree, id: NodeId) -> Result<Opened, Fail> {
 
 fn hash_prefix(o: &mut Opened, pr: &DupProgress) -> Result<u64, Fail> {
     let mut buf = vec![0u8; PREFIX.min(o.len as usize)];
-    o.f.read_exact(&mut buf).map_err(|_| Fail::Unreadable)?;
+    o.f.read_exact(&mut buf).map_err(|e| read_fail(&e))?;
     pr.read(buf.len());
     let mut h = std::collections::hash_map::DefaultHasher::new();
     h.write(&buf);
@@ -111,7 +119,7 @@ fn hash_full(tree: &Tree, id: NodeId, len: u64, cancel: &AtomicBool, pr: &DupPro
     while left > 0 {
         if pr.stop(cancel) { return Err(Fail::Stopped); }
         let n = (left as usize).min(CHUNK);
-        o.f.read_exact(&mut buf[..n]).map_err(|_| Fail::Unreadable)?;
+        o.f.read_exact(&mut buf[..n]).map_err(|e| read_fail(&e))?;
         pr.read(n);
         h.write(&buf[..n]);
         left -= n as u64;
@@ -134,8 +142,8 @@ fn same_bytes(tree: &Tree, a: NodeId, b: NodeId, len: u64, cancel: &AtomicBool, 
     while left > 0 {
         if pr.stop(cancel) { return Err((Fail::Stopped, Side::B)); }
         let n = (left as usize).min(CHUNK);
-        fa.f.read_exact(&mut ba[..n]).map_err(|_| (Fail::Unreadable, Side::A))?;
-        fb.f.read_exact(&mut bb[..n]).map_err(|_| (Fail::Unreadable, Side::B))?;
+        fa.f.read_exact(&mut ba[..n]).map_err(|e| (read_fail(&e), Side::A))?;
+        fb.f.read_exact(&mut bb[..n]).map_err(|e| (read_fail(&e), Side::B))?;
         pr.read(2 * n);
         if ba[..n] != bb[..n] { return Ok(false); }
         left -= n as u64;
@@ -207,7 +215,8 @@ fn process_size_group(tree: &Tree, size: u64, ids: Vec<NodeId>, cancel: &AtomicB
                 if c.len() >= 2 {
                     c.sort_unstable();
                     let linked = c.iter().filter(|i| nlink.get(i).map_or(false, |&n| n > 1)).count() as u32;
-                    part.groups.push(DupGroup { size, ids: c, linked });
+                    let member_count = c.len() as u32;
+                    part.groups.push(DupGroup { size, ids: c, member_count, linked });
                 }
             }
         }
@@ -222,16 +231,20 @@ pub struct DupOptions {
     pub min_size: u64,
     /// Stop after about this many bytes were read from disk (all stages); 0 = unbounded. Checked per chunk, so the overshoot is at most one chunk per worker.
     pub max_read_bytes: u64,
+    /// Keep only the first N groups of the final order (largest duplicate_allocated_bytes first); 0 = all. Totals are still computed over every group found.
+    pub max_groups: usize,
+    /// Keep only the lowest N ids per group (values below 2 act as 2; `member_count` keeps the truth); 0 = all.
+    pub max_members_per_group: usize,
 }
 
 /// Find duplicate regular files with a cooperative `cancel`.
 pub fn find_duplicates(tree: &Tree, min_size: u64, cancel: &AtomicBool) -> DupReport {
-    find_duplicates_opts(tree, DupOptions { min_size, max_read_bytes: 0 }, cancel, &DupProgress::default())
+    find_duplicates_opts(tree, DupOptions { min_size, ..Default::default() }, cancel, &DupProgress::default())
 }
 
 /// As `find_duplicates` with counters (`progress`) and a read budget.
 pub fn find_duplicates_with(tree: &Tree, min_size: u64, cancel: &AtomicBool, progress: &DupProgress) -> DupReport {
-    find_duplicates_opts(tree, DupOptions { min_size, max_read_bytes: 0 }, cancel, progress)
+    find_duplicates_opts(tree, DupOptions { min_size, ..Default::default() }, cancel, progress)
 }
 
 pub fn find_duplicates_opts(tree: &Tree, opts: DupOptions, cancel: &AtomicBool, progress: &DupProgress) -> DupReport {
@@ -258,7 +271,11 @@ pub fn find_duplicates_opts(tree: &Tree, opts: DupOptions, cancel: &AtomicBool, 
     let budget = progress.budget_hit.load(Ordering::Relaxed);
     let mut r = DupReport { version: tab.version, cancelled, budget_exhausted: budget, incomplete: cancelled || budget, ..Default::default() };
     for p in parts { r.groups.extend(p.groups); r.unreadable += p.unreadable; r.changed += p.changed; r.hardlink_aliases += p.aliases; }
-    r.duplicate_allocated_bytes = r.groups.iter().map(|g| g.size * (g.ids.len() as u64 - 1)).sum();
-    r.groups.sort_by(|a, b| (b.size * (b.ids.len() as u64 - 1)).cmp(&(a.size * (a.ids.len() as u64 - 1))).then(a.ids[0].cmp(&b.ids[0])));
+    let extra = |g: &DupGroup| g.size * (g.member_count as u64 - 1);
+    r.duplicate_allocated_bytes = r.groups.iter().map(extra).sum();
+    r.groups.sort_by(|a, b| extra(b).cmp(&extra(a)).then(a.ids[0].cmp(&b.ids[0])));      // total order: ids are disjoint across groups
+    r.groups_total = r.groups.len() as u32;
+    if opts.max_groups > 0 && r.groups.len() > opts.max_groups { r.groups.truncate(opts.max_groups); r.groups_truncated = true; }
+    if opts.max_members_per_group > 0 { for g in r.groups.iter_mut() { g.ids.truncate(opts.max_members_per_group.max(2)); } }
     r
 }
