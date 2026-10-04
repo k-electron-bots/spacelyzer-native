@@ -1943,7 +1943,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
 
     /// UNCOMPILED/UNRUN until a Mac run. Deterministic: every step that must happen after another waits on a gate, not on a sleep.
     private static func reviewModelChecks() async {
-        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state", "review-model-refuses-and-drops-when-engine-untrusted", "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", "review-bare-model-selection-change-makes-no-review-request", "copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write", "csv-largest-quotes-exactly-and-marks-unrepresentable-paths", "csv-export-flow-refuses-blocked-toolarge-stale-and-writes-once-when-unchanged", "csv-export-real-model-wiring-leaves-removal-message-untouched", "engine-largest-folders-abi-and-forget-on-real-tree", "folders-model-publishes-real-list-drops-stale-and-clears-on-poison", "folders-model-clears-at-once-and-rejects-stale-version-with-bounded-retry", "folders-model-version-retry-is-bounded-and-ends-failed-with-no-rows", "derived-presentation-retains-only-for-filter-withholds-when-table-moved-or-poisoned", "folders-model-stored-poison-forces-failed-and-clears-rows", "derived-publish-dropped-for-moved-table-retries-and-recovers-without-removed-row"]
+        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state", "review-model-refuses-and-drops-when-engine-untrusted", "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", "review-bare-model-selection-change-makes-no-review-request", "copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write", "csv-largest-quotes-exactly-and-marks-unrepresentable-paths", "csv-export-flow-refuses-blocked-toolarge-stale-and-writes-once-when-unchanged", "csv-export-real-model-wiring-leaves-removal-message-untouched", "engine-largest-folders-abi-and-forget-on-real-tree", "folders-model-publishes-real-list-drops-stale-and-clears-on-poison", "folders-model-clears-at-once-and-rejects-stale-version-with-bounded-retry", "folders-model-version-retry-is-bounded-and-ends-failed-with-no-rows", "derived-presentation-retains-only-for-filter-withholds-when-table-moved-or-poisoned", "folders-model-stored-poison-forces-failed-and-clears-rows", "derived-publish-dropped-for-moved-table-retries-and-recovers-without-removed-row", "derived-retry-exhaustion-ends-unavailable-with-reason-not-spinner"]
         let d = fixture("review-model", [("a.bin", 30_000), ("b.bin", 20_000), ("c.bin", 10_000)])
         defer { try? FileManager.default.removeItem(at: d) }
         guard let t = await ScanSession(root: d.path, excludes: [])?.run({ _ in }), let a = node(t, "a.bin"), let b = node(t, "b.bin"), let c = node(t, "c.bin") else {
@@ -2160,7 +2160,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         let settlingWithheld = isStale(am4.derivedPresentation)
         am4.requiredVersion = nil
         am4.markOutOfDate("test reason")
-        let outOfDateWithheld = am4.derivedPresentation == .updating("test reason")  // previous contract: kept, with the reason
+        let outOfDateWithheld = am4.derivedPresentation == .unavailable("test reason")   // terminal with its reason, never a spinner
         am4.viewOutOfDate = false; am4.outOfDateReason = nil
         let readyAgain = am4.derivedPresentation == .ready
         am4.panicBaseline = EnginePanics.count &- 1
@@ -2187,26 +2187,41 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         defer { try? FileManager.default.removeItem(at: d7) }
         if let t7 = await ScanSession(root: d7.path, excludes: [])?.run({ _ in }), let p7 = node(t7, "p/a.bin") ?? node(t7, "a.bin") {
             let am7 = AppModel(); am7.tree = t7; am7.panicBaseline = EnginePanics.count
-            let fired = Box(0)
+            let fired = Box(0), preContains = Box(false), moved = Box(false), acks = Box(0)
             am7.beforePublish = { key, _, _ in
                 guard key == "derived" else { return }
                 fired.value += 1
-                if fired.value == 1 { _ = t7.forget(p7) }                         // the table moves under the first read
+                if fired.value == 1 {
+                    if case .success(let pre) = t7.derivedSnapshot(filter: nil, count: 200) { preContains.value = pre.ids.contains(p7) }   // positive precondition: the removed node IS in the first read
+                    let v0 = t7.version; _ = t7.forget(p7); moved.value = t7.version != v0          // the table moves under it
+                }
             }
+            am7.afterPublish = { key, _, _ in if key == "derived" { acks.value += 1 } }          // fires only after a real publication
             am7.refreshDerived()
             var recovered = false
-            for _ in 0..<150 where !recovered {                                  // up to ~3 s; the first retry waits 100 ms
+            for _ in 0..<150 where !recovered {                                  // bounded wait, gated on the published state
                 try? await Task.sleep(nanoseconds: 20_000_000)
-                recovered = am7.derivedVersion == t7.version && !am7.largestIDs.isEmpty
+                recovered = am7.derivedVersion == t7.version && !am7.largestIDs.isEmpty && acks.value >= 1
             }
             let dropped = !am7.largestIDs.contains(p7)
             let ready = am7.derivedPresentation == .ready
-            // generation: an explicit retry after recovery re-reads once more and stays consistent (idempotent), never regressing the version.
+            let acksBefore = acks.value
             am7.retryDerived()
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            let stable = am7.derivedVersion == t7.version && !am7.largestIDs.contains(p7)
-            Check.expect("derived-publish-dropped-for-moved-table-retries-and-recovers-without-removed-row", recovered && dropped && ready && stable && fired.value >= 2, "recovered=\(recovered) removedGone=\(dropped) ready=\(ready) stable=\(stable) publishAttempts=\(fired.value)")
-        } else { Check.expect("derived-publish-dropped-for-moved-table-retries-and-recovers-without-removed-row", false, "fixture 7") }
+            var again = false
+            for _ in 0..<150 where !again { try? await Task.sleep(nanoseconds: 20_000_000); again = acks.value > acksBefore }   // gated on the second publication's ack
+            let stable = again && am7.derivedVersion == t7.version && !am7.largestIDs.contains(p7)
+            Check.expect("derived-publish-dropped-for-moved-table-retries-and-recovers-without-removed-row", preContains.value && moved.value && recovered && dropped && ready && stable && fired.value >= 2, "pre=\(preContains.value) moved=\(moved.value) recovered=\(recovered) removedGone=\(dropped) ready=\(ready) stable=\(stable) publishAttempts=\(fired.value)")
+            // Exhaustion: the same inputs fail every time. After the bound the model is out of date with a reason: terminal, no spinner, Rescan is the recovery.
+            let am8 = AppModel(); am8.tree = t7; am8.panicBaseline = EnginePanics.count
+            let tries8 = Box(0)
+            func again8() { tries8.value += 1; am8.retryBusy("derived", inputs: 4242) { again8() } }
+            again8()
+            var terminal = false
+            for _ in 0..<300 where !terminal { try? await Task.sleep(nanoseconds: 20_000_000); terminal = am8.viewOutOfDate }
+            let reasonShown: Bool = { if case .unavailable(let w) = am8.derivedPresentation { return !w.isEmpty } ; return false }()
+            let notSpinner: Bool = { if case .updating = am8.derivedPresentation { return false }; return true }()
+            Check.expect("derived-retry-exhaustion-ends-unavailable-with-reason-not-spinner", terminal && reasonShown && notSpinner && tries8.value == 6, "terminal=\(terminal) reason=\(reasonShown) notSpinner=\(notSpinner) tries=\(tries8.value)")
+        } else { Check.expect("derived-publish-dropped-for-moved-table-retries-and-recovers-without-removed-row", false, "fixture 7"); Check.expect("derived-retry-exhaustion-ends-unavailable-with-reason-not-spinner", false, "fixture 7") }
 
         Check.expect("folders-model-version-retry-is-bounded-and-ends-failed-with-no-rows", tries.value == AppModel.folderMaxAttempts && failedMsg != nil && am3.folderIDs.isEmpty && am3.folderVersion == nil, "tries=\(tries.value) failed=\(failedMsg ?? "nil") rows=\(am3.folderIDs.count)")
     }
@@ -2847,6 +2862,7 @@ final class BusyFlag: @unchecked Sendable {
         "derived-presentation-retains-only-for-filter-withholds-when-table-moved-or-poisoned",
         "folders-model-stored-poison-forces-failed-and-clears-rows",
         "derived-publish-dropped-for-moved-table-retries-and-recovers-without-removed-row",
+        "derived-retry-exhaustion-ends-unavailable-with-reason-not-spinner",
         "engine-scanned-identity-matches-lstat-on-fixture",
         "view-poison-outline-cells-show-unavailable-not-stale-names",
         "view-poison-outline-latch-persists-in-mounted-table",

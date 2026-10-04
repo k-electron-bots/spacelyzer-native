@@ -587,13 +587,13 @@ final class AppModel {
     /// What the Largest and Kinds lists show right now.
     /// `.ready`: current publication. `.retained(why)`: ONLY a pending filter edit on an otherwise current table: the last coherent
     /// publication stays visible, dimmed, selection disabled (no spinner flash per keystroke). `.updating(why)`: the table moved, a
-    /// removal/commit is settling, the view is out of date, or nothing is published yet: rows, counts and bars are WITHHELD (a removed
-    /// item is never shown as live). `.unavailable`: engine poisoned, nothing at all.
+    /// removal/commit is settling, or nothing is published yet: rows, counts and bars are WITHHELD (a removed
+    /// item is never shown as live). `.unavailable`: engine poisoned OR the view is marked out of date (its reason is shown, no spinner; recovery is Rescan, which retryDerived cannot clear): nothing at all.
     enum DerivedPresentation: Equatable { case ready, retained(String), updating(String), unavailable(String) }
     var derivedPresentation: DerivedPresentation {
         if enginePoisoned { return .unavailable("The engine reported an internal error. Rescan to continue.") }
         guard let tree else { return .updating("Updating…") }
-        if viewOutOfDate { return .updating(outOfDateReason ?? "The results may be out of date. Rescan to refresh.") }
+        if viewOutOfDate { return .unavailable(outOfDateReason ?? "The results may be out of date. Rescan to refresh.") }   // a terminal state, never a spinner
         if rowsPending { return .updating("Updating after a change…") }
         guard let v = derivedVersion, v == tree.version else { return .updating("Updating…") }
         if filterPending { return .retained("Updating the filter…") }
@@ -601,6 +601,8 @@ final class AppModel {
         return .ready
     }
     /// Explicit user retry for a derived list stuck in `.updating` (a publication that never arrived). Resets the bounded retry state.
+    var canRescan: Bool { !rootPath.isEmpty && !scanning }
+    func rescan() { if canRescan { scan(rootPath) } }
     func retryDerived() { retryDone("derived"); refreshDerived() }
 
     func refreshFolders() { startFolderLoad(attempt: 0) }
