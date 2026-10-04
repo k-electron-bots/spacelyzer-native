@@ -143,9 +143,10 @@ fn is_package(name: &str) -> bool {
 
 /// Intern a device id into the shared table (normally 1-2 entries; the lock is taken only when a directory's device changes).
 /// More than 254 distinct devices map to DEV_UNKNOWN, which the tree reads as "no scanned identity".
-fn dev_index(ctx: &Ctx, last: &mut (u64, u8), dev: u64) -> u8 {
+fn dev_index(ctx: &Ctx, last: &mut (u64, u8), dev: u64) -> u8 { intern_dev(&ctx.devs, last, dev) }
+fn intern_dev(devs: &Mutex<Vec<u64>>, last: &mut (u64, u8), dev: u64) -> u8 {
     if last.1 != crate::tree::DEV_UNKNOWN && last.0 == dev { return last.1; }
-    let mut g = ctx.devs.lock().unwrap();
+    let mut g = devs.lock().unwrap();
     let ix = match g.iter().position(|&d| d == dev) {
         Some(i) => i as u8,
         None if g.len() < crate::tree::DEV_UNKNOWN as usize => { g.push(dev); (g.len() - 1) as u8 }
@@ -327,4 +328,49 @@ pub(crate) fn enumerate_portable(dir: &Path) -> std::io::Result<Vec<RawEntry>> {
 /// Convenience for callers that want a shared handle.
 pub fn new_progress() -> Arc<ScanProgress> {
     Arc::new(ScanProgress::default())
+}
+
+#[cfg(test)]
+mod dev_intern_tests {
+    use super::*;
+    use crate::tree::DEV_UNKNOWN;
+    fn fresh() -> ((u64, u8), Mutex<Vec<u64>>) { ((0, DEV_UNKNOWN), Mutex::new(Vec::new())) }
+
+    #[test]
+    fn device_changes_between_entries_keep_indexes_consistent_through_the_one_entry_cache() {
+        let (mut last, devs) = fresh();
+        let seq = [7u64, 7, 9, 7, 9, 9, 7];
+        let ix: Vec<u8> = seq.iter().map(|&d| intern_dev(&devs, &mut last, d)).collect();
+        assert_eq!(ix, vec![0, 0, 1, 0, 1, 1, 0]);
+        assert_eq!(*devs.lock().unwrap(), vec![7, 9], "no duplicate table entries when the cache is bypassed");
+    }
+
+    #[test]
+    fn table_overflow_maps_extra_devices_to_unknown_and_keeps_earlier_indexes_stable() {
+        let (mut last, devs) = fresh();
+        let first: Vec<u8> = (0..300u64).map(|d| intern_dev(&devs, &mut last, 1000 + d)).collect();
+        assert!(first[..DEV_UNKNOWN as usize].iter().enumerate().all(|(i, &x)| x as usize == i), "first 255 get 0..=254");
+        assert!(first[DEV_UNKNOWN as usize..].iter().all(|&x| x == DEV_UNKNOWN), "the rest are unknown, never a wrapped or shared index");
+        assert_eq!(devs.lock().unwrap().len(), DEV_UNKNOWN as usize);
+        // Asking again returns the same answers: known devs keep their index, overflowed devs stay unknown (and are never cached as a valid index).
+        let again: Vec<u8> = (0..300u64).map(|d| intern_dev(&devs, &mut last, 1000 + d)).collect();
+        assert_eq!(first, again);
+        assert_eq!(devs.lock().unwrap().len(), DEV_UNKNOWN as usize);
+    }
+
+    #[test]
+    fn concurrent_per_directory_interning_gives_one_index_per_device() {
+        let devs = Mutex::new(Vec::<u64>::new());
+        let results: Vec<Vec<(u64, u8)>> = std::thread::scope(|sc| {
+            let hs: Vec<_> = (0..8u64).map(|t| { let devs = &devs; sc.spawn(move || {
+                let mut last = (0u64, DEV_UNKNOWN); let mut out = Vec::new();
+                for round in 0..200u64 { let d = 500 + (round * (t + 3)) % 50; out.push((d, intern_dev(devs, &mut last, d))); }
+                out }) }).collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let table = devs.lock().unwrap().clone();
+        let mut sorted = table.clone(); sorted.sort_unstable(); sorted.dedup();
+        assert_eq!(sorted.len(), table.len(), "duplicate device in the shared table");
+        for r in &results { for &(d, ix) in r { assert_eq!(table[ix as usize], d, "an index must always map back to its own device"); } }
+    }
 }
