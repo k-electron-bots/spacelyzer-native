@@ -207,7 +207,8 @@ struct ItemDetailsView: View {
 /// It is dismissed (by its owner) when the selection or the tree changes, and it cancels its read when it disappears.
 /// UNCOMPILED/UNRUN until a Mac build.
 struct ItemReviewPopover: View {
-    @Environment(AppModel.self) private var model
+    /// Passed explicitly, not read from the environment: nothing here assumes a popover inherits the window's environment.
+    let model: AppModel
     let tree: Tree
     let id: UInt32
     let dismiss: () -> Void
@@ -230,5 +231,7 @@ struct ItemReviewPopover: View {
         .onChange(of: model.revision) { _, _ in review.invalidate(); dismiss() }       // tree changed or replaced
         .onChange(of: model.selected) { _, _ in review.invalidate(); dismiss() }       // selection moved
         .onChange(of: model.filterRevision) { _, _ in review.invalidate(); dismiss() } // filter result changed
+        .onChange(of: model.enginePoisoned) { _, p in if p { review.invalidate(); dismiss() } }   // a caught engine panic: nothing here is trustworthy
+        .onChange(of: model.mutationPending) { _, p in if p { review.invalidate(); dismiss() } }  // a removal is being applied
     }
 }
