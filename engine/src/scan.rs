@@ -44,6 +44,9 @@ pub(crate) struct RawEntry {
     pub name: Box<str>,
     /// The real name is not valid UTF-8, so `name` is a lossy rendering that can collide with sibling names and cannot be used to reopen the entry.
     pub name_lossy: bool,
+    /// 0 = a normal entry. 1 = its metadata could not be read (permission denied), 2 = other error other than "vanished". The entry has no usable size; it is
+    /// recorded as skipped instead of silently disappearing from the totals. An entry that vanished mid-scan (ENOENT) is not an error and is not emitted.
+    pub failed: u8,
     pub kind: Kind,
     pub alloc: u64,
     pub nlink: u32,
@@ -192,6 +195,12 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
             ctx.skipped.lock().unwrap().push(Skipped::new(&dir.join(&*r.name), SkipReason::Unreadable));
             continue;
         }
+        if r.failed != 0 {
+            // Empty name = the iterator failed for this directory: the skipped path is the directory itself.
+            let path = if r.name.is_empty() { dir.to_path_buf() } else { dir.join(&*r.name) };
+            ctx.skipped.lock().unwrap().push(Skipped::new(&path, if r.failed == 1 { SkipReason::PermissionDenied } else { SkipReason::Unreadable }));
+            continue;
+        }
         match r.kind {
             Kind::Directory => {
                 let path = dir.join(&*r.name);
@@ -309,12 +318,31 @@ fn enumerate(dir: &Path, _ctx: &Ctx) -> std::io::Result<Vec<RawEntry>> {
     enumerate_portable(dir)
 }
 
+fn dir_name_marker() -> std::ffi::OsString { std::ffi::OsString::new() }
+
+fn failed_entry(name: std::ffi::OsString, err: &std::io::Error) -> RawEntry {
+    RawEntry {
+        name_lossy: name.to_str().is_none(),
+        name: name.to_string_lossy().into_owned().into_boxed_str(),
+        failed: if err.kind() == std::io::ErrorKind::PermissionDenied { 1 } else { 2 },
+        kind: Kind::File, alloc: 0, nlink: 1, dev: 0, ino: 0, mtime: 0,
+    }
+}
+
 pub(crate) fn enumerate_portable(dir: &Path) -> std::io::Result<Vec<RawEntry>> {
     use std::os::unix::fs::MetadataExt;
     let mut out = Vec::new();
     for e in std::fs::read_dir(dir)? {
-        let Ok(e) = e else { continue };
-        let Ok(md) = e.metadata() else { continue }; // lstat semantics, no symlink follow
+        let e = match e {
+            Ok(e) => e,
+            // The directory iterator itself failed (no entry name available): record the directory once as unreadable.
+            Err(err) => { out.push(failed_entry(dir_name_marker(), &err)); continue }
+        };
+        let md = match e.metadata() { // lstat semantics, no symlink follow
+            Ok(m) => m,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => { out.push(failed_entry(e.file_name(), &err)); continue }
+        };
         let ft = md.file_type();
         let kind = if ft.is_dir() {
             Kind::Directory
@@ -325,6 +353,7 @@ pub(crate) fn enumerate_portable(dir: &Path) -> std::io::Result<Vec<RawEntry>> {
         };
         out.push(RawEntry {
             name_lossy: e.file_name().to_str().is_none(),
+            failed: 0,
             name: e.file_name().to_string_lossy().into_owned().into_boxed_str(),
             kind,
             alloc: md.blocks() * 512,
