@@ -175,6 +175,11 @@ pub struct Tree {
     /// Running captures on this tree.
     pub(crate) running: AtomicUsize,
     pub(crate) mtime: Vec<i64>,
+    /// Scanned file identity, per node: inode, plus an index into `devs` (distinct device ids, normally 1-2). 9 bytes per node.
+    /// `DEV_UNKNOWN` (or a vector shorter than the node count, as in synthetic trees) means no identity was recorded.
+    pub(crate) ino: Vec<u64>,
+    pub(crate) dev_ix: Vec<u8>,
+    pub(crate) devs: Vec<u64>,
     pub(crate) first_child: Vec<NodeId>,
     pub(crate) child_count: Vec<u32>,
     pub(crate) root_path: String,
@@ -446,6 +451,27 @@ impl Tree {
             sizes[p as usize] = sizes[p as usize].saturating_sub(removed);
             cur = self.parent(p);
         }
+    }
+}
+
+pub const DEV_UNKNOWN: u8 = 255;
+
+impl Tree {
+    /// Record the identity of the node about to be pushed (call once per node, in node order, before the other columns).
+    pub(crate) fn push_identity(&mut self, dev: u64, ino: u64) {
+        let ix = match self.devs.iter().position(|&d| d == dev) {
+            Some(i) => i as u8,
+            None if self.devs.len() < DEV_UNKNOWN as usize => { self.devs.push(dev); (self.devs.len() - 1) as u8 }
+            None => DEV_UNKNOWN, // more than 255 distinct devices: fail closed, identity unknown
+        };
+        self.ino.push(ino); self.dev_ix.push(ix);
+    }
+    /// Scanned (dev, ino) of `id`, or None when none was recorded.
+    pub fn scanned_identity(&self, id: NodeId) -> Option<(u64, u64)> {
+        let i = id as usize;
+        let ix = *self.dev_ix.get(i)?;
+        if ix == DEV_UNKNOWN { return None; }
+        Some((*self.devs.get(ix as usize)?, *self.ino.get(i)?))
     }
 }
 

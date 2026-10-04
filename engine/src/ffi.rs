@@ -830,13 +830,36 @@ pub unsafe extern "C" fn spz_outline_snapshot_status(
     })
 }
 
-/// Live lstat of `path` into `out`. Returns 0 on success, a positive OS errno on failure (2 = gone), -1 for a null/invalid argument,
-/// -2 after a caught panic. `out` is only written on success.
+/// Live lstat of the path bytes at `path` into `out`. Contract: 0 success; a positive value is the OS errno (2 = gone);
+/// -1 null `path` or `out`; -2 a panic was caught; -3 the OS failed without an errno. `out` is written only on success.
+/// Path bytes are used as-is (macOS and Linux paths need not be UTF-8). The scanner's tree stores names lossily, so tree paths
+/// can already contain U+FFFD; `spz_tree_check_identity` reports that case as unaddressable instead of guessing.
 #[no_mangle]
 pub unsafe extern "C" fn spz_inspect_path(path: *const c_char, out: *mut crate::inspect::Inspect) -> i32 {
     legacy(-2, || {
+        use std::os::unix::ffi::OsStrExt;
         if path.is_null() || out.is_null() { return -1; }
-        let Ok(s) = std::ffi::CStr::from_ptr(path).to_str() else { return -1 };
-        match crate::inspect::inspect(std::path::Path::new(s)) { Ok(i) => { *out = i; 0 } Err(e) => e.max(1) }
+        let p = std::path::Path::new(std::ffi::OsStr::from_bytes(std::ffi::CStr::from_ptr(path).to_bytes()));
+        match crate::inspect::inspect(p) { Ok(i) => { *out = i; 0 } Err(Some(e)) if e > 0 => e, Err(_) => -3 }
+    })
+}
+
+/// [size, align, offset of mtime, dev, ino, nlink, kind] of the Rust `Inspect` struct, for a startup compare against the imported C struct.
+#[no_mangle]
+pub unsafe extern "C" fn spz_inspect_layout(out: *mut u64) {
+    if out.is_null() { return; }
+    use crate::inspect::Inspect; use std::mem::{offset_of, size_of, align_of};
+    let v = [size_of::<Inspect>(), align_of::<Inspect>(), offset_of!(Inspect, mtime), offset_of!(Inspect, dev), offset_of!(Inspect, ino), offset_of!(Inspect, nlink), offset_of!(Inspect, kind)];
+    for (i, x) in v.iter().enumerate() { *out.add(i) = *x as u64; }
+}
+
+/// Compare the live item behind node `id` with the identity recorded by the scan. Returns an `IdentityCheck` value (0 Same, 1 Different,
+/// 2 no scanned identity, 3 unaddressable name, 4 ancestor symlink, 5 gone) or a negative error: -1 bad tree or id, -2 caught panic,
+/// -3 OS failure without errno, <= -1000: -(1000 + errno). Only Same (0) allows proceeding, and even then the item can change afterwards.
+#[no_mangle]
+pub unsafe extern "C" fn spz_tree_check_identity(t: *const Tree, id: NodeId) -> i32 {
+    legacy(-2, || {
+        if !valid(t, id) { return -1; }
+        match crate::inspect::check_scanned(&*t, id) { Ok(c) => c as i32, Err(Some(e)) if e > 0 => -(1000 + e), Err(_) => -3 }
     })
 }
