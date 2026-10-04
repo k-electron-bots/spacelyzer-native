@@ -1746,11 +1746,13 @@ private actor PublicationBarrier {
         let l0 = labels(table)
         let v0state = visibleCellState(table)
         snapshot(host, "outline-filtered-before-removal.png")
+        let stay = node(tree, "stay.txt"), bigID = node(tree, "big.txt")
         let before = (count: childCount(l0, "sub"), chevrons: v0state.chevronsVisible, kindItems: m.kindRows.reduce(UInt64(0)) { $0 + $1.items },
-                      largestHas: m.largestIDs.contains(gone))
+                      largestHas: m.largestIDs.contains(gone), largestSurvivors: stay.map { m.largestIDs.contains($0) } == true && bigID.map { m.largestIDs.contains($0) } == true,
+                      derivedCurrent: m.derivedVersion == m.tree?.version)
         // Positive controls: the filter is really applied in the view and the folder is really expanded.
         let controls: Bool = hasLabel(l0, "gone.txt") && hasLabel(l0, "stay.txt") && hasLabel(l0, "big.txt") && !hasLabel(l0, "keep.log") && !hasLabel(l0, "hidden.log")
-            && (before.count ?? 0) >= 2 && before.chevrons >= 1 && before.largestHas && before.kindItems >= 3
+            && before.count == 3 && before.chevrons >= 1 && before.largestHas && before.largestSurvivors && before.derivedCurrent && before.kindItems == 3
 
         m.selected = gone
         let selectedBefore: Bool = await PublicationRegression.wait { if let i = m.outlineIndex[gone] { return table.selectedRow == i }; return false }
@@ -1758,22 +1760,25 @@ private actor PublicationBarrier {
         m.pendingRemoval = gone; m.confirmRemoval()
         let accepted: Bool = m.removalInFlight
         let settled: Bool = await PublicationRegression.wait { !m.removalInFlight && m.commitsInFlight == 0 && (m.tree?.version ?? 0) > v0 && !m.rowsPending && table.numberOfRows == m.outlineRows.count }
+        let derivedAfter: Bool = await PublicationRegression.wait { m.derivedVersion == m.tree?.version && !m.filterPending }
         try? await Task.sleep(nanoseconds: 400_000_000)
         let l1 = labels(table)
         let v1state = visibleCellState(table)
         snapshot(host, "outline-filtered-after-removal.png")
         let after = (count: childCount(l1, "sub"), chevrons: v1state.chevronsVisible, kindItems: m.kindRows.reduce(UInt64(0)) { $0 + $1.items },
-                     largestHas: m.largestIDs.contains(gone))
+                     largestHas: m.largestIDs.contains(gone), largestSurvivors: stay.map { m.largestIDs.contains($0) } == true && bigID.map { m.largestIDs.contains($0) } == true,
+                     derivedCurrent: derivedAfter)
         let goneRowGone: Bool = !hasLabel(l1, "gone.txt")
-        let countDropped: Bool = before.count != nil && after.count != nil && after.count! == before.count! - 1
-        let kindsDropped: Bool = after.kindItems + 1 == before.kindItems
-        let viewV = "V[rowGone=\(goneRowGone) subCount=\(String(describing: before.count))->\(String(describing: after.count)) chevrons=\(before.chevrons)->\(after.chevrons) labels=\(l1)]"
-        let modelM = "M[kindItems=\(before.kindItems)->\(after.kindItems) largestHadGone=\(before.largestHas)->\(after.largestHas)] (Kinds/Largest panes not mounted)"
-        Check.expect("view-outline-filtered-expanded-removal-readouts-coherent", controls && accepted && settled && goneRowGone && countDropped && after.chevrons >= 1 && kindsDropped && !after.largestHas,
+        let countDropped: Bool = before.count == 3 && after.count == 2   // direct live children, NOT filtered (the filter hides hidden.log and keep.log)
+        let kindsDropped: Bool = before.kindItems == 3 && after.kindItems == 2   // filtered Kinds total, a separate readout
+        let largestOK: Bool = after.derivedCurrent && after.largestSurvivors && !after.largestHas
+        let viewV = "V[rowGone=\(goneRowGone) subDirectLiveChildCountUnfiltered=\(String(describing: before.count))->\(String(describing: after.count)) chevrons=\(before.chevrons)->\(after.chevrons) labels=\(l1)]"
+        let modelM = "M[filteredKindItems=\(before.kindItems)->\(after.kindItems) largestHadGone=\(before.largestHas)->\(after.largestHas) largestSurvivorsBigStay=\(before.largestSurvivors)->\(after.largestSurvivors) derivedCurrent=\(after.derivedCurrent)] (Kinds/Largest panes not mounted)"
+        Check.expect("view-outline-filtered-expanded-removal-readouts-coherent", controls && accepted && settled && goneRowGone && countDropped && after.chevrons >= 1 && kindsDropped && largestOK,
                      "controls=\(controls) accepted=\(accepted) settled=\(settled) \(viewV) \(modelM) l0=\(l0)")
         let neighbors: Bool = hasLabel(l1, "stay.txt") && hasLabel(l1, "big.txt") && hasLabel(l1, "sub")
-        Check.expect("view-outline-filtered-expanded-selection-and-neighbors", selectedBefore && accepted && settled && m.selected == nil && table.selectedRow == -1 && neighbors,
-                     "selectedBefore=\(selectedBefore) modelSelected=\(String(describing: m.selected)) selectedRow=\(table.selectedRow) neighbors=\(neighbors) expandedKept=\(m.expanded.contains(sdir)) (no poison in this fixture)")
+        Check.expect("view-outline-filtered-expanded-selection-and-neighbors", selectedBefore && accepted && settled && m.selected == nil && table.selectedRow == -1 && neighbors && m.expanded.contains(sdir),
+                     "selectedBefore=\(selectedBefore) modelSelected=\(String(describing: m.selected)) selectedRow=\(table.selectedRow) neighbors=\(neighbors) expandedKept=\(m.expanded.contains(sdir)) (asserted; no poison in this fixture)")
     }
 }
 
