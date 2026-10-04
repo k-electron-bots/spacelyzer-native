@@ -462,6 +462,12 @@ impl Tree {
     /// Record the identity of the node about to be pushed (call once per node, in node order, before the other columns).
     pub(crate) fn push_identity(&mut self, dev: u64, ino: u64) {
         if !self.identity_enabled { return; }
+        // Never regrow: the columns were reserved for the expected node count. If more nodes arrive, drop ALL identity (fail closed)
+        // rather than risk an infallible Vec growth abort.
+        if self.ino.len() >= self.ino.capacity() || self.dev_ix.len() >= self.dev_ix.capacity() {
+            self.identity_enabled = false; self.ino = Vec::new(); self.dev_ix = Vec::new(); self.devs = Vec::new();
+            return;
+        }
         let ix = match self.devs.iter().position(|&d| d == dev) {
             Some(i) => i as u8,
             None if self.devs.len() < DEV_UNKNOWN as usize => { self.devs.push(dev); (self.devs.len() - 1) as u8 }
@@ -546,6 +552,20 @@ impl Tree {
 #[cfg(test)]
 mod identity_reserve_tests {
     use super::*;
+    #[test]
+    fn more_nodes_than_reserved_disables_identity_without_regrowing() {
+        let mut t = Tree::default();
+        t.identity_enabled = t.reserve_identity(2);
+        assert!(t.identity_enabled);
+        let cap = t.ino.capacity();
+        t.push_identity(1, 10); t.push_identity(1, 11);
+        let mut n = 2; while n < cap { t.push_identity(1, 100 + n as u64); n += 1; }
+        assert_eq!(t.scanned_identity(0), Some((1, 10)));
+        t.push_identity(1, 999); // one more than the reservation
+        assert!(!t.identity_enabled && t.ino.capacity() == 0, "dropped, not regrown");
+        assert_eq!(t.scanned_identity(0), None, "no node keeps a partial identity");
+        t.push_identity(1, 1000); assert!(t.ino.is_empty());
+    }
     #[test]
     fn failed_reservation_records_nothing_and_fails_closed() {
         let mut t = Tree::default();
