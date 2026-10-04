@@ -19,7 +19,7 @@ use std::fs::File;
 use std::hash::Hasher;
 use std::io::Read;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DupGroup {
@@ -33,7 +33,9 @@ pub struct DupGroup {
 pub struct DupReport {
     /// Largest `wasted` first, ties by first member id.
     pub groups: Vec<DupGroup>,
-    /// Sum over groups of size * (members - 1): space held by the extra copies (allocated size, an estimate of what removing all but one frees).
+    /// Sum over groups of size * (members - 1): the allocated size of the extra copies. NOT a reclaimable-space figure: identical content does not
+    /// mean removing a copy frees these bytes (APFS clones and compression share or shrink storage, other links or references may exist),
+    /// and this pass checks none of that. Treat it as an upper-bound estimate of duplicate allocation only.
     pub wasted: u64,
     pub unreadable: u32,
     pub changed: u32,
@@ -41,6 +43,26 @@ pub struct DupReport {
     pub cancelled: bool,
     /// Table version the candidate set was captured at.
     pub version: u64,
+}
+
+/// Live counters, readable from another thread while a pass runs. All Relaxed: a progress display, never a result.
+#[derive(Default)]
+pub struct DupProgress {
+    /// Candidate files after the size grouping (set once, before any file is read).
+    pub candidates: AtomicU64,
+    /// Candidates whose prefix stage has finished (opened and hashed, or counted unreadable/changed, or skipped as an alias).
+    pub examined: AtomicU64,
+    /// Bytes read from disk so far, all stages (prefix, full hash and compare reads), so it can exceed the sum of file sizes.
+    pub bytes_read: AtomicU64,
+    /// Test hook: called after every read with the running `bytes_read`. Not part of the stable API.
+    #[doc(hidden)]
+    pub on_read: Option<Box<dyn Fn(u64) + Send + Sync>>,
+}
+impl DupProgress {
+    fn read(&self, n: usize) {
+        let t = self.bytes_read.fetch_add(n as u64, Ordering::Relaxed) + n as u64;
+        if let Some(h) = &self.on_read { h(t); }
+    }
 }
 
 const PREFIX: usize = 4096;
@@ -58,15 +80,16 @@ fn open_checked(tree: &Tree, id: NodeId) -> Result<Opened, bool> {
     Ok(Opened { f, len: m.len() })
 }
 
-fn hash_prefix(o: &mut Opened) -> Option<u64> {
+fn hash_prefix(o: &mut Opened, pr: &DupProgress) -> Option<u64> {
     let mut buf = vec![0u8; PREFIX.min(o.len as usize)];
     o.f.read_exact(&mut buf).ok()?;
+    pr.read(buf.len());
     let mut h = std::collections::hash_map::DefaultHasher::new();
     h.write(&buf);
     Some(h.finish())
 }
 
-fn hash_full(tree: &Tree, id: NodeId, len: u64, cancel: &AtomicBool) -> Option<u64> {
+fn hash_full(tree: &Tree, id: NodeId, len: u64, cancel: &AtomicBool, pr: &DupProgress) -> Option<u64> {
     let mut o = open_checked(tree, id).ok()?;
     if o.len != len { return None; }
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -76,6 +99,7 @@ fn hash_full(tree: &Tree, id: NodeId, len: u64, cancel: &AtomicBool) -> Option<u
         if cancel.load(Ordering::Relaxed) { return None; }
         let n = (left as usize).min(CHUNK);
         o.f.read_exact(&mut buf[..n]).ok()?;
+        pr.read(n);
         h.write(&buf[..n]);
         left -= n as u64;
     }
@@ -83,7 +107,7 @@ fn hash_full(tree: &Tree, id: NodeId, len: u64, cancel: &AtomicBool) -> Option<u
 }
 
 /// Byte-for-byte equality of two files of the same logical length. None on any read problem or cancel.
-fn same_bytes(tree: &Tree, a: NodeId, b: NodeId, len: u64, cancel: &AtomicBool) -> Option<bool> {
+fn same_bytes(tree: &Tree, a: NodeId, b: NodeId, len: u64, cancel: &AtomicBool, pr: &DupProgress) -> Option<bool> {
     let (mut fa, mut fb) = (open_checked(tree, a).ok()?, open_checked(tree, b).ok()?);
     if fa.len != len || fb.len != len { return None; }
     let (mut ba, mut bb) = (vec![0u8; CHUNK], vec![0u8; CHUNK]);
@@ -92,6 +116,7 @@ fn same_bytes(tree: &Tree, a: NodeId, b: NodeId, len: u64, cancel: &AtomicBool) 
         if cancel.load(Ordering::Relaxed) { return None; }
         let n = (left as usize).min(CHUNK);
         fa.f.read_exact(&mut ba[..n]).ok()?; fb.f.read_exact(&mut bb[..n]).ok()?;
+        pr.read(2 * n);
         if ba[..n] != bb[..n] { return Some(false); }
         left -= n as u64;
     }
@@ -101,25 +126,26 @@ fn same_bytes(tree: &Tree, a: NodeId, b: NodeId, len: u64, cancel: &AtomicBool) 
 #[derive(Default)]
 struct Part { groups: Vec<DupGroup>, unreadable: u32, changed: u32, aliases: u32 }
 
-fn process_size_group(tree: &Tree, size: u64, ids: Vec<NodeId>, cancel: &AtomicBool) -> Part {
+fn process_size_group(tree: &Tree, size: u64, ids: Vec<NodeId>, cancel: &AtomicBool, pr: &DupProgress) -> Part {
     let mut part = Part::default();
     // 2. collapse hard-link aliases (same dev+ino) to the lowest id.
     let mut seen: HashMap<(u64, u64), NodeId> = HashMap::new();
     let mut ids: Vec<NodeId> = ids.into_iter().filter(|&i| match tree.scanned_identity(i) {
-        Some(k) => if seen.contains_key(&k) { part.aliases += 1; false } else { seen.insert(k, i); true },
+        Some(k) => if seen.contains_key(&k) { part.aliases += 1; pr.examined.fetch_add(1, Ordering::Relaxed); false } else { seen.insert(k, i); true },
         None => true,
     }).collect();
     ids.sort_unstable();
-    if ids.len() < 2 { return part; }
+    if ids.len() < 2 { pr.examined.fetch_add(ids.len() as u64, Ordering::Relaxed); return part; }
     // 3 + 4a. open, check, group by (logical length, prefix hash).
     let mut by_prefix: BTreeMap<(u64, u64), Vec<NodeId>> = BTreeMap::new();
     for id in ids {
         if cancel.load(Ordering::Relaxed) { return part; }
         match open_checked(tree, id) {
-            Ok(mut o) => match hash_prefix(&mut o) { Some(h) => by_prefix.entry((o.len, h)).or_default().push(id), None => part.unreadable += 1 },
+            Ok(mut o) => match hash_prefix(&mut o, pr) { Some(h) => by_prefix.entry((o.len, h)).or_default().push(id), None => part.unreadable += 1 },
             Err(true) => part.unreadable += 1,
             Err(false) => part.changed += 1,
         }
+        pr.examined.fetch_add(1, Ordering::Relaxed);
     }
     for ((len, _), cand) in by_prefix {
         if cand.len() < 2 { continue; }
@@ -127,7 +153,7 @@ fn process_size_group(tree: &Tree, size: u64, ids: Vec<NodeId>, cancel: &AtomicB
         let mut by_full: BTreeMap<u64, Vec<NodeId>> = BTreeMap::new();
         for id in cand {
             if cancel.load(Ordering::Relaxed) { return part; }
-            match hash_full(tree, id, len, cancel) { Some(h) => by_full.entry(h).or_default().push(id), None => part.unreadable += 1 }
+            match hash_full(tree, id, len, cancel, pr) { Some(h) => by_full.entry(h).or_default().push(id), None => if !cancel.load(Ordering::Relaxed) { part.unreadable += 1 } }
         }
         for (_, same_hash) in by_full {
             if same_hash.len() < 2 { continue; }
@@ -136,10 +162,10 @@ fn process_size_group(tree: &Tree, size: u64, ids: Vec<NodeId>, cancel: &AtomicB
             for id in same_hash {
                 let mut placed = false;
                 for c in classes.iter_mut() {
-                    match same_bytes(tree, c[0], id, len, cancel) {
+                    match same_bytes(tree, c[0], id, len, cancel, pr) {
                         Some(true) => { c.push(id); placed = true; break; }
                         Some(false) => {}
-                        None => { part.unreadable += 1; placed = true; break; }
+                        None => { if !cancel.load(Ordering::Relaxed) { part.unreadable += 1; } placed = true; break; }
                     }
                 }
                 if !placed { classes.push(vec![id]); }
@@ -152,6 +178,12 @@ fn process_size_group(tree: &Tree, size: u64, ids: Vec<NodeId>, cancel: &AtomicB
 
 /// Find duplicate regular files. `min_size` is in scanned (allocated) bytes; zero-size files are never candidates. Cooperative `cancel`.
 pub fn find_duplicates(tree: &Tree, min_size: u64, cancel: &AtomicBool) -> DupReport {
+    find_duplicates_with(tree, min_size, cancel, &DupProgress::default())
+}
+
+/// As `find_duplicates`, publishing counters to `progress` while it runs. On cancel the report holds only groups fully proven before the stop
+/// (never a partial group) and `cancelled` is true; counts are then lower bounds.
+pub fn find_duplicates_with(tree: &Tree, min_size: u64, cancel: &AtomicBool, progress: &DupProgress) -> DupReport {
     let tab = tree.table();
     let dead = tab.dead_mask(tree);
     let mut by_size: BTreeMap<u64, Vec<NodeId>> = BTreeMap::new();
@@ -163,7 +195,8 @@ pub fn find_duplicates(tree: &Tree, min_size: u64, cancel: &AtomicBool) -> DupRe
         by_size.entry(s).or_default().push(i);
     }
     let work: Vec<(u64, Vec<NodeId>)> = by_size.into_iter().filter(|(_, v)| v.len() >= 2).collect();
-    let parts: Vec<Part> = work.into_par_iter().map(|(s, v)| process_size_group(tree, s, v, cancel)).collect();
+    progress.candidates.store(work.iter().map(|(_, v)| v.len() as u64).sum(), Ordering::Relaxed);
+    let parts: Vec<Part> = work.into_par_iter().map(|(s, v)| process_size_group(tree, s, v, cancel, progress)).collect();
     let mut r = DupReport { version: tab.version, cancelled: cancel.load(Ordering::Relaxed), ..Default::default() };
     for p in parts { r.groups.extend(p.groups); r.unreadable += p.unreadable; r.changed += p.changed; r.hardlink_aliases += p.aliases; }
     r.wasted = r.groups.iter().map(|g| g.size * (g.ids.len() as u64 - 1)).sum();
