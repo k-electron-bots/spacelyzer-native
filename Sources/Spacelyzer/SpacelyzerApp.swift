@@ -1943,7 +1943,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
 
     /// UNCOMPILED/UNRUN until a Mac run. Deterministic: every step that must happen after another waits on a gate, not on a sleep.
     private static func reviewModelChecks() async {
-        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state", "review-model-refuses-and-drops-when-engine-untrusted", "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", "review-bare-model-selection-change-makes-no-review-request", "copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write", "csv-largest-quotes-exactly-and-marks-unrepresentable-paths", "csv-export-flow-refuses-blocked-toolarge-stale-and-writes-once-when-unchanged", "csv-export-real-model-wiring-leaves-removal-message-untouched", "engine-largest-folders-abi-and-forget-on-real-tree", "folders-model-publishes-real-list-drops-stale-and-clears-on-poison"]
+        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state", "review-model-refuses-and-drops-when-engine-untrusted", "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", "review-bare-model-selection-change-makes-no-review-request", "copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write", "csv-largest-quotes-exactly-and-marks-unrepresentable-paths", "csv-export-flow-refuses-blocked-toolarge-stale-and-writes-once-when-unchanged", "csv-export-real-model-wiring-leaves-removal-message-untouched", "engine-largest-folders-abi-and-forget-on-real-tree", "folders-model-publishes-real-list-drops-stale-and-clears-on-poison", "folders-model-clears-at-once-and-rejects-stale-version-with-bounded-retry", "folders-model-version-retry-is-bounded-and-ends-failed-with-no-rows"]
         let d = fixture("review-model", [("a.bin", 30_000), ("b.bin", 20_000), ("c.bin", 10_000)])
         defer { try? FileManager.default.removeItem(at: d) }
         guard let t = await ScanSession(root: d.path, excludes: [])?.run({ _ in }), let a = node(t, "a.bin"), let b = node(t, "b.bin"), let c = node(t, "c.bin") else {
@@ -2093,26 +2093,58 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         }
         Check.expect("engine-largest-folders-abi-and-forget-on-real-tree", engineOK, engineDetail)
 
-        // 2. Real AppModel: refresh publishes the real list; a stale generation does not publish; a poisoned engine shows a problem, not rows.
+        // 2. Real AppModel and the real loader. Rows exist only when ready; poisoned shows a failure and no rows.
         let d2 = mk("folders-model", [("x/a.bin", 90_000), ("y/b.bin", 30_000)])
         defer { try? FileManager.default.removeItem(at: d2) }
         guard let t2 = await ScanSession(root: d2.path, excludes: [])?.run({ _ in }), let x = node(t2, "x"), let y = node(t2, "y") else {
             Check.expect("folders-model-publishes-real-list-drops-stale-and-clears-on-poison", false, "fixture 2"); return
         }
         let am = AppModel(); am.tree = t2; am.panicBaseline = EnginePanics.count
-        am.refreshFolders(); await am.folderTask?.value
-        let published = am.folderIDs == [x, y] && am.folderVersion == t2.version && am.folderProblem == nil && am.folderSizes == [t2.info(x).size, t2.info(y).size]
-        // tree replaced while a refresh may still be in flight: its answer must not appear (the generation/tree guard; the refresh may already have finished, so this is a guard check, not a race proof)
         am.refreshFolders()
-        let staleTask = am.folderTask
-        am.tree = nil; am.refreshFolders()                                   // tree gone: list cleared
-        await staleTask?.value
-        let clearedOnNoTree = am.folderIDs.isEmpty && am.folderVersion == nil
-        am.tree = t2
+        let loadingNow = am.folderLoad == .loading && am.folderIDs.isEmpty
+        await am.folderTask?.value
+        let published = am.folderLoad == .ready && am.folderIDs == [x, y] && am.folderVersion == t2.version && am.folderSizes == [t2.info(x).size, t2.info(y).size]
+
+        // Generation guard, isolated: SAME tree, a LATE answer for an older generation, and a correct-looking version. It must change nothing.
+        let g = am.folderGeneration
+        am.applyFolderResult(.success(FolderSnapshot(ids: [y], sizes: [1], version: t2.version)), tree: t2, generation: g &- 1, attempt: 0)
+        let lateIgnored = am.folderIDs == [x, y] && am.folderLoad == .ready
+        // ...and an answer for a different tree object is ignored too
+        let otherTree = await ScanSession(root: d2.path, excludes: [])?.run({ _ in })
+        if let otherTree { am.applyFolderResult(.success(FolderSnapshot(ids: [y], sizes: [1], version: otherTree.version)), tree: otherTree, generation: g, attempt: 0) }
+        let otherIgnored = am.folderIDs == [x, y]
+
         am.panicBaseline = EnginePanics.count &- 1                           // the engine now looks poisoned
-        am.refreshFolders(); await am.folderTask?.value
-        let poisonShown = am.folderIDs.isEmpty && am.folderProblem != nil && am.folderVersion == nil
-        Check.expect("folders-model-publishes-real-list-drops-stale-and-clears-on-poison", published && clearedOnNoTree && poisonShown, "published=\(published) clearedOnNoTree=\(clearedOnNoTree) poisonShown=\(poisonShown)")
+        am.refreshFolders()
+        let poisonShown = am.folderIDs.isEmpty && am.folderVersion == nil && { if case .failed = am.folderLoad { return true }; return false }()
+        am.panicBaseline = EnginePanics.count
+        Check.expect("folders-model-publishes-real-list-drops-stale-and-clears-on-poison", loadingNow && published && lateIgnored && otherIgnored && poisonShown, "loadingNow=\(loadingNow) published=\(published) lateIgnored=\(lateIgnored) otherTreeIgnored=\(otherIgnored) poisonShown=\(poisonShown)")
+
+        // 3. A removal while Folders are shown: the rows go away AT ONCE (revision change), a stale answer for the old version is rejected and
+        // retried (bounded), and the final list has no removed folder. The loader is the real one except the first answer, which is the OLD list.
+        let am2 = AppModel(); am2.tree = t2; am2.panicBaseline = EnginePanics.count
+        am2.refreshFolders(); await am2.folderTask?.value
+        guard case .success(let oldSnap) = t2.largestFolders(count: 10) else { Check.expect("folders-model-clears-at-once-and-rejects-stale-version-with-bounded-retry", false, "snapshot"); return }
+        let calls = Box(0)
+        am2.folderLoader = { tree, n in
+            calls.value += 1
+            return calls.value == 1 ? .success(oldSnap) : tree.largestFolders(count: n)       // first answer is the pre-removal list
+        }
+        _ = t2.forget(x); am2.revision += 1                                  // removal: revision bump
+        let clearedAtOnce = am2.folderIDs.isEmpty && am2.folderLoad == .idle && am2.folderVersion == nil
+        am2.refreshFolders()
+        for _ in 0..<20 where am2.folderLoad == .loading || am2.folderLoad == .idle { await am2.folderTask?.value }
+        let retried = calls.value == 2 && am2.folderLoad == .ready && am2.folderIDs == [y] && !am2.folderIDs.contains(x)
+        Check.expect("folders-model-clears-at-once-and-rejects-stale-version-with-bounded-retry", clearedAtOnce && retried, "clearedAtOnce=\(clearedAtOnce) loaderCalls=\(calls.value) final=\(am2.folderIDs)")
+
+        // 4. A loader whose answer never matches the tree version: exactly folderMaxAttempts tries, then a failure (not loading forever, not a 0 count).
+        let am3 = AppModel(); am3.tree = t2; am3.panicBaseline = EnginePanics.count
+        let tries = Box(0)
+        am3.folderLoader = { tree, _ in tries.value += 1; return .success(FolderSnapshot(ids: [y], sizes: [1], version: tree.version &+ 1)) }
+        am3.refreshFolders()
+        for _ in 0..<20 where am3.folderLoad == .loading { await am3.folderTask?.value }
+        let failedMsg: String? = { if case .failed(let m) = am3.folderLoad { return m }; return nil }()
+        Check.expect("folders-model-version-retry-is-bounded-and-ends-failed-with-no-rows", tries.value == AppModel.folderMaxAttempts && failedMsg != nil && am3.folderIDs.isEmpty && am3.folderVersion == nil, "tries=\(tries.value) failed=\(failedMsg ?? "nil") rows=\(am3.folderIDs.count)")
     }
 
     private final class Box<T>: @unchecked Sendable {
@@ -2746,6 +2778,8 @@ final class BusyFlag: @unchecked Sendable {
         "csv-export-real-model-wiring-leaves-removal-message-untouched",
         "engine-largest-folders-abi-and-forget-on-real-tree",
         "folders-model-publishes-real-list-drops-stale-and-clears-on-poison",
+        "folders-model-clears-at-once-and-rejects-stale-version-with-bounded-retry",
+        "folders-model-version-retry-is-bounded-and-ends-failed-with-no-rows",
         "engine-scanned-identity-matches-lstat-on-fixture",
         "view-poison-outline-cells-show-unavailable-not-stale-names",
         "view-poison-outline-latch-persists-in-mounted-table",

@@ -189,15 +189,19 @@ final class AppModel {
     }
     /// Largest-files and per-kind lists are computed in Rust off the main thread, never inside a view body.
     var largestIDs: [UInt32] = []
-    /// Largest folders (Folders tab). Loaded only while that tab is shown, from one engine capture, and dropped when the tree changes.
+    /// Largest folders (Folders tab). Loaded only while that tab is shown, from one engine capture. Rows exist ONLY in `.ready`; every other
+    /// state has no rows, so nothing old can be shown or selected while a load is pending, failed, or after a change.
+    enum FolderLoad: Equatable { case idle, loading, ready, failed(String) }
+    var folderLoad: FolderLoad = .idle
     var folderIDs: [UInt32] = []
     var folderSizes: [UInt64] = []
     var folderVersion: UInt64?
-    /// nil = not loaded for the current tree/version; a message = the load failed or was refused (never shown as an empty list).
-    var folderProblem: String?
     @ObservationIgnored var folderTask: Task<Void, Never>?
-    @ObservationIgnored private var folderGeneration: UInt64 = 0
+    @ObservationIgnored private(set) var folderGeneration: UInt64 = 0
+    /// Test seam: how the list is read. Production reads the engine.
+    @ObservationIgnored var folderLoader: @Sendable (Tree, Int) async -> Result<FolderSnapshot, EngineStatus> = { t, n in t.largestFolders(count: n) }
     static let folderCount = 200
+    static let folderMaxAttempts = 3
     /// Result words for the CSV export. Separate from `removalMessage`, which belongs to Trash (and its Undo button).
     var exportMessage: String?
     @ObservationIgnored var exportTask: Task<Void, Never>?
@@ -327,7 +331,7 @@ final class AppModel {
     }
     var coloring: TreemapColoring = .folder
     var tab: TrailingTab = .treemap { didSet { surfaceCheck() } }
-    var revision = 0   // bumps when the tree changes, so views refresh
+    var revision = 0 { didSet { invalidateFolders() } }   // bumps when the tree changes, so views refresh; the Folders rows are dropped at once
     var exclusions: [String] = []
 
     var pendingRemoval: UInt32?
@@ -547,7 +551,7 @@ final class AppModel {
                 outlineRows = []; outlineInfos = []; outlineShown = []; outlineIndex = [:]; outlineRevision += 1; expanded = []; largestIDs = []; largestSizes = []; kindRows = []; activeFilter = nil
                 outlineRootSize = 0; publishedTotalBytes = nil; outlineVersion = nil; derivedVersion = nil; layoutVersion = nil; layoutNotRenderableVersion = nil; requiredVersion = nil
                 pendingRemoval = nil
-                folderTask?.cancel(); folderGeneration &+= 1; folderIDs = []; folderSizes = []; folderVersion = nil; folderProblem = nil
+                invalidateFolders()
                 exportTask?.cancel()   // an export prepared for the old tree must not write
                 if fsEpoch != epochAtStart || mutatingAtStart || mutationPending || commitsInFlight > 0 {
                     markOutOfDate("Files were moved while this scan ran, so it may not match the disk. Rescan.")
@@ -569,30 +573,48 @@ final class AppModel {
         }
     }
 
-    /// Reads the largest folders off the main actor and publishes only if the tree, the generation and the table version still match.
-    /// A failure or a poisoned engine shows a message, never an empty list or old rows.
-    func refreshFolders() {
+    /// Drops every Folders row and any load in flight at once (tree changed, replaced, or a removal bumped `revision`).
+    func invalidateFolders() {
+        folderTask?.cancel(); folderTask = nil
+        folderGeneration &+= 1
+        folderIDs = []; folderSizes = []; folderVersion = nil
+        folderLoad = .idle
+    }
+
+    func refreshFolders() { startFolderLoad(attempt: 0) }
+
+    /// Reads the largest folders off the main actor and publishes only if the generation, the tree and the table version still match.
+    /// A version mismatch retries at most `folderMaxAttempts` times with a short backoff, shown as loading, then ends as a failure.
+    private func startFolderLoad(attempt: Int) {
         folderTask?.cancel()
         folderGeneration &+= 1
         let generation = folderGeneration
-        guard let tree else { folderIDs = []; folderSizes = []; folderVersion = nil; folderProblem = nil; return }
-        if enginePoisoned { folderIDs = []; folderSizes = []; folderVersion = nil; folderProblem = "The engine reported an internal error. Rescan to continue."; return }
+        folderIDs = []; folderSizes = []; folderVersion = nil
+        guard let tree else { folderLoad = .idle; return }
+        if enginePoisoned { folderLoad = .failed("The engine reported an internal error. Rescan to continue."); return }
+        folderLoad = .loading
+        let loader = folderLoader
         folderTask = Task.detached(priority: .userInitiated) { [weak self] in
-            let result = tree.largestFolders(count: AppModel.folderCount)
+            if attempt > 0 { try? await Task.sleep(nanoseconds: UInt64(attempt) * 50_000_000) }
             if Task.isCancelled { return }
-            await MainActor.run {
-                guard let self, self.folderGeneration == generation, self.tree === tree else { return }
-                if self.enginePoisoned { self.folderIDs = []; self.folderSizes = []; self.folderVersion = nil; self.folderProblem = "The engine reported an internal error. Rescan to continue."; return }
-                switch result {
-                case .success(let snap) where snap.version == tree.version:
-                    self.folderIDs = snap.ids; self.folderSizes = snap.sizes; self.folderVersion = snap.version; self.folderProblem = nil
-                case .success:
-                    self.folderIDs = []; self.folderSizes = []; self.folderVersion = nil; self.folderProblem = "The results changed while loading. Reloading…"
-                    self.refreshFolders()
-                case .failure:
-                    self.folderIDs = []; self.folderSizes = []; self.folderVersion = nil; self.folderProblem = "The folder list could not be read. Rescan to refresh."
-                }
-            }
+            let result = await loader(tree, AppModel.folderCount)
+            if Task.isCancelled { return }
+            await MainActor.run { self?.applyFolderResult(result, tree: tree, generation: generation, attempt: attempt) }
+        }
+    }
+
+    /// The only place rows are published. Ignores an answer for another generation or tree, and a version that is not the tree's now.
+    func applyFolderResult(_ result: Result<FolderSnapshot, EngineStatus>, tree: Tree, generation: UInt64, attempt: Int) {
+        guard folderGeneration == generation, self.tree === tree else { return }
+        if enginePoisoned { folderIDs = []; folderSizes = []; folderVersion = nil; folderLoad = .failed("The engine reported an internal error. Rescan to continue."); return }
+        switch result {
+        case .success(let snap) where snap.version == tree.version:
+            folderIDs = snap.ids; folderSizes = snap.sizes; folderVersion = snap.version; folderLoad = .ready
+        case .success:
+            if attempt + 1 < Self.folderMaxAttempts { startFolderLoad(attempt: attempt + 1) }
+            else { folderIDs = []; folderSizes = []; folderVersion = nil; folderLoad = .failed("The results kept changing while loading. Try again.") }
+        case .failure:
+            folderIDs = []; folderSizes = []; folderVersion = nil; folderLoad = .failed("The folder list could not be read. Rescan to refresh.")
         }
     }
 

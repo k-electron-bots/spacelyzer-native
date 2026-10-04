@@ -61,3 +61,90 @@ fn bad_arguments_are_status_3_and_a_stale_expected_version_is_status_1() {
     let n = unsafe { spz_largest_dirs_status(std::ptr::null(), 4, ids.as_mut_ptr(), sizes.as_mut_ptr(), u64::MAX, &mut v, &mut st) };
     assert_eq!((n, st), (0, 3));
 }
+
+/// Property: with a cap larger than the tree, a node is listed exactly when it is a directory or package, not the root, not removed, and
+/// has a non-zero cumulative size; the list is ordered by (size desc, id asc) and every size equals the table's.
+fn assert_list_matches_rule(t: &Tree) {
+    let n = t.len() as u32;
+    let (ids, sizes, _v, st) = dirs(t, n + 5);
+    assert_eq!(st, 0);
+    let tab = t.table();
+    let dead = tab.dead_mask(t);
+    let want: std::collections::BTreeSet<u32> = (1..n).filter(|&i| {
+        let k = t.kind(i);
+        (k == spacelyzer_engine::tree::Kind::Directory || k == spacelyzer_engine::tree::Kind::Package) && t.size(i) > 0 && !dead.as_ref().map_or(false, |d| d[i as usize])
+    }).collect();
+    let got: std::collections::BTreeSet<u32> = ids.iter().copied().collect();
+    assert_eq!(got, want, "listed set must follow the rule");
+    assert_eq!(ids.len(), got.len(), "no duplicates");
+    for (i, id) in ids.iter().enumerate() { assert_eq!(sizes[i], t.size(*id)); }
+    assert!(ids.windows(2).zip(sizes.windows(2)).all(|(w, s)| s[0] > s[1] || (s[0] == s[1] && w[0] < w[1])), "size desc, then id asc");
+}
+
+#[test]
+fn equal_sizes_break_ties_by_id_and_packages_are_listed() {
+    let d = fixture("ties");
+    for name in ["p1", "p2", "p3.app"] { std::fs::create_dir_all(d.join(name)).unwrap(); std::fs::write(d.join(name).join("f"), vec![1u8; 50_000]).unwrap(); }
+    let t = scanned(&d);
+    assert_list_matches_rule(&t);
+    let (ids, sizes, ..) = dirs(&t, 10);
+    assert_eq!(ids.len(), 3);
+    assert!(sizes.iter().all(|s| *s == sizes[0]), "same content, same cumulative size");
+    assert!(ids.windows(2).all(|w| w[0] < w[1]), "ties ordered by node id");
+    let app = node(&t, &d.join("p3.app"));
+    assert!(ids.contains(&app), "a package is listed like a folder");
+    eprintln!("p3.app kind on this platform: {:?}", t.kind(app));
+}
+
+#[test]
+fn trees_with_only_empty_folders_or_only_files_list_nothing() {
+    let d = fixture("zero");
+    std::fs::create_dir_all(d.join("e1/e2")).unwrap(); std::fs::create_dir_all(d.join("e3")).unwrap();
+    let t = scanned(&d);
+    assert_list_matches_rule(&t);
+    assert!(dirs(&t, 10).0.is_empty(), "empty folders have no size, so they are not listed");
+    let d2 = fixture("filesonly"); std::fs::write(d2.join("a"), vec![1u8; 10_000]).unwrap();
+    let t2 = scanned(&d2);
+    assert!(dirs(&t2, 10).0.is_empty(), "only the root holds files, and the root is never listed");
+}
+
+#[test]
+fn hard_links_across_folders_follow_the_same_rule_as_the_table() {
+    let d = fixture("hl");
+    std::fs::create_dir_all(d.join("a")).unwrap(); std::fs::create_dir_all(d.join("b")).unwrap();
+    std::fs::write(d.join("a/f"), vec![1u8; 90_000]).unwrap(); std::fs::hard_link(d.join("a/f"), d.join("b/f")).unwrap();
+    let t = scanned(&d);
+    assert_list_matches_rule(&t);   // whichever folder the scan charged the shared data to, the list and the table agree and no zero folder appears
+}
+
+#[test]
+fn lists_stay_well_formed_while_folders_are_forgotten_concurrently() {
+    let d = fixture("conc");
+    for i in 0..12 { std::fs::create_dir_all(d.join(format!("d{i}/s"))).unwrap(); for j in 0..4 { std::fs::write(d.join(format!("d{i}/s/f{j}")), vec![1u8; 4096 * (i + 1)]).unwrap(); } }
+    let t = scanned(&d);
+    let n = t.len() as u32;
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let bad = std::sync::atomic::AtomicUsize::new(0); let reads = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|s| {
+        for _ in 0..3 {
+            s.spawn(|| {
+                let mut last_v = 0u64;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let (ids, sizes, v, st) = dirs(&t, n);
+                    let ok = st == 0 && v >= last_v && !ids.contains(&0) && sizes.iter().all(|s| *s > 0)
+                        && sizes.windows(2).all(|w| w[0] >= w[1]) && { let mut u = ids.clone(); u.sort_unstable(); u.dedup(); u.len() == ids.len() };
+                    if !ok { bad.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+                    last_v = v; reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            });
+        }
+        for id in 1..n { let _ = t.forget(id); std::thread::yield_now(); }
+        let target = reads.load(std::sync::atomic::Ordering::Relaxed) + 6;
+        let t0 = std::time::Instant::now();
+        while reads.load(std::sync::atomic::Ordering::Relaxed) < target && t0.elapsed().as_secs() < 20 { std::thread::yield_now(); }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    assert!(reads.load(std::sync::atomic::Ordering::Relaxed) > 0);
+    assert_eq!(bad.load(std::sync::atomic::Ordering::Relaxed), 0, "a list was malformed or a version went backwards");
+    assert!(dirs(&t, n).0.is_empty(), "everything removed, nothing listed");
+}
