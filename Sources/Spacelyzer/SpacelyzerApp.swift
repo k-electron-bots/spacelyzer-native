@@ -1939,6 +1939,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
             }
         }
         func open() { lock.lock(); opened = true; let c = cont; cont = nil; lock.unlock(); c?.resume() }
+        var isOpen: Bool { lock.lock(); defer { lock.unlock() }; return opened }
     }
     private static func settle(_ cond: () -> Bool) async { for _ in 0..<300 where !cond() { try? await Task.sleep(nanoseconds: 10_000_000) } }
 
@@ -1958,38 +1959,42 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         let inFlightBefore = m1.inProgress
         _ = t.forget(c)                       // real engine mutation on this tree: version advances
         g1.open()
-        await settle { !m1.inProgress }
-        Check.expect("review-model-version-change-drops-result-and-clears-progress", inFlightBefore && m1.result == nil && !m1.inProgress && m1.outdated, "inFlightBefore=\(inFlightBefore) result=\(String(describing: m1.result)) inProgress=\(m1.inProgress) outdated=\(m1.outdated)")
+        let tok1 = m1.token
+        await settle { m1.processedTokens.contains(tok1) }
+        Check.expect("review-model-version-change-drops-result-and-clears-progress", inFlightBefore && m1.processedTokens.contains(tok1) && m1.result == nil && !m1.inProgress && m1.outdated, "inFlightBefore=\(inFlightBefore) result=\(String(describing: m1.result)) inProgress=\(m1.inProgress) outdated=\(m1.outdated)")
 
-        // 2. A newer request wins; the older answer arriving later changes nothing.
+        // 2. A newer request wins; the older answer arriving later changes nothing. Waits are on the model's own "answer processed" signal.
         let gA = ReviewGate(), gB = ReviewGate()
         let m2 = ItemReviewModel(reviewer: { tree, id, v in if id == a { await gA.wait() } else { await gB.wait() }; return reviewTestAnswer(tree, id, v) })
-        m2.request(tree: t, node: a)
-        m2.request(tree: t, node: b)
+        m2.request(tree: t, node: a); let tokA = m2.token
+        m2.request(tree: t, node: b); let tokB = m2.token
         gB.open()
-        await settle { m2.result != nil }
+        await settle { m2.processedTokens.contains(tokB) }
         let shownB = m2.result?.node == b && !m2.inProgress
         gA.open()
-        for _ in 0..<20 { await Task.yield() }
-        try? await Task.sleep(nanoseconds: 100_000_000)
-        Check.expect("review-model-newer-request-wins-and-late-result-is-ignored", shownB && m2.result?.node == b && !m2.inProgress && !m2.outdated, "shownB=\(shownB) result=\(m2.result.map { String($0.node) } ?? "nil") inProgress=\(m2.inProgress) outdated=\(m2.outdated)")
+        await settle { m2.processedTokens.contains(tokA) }          // the late answer has now been through the acceptance logic
+        Check.expect("review-model-newer-request-wins-and-late-result-is-ignored", tokA != tokB && m2.processedTokens.contains(tokA) && shownB && m2.result?.node == b && !m2.inProgress && !m2.outdated, "tokA=\(tokA) tokB=\(tokB) processed=\(m2.processedTokens.sorted()) shownB=\(shownB) result=\(m2.result.map { String($0.node) } ?? "nil") inProgress=\(m2.inProgress) outdated=\(m2.outdated)")
 
-        // 3. Cancelling the caller of the REAL review reaches the inner detached read (a plain detached task would keep running);
-        // and invalidate() on the model clears its state.
-        let start = Date()
-        let real = Task { try await ItemReview.review(tree: t, id: a, version: t.version, parkForTest: { try await Task.sleep(nanoseconds: 30_000_000_000) }) }
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        // 3. Cancelling the caller of the REAL review reaches the inner detached read (a plain detached task would not see it).
+        // The park hook signals when the inner task is parked, and records whether it saw the cancellation. This says nothing about
+        // interrupting an FFI call: cancellation is only observed between steps. Then invalidate() on the model, waiting for the late answer.
+        let entered = ReviewGate(), sawCancel = ReviewGate()
+        let real = Task { try await ItemReview.review(tree: t, id: a, version: t.version, parkForTest: {
+            entered.open()
+            do { try await Task.sleep(nanoseconds: 60_000_000_000) } catch { sawCancel.open(); throw error }
+        }) }
+        await entered.wait()                          // the inner read is parked: the handler is genuinely exercised
         real.cancel()
         let outcome = await real.result
-        let elapsed = Date().timeIntervalSince(start)
         let cancelled: Bool = { if case .failure(let e) = outcome { return e is CancellationError }; return false }()
         let g3 = ReviewGate()
         let m3 = ItemReviewModel(reviewer: { _, _, _ in await g3.wait(); throw CancellationError() })
-        m3.request(tree: t, node: a)
+        m3.request(tree: t, node: a); let tok3 = m3.token
+        let inProgressBefore = m3.inProgress
         m3.invalidate()
         g3.open()
-        for _ in 0..<20 { await Task.yield() }
-        Check.expect("review-cancel-reaches-the-inner-read-and-clears-state", cancelled && elapsed < 5 && m3.result == nil && !m3.inProgress && !m3.outdated, "cancelled=\(cancelled) elapsed=\(elapsed)s result=\(m3.result == nil ? "nil" : "set") inProgress=\(m3.inProgress) outdated=\(m3.outdated)")
+        await settle { m3.processedTokens.contains(tok3) }       // the late (cancelled) completion has been handled
+        Check.expect("review-cancel-reaches-the-inner-read-and-clears-state", cancelled && sawCancel.isOpen && inProgressBefore && m3.processedTokens.contains(tok3) && m3.result == nil && !m3.inProgress && !m3.outdated, "cancelled=\(cancelled) innerSawCancel=\(sawCancel.isOpen) inProgressBefore=\(inProgressBefore) processed=\(m3.processedTokens.contains(tok3)) result=\(m3.result == nil ? "nil" : "set") inProgress=\(m3.inProgress) outdated=\(m3.outdated)")
     }
 
     private static func engine() async {
