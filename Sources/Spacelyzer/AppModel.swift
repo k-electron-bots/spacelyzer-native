@@ -233,7 +233,10 @@ final class AppModel {
             await barrier?("derived", generation, publication)
             await MainActor.run {
                 // Full key: tree identity, generation, and the table version the data was read at (the engine's stamp).
-                guard let self, !Task.isCancelled, self.derivedGeneration == generation, self.tree === tree, snap.version == tree.version, flt == nil || flt!.version == snap.version else { return }
+                guard let self, !Task.isCancelled, self.derivedGeneration == generation, self.tree === tree else { return }
+                // The table moved while this read ran: the result is dropped, but never silently. Bounded keyed retry (ends in the explicit out-of-date state).
+                if snap.version != tree.version { self.retryBusy("derived", inputs: self.derivedInputKey) { [weak self] in self?.refreshDerived() }; return }
+                guard flt == nil || flt!.version == snap.version else { return }
                 if self.enginePoisoned { self.markPoisoned(); return }   // a caught panic makes this publication untrustworthy
                 self.retryDone("derived")
                 self.derivedVersion = snap.version
@@ -581,19 +584,24 @@ final class AppModel {
         folderLoad = .idle
     }
 
-    /// What the Largest and Kinds lists show right now. `.ready`: the publication is the current table's. `.stale(reason)`: the previous
-    /// coherent publication is kept (not erased early) but shown dimmed with its selection disabled, and removal/navigation stay gated.
-    /// `.unavailable`: the engine is poisoned, so NO derived number, bar, count or selectable row is shown.
-    enum DerivedPresentation: Equatable { case ready, stale(String), unavailable(String) }
+    /// What the Largest and Kinds lists show right now.
+    /// `.ready`: current publication. `.retained(why)`: ONLY a pending filter edit on an otherwise current table: the last coherent
+    /// publication stays visible, dimmed, selection disabled (no spinner flash per keystroke). `.updating(why)`: the table moved, a
+    /// removal/commit is settling, the view is out of date, or nothing is published yet: rows, counts and bars are WITHHELD (a removed
+    /// item is never shown as live). `.unavailable`: engine poisoned, nothing at all.
+    enum DerivedPresentation: Equatable { case ready, retained(String), updating(String), unavailable(String) }
     var derivedPresentation: DerivedPresentation {
         if enginePoisoned { return .unavailable("The engine reported an internal error. Rescan to continue.") }
-        guard let tree else { return .stale("Updating…") }
-        if viewOutOfDate { return .stale(outOfDateReason ?? "The results may be out of date. Rescan to refresh.") }
-        if rowsPending || filterPending { return .stale("Updating after a change…") }
-        if let f = activeFilter, f.version != tree.version { return .stale("Updating…") }
-        guard let v = derivedVersion, v == tree.version else { return .stale("Updating…") }
+        guard let tree else { return .updating("Updating…") }
+        if viewOutOfDate { return .updating(outOfDateReason ?? "The results may be out of date. Rescan to refresh.") }
+        if rowsPending { return .updating("Updating after a change…") }
+        guard let v = derivedVersion, v == tree.version else { return .updating("Updating…") }
+        if filterPending { return .retained("Updating the filter…") }
+        if let f = activeFilter, f.version != tree.version { return .retained("Updating the filter…") }
         return .ready
     }
+    /// Explicit user retry for a derived list stuck in `.updating` (a publication that never arrived). Resets the bounded retry state.
+    func retryDerived() { retryDone("derived"); refreshDerived() }
 
     func refreshFolders() { startFolderLoad(attempt: 0) }
 

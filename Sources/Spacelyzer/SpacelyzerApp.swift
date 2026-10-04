@@ -1943,7 +1943,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
 
     /// UNCOMPILED/UNRUN until a Mac run. Deterministic: every step that must happen after another waits on a gate, not on a sleep.
     private static func reviewModelChecks() async {
-        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state", "review-model-refuses-and-drops-when-engine-untrusted", "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", "review-bare-model-selection-change-makes-no-review-request", "copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write", "csv-largest-quotes-exactly-and-marks-unrepresentable-paths", "csv-export-flow-refuses-blocked-toolarge-stale-and-writes-once-when-unchanged", "csv-export-real-model-wiring-leaves-removal-message-untouched", "engine-largest-folders-abi-and-forget-on-real-tree", "folders-model-publishes-real-list-drops-stale-and-clears-on-poison", "folders-model-clears-at-once-and-rejects-stale-version-with-bounded-retry", "folders-model-version-retry-is-bounded-and-ends-failed-with-no-rows", "derived-presentation-dims-when-stale-and-blanks-when-poisoned", "folders-model-stored-poison-forces-failed-and-clears-rows"]
+        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state", "review-model-refuses-and-drops-when-engine-untrusted", "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", "review-bare-model-selection-change-makes-no-review-request", "copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write", "csv-largest-quotes-exactly-and-marks-unrepresentable-paths", "csv-export-flow-refuses-blocked-toolarge-stale-and-writes-once-when-unchanged", "csv-export-real-model-wiring-leaves-removal-message-untouched", "engine-largest-folders-abi-and-forget-on-real-tree", "folders-model-publishes-real-list-drops-stale-and-clears-on-poison", "folders-model-clears-at-once-and-rejects-stale-version-with-bounded-retry", "folders-model-version-retry-is-bounded-and-ends-failed-with-no-rows", "derived-presentation-retains-only-for-filter-withholds-when-table-moved-or-poisoned", "folders-model-stored-poison-forces-failed-and-clears-rows"]
         let d = fixture("review-model", [("a.bin", 30_000), ("b.bin", 20_000), ("c.bin", 10_000)])
         defer { try? FileManager.default.removeItem(at: d) }
         guard let t = await ScanSession(root: d.path, excludes: [])?.run({ _ in }), let a = node(t, "a.bin"), let b = node(t, "b.bin"), let c = node(t, "c.bin") else {
@@ -2146,26 +2146,32 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         let failedMsg: String? = { if case .failed(let m) = am3.folderLoad { return m }; return nil }()
         // 5. The rule the Largest and Kinds views use (model level; the mounted views are not exercised). Stale keeps the previous
         // publication but dimmed and not selectable; poisoned shows nothing at all.
-        func isStale(_ p: AppModel.DerivedPresentation) -> Bool { if case .stale = p { return true }; return false }
+        func isStale(_ p: AppModel.DerivedPresentation) -> Bool { if case .updating = p { return true }; return false }
+        func isRetained(_ p: AppModel.DerivedPresentation) -> Bool { if case .retained = p { return true }; return false }
         func isUnavailable(_ p: AppModel.DerivedPresentation) -> Bool { if case .unavailable = p { return true }; return false }
         let am4 = AppModel(); am4.tree = t2; am4.panicBaseline = EnginePanics.count
         let noVersion = isStale(am4.derivedPresentation)                      // nothing published yet
         am4.derivedVersion = t2.version
         let ready = am4.derivedPresentation == .ready
         _ = t2.forget(y)                                                       // table moves; the published lists are now the OLD table's
-        let staleDimmed = isStale(am4.derivedPresentation)
+        let tableMovedWithheld = isStale(am4.derivedPresentation)
         am4.derivedVersion = t2.version
         am4.requiredVersion = t2.version                                        // a removal is settling
-        let pendingStale = isStale(am4.derivedPresentation)
+        let settlingWithheld = isStale(am4.derivedPresentation)
         am4.requiredVersion = nil
         am4.markOutOfDate("test reason")
-        let outOfDateStale = am4.derivedPresentation == .stale("test reason")  // previous contract: kept, with the reason
+        let outOfDateWithheld = am4.derivedPresentation == .updating("test reason")  // previous contract: kept, with the reason
         am4.viewOutOfDate = false; am4.outOfDateReason = nil
         let readyAgain = am4.derivedPresentation == .ready
         am4.panicBaseline = EnginePanics.count &- 1
         let poisonBlank = isUnavailable(am4.derivedPresentation)
-        let allOK = noVersion && ready && staleDimmed && pendingStale && outOfDateStale && readyAgain && poisonBlank
-        Check.expect("derived-presentation-dims-when-stale-and-blanks-when-poisoned", allOK, "noVersion=\(noVersion) ready=\(ready) staleDimmed=\(staleDimmed) pendingStale=\(pendingStale) outOfDateStale=\(outOfDateStale) readyAgain=\(readyAgain) poisonBlank=\(poisonBlank)")
+        am4.derivedVersion = t2.version
+        am4.filterPending = true
+        let filterRetained = isRetained(am4.derivedPresentation)                // filter-only pending: snapshot kept (dimmed), not withheld
+        am4.filterPending = false
+        let afterFilter = am4.derivedPresentation == .ready
+        let allOK = filterRetained && afterFilter && noVersion && ready && tableMovedWithheld && settlingWithheld && outOfDateWithheld && readyAgain && poisonBlank
+        Check.expect("derived-presentation-retains-only-for-filter-withholds-when-table-moved-or-poisoned", allOK, "filterRetained=\(filterRetained) afterFilter=\(afterFilter) noVersion=\(noVersion) ready=\(ready) tableMovedWithheld=\(tableMovedWithheld) settlingWithheld=\(settlingWithheld) outOfDateWithheld=\(outOfDateWithheld) readyAgain=\(readyAgain) poisonBlank=\(poisonBlank)")
 
         // 6. Stored poison (markPoisoned, as the poison watch calls it) while Folders are ready: failed, no rows, no version.
         let am5 = AppModel(); am5.tree = t2; am5.panicBaseline = EnginePanics.count
@@ -2811,7 +2817,7 @@ final class BusyFlag: @unchecked Sendable {
         "folders-model-publishes-real-list-drops-stale-and-clears-on-poison",
         "folders-model-clears-at-once-and-rejects-stale-version-with-bounded-retry",
         "folders-model-version-retry-is-bounded-and-ends-failed-with-no-rows",
-        "derived-presentation-dims-when-stale-and-blanks-when-poisoned",
+        "derived-presentation-retains-only-for-filter-withholds-when-table-moved-or-poisoned",
         "folders-model-stored-poison-forces-failed-and-clears-rows",
         "engine-scanned-identity-matches-lstat-on-fixture",
         "view-poison-outline-cells-show-unavailable-not-stale-names",
