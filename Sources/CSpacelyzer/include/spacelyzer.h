@@ -119,4 +119,10 @@ void spz_dup_report_group(const SpzDupReport *r, uint32_t index, SpzDupGroup *ou
 uint32_t spz_dup_report_ids(const SpzDupReport *r, uint32_t index, uint32_t *out, uint32_t cap, int32_t *status);
 void spz_dup_report_free(SpzDupReport *r);
 
+
+/* Skipped entries with status. Sorted by (path, reason) at scan end; fixed for the tree's life. Reasons: 0 permission denied, 1 unreadable, 2 separate volume, 3 user excluded.
+   counts[4] in that order. lossy=1 means the path is a lossy rendering of a non-UTF-8 path and cannot be reopened. Free the path with spz_string_free. */
+void spz_tree_skipped_counts_status(const SpzTree *t, uint32_t *out, int32_t *status);
+char *spz_tree_skipped_item_status(const SpzTree *t, uint32_t i, uint8_t *reason, uint8_t *lossy, int32_t *status);
+
 #endif

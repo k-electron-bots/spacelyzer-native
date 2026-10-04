@@ -1,0 +1,83 @@
+//! Skipped-entry accounting through the C ABI (Linux Rust evidence only). SeparateVolume cannot be produced on a single test filesystem and is untested here.
+use spacelyzer_engine::ffi::*;
+use spacelyzer_engine::scan::{scan, ScanOptions, ScanProgress};
+use spacelyzer_engine::tree::{SkipReason, Tree};
+use std::ffi::{CStr, OsStr};
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
+
+fn fixture(name: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("spz-skip-{}-{}", std::process::id(), name));
+    let _ = std::fs::remove_dir_all(&d); std::fs::create_dir_all(&d).unwrap(); d.canonicalize().unwrap()
+}
+fn scan_with(d: &Path, excl: Vec<PathBuf>) -> Tree { scan(d, &ScanOptions { exclude: excl, ..Default::default() }, &ScanProgress::default()).unwrap() }
+fn item(t: &Tree, i: u32) -> (Option<String>, u8, u8, i32) {
+    let (mut r, mut l, mut st) = (99u8, 99u8, -1i32);
+    let p = unsafe { spz_tree_skipped_item_status(t, i, &mut r, &mut l, &mut st) };
+    let s = if p.is_null() { None } else { let s = unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned(); unsafe { spz_string_free(p) }; Some(s) };
+    (s, r, l, st)
+}
+fn counts(t: &Tree) -> ([u32; 4], i32) { let mut o = [77u32; 4]; let mut st = -1; unsafe { spz_tree_skipped_counts_status(t, o.as_mut_ptr(), &mut st) }; (o, st) }
+
+#[test]
+fn order_is_sorted_and_stable_across_scans_and_counts_match_the_list() {
+    let d = fixture("order");
+    let mut excl = Vec::new();
+    for i in (0..24).rev() { std::fs::create_dir_all(d.join(format!("x{i:02}/sub"))).unwrap(); std::fs::write(d.join(format!("x{i:02}/sub/f")), vec![1u8; 5000]).unwrap(); excl.push(d.join(format!("x{i:02}"))); }
+    std::fs::write(d.join("keep"), vec![1u8; 5000]).unwrap();
+    let first = scan_with(&d, excl.clone());
+    let paths: Vec<String> = (0..first.skipped.len() as u32).map(|i| item(&first, i).0.unwrap()).collect();
+    assert_eq!(paths.len(), 24);
+    let mut sorted = paths.clone(); sorted.sort();
+    assert_eq!(paths, sorted, "sorted by path");
+    for _ in 0..8 { let t = scan_with(&d, excl.clone()); let p2: Vec<String> = (0..t.skipped.len() as u32).map(|i| item(&t, i).0.unwrap()).collect(); assert_eq!(p2, paths, "same index, same entry on every scan"); }
+    let (c, st) = counts(&first); assert_eq!(st, 0);
+    assert_eq!(c, [0, 0, 0, 24]);
+    assert_eq!(c.iter().sum::<u32>(), unsafe { spz_tree_skipped_count(&first) });
+    for i in 0..24 { let (_, r, l, st) = item(&first, i); assert_eq!((r, l, st), (SkipReason::UserExcluded as u8, 0, 0)); }
+}
+
+#[test]
+fn bad_index_and_null_arguments_are_invalid_and_leave_outputs_untouched() {
+    let d = fixture("bad");
+    std::fs::create_dir_all(d.join("a")).unwrap();
+    let t = scan_with(&d, vec![d.join("a")]);
+    assert_eq!(t.skipped.len(), 1);
+    let (p, r, l, st) = item(&t, 1);
+    assert!(p.is_none()); assert_eq!((r, l, st), (99, 99, 3), "a bad index is INVALID, not a real-looking reason");
+    let (p, ..) = { let (mut r, mut l, mut st) = (99u8, 99u8, -1i32); let q = unsafe { spz_tree_skipped_item_status(std::ptr::null(), 0, &mut r, &mut l, &mut st) }; (q.is_null(), st) }; assert!(p);
+    let mut o = [77u32; 4]; let mut st = -1;
+    unsafe { spz_tree_skipped_counts_status(std::ptr::null(), o.as_mut_ptr(), &mut st) }; assert_eq!((o, st), ([77; 4], 3));
+    st = -1; unsafe { spz_tree_skipped_counts_status(&t, std::ptr::null_mut(), &mut st) }; assert_eq!(st, 3);
+    // the old accessor still returns a value for a bad index (documented reason for the new one)
+    assert_eq!(unsafe { spz_tree_skipped_reason(&t, 5) }, 1);
+}
+
+#[test]
+fn a_non_utf8_path_is_flagged_lossy_and_a_utf8_one_is_not() {
+    let d = fixture("lossy");
+    let bad = d.join(OsStr::from_bytes(b"bad\xffname"));
+    std::fs::create_dir_all(&bad).unwrap(); std::fs::create_dir_all(d.join("good")).unwrap();
+    // exclusion matches on the lossy rendering, which is what a user-supplied (UTF-8) exclude list can express
+    let lossy_name = d.join(String::from_utf8_lossy(b"bad\xffname").into_owned());
+    let t = scan_with(&d, vec![lossy_name, d.join("good")]);
+    assert_eq!(t.skipped.len(), 2, "{:?}", t.skipped);
+    let flags: Vec<(String, u8)> = (0..2).map(|i| { let (p, _, l, st) = item(&t, i); assert_eq!(st, 0); (p.unwrap(), l) }).collect();
+    let bad_flag = flags.iter().find(|(p, _)| p.contains('\u{FFFD}')).expect("lossy entry").1;
+    let good_flag = flags.iter().find(|(p, _)| p.ends_with("/good")).expect("utf8 entry").1;
+    assert_eq!((bad_flag, good_flag), (1, 0));
+}
+
+#[test]
+fn permission_denied_directories_are_counted_when_the_test_user_cannot_read_them() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = fixture("perm");
+    std::fs::create_dir_all(d.join("locked")).unwrap(); std::fs::write(d.join("locked/f"), vec![1u8; 5000]).unwrap();
+    std::fs::set_permissions(d.join("locked"), std::fs::Permissions::from_mode(0o000)).unwrap();
+    let readable_anyway = std::fs::read_dir(d.join("locked")).is_ok();           // root ignores the mode bits
+    let t = scan_with(&d, vec![]);
+    std::fs::set_permissions(d.join("locked"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (c, st) = counts(&t); assert_eq!(st, 0);
+    if readable_anyway { assert_eq!(c, [0, 0, 0, 0], "running as a user that can read it (e.g. root): nothing to skip, assertion on the denied path not exercised"); }
+    else { assert_eq!(c, [1, 0, 0, 0]); let (p, r, l, st) = item(&t, 0); assert!(p.unwrap().ends_with("/locked")); assert_eq!((r, l, st), (SkipReason::PermissionDenied as u8, 0, 0)); }
+}
