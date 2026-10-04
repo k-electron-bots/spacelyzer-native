@@ -45,9 +45,9 @@ Folders retry button ("Try Again" in the failed overlay, disabled while the engi
 Needs a window to test: clicking Try Again shows Loading then ready, the task refresh runs when the tab appears, and the overlay layout.
 
 ## Largest and Kinds presentation (source only, UNCOMPILED/UNRUN)
-`AppModel.derivedPresentation`: `.ready`; `.stale(reason)` keeps the previous coherent publication, dimmed, selection disabled, count replaced by the reason
-(removal and navigation stay gated by the existing rules); `.unavailable` (engine poisoned) shows no number, bar, count or selectable row, in Kinds and
-Largest, and the Folders view renders failed whenever the computed poison counter says so (not only the stored flag; markPoisoned also forces Folders to failed).
-Declared checks (rules only, real tree/AppModel): derived-presentation-dims-when-stale-and-blanks-when-poisoned, folders-model-stored-poison-forces-failed-and-clears-rows.
-PLANNED, needs a mounted window: the views really render dimmed/blank/disabled in those states, no row is selectable under poison, the Kinds share bar and header are
-hidden under poison, and the UI calibration baselines (a dimmed list after a change) need re-measuring.
+`AppModel.derivedPresentation`: `.ready`; `.retained` only for a pending filter edit on a current table (last coherent publication dimmed, selection disabled, no spinner per keystroke);
+`.updating` when the table moved, a removal is settling, the view is out of date or nothing is published (rows/counts/bars withheld, spinner plus Try Again);
+`.unavailable` when the engine is poisoned (nothing shown, Kinds and Largest). Folders render failed whenever the computed poison counter says so, and markPoisoned forces Folders failed.
+A derived read whose table version moved is no longer dropped silently: bounded keyed retry (retryBusy "derived"), ending in the explicit out-of-date state; `retryDerived()` is the explicit user retry. The retry path has NO dedicated test yet.
+Declared checks (rules on the real AppModel; mounted views not exercised): derived-presentation-retains-only-for-filter-withholds-when-table-moved-or-poisoned, folders-model-stored-poison-forces-failed-and-clears-rows.
+PLANNED, needs a mounted window: dimmed/blank/disabled rendering, no selectable row under poison, Kinds bar/header hidden under poison, Try Again behavior, UI calibration baselines.
