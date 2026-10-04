@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Source-only, run-independent check: the OrderingDriver.required list must equal the check names the four
+"""Source-only, run-independent check: the OrderingDriver.required list must equal the check names the five
 ordering/coherence suites declare in source. Never reads a run log. Dynamic names (containing \\( ) are expanded
 below by hand and must be edited with the check. Exit 1 on any difference."""
 import re, sys
@@ -7,7 +7,7 @@ src = open('Sources/Spacelyzer/SpacelyzerApp.swift').read()
 m = re.search(r'static let required: \[String\] = \[(.*?)\n    \]', src, re.S)
 required = re.findall(r'"([^"]+)"', m.group(1))
 dup = {n for n in required if required.count(n) > 1}
-suites = ['PublicationRegression', 'CommitOrderingRegression', 'ZeroMatchRegression', 'AsyncRemovalRegression']
+suites = ['PublicationRegression', 'CommitOrderingRegression', 'ZeroMatchRegression', 'AsyncRemovalRegression', 'MountedViewRegression']
 declared, dynamic = set(), []
 for s in suites:
     b = re.search(r'enum %s\b.*?\n}\n' % s, src, re.S)

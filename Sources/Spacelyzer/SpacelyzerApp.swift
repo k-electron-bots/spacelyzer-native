@@ -1552,6 +1552,114 @@ private actor PublicationBarrier {
 }
 
 /// Isolated native API guards, not actual keyboard-shortcut or IME proof.
+/// ACTUAL-VIEW and ACTUAL-ENGINE slice (test binary only). The treemap below is the production TreemapView mounted in a
+/// real NSWindow: the layout gate is released by the VIEW (no layoutPublished call from this test). The Trash is still
+/// mocked and the outline view is not mounted here. Pixels are real bitmaps of the hosted window, written as PNGs next to
+/// assertions.txt and judged by pixel difference, not by model state alone.
+@MainActor private enum MountedViewRegression {
+    private static func fixture(_ tag: String, _ files: [(String, Int)]) -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("spz-\(tag)-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        for (n, k) in files { FileManager.default.createFile(atPath: root.appendingPathComponent(n).path, contents: Data(repeating: 7, count: k)) }
+        return root
+    }
+    private static func node(_ t: Tree, _ name: String) -> UInt32? { (0..<UInt32(t.nodeCount)).first { t.name($0) == name } }
+    private static func snapshot(_ view: NSView, _ file: String) -> NSBitmapImageRep? {
+        view.layoutSubtreeIfNeeded()
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return nil }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        let dir = (Check.path as NSString).deletingLastPathComponent
+        if let png = rep.representation(using: .png, properties: [:]) { try? png.write(to: URL(fileURLWithPath: dir + "/" + file)) }
+        return rep
+    }
+    /// (pixels that differ, total pixels, distinct colors in `a`), or nil when the bitmaps are not comparable.
+    private static func compare(_ a: NSBitmapImageRep, _ b: NSBitmapImageRep) -> (differing: Int, total: Int, distinct: Int, distinctAfter: Int)? {
+        guard a.pixelsWide == b.pixelsWide, a.pixelsHigh == b.pixelsHigh, a.samplesPerPixel == b.samplesPerPixel, a.bitsPerSample == 8,
+              let pa = a.bitmapData, let pb = b.bitmapData else { return nil }
+        let spp = a.samplesPerPixel
+        var diff = 0, colors = Set<UInt32>(), colorsB = Set<UInt32>()
+        for y in 0..<a.pixelsHigh {
+            for x in 0..<a.pixelsWide {
+                let ia = y * a.bytesPerRow + x * spp, ib = y * b.bytesPerRow + x * spp
+                var same = true, key: UInt32 = 0, keyB: UInt32 = 0
+                for c in 0..<min(spp, 3) {
+                    if abs(Int(pa[ia + c]) - Int(pb[ib + c])) > 2 { same = false }
+                    key = key << 8 | UInt32(pa[ia + c]); keyB = keyB << 8 | UInt32(pb[ib + c])
+                }
+                if !same { diff += 1 }
+                colors.insert(key); colorsB.insert(keyB)
+            }
+        }
+        return (diff, a.pixelsWide * a.pixelsHigh, colors.count, colorsB.count)
+    }
+
+    static func run() async {
+        await treemap()
+        await engine()
+    }
+
+    private static func treemap() async {
+        let dir = fixture("mounted-view", [("big.bin", 600_000), ("mid.bin", 250_000), ("small.bin", 90_000), ("tiny.bin", 40_000)])
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let m = AppModel(); m.scan(dir.path)
+        guard await PublicationRegression.ready(m) != nil, let tree = m.tree, let big = node(tree, "big.bin") else {
+            Check.expect("view-treemap-layout-gate-released-by-real-view", false, "fixture: model never ready"); Check.expect("view-treemap-pixels-change-after-removal", false, "fixture: model never ready"); return
+        }
+        m.trashItem = { $0 }   // mocked Trash seam: nothing is moved on disk
+        let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: 520, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.title = "CI mounted treemap (ordering driver)"
+        let host = NSHostingView(rootView: TreemapView().environment(m))
+        window.contentView = host; window.center(); window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        // The real view publishes the first layout by itself.
+        let first = await PublicationRegression.wait { m.layoutVersion != nil && m.layoutVersion == m.tree?.version && !m.rowsPending }
+        try? await Task.sleep(nanoseconds: 700_000_000)   // let the Canvas draw before taking pixels
+        let before = snapshot(host, "treemap-before-removal.png")
+        let v0 = m.tree?.version ?? 0
+        m.pendingRemoval = big; m.confirmRemoval()
+        let accepted = m.removalInFlight
+        var sawRequired = false
+        let settled = await PublicationRegression.wait {
+            if m.requiredVersion != nil { sawRequired = true }
+            return !m.removalInFlight && m.commitsInFlight == 0 && (m.tree?.version ?? 0) > v0 && !m.rowsPending
+        }
+        let vNow = m.tree?.version ?? 0
+        Check.expect("view-treemap-layout-gate-released-by-real-view", first && accepted && settled && vNow > v0 && m.requiredVersion == nil && m.layoutVersion == m.tree?.version && !m.navigationBlocked,
+                     "initialLayoutByView=\(first) accepted=\(accepted) settled=\(settled) version \(v0)->\(vNow) layoutVersion=\(String(describing: m.layoutVersion)) required=\(String(describing: m.requiredVersion)) sawRequiredWhileSampling=\(sawRequired) (no layoutPublished call from the test; Trash mocked)")
+        try? await Task.sleep(nanoseconds: 700_000_000)
+        let after = snapshot(host, "treemap-after-removal.png")
+        if let before, let after, let c = compare(before, after) {
+            // The largest block is gone, so a large share of pixels must change; neither picture may be blank (>= 3 distinct colors).
+            Check.expect("view-treemap-pixels-change-after-removal", c.distinct >= 3 && c.distinctAfter >= 3 && c.differing * 20 > c.total, "differing=\(c.differing) of \(c.total) pixels, distinctColorsBefore=\(c.distinct) distinctColorsAfter=\(c.distinctAfter), PNGs treemap-before-removal.png / treemap-after-removal.png")
+        } else { Check.expect("view-treemap-pixels-change-after-removal", false, "snapshot unavailable or bitmaps not comparable") }
+    }
+
+    private static func engine() async {
+        let d1 = fixture("engine-old", [("f1.bin", 40_000), ("f2.bin", 24_000), ("f3.bin", 8_000)])
+        let d2 = fixture("engine-new", [("g1.bin", 30_000), ("g2.bin", 10_000)])
+        defer { try? FileManager.default.removeItem(at: d1); try? FileManager.default.removeItem(at: d2) }
+        guard let t1 = await ScanSession(root: d1.path, excludes: [])?.run({ _ in }),
+              let t2 = await ScanSession(root: d2.path, excludes: [])?.run({ _ in }),
+              let f1 = node(t1, "f1.bin"), let f2 = node(t1, "f2.bin"), let f3 = node(t1, "f3.bin") else {
+            Check.expect("engine-old-tree-forget-advances-old-only-after-swap", false, "fixture"); Check.expect("engine-concurrent-forgets-on-one-tree-no-lost-update", false, "fixture"); return
+        }
+        // Real engine forget on the OLD tree handle after a second tree exists: only the old tree changes.
+        let v1 = t1.version, v2 = t2.version, r1 = t1.info(0).size, r2 = t2.info(0).size, s1 = t1.info(f1).size, s2 = t1.info(f2).size, s3 = t1.info(f3).size
+        let st = t1.forget(f1)
+        let okSwap = st == .ok && t1.version == v1 + 1 && t1.info(0).size == r1 - s1 && t1.info(f1).size == 0
+            && t2.version == v2 && t2.info(0).size == r2
+        Check.expect("engine-old-tree-forget-advances-old-only-after-swap", okSwap, "status=\(st) oldVersion \(v1)->\(t1.version) oldRoot \(r1)->\(t1.info(0).size) (forgot \(s1)) newTreeVersion \(v2)->\(t2.version) newTreeRoot \(r2)->\(t2.info(0).size)")
+        // Two real forgets on two DISTINCT live files of one real tree, issued from two concurrent tasks. Bounded and small:
+        // it shows neither update is lost (exact sum, version +2, both OK); it is not a stress test.
+        let vA = t1.version, rA = t1.info(0).size
+        async let a: EngineStatus = Task.detached { t1.forget(f2) }.value
+        async let b: EngineStatus = Task.detached { t1.forget(f3) }.value
+        let (sa, sb) = await (a, b)
+        let okDbl = sa == .ok && sb == .ok && t1.info(f2).size == 0 && t1.info(f3).size == 0 && t1.info(0).size == rA - s2 - s3 && t1.version == vA + 2
+        Check.expect("engine-concurrent-forgets-on-one-tree-no-lost-update", okDbl, "statuses \(sa)/\(sb) root \(rA)->\(t1.info(0).size) expected \(rA - s2 - s3) version \(vA)->\(t1.version) expected \(vA + 2)")
+    }
+}
+
 @MainActor private enum BoundaryGuardRegression {
     private final class TableData: NSObject, NSTableViewDataSource {
         func numberOfRows(in tableView: NSTableView) -> Int { 1 }
@@ -1996,6 +2104,10 @@ final class BusyFlag: @unchecked Sendable {
     /// Every check name that must appear exactly once as PASS. A check that silently does not run, runs twice, or is
     /// not listed here fails the run. Add a name here in the same change that adds a check.
     static let required: [String] = [
+        "view-treemap-layout-gate-released-by-real-view",
+        "view-treemap-pixels-change-after-removal",
+        "engine-old-tree-forget-advances-old-only-after-swap",
+        "engine-concurrent-forgets-on-one-tree-no-lost-update",
         "async-removal-cancel-is-harmless-and-does-not-stop-the-move",
         "async-removal-failure-leaves-tree-untouched",
         "async-removal-commit-busy-marks-out-of-date-and-keeps-journal",
@@ -2059,6 +2171,7 @@ final class BusyFlag: @unchecked Sendable {
         await CommitOrderingRegression.run()
         await ZeroMatchRegression.run()
         await AsyncRemovalRegression.run()
+        await MountedViewRegression.run()
         var problems: [String] = []
         if Check.results.isEmpty { problems.append("no results recorded") }
         let fileOK = (try? String(contentsOfFile: Check.path, encoding: .utf8))?.isEmpty == false
