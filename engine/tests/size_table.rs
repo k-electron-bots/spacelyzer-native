@@ -116,24 +116,30 @@ fn readers_see_consistent_snapshots_during_commits() {
     let t = Arc::new(Tree::synthetic(100_000));
     let own0 = Arc::new(own_v0(&t));
     let stop = Arc::new(AtomicBool::new(false));
-    let ready = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let readers: Vec<_> = (0..3).map(|_| {
-        let (t, stop, own0, ready) = (t.clone(), stop.clone(), own0.clone(), ready.clone());
+    let prog: Arc<Vec<std::sync::atomic::AtomicU64>> = Arc::new((0..3).map(|_| Default::default()).collect());
+    let readers: Vec<_> = (0..3).map(|ri| {
+        let (t, stop, own0, prog) = (t.clone(), stop.clone(), own0.clone(), prog.clone());
         std::thread::spawn(move || {
             let mut n = 0u64;
             loop {
                 let c = t.capture().expect("admission");
                 assert!(dir_sum_ok(&t, &c.table.sizes) && exact_ok(&t, &own0, &c.table.sizes), "inconsistent snapshot at version {}", c.table.version);
                 n += 1;
-                if n == 1 { ready.fetch_add(1, Ordering::SeqCst); }
+                prog[ri].store(n, Ordering::SeqCst);
                 if stop.load(Ordering::Relaxed) { break; }
             }
             n
         })
     }).collect();
-    // Gate the writers on every reader having completed one real check, so reader starvation under load cannot make the test vacuous.
-    while ready.load(Ordering::SeqCst) < 3 { std::thread::yield_now(); }
-    for i in disjoint_dirs(&t, 30) { t.forget(i).unwrap(); }
+    // Deterministic handshake, no timing: every reader must finish a NEW check after each removal commits before the next removal starts, so every
+    // reader verifies a snapshot at every one of the 30 versions it is gated on (checks are not guaranteed to overlap a commit in flight).
+    let wait_all = |prog: &Vec<std::sync::atomic::AtomicU64>, base: &[u64]| for (p, b) in prog.iter().zip(base) { while p.load(Ordering::SeqCst) <= *b { std::thread::yield_now(); } };
+    let base0: Vec<u64> = vec![0; 3]; wait_all(&prog, &base0);
+    for i in disjoint_dirs(&t, 30) {
+        let base: Vec<u64> = prog.iter().map(|p| p.load(Ordering::SeqCst)).collect();
+        t.forget(i).unwrap();
+        wait_all(&prog, &base);
+    }
     stop.store(true, Ordering::Relaxed);
     let checks: u64 = readers.into_iter().map(|h| h.join().unwrap()).sum();
     assert!(checks > 0);
@@ -485,9 +491,9 @@ fn concurrent_forgets_keep_the_removal_list_consistent_for_readers() {
     let t = Arc::new(Tree::synthetic(30_000));
     let ids = disjoint_dirs(&t, 40);
     let stop = Arc::new(AtomicBool::new(false));
-    let ready = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let readers: Vec<_> = (0..2).map(|_| {
-        let (t, stop, ready) = (t.clone(), stop.clone(), ready.clone());
+    let prog: Arc<Vec<std::sync::atomic::AtomicU64>> = Arc::new((0..2).map(|_| Default::default()).collect());
+    let readers: Vec<_> = (0..2).map(|ri| {
+        let (t, stop, prog) = (t.clone(), stop.clone(), prog.clone());
         std::thread::spawn(move || {
             let mut n = 0u64;
             loop {
@@ -497,17 +503,22 @@ fn concurrent_forgets_keep_the_removal_list_consistent_for_readers() {
                 assert_eq!(f.len() as u64, c.table.version, "one removal per version step");
                 assert!(f.iter().all(|&i| c.table.sizes[i as usize] == 0));
                 n += 1;
-                if n == 1 { ready.fetch_add(1, Ordering::SeqCst); }
+                prog[ri].store(n, Ordering::SeqCst);
                 if stop.load(Ordering::Relaxed) { break; }
             }
             n
         })
     }).collect();
-    // Gate the writers on every reader having completed one real check (see the sibling test).
-    while ready.load(Ordering::SeqCst) < 2 { std::thread::yield_now(); }
+    // Same no-timing handshake as the sibling test: after each removal, every reader finishes a new check before the next removal by that writer.
+    let wait_all = |prog: &Vec<std::sync::atomic::AtomicU64>, base: &[u64]| for (p, b) in prog.iter().zip(base) { while p.load(Ordering::SeqCst) <= *b { std::thread::yield_now(); } };
+    wait_all(&prog, &[0, 0]);
     let writers: Vec<_> = ids.chunks(20).map(|chunk| {
-        let (t, chunk) = (t.clone(), chunk.to_vec());
-        std::thread::spawn(move || for i in chunk { t.forget(i).unwrap(); })
+        let (t, chunk, prog) = (t.clone(), chunk.to_vec(), prog.clone());
+        std::thread::spawn(move || for i in chunk {
+            let base: Vec<u64> = prog.iter().map(|p| p.load(Ordering::SeqCst)).collect();
+            t.forget(i).unwrap();
+            for (p, b) in prog.iter().zip(&base) { while p.load(Ordering::SeqCst) <= *b { std::thread::yield_now(); } }
+        })
     }).collect();
     for w in writers { w.join().unwrap(); }
     stop.store(true, Ordering::Relaxed);
