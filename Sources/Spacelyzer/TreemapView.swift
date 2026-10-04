@@ -347,7 +347,7 @@ struct KindsView: View {
     var body: some View {
         if let t = model.tree {
             let presentation = model.derivedPresentation
-            let rows: [KindRow] = { if case .unavailable = presentation { return [] }; return model.kindRows }()      // poisoned: no total, count or bar at all; stale: the previous publication, dimmed
+            let rows: [KindRow] = { switch presentation { case .ready, .retained: return model.kindRows; default: return [] } }()      // only current or filter-pending rows; withheld when updating/poisoned
             let total = max(1, rows.reduce(0) { $0 + $1.bytes })
             List(rows) { r in
                 HStack {
@@ -361,19 +361,19 @@ struct KindsView: View {
             }
             .opacity(presentation == .ready ? 1 : 0.5)
             .disabled(presentation != .ready)
-            .overlay { DerivedOverlay(presentation: presentation, hasRows: !rows.isEmpty) }
+            .overlay { DerivedOverlay(presentation: presentation, retry: { model.retryDerived() }) }
         }
     }
 }
 
-/// Shown over a derived list (Kinds, Largest). `.stale` with no rows to show is a spinner; with rows they stay visible, dimmed, by the caller.
+/// Shown over a derived list (Kinds, Largest). Retained rows stay visible dimmed (caller); `.updating` withholds rows and shows a spinner with an explicit Retry.
 struct DerivedOverlay: View {
     let presentation: AppModel.DerivedPresentation
-    let hasRows: Bool
+    var retry: () -> Void = {}
     var body: some View {
         switch presentation {
-        case .ready: EmptyView()
-        case .stale(let why): if !hasRows { ProgressView(why) }
+        case .ready, .retained: EmptyView()
+        case .updating(let why): VStack(spacing: 8) { ProgressView(why); Button("Try Again", action: retry) }
         case .unavailable(let why): ContentUnavailableView("Unavailable", systemImage: "exclamationmark.triangle", description: Text(why))
         }
     }
@@ -435,7 +435,7 @@ struct LargestView: View {
     var body: some View {
         if let t = model.tree {
             let presentation = model.derivedPresentation
-            let blank: Bool = { if case .unavailable = presentation { return true }; return false }()
+            let blank: Bool = { switch presentation { case .ready, .retained: return false; default: return true } }()
             let ids = blank ? [] : model.largestIDs           // poisoned: nothing. stale: the previous publication, dimmed, not selectable
             let sizes = blank ? [] : model.largestSizes
             let sizeOf = Dictionary(zip(ids, sizes), uniquingKeysWith: { a, _ in a })   // sizes come from the same capture as the ids
@@ -453,7 +453,7 @@ struct LargestView: View {
             .opacity(presentation == .ready ? 1 : 0.5)
             .disabled(presentation != .ready)
             .overlay {
-                if presentation != .ready { DerivedOverlay(presentation: presentation, hasRows: !ids.isEmpty) }
+                if presentation != .ready { DerivedOverlay(presentation: presentation, retry: { model.retryDerived() }) }
                 else if model.activeFilter != nil && ids.isEmpty {
                     ContentUnavailableView("No matches", systemImage: "line.3.horizontal.decrease.circle",
                                            description: Text("No file matches the current filter."))
@@ -463,7 +463,7 @@ struct LargestView: View {
                 if presentation == .ready {   // count only for a current publication
                 Text(ids.count >= 200 ? "Showing the 200 largest\(model.activeFilter != nil ? " matching" : "") files" : "\(ids.count.formatted()) \(model.activeFilter != nil ? "matching " : "")files")
                     .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 4)
-                } else if case .stale(let why) = presentation {
+                } else if case .retained(let why) = presentation {
                     Text(why).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 4)
                 }
             }
