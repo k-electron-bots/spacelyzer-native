@@ -101,6 +101,8 @@ struct Ctx<'a> {
     /// Parallel to `exclude`: true once some scanned entry matched it. Non-matchable (non-UTF-8) exclusions stay false.
     excl_hit: Vec<AtomicBool>,
     excl_display: Vec<String>,
+    /// Exclusion index by parent directory text: only directories that are the parent of some exclusion pay any per-entry matching cost.
+    excl_by_parent: std::collections::HashMap<String, Vec<(Box<str>, usize)>>,
     #[allow(dead_code)]
     bulk: bool,
 }
@@ -136,7 +138,10 @@ pub fn scan(root: &Path, opts: &ScanOptions, progress: &ScanProgress) -> std::io
             .map(|p| p.to_str().map(|p| p.trim_end_matches('/').to_string()))
             .collect(),
         bulk: cfg!(target_os = "macos") && !opts.force_portable,
+        excl_by_parent: Default::default(),
     };
+    let mut ctx = ctx;
+    ctx.excl_by_parent = build_exclusion_index(&ctx.exclude);
     ctx.dirs.claim(md.dev(), md.ino());
 
     let run = || walk(&root, &ctx);
@@ -172,6 +177,19 @@ fn intern_dev(devs: &Mutex<Vec<u64>>, last: &mut (u64, u8), dev: u64) -> u8 {
     *last = (dev, ix); ix
 }
 
+/// parent text -> [(entry name, exclusion index)]. An exclusion "P/N" matches exactly the entry named N inside the directory whose text is P, which is the same
+/// string equality as comparing dir.join(name) with the whole exclusion, without building a path per scanned entry. The root directory "/" is keyed as "".
+fn build_exclusion_index(ex: &[Option<String>]) -> std::collections::HashMap<String, Vec<(Box<str>, usize)>> {
+    let mut m: std::collections::HashMap<String, Vec<(Box<str>, usize)>> = Default::default();
+    for (i, x) in ex.iter().enumerate() {
+        let Some(x) = x else { continue };
+        let Some(k) = x.rfind('/') else { continue }; // a relative request can never equal a joined absolute path
+        if k + 1 == x.len() { continue }
+        m.entry(x[..k].to_string()).or_default().push((x[k + 1..].into(), i));
+    }
+    m
+}
+
 fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
     if ctx.progress.cancel.load(Ordering::Relaxed) {
         return DirNode { ents: vec![], total: 0 };
@@ -193,6 +211,9 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
     let mut subdirs: Vec<(usize, PathBuf)> = Vec::new();
     let mut local_bytes = 0u64;
     let mut last_dev: (u64, u8) = (0, crate::tree::DEV_UNKNOWN);
+    let dir_excl: Option<&Vec<(Box<str>, usize)>> = if ctx.excl_by_parent.is_empty() { None } else {
+        dir.to_str().and_then(|d| ctx.excl_by_parent.get(if d == "/" { "" } else { d }))
+    };
     for r in raw {
         if r.name_lossy {
             // Fail closed: a node must never carry a name that can alias a sibling or point at a different real entry (removal/reveal/rescan build
@@ -206,16 +227,12 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
             ctx.skipped.lock().unwrap().push(Skipped::new(&path, if r.failed == 1 { SkipReason::PermissionDenied } else { SkipReason::Unreadable }));
             continue;
         }
-        if !ctx.exclude.is_empty() {
+        if let Some(list) = dir_excl {
             // Any entry kind (directory, file, symlink) can be excluded by exact path. Every equal exclusion is marked as hit.
-            let path = dir.join(&*r.name);
-            let p = path.to_string_lossy();
             let mut hit = false;
-            for (i, x) in ctx.exclude.iter().enumerate() {
-                if x.as_deref() == Some(&*p) { ctx.excl_hit[i].store(true, Ordering::Relaxed); hit = true; }
-            }
+            for (n, i) in list { if **n == *r.name { ctx.excl_hit[*i].store(true, Ordering::Relaxed); hit = true; } }
             if hit {
-                ctx.skipped.lock().unwrap().push(Skipped::new(&path, SkipReason::UserExcluded));
+                ctx.skipped.lock().unwrap().push(Skipped::new(&dir.join(&*r.name), SkipReason::UserExcluded));
                 continue;
             }
         }
@@ -306,12 +323,20 @@ fn flatten(root_path: String, root: DirNode, ctx: Ctx, progress: &ScanProgress) 
     t.items = t.len() as u64 - 1;
     t.cancelled = progress.cancel.load(Ordering::Relaxed);
     t.skipped = ctx.skipped.into_inner().unwrap();
-    // Exclusions that matched no scanned entry (a file or symlinked path given instead of the real one, a relative path, the scan root itself, a path outside the
-    // scan, a typo, a non-UTF-8 path). Only meaningful for a complete scan: a cancelled walk may simply not have reached the entry.
+    // Exclusions the walk never observed an entry for. NOT "nothing exists there": a request under a skipped subtree (excluded, permission denied, unreadable,
+    // separate volume, or a lossy-named directory) was never visited and may well exist. Reason codes: see `UnobservedReason`. Only meaningful for a complete
+    // scan: a cancelled walk may simply not have reached the entry.
     if !t.cancelled {
-        let mut u: Vec<String> = ctx.excl_display.iter().zip(&ctx.excl_hit).filter(|(_, h)| !h.load(Ordering::Relaxed)).map(|(d, _)| d.clone()).collect();
+        let mut u: Vec<(String, u8)> = Vec::new();
+        for (i, d) in ctx.excl_display.iter().enumerate() {
+            if ctx.excl_hit[i].load(Ordering::Relaxed) { continue; }
+            let reason = if ctx.exclude[i].is_none() { crate::tree::UnobservedReason::NotMatchable }
+                else if t.skipped.iter().any(|sk| *d == sk.path || d.strip_prefix(&sk.path).map_or(false, |r| r.starts_with('/'))) { crate::tree::UnobservedReason::InsideSkippedSubtree }
+                else { crate::tree::UnobservedReason::NotSeen };
+            u.push((d.clone(), reason as u8));
+        }
         u.sort(); u.dedup();
-        t.unmatched_exclusions = u;
+        t.unobserved_exclusions = u;
     }
     // Pushed from parallel workers in whatever order they finish; sort so index i means the same entry on every scan of the same disk state.
     t.skipped.sort_by(|a, b| a.path.cmp(&b.path).then((a.reason as u8).cmp(&(b.reason as u8))));
