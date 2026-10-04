@@ -1943,7 +1943,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
 
     /// UNCOMPILED/UNRUN until a Mac run. Deterministic: every step that must happen after another waits on a gate, not on a sleep.
     private static func reviewModelChecks() async {
-        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state"]
+        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state", "review-model-refuses-and-drops-when-engine-untrusted", "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", "review-selection-and-filter-changes-start-no-review"]
         let d = fixture("review-model", [("a.bin", 30_000), ("b.bin", 20_000), ("c.bin", 10_000)])
         defer { try? FileManager.default.removeItem(at: d) }
         guard let t = await ScanSession(root: d.path, excludes: [])?.run({ _ in }), let a = node(t, "a.bin"), let b = node(t, "b.bin"), let c = node(t, "c.bin") else {
@@ -1995,6 +1995,37 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         g3.open()
         await settle { m3.processedTokens.contains(tok3) }       // the late (cancelled) completion has been handled
         Check.expect("review-cancel-reaches-the-inner-read-and-clears-state", enteredOK && cancelled && sawCancel.isOpen && inProgressBefore && m3.processedTokens.contains(tok3) && m3.result == nil && !m3.inProgress && !m3.outdated, "cancelled=\(cancelled) innerSawCancel=\(sawCancel.isOpen) inProgressBefore=\(inProgressBefore) processed=\(m3.processedTokens.contains(tok3)) result=\(m3.result == nil ? "nil" : "set") inProgress=\(m3.inProgress) outdated=\(m3.outdated)")
+        // 4. Untrusted engine: before the read (nothing starts) and during it (the answer is dropped). Flags are plain test variables.
+        var trustedNow = false
+        let m4 = ItemReviewModel(trusted: { trustedNow }, reviewer: { tree, id, v in reviewTestAnswer(tree, id, v) })
+        let before4 = ItemReviewModel.requestCountForTests
+        m4.request(tree: t, node: a)
+        let preRefused = m4.result == nil && !m4.inProgress && m4.outdated
+        trustedNow = true
+        let g4 = ReviewGate()
+        let m5 = ItemReviewModel(trusted: { trustedNow }, reviewer: { tree, id, v in await g4.wait(); return reviewTestAnswer(tree, id, v) })
+        m5.request(tree: t, node: a); let tok5 = m5.token
+        let inFlight5 = m5.inProgress
+        trustedNow = false                    // the engine reports an error while the read is parked
+        g4.open()
+        await settle { m5.processedTokens.contains(tok5) }
+        Check.expect("review-model-refuses-and-drops-when-engine-untrusted", ItemReviewModel.requestCountForTests > before4 && preRefused && inFlight5 && m5.processedTokens.contains(tok5) && m5.result == nil && !m5.inProgress && m5.outdated, "preRefused=\(preRefused) inFlight=\(inFlight5) result=\(m5.result == nil ? "nil" : "set") inProgress=\(m5.inProgress) outdated=\(m5.outdated)")
+
+        // 5. Every verdict has words; a refusal is never worded as a match; only .same allows proceeding.
+        let verdicts: [IdentityVerdict] = [.same, .replaced, .noScannedIdentity, .unaddressableName, .ancestorIsSymlink, .gone, .unreadable(errno: 13), .unreadable(errno: 2), .engineFault(code: -2), .engineFault(code: 99)]
+        let wordsOK = verdicts.allSatisfy { !$0.message.isEmpty }
+        let onlySame = verdicts.filter { $0.allowsProceeding } == [.same]
+        let refusalsNotMatch = verdicts.filter { $0 != .same }.allSatisfy { !$0.message.lowercased().hasPrefix("matches") }
+        let mapped = IdentityVerdict(engineCode: 0) == .same && IdentityVerdict(engineCode: 5) == .gone && IdentityVerdict(engineCode: -1013) == .unreadable(errno: 13) && IdentityVerdict(engineCode: 42) == .engineFault(code: 42)
+        Check.expect("review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", wordsOK && onlySame && refusalsNotMatch && mapped, "words=\(wordsOK) onlySame=\(onlySame) refusalsNotMatch=\(refusalsNotMatch) mapped=\(mapped)")
+
+        // 6. Selection and filter changes on the app model start no review (nothing calls request(); the popover is opened only by a click).
+        let am = AppModel(); am.tree = t
+        let before6 = ItemReviewModel.requestCountForTests
+        am.selected = a; am.selected = b; am.selected = nil
+        am.filterText = "a"; am.filterText = ""
+        let none6 = ItemReviewModel.requestCountForTests == before6
+        Check.expect("review-selection-and-filter-changes-start-no-review", none6, "requests during selection/filter changes: \(ItemReviewModel.requestCountForTests - before6)")
     }
 
     private static func engine() async {
@@ -2517,6 +2548,9 @@ final class BusyFlag: @unchecked Sendable {
         "review-model-version-change-drops-result-and-clears-progress",
         "review-model-newer-request-wins-and-late-result-is-ignored",
         "review-cancel-reaches-the-inner-read-and-clears-state",
+        "review-model-refuses-and-drops-when-engine-untrusted",
+        "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding",
+        "review-selection-and-filter-changes-start-no-review",
         "engine-scanned-identity-matches-lstat-on-fixture",
         "view-poison-outline-cells-show-unavailable-not-stale-names",
         "view-poison-outline-latch-persists-in-mounted-table",
