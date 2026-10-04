@@ -71,9 +71,13 @@ step engine-build-drift-guard drift_guard
 step build-engine build_engine
 # Expected per-binary passed counts in output order (incl. zero-test binaries), taken from run 12 macOS logs for tree 5b22de43; the runner pin and these must be re-pinned together.
 EXPECT_RUST_DEFAULT="2 0 39 0 0 17 0"; EXPECT_RUST_FAILPOINTS="2 0 39 0 0 20 0"
+# Only the tree 5b22de43 has measured macOS counts. For any other tree the sequences are RECORDED as observed, with no expectation
+# (an expectation not yet observed on a Mac is never pinned). Re-pin only from a real Mac log.
+MEASURED_TREE=5b22de43198a254d7ff0a9b469432e07e3209eeb
 rust_counts() { local log="$1" want="$2" got
   got=$(sed -n 's/^test result: ok\. \([0-9]*\) passed; 0 failed.*/\1/p' "$log" | tr '\n' ' ' | sed 's/ $//')
   grep -qE 'FAILED|panicked|^error' "$log" && { echo "failure text in $log"; return 1; }
+  if [ "$GOT" != "$MEASURED_TREE" ]; then echo "OBSERVED passed counts '$got' (no pinned expectation for tree $GOT; not compared)"; return 0; fi
   [ "$got" = "$want" ] || { echo "passed counts '$got' != expected '$want'"; return 1; }; }
 rust_default() { cargo test --locked --offline --manifest-path engine/Cargo.toml > "$OUT/cargo-default.raw" 2>&1; local rc=$?; [ $rc = 0 ] && rust_counts "$OUT/cargo-default.raw" "$EXPECT_RUST_DEFAULT"; }
 rust_failpoints() { cargo test --locked --offline --manifest-path engine/Cargo.toml --features failpoints > "$OUT/cargo-failpoints.raw" 2>&1; local rc=$?; [ $rc = 0 ] && rust_counts "$OUT/cargo-failpoints.raw" "$EXPECT_RUST_FAILPOINTS"; }
