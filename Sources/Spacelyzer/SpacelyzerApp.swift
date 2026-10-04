@@ -1551,6 +1551,79 @@ private actor PublicationBarrier {
     }
 }
 
+/// ACTUAL-VIEW slice 2 (test binary only): the production OutlineView (AppKit NSTableView) mounted in a real NSWindow.
+/// Trash is mocked. Rows are read back through the table's own accessibility labels, selection through the real table.
+@MainActor private enum MountedOutlineRegression {
+    private static func fixture(_ tag: String, _ files: [(String, Int)]) -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("spz-\(tag)-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        for (n, k) in files { FileManager.default.createFile(atPath: root.appendingPathComponent(n).path, contents: Data(repeating: 7, count: k)) }
+        return root
+    }
+    private static func node(_ t: Tree, _ name: String) -> UInt32? { (0..<UInt32(t.nodeCount)).first { t.name($0) == name } }
+    private static func findTable(_ v: NSView) -> NSTableView? {
+        if let t = v as? NSTableView { return t }
+        for s in v.subviews { if let t = findTable(s) { return t } }
+        return nil
+    }
+    /// Accessibility labels of every row the table can realize right now.
+    private static func labels(_ t: NSTableView) -> [String] {
+        var out: [String] = []
+        for r in 0..<t.numberOfRows {
+            if let c = t.view(atColumn: 0, row: r, makeIfNecessary: true) { out.append(c.accessibilityLabel() ?? "") } else { out.append("") }
+        }
+        return out
+    }
+    private static func hasLabel(_ l: [String], _ name: String) -> Bool { l.contains { $0.hasPrefix(name + ",") } }
+
+    static func run() async {
+        let dir = fixture("mounted-outline", [("big.bin", 600_000), ("mid.bin", 250_000), ("small.bin", 90_000), ("tiny.bin", 40_000)])
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let m = AppModel(); m.scan(dir.path)
+        guard await PublicationRegression.ready(m) != nil, let tree = m.tree, let big = node(tree, "big.bin"), let mid = node(tree, "mid.bin") else {
+            Check.expect("view-outline-rows-mounted-match-published", false, "fixture: model never ready"); Check.expect("view-outline-selection-syncs-both-ways", false, "fixture: model never ready"); Check.expect("view-outline-removal-drops-row-and-clears-selection", false, "fixture: model never ready"); return
+        }
+        m.trashItem = { $0 }
+        let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: 520, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.title = "CI mounted outline (ordering driver)"
+        let host = NSHostingView(rootView: OutlineView().environment(m))
+        window.contentView = host; window.center(); window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        let mounted = await PublicationRegression.wait { if let t = findTable(host) { return t.numberOfRows > 0 && t.numberOfRows == m.outlineRows.count }; return false }
+        guard mounted, let table = findTable(host) else {
+            Check.expect("view-outline-rows-mounted-match-published", false, "outline table never mounted with published rows"); Check.expect("view-outline-selection-syncs-both-ways", false, "outline table never mounted with published rows"); Check.expect("view-outline-removal-drops-row-and-clears-selection", false, "outline table never mounted with published rows"); return
+        }
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        let l0 = labels(table)
+        let rowsMatch: Bool = table.numberOfRows == m.outlineRows.count
+        let allNames: Bool = ["big.bin", "mid.bin", "small.bin", "tiny.bin"].allSatisfy { hasLabel(l0, $0) }
+        let bigSized: Bool = l0.contains { $0.hasPrefix("big.bin,") && $0.contains("item") }
+        Check.expect("view-outline-rows-mounted-match-published", rowsMatch && allNames && bigSized, "tableRows=\(table.numberOfRows) published=\(m.outlineRows.count) allNames=\(allNames) labels=\(l0)")
+
+        // Model -> table, then table -> model, through the real NSTableView.
+        m.selected = big
+        let toTable = await PublicationRegression.wait { if let i = m.outlineIndex[big] { return table.selectedRow == i }; return false }
+        let midRow = m.outlineIndex[mid] ?? -1
+        table.selectRowIndexes(IndexSet(integer: midRow), byExtendingSelection: false)
+        let toModel = await PublicationRegression.wait { m.selected == mid }
+        Check.expect("view-outline-selection-syncs-both-ways", toTable && toModel && midRow >= 0, "modelToTable=\(toTable) tableToModel=\(toModel) selected=\(String(describing: m.selected)) selectedRow=\(table.selectedRow)")
+
+        // Real removal flow with the Trash mocked: row disappears from the mounted table, selection must not point at it.
+        m.selected = big
+        _ = await PublicationRegression.wait { if let i = m.outlineIndex[big] { return table.selectedRow == i }; return false }
+        let v0 = m.tree?.version ?? 0
+        m.pendingRemoval = big; m.confirmRemoval()
+        let accepted: Bool = m.removalInFlight
+        let settled = await PublicationRegression.wait { !m.removalInFlight && m.commitsInFlight == 0 && (m.tree?.version ?? 0) > v0 && !m.rowsPending && table.numberOfRows == m.outlineRows.count }
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        let l1 = labels(table)
+        let gone: Bool = !hasLabel(l1, "big.bin")
+        let others: Bool = ["mid.bin", "small.bin", "tiny.bin"].allSatisfy { hasLabel(l1, $0) }
+        let selClear: Bool = m.selected != big && (table.selectedRow < 0 || table.selectedRow >= l1.count || !l1[table.selectedRow].hasPrefix("big.bin,"))
+        Check.expect("view-outline-removal-drops-row-and-clears-selection", accepted && settled && gone && others && selClear, "accepted=\(accepted) settled=\(settled) bigRowGone=\(gone) othersPresent=\(others) selection=\(String(describing: m.selected)) selectedRow=\(table.selectedRow) labels=\(l1)")
+    }
+}
+
 /// Isolated native API guards, not actual keyboard-shortcut or IME proof.
 /// ACTUAL-VIEW and ACTUAL-ENGINE slice (test binary only). The treemap below is the production TreemapView mounted in a
 /// real NSWindow: the layout gate is released by the VIEW (no layoutPublished call from this test). The Trash is still
@@ -2119,6 +2192,9 @@ final class BusyFlag: @unchecked Sendable {
     static let required: [String] = [
         "view-treemap-layout-gate-released-by-real-view",
         "view-treemap-pixels-change-after-removal",
+        "view-outline-rows-mounted-match-published",
+        "view-outline-selection-syncs-both-ways",
+        "view-outline-removal-drops-row-and-clears-selection",
         "engine-old-tree-forget-advances-old-only-after-swap",
         "engine-concurrent-forgets-on-one-tree-no-lost-update",
         "async-removal-cancel-is-harmless-and-does-not-stop-the-move",
@@ -2185,6 +2261,7 @@ final class BusyFlag: @unchecked Sendable {
         await ZeroMatchRegression.run()
         await AsyncRemovalRegression.run()
         await MountedViewRegression.run()
+        await MountedOutlineRegression.run()
         var problems: [String] = []
         if Check.results.isEmpty { problems.append("no results recorded") }
         let fileOK = (try? String(contentsOfFile: Check.path, encoding: .utf8))?.isEmpty == false
