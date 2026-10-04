@@ -10,6 +10,22 @@ Priorities: safety, real and perceived performance, pixel polish, then features.
 ## First usable release priority
 Karim approved safe big-file cleanup first on October3, ahead of hidden macOS space/snapshot/accounting explanations. Build useful inspect/preview and reviewed Trash workflows on the existing Largest/outline surfaces. Responsiveness, current-file identity validation, permissions, protected paths, failure and undo gates remain; this direction does not authorize automatic deletion or establish release readiness. The first release uses one-item-at-a-time cleanup with a preview, full path and clear undo; batch cleanup comes later. Hidden-space accounting stays planned after this first usable workflow.
 
+## Near-term steps, in dependency order
+Each step names its gate. None is a release-readiness claim, and none authorizes a Mac CI run, a release or spend; the Mac verification gate is owned by the project owner.
+1. **Mac verification of the current stack (blocks everything Swift).** Evidence today: one hosted macOS compile of the older `f5c50283` tree built the universal Rust engine and Swift with 0 errors and 20 warnings; the Rust integration tests stopped at the first failing binary (APFS refused a non-UTF-8 fixture name), so most Rust test binaries and the whole failpoints run have no macOS result. Later commits (Swift warning fixes, test-skip handling) are uncompiled on Mac. Needed: a permitted Mac run on the latest tree that initializes a fresh absolute `SPZ_SKIP_MANIFEST`, reports skipped names and subtracts them from the pass count. Still unknown there: `scan_oracle` default (bulk) backend vs the `lstat` oracle on APFS, case-insensitive volumes, 0444 permission semantics.
+2. **Swift consumers for engine work that has no UI (after step 1).** The engine already has Linux-tested, Mac-unverified capabilities with no Swift caller: skipped/unreadable list with a lossy flag (E5), unobserved-exclusion reporting (E5), raw volume capacity (E3), the duplicate finder and `spz_dup_*` ABI (E6), item inspect. Order: skipped list view, then exclusions editor, then volume header, then duplicates review (read-only, no removal). Each needs real-UI state capture reviewed by pixels, not source review.
+3. **Cleanup workflow (E4).** One-item-at-a-time inspect, preview, full path, Trash and undo, per the owner's October 3 priority. Gates: off-main Trash execution with current-identity revalidation, protected paths, failure and undo on real hardware. Duplicates removal depends on this and on step 2.
+4. **Accessibility and input evidence (E2).** Real VoiceOver and real-system input, not injected preferences.
+5. **Stability evidence (E7).** Memory plateau over repeated rescans, long-session soak, main-thread stall measurements for hover, typing and expand-all, on release builds. No speed or reclaimable-space claim exists until then.
+
+## Long-range hypotheses (not planned work, no evidence yet)
+- Hidden-space accounting: purgeable space, APFS snapshots, container sharing and clone accounting, shown as separate labeled numbers, never merged into one total. Needs Mac-only APIs; unresearched on real volumes.
+- Persisted-tree and FSEvents incremental rescan, and index-assisted early results (see the two evaluation pages). Each must prove it cannot show a stale total as current.
+- Batch cleanup and removal history, only after one-item cleanup has real-hardware evidence.
+- Scheduled or background re-scan reminders, and a "what changed since last scan" view. Both need the persisted-tree work first.
+- Cloud/placeholder file awareness (files not materialized locally), and external or network volumes. Need dataless-file and volume-change semantics checked on real systems.
+- Distribution (signing, notarization, update channel): requires explicit owner permission and spend decisions; not started.
+
 ## Product epics
 | Epic | Scope and dependencies | Status |
 |---|---|---|
@@ -17,7 +33,7 @@ Karim approved safe big-file cleanup first on October3, ahead of hidden macOS sp
 | E2 Glass and accessibility | Selection/action surface, native filter editor, focus, Reduce Transparency/Motion, minimum layout, VoiceOver | Underway; full signoff open |
 | E3 Volume accounting | Used/free/purgeable space, snapshots, unaccounted space | Engine has raw statvfs capacity (`engine/src/volume.rs`, `spz_volume_info_status`, header only, Linux-tested, no Swift consumer). Purgeable, snapshots and container sharing are Mac-only and not implemented; no UI |
 | E4 Inspect and remove | Item details and Quick Look, then batch removal/history | Planned; batch work depends on details and safety |
-| E5 Scan control | Persistent exclusions, reviewable unreadable list, Full Disk Access detection | Planned |
+| E5 Scan control | Persistent exclusions, reviewable unreadable list, Full Disk Access detection | Engine side exists, Linux-tested only: skipped list, exclusions with unobserved-exclusion reasons (not proof of absence). No Swift/UI; Full Disk Access detection not started |
 | E6 Duplicates | Rust duplicate finding and review/removal UI | Rust finder `engine/src/dupes.rs` and its C ABI (`spz_dup_*`, header only, no Swift consumer) exist with Linux tests only (read-only; no UI, no removal path; caps are report-only; sizes are allocated bytes, not reclaimable space). Swift/UI and Mac behavior unverified; depends on E4 for review/removal |
 | E7 Polish and endurance | App icon, decimal/binary units, cold first-click investigation, long-session soak/leaks | Planned; stability is cross-cutting |
 
