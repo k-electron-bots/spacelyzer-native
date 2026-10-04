@@ -45,6 +45,12 @@ struct ContentView: View {
                         .accessibilityLabel("Stop scan").help("Stop the current scan")
                 }
             }
+            ToolbarItem {
+                Button { model.exportLargestCSV() } label: { Label("Export CSV", systemImage: "square.and.arrow.up") }
+                    .disabled(model.tab != .largest || model.largestExportBlockedReason != nil)
+                    .help(model.tab != .largest ? "Open the Largest tab to export its list as CSV" : (model.largestExportBlockedReason ?? "Export the Largest list as CSV (read only, as the scan recorded it)"))
+                    .accessibilityLabel("Export the Largest list as CSV")
+            }
             ToolbarItem(placement: .principal) {
                 Picker("View", selection: $model.tab) {
                     Text("Treemap").tag(TrailingTab.treemap)
