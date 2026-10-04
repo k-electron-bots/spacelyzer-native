@@ -347,7 +347,7 @@ struct KindsView: View {
     var body: some View {
         if let t = model.tree {
             let presentation = model.derivedPresentation
-            let rows = presentation == .ready ? model.kindRows : []        // old totals are never shown while stale, updating, poisoned or out of date
+            let rows: [KindRow] = { if case .unavailable = presentation { return [] }; return model.kindRows }()      // poisoned: no total, count or bar at all; stale: the previous publication, dimmed
             let total = max(1, rows.reduce(0) { $0 + $1.bytes })
             List(rows) { r in
                 HStack {
@@ -359,18 +359,21 @@ struct KindsView: View {
                     ShareBar(fraction: Double(r.bytes) / Double(total)).frame(width: 60, height: 6)
                 }
             }
-            .overlay { DerivedOverlay(presentation: presentation) }
+            .opacity(presentation == .ready ? 1 : 0.5)
+            .disabled(presentation != .ready)
+            .overlay { DerivedOverlay(presentation: presentation, hasRows: !rows.isEmpty) }
         }
     }
 }
 
-/// Shown over a derived list (Kinds, Largest) while its rows are withheld.
+/// Shown over a derived list (Kinds, Largest). `.stale` with no rows to show is a spinner; with rows they stay visible, dimmed, by the caller.
 struct DerivedOverlay: View {
     let presentation: AppModel.DerivedPresentation
+    let hasRows: Bool
     var body: some View {
         switch presentation {
         case .ready: EmptyView()
-        case .updating: ProgressView("Updating…")
+        case .stale(let why): if !hasRows { ProgressView(why) }
         case .unavailable(let why): ContentUnavailableView("Unavailable", systemImage: "exclamationmark.triangle", description: Text(why))
         }
     }
@@ -383,7 +386,7 @@ struct FoldersView: View {
     private struct LoadKey: Hashable { var tree: ObjectIdentifier?; var revision: Int }
     var body: some View {
         if let t = model.tree {
-            let ready = model.folderLoad == .ready
+            let ready = model.folderLoad == .ready && !model.enginePoisoned      // computed counter too, not only the stored flag
             let ids = ready ? model.folderIDs : []        // rows exist only when ready
             let sizes = ready ? model.folderSizes : []
             let sizeOf = Dictionary(zip(ids, sizes), uniquingKeysWith: { a, _ in a })
@@ -399,7 +402,7 @@ struct FoldersView: View {
             }
             .disabled(!ready)
             .overlay {
-                switch model.folderLoad {
+                switch (model.enginePoisoned ? AppModel.FolderLoad.failed("The engine reported an internal error. Rescan to continue.") : model.folderLoad) {
                 case .idle, .loading: ProgressView("Loading folders…")
                 case .failed(let problem):
                     ContentUnavailableView {
@@ -432,8 +435,9 @@ struct LargestView: View {
     var body: some View {
         if let t = model.tree {
             let presentation = model.derivedPresentation
-            let ids = presentation == .ready ? model.largestIDs : []         // a removed row or old size is never shown or selectable while stale
-            let sizes = presentation == .ready ? model.largestSizes : []
+            let blank: Bool = { if case .unavailable = presentation { return true }; return false }()
+            let ids = blank ? [] : model.largestIDs           // poisoned: nothing. stale: the previous publication, dimmed, not selectable
+            let sizes = blank ? [] : model.largestSizes
             let sizeOf = Dictionary(zip(ids, sizes), uniquingKeysWith: { a, _ in a })   // sizes come from the same capture as the ids
             List(ids, id: \.self, selection: Bindable(model).selected) { id in
                 HStack {
@@ -446,18 +450,21 @@ struct LargestView: View {
                     Text(sizeOf[id].map(formatBytes) ?? "\u{2014}").monospacedDigit()   // a missing size, or a poisoned engine, is a visible placeholder, never 0 B or an old number
                 }.tag(id)
             }
+            .opacity(presentation == .ready ? 1 : 0.5)
             .disabled(presentation != .ready)
             .overlay {
-                if presentation != .ready { DerivedOverlay(presentation: presentation) }
+                if presentation != .ready { DerivedOverlay(presentation: presentation, hasRows: !ids.isEmpty) }
                 else if model.activeFilter != nil && ids.isEmpty {
                     ContentUnavailableView("No matches", systemImage: "line.3.horizontal.decrease.circle",
                                            description: Text("No file matches the current filter."))
                 }
             }
             .safeAreaInset(edge: .top, spacing: 0) {
-                if presentation == .ready {   // no count while rows are withheld
+                if presentation == .ready {   // count only for a current publication
                 Text(ids.count >= 200 ? "Showing the 200 largest\(model.activeFilter != nil ? " matching" : "") files" : "\(ids.count.formatted()) \(model.activeFilter != nil ? "matching " : "")files")
                     .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 4)
+                } else if case .stale(let why) = presentation {
+                    Text(why).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 4)
                 }
             }
         }
