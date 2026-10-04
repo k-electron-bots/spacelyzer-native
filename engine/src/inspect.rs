@@ -62,12 +62,27 @@ fn dev_eq(a: u64, b: u64) -> bool { if cfg!(target_os = "macos") { a as u32 == b
 /// size or mtime (hard-link dedup makes scanned bytes differ from live allocation, and size/mtime narrowing is not identity).
 /// Not atomic: the path can change right after this returns. Ancestors BELOW the scan root are checked for symlinks; the scan root
 /// itself and its own ancestors are taken as given.
-pub fn check_scanned(tree: &crate::tree::Tree, id: crate::tree::NodeId) -> Result<IdentityCheck, Option<i32>> {
+/// `live_state` values. Live metadata is carried ONLY when the leaf was observed: for Same it describes the scanned item, for Different
+/// it describes the DIFFERENT item now at the path and must be labelled that way. For every other verdict there is no live metadata.
+pub const LIVE_NONE: u8 = 0;
+pub const LIVE_SAME_ITEM: u8 = 1;
+pub const LIVE_DIFFERENT_ITEM: u8 = 2;
+
+pub struct Review { pub check: IdentityCheck, pub live: Option<Inspect>, pub live_state: u8 }
+impl Review { fn bare(check: IdentityCheck) -> Review { Review { check, live: None, live_state: LIVE_NONE } } }
+
+/// C layout written by `spz_tree_review`: the live metadata (zeroed when `live_state` is 0) plus its state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct SpzReview { pub live: Inspect, pub live_state: u8, pub _pad: [u8; 7] }
+
+/// Compare the live item behind `id` to the identity the scan recorded and return the verdict together with the metadata of the SAME lstat.
+pub fn review_scanned(tree: &crate::tree::Tree, id: crate::tree::NodeId) -> Result<Review, Option<i32>> {
     use crate::tree::Kind;
     if id as usize >= tree.len() { return Err(None); }
-    let Some((dev, ino)) = tree.scanned_identity(id) else { return Ok(IdentityCheck::NoScannedIdentity) };
+    let Some((dev, ino)) = tree.scanned_identity(id) else { return Ok(Review::bare(IdentityCheck::NoScannedIdentity)) };
     let path = tree.path(id);
-    if path.contains('\u{FFFD}') { return Ok(IdentityCheck::Unaddressable); }
+    if path.contains('\u{FFFD}') { return Ok(Review::bare(IdentityCheck::Unaddressable)); }
     let root = tree.root_path.trim_end_matches('/');
     if let Some(rel) = path.strip_prefix(root).filter(|_| id != 0) {
         let mut cur = std::path::PathBuf::from(if root.is_empty() { "/" } else { root });
@@ -75,21 +90,26 @@ pub fn check_scanned(tree: &crate::tree::Tree, id: crate::tree::NodeId) -> Resul
         for c in &comps[..comps.len().saturating_sub(1)] {
             cur.push(c);
             match inspect(&cur) {
-                Ok(i) if i.kind == InspectKind::Symlink as u8 => return Ok(IdentityCheck::AncestorSymlink),
+                Ok(i) if i.kind == InspectKind::Symlink as u8 => return Ok(Review::bare(IdentityCheck::AncestorSymlink)),
                 Ok(_) => {}
-                Err(Some(2)) => return Ok(IdentityCheck::Gone),
+                Err(Some(2)) => return Ok(Review::bare(IdentityCheck::Gone)),
                 Err(e) => return Err(e),
             }
         }
     }
-    let live = match inspect(Path::new(&path)) { Ok(i) => i, Err(Some(2)) => return Ok(IdentityCheck::Gone), Err(e) => return Err(e) };
+    let live = match inspect(Path::new(&path)) { Ok(i) => i, Err(Some(2)) => return Ok(Review::bare(IdentityCheck::Gone)), Err(e) => return Err(e) };
     let kind_ok = match tree.kind(id) {
         Kind::File => live.kind == InspectKind::File as u8 || live.kind == InspectKind::Other as u8,
         Kind::Directory | Kind::Package => live.kind == InspectKind::Dir as u8,
         Kind::Symlink => live.kind == InspectKind::Symlink as u8,
     };
-    Ok(if kind_ok && dev_eq(dev, live.dev) && ino == live.ino { IdentityCheck::Same } else { IdentityCheck::Different })
+    // The verdict and the live metadata come from the SAME lstat observation, so a different file's metadata can never be labelled Same.
+    let same = kind_ok && dev_eq(dev, live.dev) && ino == live.ino;
+    Ok(Review { check: if same { IdentityCheck::Same } else { IdentityCheck::Different }, live: Some(live), live_state: if same { LIVE_SAME_ITEM } else { LIVE_DIFFERENT_ITEM } })
 }
+
+/// Existing wrapper: the verdict only.
+pub fn check_scanned(tree: &crate::tree::Tree, id: crate::tree::NodeId) -> Result<IdentityCheck, Option<i32>> { review_scanned(tree, id).map(|r| r.check) }
 
 #[cfg(test)]
 mod tests {
