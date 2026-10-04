@@ -3,7 +3,7 @@
 Written as source in SpacelyzerApp.swift (declared in the manifest, 65 names, never compiled or run, so no result exists):
 `review-model-refuses-and-drops-when-engine-untrusted` (pre-read refusal and post-read drop, items 4/5 at model level only),
 `review-verdict-messages-are-nonempty-and-only-same-allows-proceeding` (item 6, text only, not accessibility labels),
-`review-selection-and-filter-changes-start-no-review` (item 2, model level: it shows nothing calls request(); it is weak by construction).
+`review-bare-model-selection-change-makes-no-review-request` (bare AppModel only, selection only; no filter, no window, no popover; weak by construction).
 Everything else below remains PLANNED: it needs a mounted window.
 
 Status: the "Check on disk" popover is uncompiled source. These are the checks a Mac run should add. None is in the ordering manifest
