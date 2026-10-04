@@ -78,7 +78,10 @@ final class AppModel {
     var error: String?
 
     var displayedRoot: UInt32 = 0
-    var selected: UInt32? { didSet { if selected != oldValue { retryDone("node") } } }   // a retry for the old selection must not outlive it
+    /// Bumped on every real selection change (table or model). It is an input of the outline table so SwiftUI cannot skip a table sync when
+    /// coalesced changes end on the value last rendered while the table sits elsewhere. A hypothesis-driven remedy, see the CI selection variant.
+    var selectionRevision = 0
+    var selected: UInt32? { didSet { if selected != oldValue { selectionRevision &+= 1; retryDone("node") } } }   // a retry for the old selection must not outlive it
     var expanded: Set<UInt32> = []
     private var editorOrigin = false
     var externalFilterTextRevision: UInt64 = 0
