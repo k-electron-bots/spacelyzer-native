@@ -460,7 +460,7 @@ pub const DEV_UNKNOWN: u8 = 255;
 
 impl Tree {
     /// Record the identity of the node about to be pushed (call once per node, in node order, before the other columns).
-    pub(crate) fn push_identity(&mut self, dev: u64, ino: u64) {
+    pub(crate) fn push_identity_ix(&mut self, dev_ix: u8, ino: u64) {
         if !self.identity_enabled { return; }
         // Never regrow: the columns were reserved for the expected node count. If more nodes arrive, drop ALL identity (fail closed)
         // rather than risk an infallible Vec growth abort.
@@ -468,12 +468,13 @@ impl Tree {
             self.identity_enabled = false; self.ino = Vec::new(); self.dev_ix = Vec::new(); self.devs = Vec::new();
             return;
         }
-        let ix = match self.devs.iter().position(|&d| d == dev) {
-            Some(i) => i as u8,
-            None if self.devs.len() < DEV_UNKNOWN as usize => { self.devs.push(dev); (self.devs.len() - 1) as u8 }
-            None => DEV_UNKNOWN, // more than 255 distinct devices: fail closed, identity unknown
-        };
-        self.ino.push(ino); self.dev_ix.push(ix);
+        self.ino.push(ino); self.dev_ix.push(dev_ix);
+    }
+    /// Test/synthetic helper: intern `dev` into this tree's own table and push.
+    #[cfg(test)]
+    pub(crate) fn push_identity(&mut self, dev: u64, ino: u64) {
+        let ix = match self.devs.iter().position(|&d| d == dev) { Some(i) => i as u8, None => { self.devs.push(dev); (self.devs.len() - 1) as u8 } };
+        self.push_identity_ix(ix, ino);
     }
     /// Fallibly reserve identity columns for `n` nodes. On failure nothing is stored and `scanned_identity` stays None for every node
     /// (fail closed) instead of aborting on this allocation. The other columns still use plain Vec growth (an abort on OOM there is unchanged).
