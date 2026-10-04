@@ -130,8 +130,11 @@ struct OutlineView: View {
 
     var body: some View {
         if let tree = model.tree {
+            #if SPZ_CI_TESTS
+            let _: Void = SelDiag.noteBody(model.selected)
+            #endif
             let total = max(1, model.outlineRootSize)   // same publication and table version as the rows
-            OutlineTable(model: model, tree: tree, total: total, revision: model.outlineRevision, selected: model.selected, poisoned: model.enginePoisoned)
+            OutlineTable(model: model, tree: tree, total: total, revision: model.outlineRevision, selected: model.selected, selectionRevision: SelectionRevisionSwitch.value(model.selectionRevision), poisoned: model.enginePoisoned)
                 .overlay {
                     if model.activeFilter != nil && model.outlineRows.isEmpty {
                         ContentUnavailableView("No matches", systemImage: "line.3.horizontal.decrease.circle",
@@ -309,12 +312,33 @@ private enum PoisonReloadSwitch {
     }
 }
 
+#if SPZ_CI_TESTS
+/// Test-binary-only counters for the selection diagnostic. Not compiled into the shipped build.
+enum SelDiag {
+    static var body = 0, bodySel: UInt32? = nil, update = 0, updateSel: UInt32? = nil
+    static func noteBody(_ s: UInt32?) { body += 1; bodySel = s }
+    static var summary: String { "bodyEvals=\(body) lastBodySelected=\(String(describing: bodySel)) updateNSViewCalls=\(update) lastUpdateSelected=\(String(describing: updateSel))" }
+}
+#endif
+
+/// Test-binary-only switch: the same CI binary can run with the selection revision input frozen, to measure the no-remedy baseline. Shipped build: passthrough.
+private enum SelectionRevisionSwitch {
+    static func value(_ r: Int) -> Int {
+        #if SPZ_CI_TESTS
+        return ProcessInfo.processInfo.environment["SPZ_CI_DISABLE_SELECTION_REVISION"] == nil ? r : 0
+        #else
+        return r
+        #endif
+    }
+}
+
 private struct OutlineTable: NSViewRepresentable {
     let model: AppModel
     let tree: Tree
     let total: UInt64
     let revision: Int
     let selected: UInt32?
+    let selectionRevision: Int   // only part of the diffed value; updateNSView does not read it
     let poisoned: Bool   // a latched engine panic must repaint visible cells, not wait for the next row publication
 
     func makeCoordinator() -> Coordinator { Coordinator(model) }
@@ -357,6 +381,9 @@ private struct OutlineTable: NSViewRepresentable {
         InteractionTrace.record("outline-update-enter")
         defer { InteractionTrace.record("outline-update-exit") }
         let c = context.coordinator
+        #if SPZ_CI_TESTS
+        SelDiag.update += 1; SelDiag.updateSel = selected
+        #endif
         c.tree = tree
         model.outlineKeyView = c.table
         model.connectOutlineFocusLoop()
@@ -386,6 +413,11 @@ private struct OutlineTable: NSViewRepresentable {
         var shownRevision = -1
         var shownPoisoned = false
         private var suppress = false
+        #if SPZ_CI_TESTS
+        /// Test-binary-only counters, read back through the table's accessibility help by the mounted-outline check.
+        var syncCalls = 0, delegateCalls = 0, lastSync = "none"
+        func publishDiag() { table?.setAccessibilityHelp("syncCalls=\(syncCalls) delegateCalls=\(delegateCalls) suppress=\(suppress) last=\(lastSync)") }
+        #endif
         init(_ m: AppModel) { model = m }
 
         func numberOfRows(in tableView: NSTableView) -> Int { model.outlineRows.count }
@@ -442,6 +474,9 @@ private struct OutlineTable: NSViewRepresentable {
         func tableViewSelectionDidChange(_ notification: Notification) {
             InteractionTrace.record("native-selection-callback-enter")
             defer { InteractionTrace.record("native-selection-callback-exit") }
+            #if SPZ_CI_TESTS
+            delegateCalls += 1; publishDiag()
+            #endif
             guard !suppress, let t = table else { return }
             let r = t.selectedRow
             let node: UInt32? = r >= 0 && r < model.outlineRows.count ? model.outlineRows[r].node : nil
@@ -452,6 +487,10 @@ private struct OutlineTable: NSViewRepresentable {
         func syncSelection(_ node: UInt32?) {
             guard let t = table else { return }
             let idx = node.flatMap { model.outlineIndex[$0] }
+            #if SPZ_CI_TESTS
+            syncCalls += 1; lastSync = "node=\(String(describing: node)) idx=\(String(describing: idx)) selectedRowBefore=\(t.selectedRow)"
+            defer { lastSync += " after=\(t.selectedRow)"; publishDiag() }
+            #endif
             if let idx {
                 if t.selectedRow != idx {
                     suppress = true

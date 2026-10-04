@@ -1641,7 +1641,28 @@ private actor PublicationBarrier {
         let selectedBeforeRemoval = await PublicationRegression.wait { if let i = m.outlineIndex[big] { return table.selectedRow == i }; return false }
         var lateSync = false
         if !selectedBeforeRemoval { try? await Task.sleep(nanoseconds: 1_000_000_000); if let i = m.outlineIndex[big] { lateSync = table.selectedRow == i } }
-        let selDiag = "modelSelected=\(String(describing: m.selected)) big=\(big) bigIndex=\(String(describing: m.outlineIndex[big])) tableRow=\(table.selectedRow) lateSync=\(lateSync)"
+        var selDiag = "BASELINE modelSelected=\(String(describing: m.selected)) big=\(big) bigIndex=\(String(describing: m.outlineIndex[big])) tableRow=\(table.selectedRow) lateSync=\(lateSync) coordinator[\(table.accessibilityHelp() ?? "nil")] \(SelDiag.summary)"
+        if !selectedBeforeRemoval {
+            // Labelled PROBES, run only after the baseline above was captured; they never feed the precondition. Each ends with the same row/model readout.
+            let bigRow: () -> Bool = { if let i = m.outlineIndex[big] { return table.selectedRow == i }; return false }
+            func readout(_ tag: String) -> String { "\(tag): tableAtBig=\(bigRow()) tableRow=\(table.selectedRow) model=\(String(describing: m.selected)) coordinator[\(table.accessibilityHelp() ?? "nil")] \(SelDiag.summary)" }
+            // DISPLAY-PROBE (not a product fix): force layout and display on the stuck state, then one real run-loop turn.
+            host.layoutSubtreeIfNeeded(); host.displayIfNeeded(); window.displayIfNeeded()
+            let afterDisplay = bigRow()
+            selDiag += " | " + readout("probe-display-immediate(\(afterDisplay))")
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            selDiag += " | " + readout("probe-after-runloop-turn")
+            // BISECT A: two model changes in one turn, no table change (nil then big).
+            m.selected = nil; m.selected = big
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            selDiag += " | " + readout("probe-A-two-model-changes-same-turn")
+            // BISECT B: the same two changes separated by a real turn.
+            m.selected = nil
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            m.selected = big
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            selDiag += " | " + readout("probe-B-two-model-changes-separate-turns")
+        }
         let v0 = m.tree?.version ?? 0
         m.pendingRemoval = big; m.confirmRemoval()
         let accepted: Bool = m.removalInFlight
