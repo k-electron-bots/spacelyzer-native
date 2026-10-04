@@ -1,4 +1,6 @@
 //! Scanned-identity comparison and the C boundary of the inspect functions (Linux Rust evidence only, unless a Mac run says otherwise).
+#[path = "common/mod.rs"]
+mod common;
 use spacelyzer_engine::ffi::*;
 use spacelyzer_engine::inspect::{Inspect, IdentityCheck as C};
 use spacelyzer_engine::scan::{scan, ScanOptions, ScanProgress};
@@ -109,7 +111,7 @@ fn inspect_path_boundary_contract() {
     // success writes the struct. A non-UTF-8 path is used byte-for-byte.
     assert_eq!(unsafe { spz_inspect_path(p.as_ptr(), &mut out) }, 0); assert_eq!(out.logical, 5);
     let weird = d.join(std::ffi::OsStr::from_bytes(b"w\xfe\xff"));
-    if std::fs::write(&weird, b"xy").is_ok() {
+    if common::made(std::fs::write(&weird, b"xy")) {   // Linux: a failed create panics. Elsewhere EILSEQ fails unless SPZ_ALLOW_PLATFORM_SKIP=1 records it in the skip manifest.
         let wp = CString::new(weird.as_os_str().as_bytes()).unwrap(); let mut o2 = zeroed();
         assert_eq!(unsafe { spz_inspect_path(wp.as_ptr(), &mut o2) }, 0); assert_eq!(o2.logical, 2);
     }
