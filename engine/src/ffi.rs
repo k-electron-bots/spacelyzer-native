@@ -882,11 +882,12 @@ pub unsafe extern "C" fn spz_tree_review(t: *const Tree, id: NodeId, out: *mut c
         }
     })
 }
-/// [size, align, offset of live_state] of `SpzReview`, for a startup compare against the imported C struct.
+/// [size, align, offset of live_state, offset of live] of `SpzReview`, for a startup compare against the imported C struct. The nested `Inspect` is
+/// covered by `spz_inspect_layout`; a caller must compare both.
 #[no_mangle]
 pub unsafe extern "C" fn spz_review_layout(out: *mut u64) {
     if out.is_null() { return; }
     use crate::inspect::SpzReview; use std::mem::{offset_of, size_of, align_of};
-    let v = [size_of::<SpzReview>(), align_of::<SpzReview>(), offset_of!(SpzReview, live_state)];
+    let v = [size_of::<SpzReview>(), align_of::<SpzReview>(), offset_of!(SpzReview, live_state), offset_of!(SpzReview, live)];
     for (i, x) in v.iter().enumerate() { *out.add(i) = *x as u64; }
 }
