@@ -100,3 +100,17 @@ fn lossy_name_siblings_cannot_alias_a_real_node_or_overmatch_an_exclusion() {
     assert_eq!((1..t2.len() as u32).filter(|&i| t2.name(i) == "f").count(), 0);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn a_non_utf8_scan_root_is_refused_and_a_non_utf8_exclusion_matches_nothing() {
+    let base = std::env::temp_dir().join(format!("skp-root-{}", std::process::id())); let _ = std::fs::remove_dir_all(&base);
+    let bad = base.join(OsStr::from_bytes(b"r\xff")); std::fs::create_dir_all(&bad).unwrap(); std::fs::write(bad.join("f"), b"x").unwrap();
+    let e = scan(&bad, &ScanOptions::default(), &ScanProgress::default()).err().expect("must refuse");
+    assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
+    // A non-UTF-8 exclusion must not overmatch the real U+FFFD-named sibling.
+    let ok = base.join("ok"); std::fs::create_dir_all(ok.join("a\u{FFFD}")).unwrap(); std::fs::write(ok.join("a\u{FFFD}").join("f"), vec![1u8; 5000]).unwrap();
+    let t = scan(&ok, &ScanOptions { exclude: vec![ok.join(OsStr::from_bytes(b"a\xff"))], ..Default::default() }, &ScanProgress::default()).unwrap();
+    assert!(t.skipped.is_empty());
+    assert_eq!((1..t.len() as u32).filter(|&i| t.name(i) == "f").count(), 1);
+    let _ = std::fs::remove_dir_all(&base);
+}

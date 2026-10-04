@@ -101,6 +101,11 @@ struct Ctx<'a> {
 
 pub fn scan(root: &Path, opts: &ScanOptions, progress: &ScanProgress) -> std::io::Result<Tree> {
     let root = root.canonicalize()?;
+    // Fail closed: every path the tree builds is root + node names, and the root is stored as text. A root that is not valid UTF-8 would be stored lossily
+    // and every later removal/reveal path would point somewhere else (or nowhere).
+    if root.to_str().is_none() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "scan root path is not valid UTF-8"));
+    }
     let md = std::fs::symlink_metadata(&root)?;
     if !md.is_dir() {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a directory"));
@@ -118,7 +123,9 @@ pub fn scan(root: &Path, opts: &ScanOptions, progress: &ScanProgress) -> std::io
         exclude: opts
             .exclude
             .iter()
-            .map(|p| p.to_string_lossy().trim_end_matches('/').to_string())
+            // An exclusion that is not valid UTF-8 can only name a non-UTF-8 entry, which the walk already leaves out, so dropping it cannot expose anything;
+            // keeping a lossy form could overmatch a real U+FFFD-named sibling.
+            .filter_map(|p| p.to_str().map(|p| p.trim_end_matches('/').to_string()))
             .collect(),
         bulk: cfg!(target_os = "macos") && !opts.force_portable,
     };
