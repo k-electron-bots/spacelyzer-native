@@ -1624,13 +1624,19 @@ private actor PublicationBarrier {
             return !m.removalInFlight && m.commitsInFlight == 0 && (m.tree?.version ?? 0) > v0 && !m.rowsPending
         }
         let vNow = m.tree?.version ?? 0
-        Check.expect("view-treemap-layout-gate-released-by-real-view", first && accepted && settled && vNow > v0 && m.requiredVersion == nil && m.layoutVersion == m.tree?.version && !m.navigationBlocked,
+        let versionAdvanced: Bool = vNow > v0
+        let gateReleased: Bool = m.requiredVersion == nil && !m.navigationBlocked
+        let layoutCurrent: Bool = m.layoutVersion == m.tree?.version
+        let gateOK: Bool = first && accepted && settled && versionAdvanced && gateReleased && layoutCurrent
+        Check.expect("view-treemap-layout-gate-released-by-real-view", gateOK,
                      "initialLayoutByView=\(first) accepted=\(accepted) settled=\(settled) version \(v0)->\(vNow) layoutVersion=\(String(describing: m.layoutVersion)) required=\(String(describing: m.requiredVersion)) sawRequiredWhileSampling=\(sawRequired) (no layoutPublished call from the test; Trash mocked)")
         try? await Task.sleep(nanoseconds: 700_000_000)
         let after = snapshot(host, "treemap-after-removal.png")
         if let before, let after, let c = compare(before, after) {
             // The largest block is gone, so a large share of pixels must change; neither picture may be blank (>= 3 distinct colors).
-            Check.expect("view-treemap-pixels-change-after-removal", c.distinct >= 3 && c.distinctAfter >= 3 && c.differing * 20 > c.total, "differing=\(c.differing) of \(c.total) pixels, distinctColorsBefore=\(c.distinct) distinctColorsAfter=\(c.distinctAfter), PNGs treemap-before-removal.png / treemap-after-removal.png")
+            let notBlank: Bool = c.distinct >= 3 && c.distinctAfter >= 3
+            let changed: Bool = c.differing * 20 > c.total
+            Check.expect("view-treemap-pixels-change-after-removal", notBlank && changed, "differing=\(c.differing) of \(c.total) pixels, distinctColorsBefore=\(c.distinct) distinctColorsAfter=\(c.distinctAfter), PNGs treemap-before-removal.png / treemap-after-removal.png")
         } else { Check.expect("view-treemap-pixels-change-after-removal", false, "snapshot unavailable or bitmaps not comparable") }
     }
 
@@ -1638,16 +1644,20 @@ private actor PublicationBarrier {
         let d1 = fixture("engine-old", [("f1.bin", 40_000), ("f2.bin", 24_000), ("f3.bin", 8_000)])
         let d2 = fixture("engine-new", [("g1.bin", 30_000), ("g2.bin", 10_000)])
         defer { try? FileManager.default.removeItem(at: d1); try? FileManager.default.removeItem(at: d2) }
-        guard let t1 = await ScanSession(root: d1.path, excludes: [])?.run({ _ in }),
-              let t2 = await ScanSession(root: d2.path, excludes: [])?.run({ _ in }),
+        let scan1 = await ScanSession(root: d1.path, excludes: [])?.run { _ in }
+        let scan2 = await ScanSession(root: d2.path, excludes: [])?.run { _ in }
+        guard let t1 = scan1, let t2 = scan2,
               let f1 = node(t1, "f1.bin"), let f2 = node(t1, "f2.bin"), let f3 = node(t1, "f3.bin") else {
             Check.expect("engine-old-tree-forget-advances-old-only-after-swap", false, "fixture"); Check.expect("engine-concurrent-forgets-on-one-tree-no-lost-update", false, "fixture"); return
         }
         // Real engine forget on the OLD tree handle after a second tree exists: only the old tree changes.
         let v1 = t1.version, v2 = t2.version, r1 = t1.info(0).size, r2 = t2.info(0).size, s1 = t1.info(f1).size, s2 = t1.info(f2).size, s3 = t1.info(f3).size
         let st = t1.forget(f1)
-        let okSwap = st == .ok && t1.version == v1 + 1 && t1.info(0).size == r1 - s1 && t1.info(f1).size == 0
-            && t2.version == v2 && t2.info(0).size == r2
+        let oldAdvanced: Bool = t1.version == v1 + 1
+        let oldRootOK: Bool = t1.info(0).size == r1 - s1
+        let oldNodeZero: Bool = t1.info(f1).size == 0
+        let newUntouched: Bool = t2.version == v2 && t2.info(0).size == r2
+        let okSwap: Bool = st == .ok && oldAdvanced && oldRootOK && oldNodeZero && newUntouched
         Check.expect("engine-old-tree-forget-advances-old-only-after-swap", okSwap, "status=\(st) oldVersion \(v1)->\(t1.version) oldRoot \(r1)->\(t1.info(0).size) (forgot \(s1)) newTreeVersion \(v2)->\(t2.version) newTreeRoot \(r2)->\(t2.info(0).size)")
         // Two real forgets on two DISTINCT live files of one real tree, issued from two concurrent tasks. Bounded and small:
         // it shows neither update is lost (exact sum, version +2, both OK); it is not a stress test.
@@ -1655,7 +1665,10 @@ private actor PublicationBarrier {
         async let a: EngineStatus = Task.detached { t1.forget(f2) }.value
         async let b: EngineStatus = Task.detached { t1.forget(f3) }.value
         let (sa, sb) = await (a, b)
-        let okDbl = sa == .ok && sb == .ok && t1.info(f2).size == 0 && t1.info(f3).size == 0 && t1.info(0).size == rA - s2 - s3 && t1.version == vA + 2
+        let nodesZero: Bool = t1.info(f2).size == 0 && t1.info(f3).size == 0
+        let rootOK: Bool = t1.info(0).size == rA - s2 - s3
+        let versionOK: Bool = t1.version == vA + 2
+        let okDbl: Bool = sa == .ok && sb == .ok && nodesZero && rootOK && versionOK
         Check.expect("engine-concurrent-forgets-on-one-tree-no-lost-update", okDbl, "statuses \(sa)/\(sb) root \(rA)->\(t1.info(0).size) expected \(rA - s2 - s3) version \(vA)->\(t1.version) expected \(vA + 2)")
     }
 }
