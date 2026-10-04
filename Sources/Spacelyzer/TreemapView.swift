@@ -369,8 +369,9 @@ struct FoldersView: View {
     private struct LoadKey: Hashable { var tree: ObjectIdentifier?; var revision: Int }
     var body: some View {
         if let t = model.tree {
-            let ids = model.folderIDs
-            let sizes = model.folderSizes
+            let ready = model.folderLoad == .ready
+            let ids = ready ? model.folderIDs : []        // rows exist only when ready
+            let sizes = ready ? model.folderSizes : []
             let sizeOf = Dictionary(zip(ids, sizes), uniquingKeysWith: { a, _ in a })
             List(ids, id: \.self, selection: Bindable(model).selected) { id in
                 HStack {
@@ -382,16 +383,20 @@ struct FoldersView: View {
                     Text(sizeOf[id].map(formatBytes) ?? "\u{2014}").monospacedDigit()
                 }.tag(id)
             }
+            .disabled(!ready)
             .overlay {
-                if let problem = model.folderProblem {
-                    ContentUnavailableView("Folders unavailable", systemImage: "exclamationmark.triangle", description: Text(problem))
-                } else if ids.isEmpty && model.folderVersion != nil {
-                    ContentUnavailableView("No folders", systemImage: "folder", description: Text("The scan found no folder with any size."))
+                switch model.folderLoad {
+                case .idle, .loading: ProgressView("Loading folders…")
+                case .failed(let problem): ContentUnavailableView("Folders unavailable", systemImage: "exclamationmark.triangle", description: Text(problem))
+                case .ready: if ids.isEmpty { ContentUnavailableView("No folders", systemImage: "folder", description: Text("The scan found no folder with any size.")) }
                 }
             }
             .safeAreaInset(edge: .top, spacing: 0) {
-                Text((ids.count >= AppModel.folderCount ? "Showing the \(AppModel.folderCount) largest folders, by total size inside" : "\(ids.count.formatted()) folders, by total size inside") + (model.filterIsActive ? ". Not filtered." : ""))
-                    .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 4)
+                // The count is shown only for a valid, loaded list. Never "0 folders" while loading or after an error.
+                if ready {
+                    Text((ids.count >= AppModel.folderCount ? "Showing the \(AppModel.folderCount) largest folders, by total size inside" : "\(ids.count.formatted()) folders, by total size inside") + (model.filterIsActive ? ". Not filtered." : ""))
+                        .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 4)
+                }
             }
             .task(id: LoadKey(tree: model.tree.map(ObjectIdentifier.init), revision: model.revision)) { model.refreshFolders() }
         }
