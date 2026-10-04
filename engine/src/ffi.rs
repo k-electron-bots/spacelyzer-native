@@ -1075,24 +1075,26 @@ pub unsafe extern "C" fn spz_volume_info_status(path: *const c_char, out: *mut S
     })
 }
 
-// ---- Exclusions that matched nothing (so a reviewable exclusion list can say which entries did nothing). ----
+// ---- Exclusions the walk never observed an entry for. NOT proof the path is absent; see UnobservedReason. ----
 
-/// Number of requested exclusions that matched no scanned entry (0 for a cancelled scan). Status 3 for a null tree.
+/// Number of requested exclusions with no observed entry (0 for a cancelled scan). Status 3 for a null tree.
 #[no_mangle]
-pub unsafe extern "C" fn spz_tree_unmatched_exclusion_count_status(t: *const Tree, status: *mut i32) -> u32 {
+pub unsafe extern "C" fn spz_tree_unobserved_exclusion_count_status(t: *const Tree, status: *mut i32) -> u32 {
     guarded(status, 0, || {
         if t.is_null() { if !status.is_null() { *status = 3; } return 0; }
         if !status.is_null() { *status = 0; }
-        (&*t).unmatched_exclusions.len() as u32
+        (&*t).unobserved_exclusions.len() as u32
     })
 }
 
-/// The i-th unmatched exclusion (sorted, deduplicated; lossy display text; free with spz_string_free). Null plus status 3 for a null tree or index out of range.
+/// The i-th unobserved exclusion (sorted, deduplicated; lossy display text; free with spz_string_free) and its reason code (0 not seen, 1 inside a skipped
+/// subtree, 2 not matchable). Null plus status 3 for a null tree or index out of range, with `reason` untouched.
 #[no_mangle]
-pub unsafe extern "C" fn spz_tree_unmatched_exclusion_status(t: *const Tree, i: u32, status: *mut i32) -> *mut c_char {
+pub unsafe extern "C" fn spz_tree_unobserved_exclusion_status(t: *const Tree, i: u32, reason: *mut u8, status: *mut i32) -> *mut c_char {
     guarded(status, std::ptr::null_mut(), || {
         if t.is_null() { if !status.is_null() { *status = 3; } return std::ptr::null_mut(); }
-        let Some(s) = (&*t).unmatched_exclusions.get(i as usize) else { if !status.is_null() { *status = 3; } return std::ptr::null_mut() };
+        let Some((s, r)) = (&*t).unobserved_exclusions.get(i as usize) else { if !status.is_null() { *status = 3; } return std::ptr::null_mut() };
+        if !reason.is_null() { *reason = *r; }
         if !status.is_null() { *status = 0; }
         to_c(s.clone())
     })

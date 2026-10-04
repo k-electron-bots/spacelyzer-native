@@ -139,11 +139,13 @@ typedef struct { uint64_t total_bytes; uint64_t free_bytes; uint64_t available_b
 _Static_assert(sizeof(SpzVolume) == 40 && offsetof(SpzVolume, block_size) == 24 && offsetof(SpzVolume, os_errno) == 32 && offsetof(SpzVolume, flags) == 36, "SpzVolume layout");
 void spz_volume_info_status(const char *path, SpzVolume *out, int32_t *status);
 
-/* Exclusions are exact paths and apply to any scanned entry (directory, file or symlink), not only directories. A requested exclusion that matched no entry
-   (relative path, symlinked or non-canonical spelling, the scan root itself, a path outside the scan, a typo, a non-UTF-8 path) is reported here instead of
-   silently doing nothing. Sorted, deduplicated, lossy display text; empty for a cancelled scan. Free items with spz_string_free. Null/INVALID (3) for a null
-   tree or out-of-range index. */
-uint32_t spz_tree_unmatched_exclusion_count_status(const SpzTree *t, int32_t *status);
-char *spz_tree_unmatched_exclusion_status(const SpzTree *t, uint32_t i, int32_t *status);
+/* Exclusions are exact paths and apply to any scanned entry (directory, file or symlink), not only directories. A hard-linked file's bytes stay counted while
+   any other link to the same inode is scanned. A requested exclusion for which the walk OBSERVED NO ENTRY is listed here. That is not proof the path does not
+   exist. reason: 0 not seen (typo, relative path, symlinked/differently cased spelling, the scan root itself, outside the scan, or gone), 1 lies at or under a
+   skipped entry (excluded, permission denied, unreadable, separate volume, lossy-named) so it was never visited and may exist, 2 not valid UTF-8 (can never
+   match). Sorted, deduplicated, lossy display text; empty for a cancelled scan. Free items with spz_string_free. Null/INVALID (3) for a null tree or
+   out-of-range index (reason untouched). */
+uint32_t spz_tree_unobserved_exclusion_count_status(const SpzTree *t, int32_t *status);
+char *spz_tree_unobserved_exclusion_status(const SpzTree *t, uint32_t i, uint8_t *reason, int32_t *status);
 
 #endif

@@ -186,8 +186,9 @@ pub struct Tree {
     pub(crate) child_count: Vec<u32>,
     pub(crate) root_path: String,
     pub skipped: Vec<Skipped>,
-    /// Requested exclusions that matched no scanned entry (sorted, deduplicated, lossy display text). Empty for a cancelled scan.
-    pub unmatched_exclusions: Vec<String>,
+    /// Requested exclusions for which the walk observed no entry, with an `UnobservedReason` code (sorted, deduplicated, lossy display text). This does NOT mean
+    /// the path does not exist. Empty for a cancelled scan.
+    pub unobserved_exclusions: Vec<(String, u8)>,
     pub items: u64,
     pub cancelled: bool,
     /// Process-unique generation id, assigned when the tree is handed across the FFI. Filters and layouts are bound to it.
@@ -217,6 +218,19 @@ pub enum SkipReason {
     Unreadable = 1,
     SeparateVolume = 2,
     UserExcluded = 3,
+}
+
+/// Why a requested exclusion was not observed. None of these proves the path is absent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum UnobservedReason {
+    /// No scanned entry had that exact path and no skipped subtree contains it: a typo, a relative path, a symlinked or differently cased spelling, the scan
+    /// root itself, a path outside the scan, or an entry that is gone.
+    NotSeen = 0,
+    /// The path lies at or under a skipped entry (user-excluded, permission denied, unreadable, separate volume or lossy-named), so it was never visited and may exist.
+    InsideSkippedSubtree = 1,
+    /// The request is not valid UTF-8 and can never match a scanned entry.
+    NotMatchable = 2,
 }
 
 impl Tree {
