@@ -149,3 +149,38 @@ fn lists_stay_well_formed_while_folders_are_forgotten_concurrently() {
     assert_eq!(bad.load(std::sync::atomic::Ordering::Relaxed), 0, "a list was malformed or a version went backwards");
     assert!(dirs(&t, n).0.is_empty(), "everything removed, nothing listed");
 }
+
+/// Cross-surface consistency (Kinds totals, Largest files, Folders, root size) on one table, before and after removals.
+/// Rust-side only: the Swift views are not exercised here.
+fn assert_surfaces_agree(t: &Tree) {
+    let tab = t.table();
+    let n = t.len() as u32;
+    let dead = tab.dead_mask(t);
+    let alive = |i: u32| !dead.as_ref().map_or(false, |d| d[i as usize]);
+    // 1. Every byte of the root is owned by exactly one live node: Kinds bytes (non-directory nodes) + directories' own bytes == root size.
+    let kinds_bytes: u64 = t.category_totals_in(&tab).iter().map(|c| c.0).sum();
+    let dir_own: u64 = (0..n).filter(|&i| alive(i) && t.kind(i) == spacelyzer_engine::tree::Kind::Directory).map(|i| t.own_bytes_in(&tab.sizes, i)).sum();
+    assert_eq!(kinds_bytes + dir_own, tab.sizes[0], "kinds + directory bytes must add up to the root");
+    // 2. Largest files lists exactly the live regular files, each once, with the table's size, largest first.
+    let files: Vec<u32> = t.largest_files_in(&tab, n as usize);
+    let want_files = (0..n).filter(|&i| alive(i) && t.kind(i) == spacelyzer_engine::tree::Kind::File).count();
+    assert_eq!(files.len(), want_files);
+    assert!(files.windows(2).all(|w| tab.sizes[w[0] as usize] >= tab.sizes[w[1] as usize]));
+    // 3. Folders never list something Kinds does not count as live, and never exceed the root.
+    let (ids, sizes, _v, st) = dirs(t, n + 5);
+    assert_eq!(st, 0);
+    assert!(ids.iter().all(|&i| alive(i)) && sizes.iter().all(|&s| s <= tab.sizes[0]));
+}
+
+#[test]
+fn kinds_largest_folders_and_root_agree_before_and_after_removals() {
+    let d = fixture("surfaces");
+    std::fs::create_dir_all(d.join("a/inner")).unwrap(); std::fs::create_dir_all(d.join("b.app/Contents")).unwrap(); std::fs::create_dir_all(d.join("c")).unwrap();
+    std::fs::write(d.join("a/inner/f.txt"), vec![1u8; 70_000]).unwrap(); std::fs::write(d.join("a/g.png"), vec![1u8; 30_000]).unwrap();
+    std::fs::write(d.join("b.app/Contents/x.bin"), vec![1u8; 55_000]).unwrap(); std::fs::write(d.join("c/h"), vec![1u8; 9_000]).unwrap();
+    std::fs::hard_link(d.join("c/h"), d.join("a/h2")).unwrap(); std::os::unix::fs::symlink(d.join("c/h"), d.join("a/link")).unwrap();
+    let t = scanned(&d);
+    assert_surfaces_agree(&t);
+    for rel in ["a/inner", "b.app", "c"] { t.forget(node(&t, &d.join(rel))).unwrap(); assert_surfaces_agree(&t); }
+    t.forget(node(&t, &d.join("a"))).unwrap(); assert_surfaces_agree(&t);
+}
