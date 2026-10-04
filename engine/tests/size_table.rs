@@ -116,18 +116,23 @@ fn readers_see_consistent_snapshots_during_commits() {
     let t = Arc::new(Tree::synthetic(100_000));
     let own0 = Arc::new(own_v0(&t));
     let stop = Arc::new(AtomicBool::new(false));
+    let ready = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let readers: Vec<_> = (0..3).map(|_| {
-        let (t, stop, own0) = (t.clone(), stop.clone(), own0.clone());
+        let (t, stop, own0, ready) = (t.clone(), stop.clone(), own0.clone(), ready.clone());
         std::thread::spawn(move || {
             let mut n = 0u64;
-            while !stop.load(Ordering::Relaxed) {
+            loop {
                 let c = t.capture().expect("admission");
                 assert!(dir_sum_ok(&t, &c.table.sizes) && exact_ok(&t, &own0, &c.table.sizes), "inconsistent snapshot at version {}", c.table.version);
                 n += 1;
+                if n == 1 { ready.fetch_add(1, Ordering::SeqCst); }
+                if stop.load(Ordering::Relaxed) { break; }
             }
             n
         })
     }).collect();
+    // Gate the writers on every reader having completed one real check, so reader starvation under load cannot make the test vacuous.
+    while ready.load(Ordering::SeqCst) < 3 { std::thread::yield_now(); }
     for i in disjoint_dirs(&t, 30) { t.forget(i).unwrap(); }
     stop.store(true, Ordering::Relaxed);
     let checks: u64 = readers.into_iter().map(|h| h.join().unwrap()).sum();
@@ -480,21 +485,26 @@ fn concurrent_forgets_keep_the_removal_list_consistent_for_readers() {
     let t = Arc::new(Tree::synthetic(30_000));
     let ids = disjoint_dirs(&t, 40);
     let stop = Arc::new(AtomicBool::new(false));
+    let ready = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let readers: Vec<_> = (0..2).map(|_| {
-        let (t, stop) = (t.clone(), stop.clone());
+        let (t, stop, ready) = (t.clone(), stop.clone(), ready.clone());
         std::thread::spawn(move || {
             let mut n = 0u64;
-            while !stop.load(Ordering::Relaxed) {
+            loop {
                 let c = t.capture().expect("admission");
                 let f = &c.table.forgotten;
                 assert!(f.windows(2).all(|w| w[0] < w[1]), "removal list not sorted/unique");
                 assert_eq!(f.len() as u64, c.table.version, "one removal per version step");
                 assert!(f.iter().all(|&i| c.table.sizes[i as usize] == 0));
                 n += 1;
+                if n == 1 { ready.fetch_add(1, Ordering::SeqCst); }
+                if stop.load(Ordering::Relaxed) { break; }
             }
             n
         })
     }).collect();
+    // Gate the writers on every reader having completed one real check (see the sibling test).
+    while ready.load(Ordering::SeqCst) < 2 { std::thread::yield_now(); }
     let writers: Vec<_> = ids.chunks(20).map(|chunk| {
         let (t, chunk) = (t.clone(), chunk.to_vec());
         std::thread::spawn(move || for i in chunk { t.forget(i).unwrap(); })
