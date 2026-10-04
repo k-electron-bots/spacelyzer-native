@@ -20,7 +20,8 @@ fn real_filesystems_match_stat_f_and_are_internally_consistent() {
     for p in ["/", "/tmp", "/proc", "/dev/shm"] {
         if !std::path::Path::new(p).exists() { continue; }
         let (v, st) = call(p); assert_eq!(st, 0, "{p}");
-        let (bs, blocks, free, avail) = stat_f(p);
+        // The oracle is GNU coreutils `stat -f -c`; BSD/macOS stat has different flags, so off Linux this test checks only the invariants below, NOT the oracle.
+        let (bs, blocks, free, avail) = if cfg!(target_os = "linux") { stat_f(p) } else { (v.block_size, v.total_bytes / v.block_size.max(1), 0, 0) };
         // Free counts can legitimately change between the two reads on a live filesystem; total and unit cannot.
         assert_eq!((v.block_size, v.total_bytes), (bs, blocks * bs), "{p}");
         assert!(v.free_bytes % bs == 0 && v.available_bytes % bs == 0);

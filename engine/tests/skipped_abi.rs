@@ -6,6 +6,18 @@ use std::ffi::{CStr, OsStr};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
+/// Creating a non-UTF-8 file name is refused by some filesystems (APFS returns EILSEQ, errno 92; the first hosted-macOS run failed here). That is a fixture
+/// limit, not an engine result: on those platforms the test reports SKIPPED and does not claim to have exercised anything. On Linux the creation must work,
+/// so a failure there still fails the test (no silent pass).
+#[allow(dead_code)]
+fn made(r: std::io::Result<()>) -> bool {
+    match r {
+        Ok(()) => true,
+        Err(e) if e.raw_os_error() == Some(92) && !cfg!(target_os = "linux") => { eprintln!("SKIPPED: this filesystem refuses non-UTF-8 names (EILSEQ); the case was NOT exercised"); false }
+        Err(e) => panic!("fixture creation failed: {e}"),
+    }
+}
+
 fn fixture(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("spz-skip-{}-{}", std::process::id(), name));
     let _ = std::fs::remove_dir_all(&d); std::fs::create_dir_all(&d).unwrap(); d.canonicalize().unwrap()
@@ -57,7 +69,7 @@ fn bad_index_and_null_arguments_are_invalid_and_leave_outputs_untouched() {
 fn a_non_utf8_path_is_flagged_lossy_and_a_utf8_one_is_not() {
     let d = fixture("lossy");
     let bad = d.join(OsStr::from_bytes(b"bad\xffname"));
-    std::fs::create_dir_all(&bad).unwrap(); std::fs::create_dir_all(d.join("good")).unwrap();
+    if !made(std::fs::create_dir_all(&bad)) { return; } std::fs::create_dir_all(d.join("good")).unwrap();
     // exclusion matches on the lossy rendering, which is what a user-supplied (UTF-8) exclude list can express
     let lossy_name = d.join(String::from_utf8_lossy(b"bad\xffname").into_owned());
     let t = scan_with(&d, vec![lossy_name, d.join("good")]);
@@ -88,7 +100,7 @@ fn permission_denied_directories_are_counted_when_the_test_user_cannot_read_them
 fn lossy_name_siblings_cannot_alias_a_real_node_or_overmatch_an_exclusion() {
     use std::os::unix::ffi::OsStrExt;
     let d = std::env::temp_dir().join(format!("skp-lossy-{}", std::process::id())); let _ = std::fs::remove_dir_all(&d); std::fs::create_dir_all(&d).unwrap(); let d = d.canonicalize().unwrap();
-    for n in [&b"a\xff"[..], &b"a\xfe"[..], "a\u{FFFD}".as_bytes()] { let p = d.join(std::ffi::OsStr::from_bytes(n)); std::fs::create_dir_all(&p).unwrap(); std::fs::write(p.join("f"), vec![1u8; 5000]).unwrap(); }
+    for n in [&b"a\xff"[..], &b"a\xfe"[..], "a\u{FFFD}".as_bytes()] { let p = d.join(std::ffi::OsStr::from_bytes(n)); if !made(std::fs::create_dir_all(&p)) { return; } std::fs::write(p.join("f"), vec![1u8; 5000]).unwrap(); }
     let t = scan(&d, &ScanOptions::default(), &ScanProgress::default()).unwrap();
     let fs = (1..t.len() as u32).filter(|&i| t.name(i) == "f").count();
     assert_eq!(fs, 1, "only the real literal directory is walked, once");
@@ -104,7 +116,7 @@ fn lossy_name_siblings_cannot_alias_a_real_node_or_overmatch_an_exclusion() {
 #[test]
 fn a_non_utf8_scan_root_is_refused_and_a_non_utf8_exclusion_matches_nothing() {
     let base = std::env::temp_dir().join(format!("skp-root-{}", std::process::id())); let _ = std::fs::remove_dir_all(&base);
-    let bad = base.join(OsStr::from_bytes(b"r\xff")); std::fs::create_dir_all(&bad).unwrap(); std::fs::write(bad.join("f"), b"x").unwrap();
+    let bad = base.join(OsStr::from_bytes(b"r\xff")); if !made(std::fs::create_dir_all(&bad)) { return; } std::fs::write(bad.join("f"), b"x").unwrap();
     let e = scan(&bad, &ScanOptions::default(), &ScanProgress::default()).err().expect("must refuse");
     assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput);
     // A non-UTF-8 exclusion must not overmatch the real U+FFFD-named sibling.
