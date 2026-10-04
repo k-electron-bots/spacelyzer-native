@@ -125,3 +125,53 @@ fn caught_panic_returns_minus_two_and_leaves_out_untouched() {
     assert_eq!(out, sentinel()); assert!(spz_engine_panic_count() >= before + 2);
     assert_eq!(unsafe { spz_inspect_path(p.as_ptr(), &mut out) }, 0, "works again after the failpoint is cleared");
 }
+
+fn review(t: &Tree, id: u32) -> (i32, spacelyzer_engine::inspect::SpzReview) {
+    let mut r: spacelyzer_engine::inspect::SpzReview = unsafe { std::mem::zeroed() }; r.live_state = 77; r.live.ino = 0xDEAD;
+    let rc = unsafe { spz_tree_review(t as *const Tree, id, &mut r) }; (rc, r)
+}
+
+#[test]
+fn review_carries_live_data_only_when_the_leaf_was_observed_and_labels_the_item() {
+    let d = fixture("review"); std::fs::create_dir_all(d.join("a")).unwrap(); std::fs::write(d.join("f"), b"abcd").unwrap(); std::fs::write(d.join("g"), b"x").unwrap(); std::fs::write(d.join("h"), b"y").unwrap(); std::fs::write(d.join("a/z"), b"z").unwrap();
+    let t = scanned(&d); let (f, g, h, z) = (node(&t, &d.join("f")), node(&t, &d.join("g")), node(&t, &d.join("h")), node(&t, &d.join("a/z")));
+    // Same: live data comes from the same lstat, equal to a direct inspect.
+    let (rc, r) = review(&t, f); assert_eq!(rc, C::Same as i32); assert_eq!(r.live_state, 1);
+    let direct = spacelyzer_engine::inspect::inspect(&d.join("f")).unwrap(); assert_eq!((r.live.dev, r.live.ino, r.live.logical), (direct.dev, direct.ino, 4));
+    // Different (replaced by a directory): live data is present but tagged as a DIFFERENT item.
+    std::fs::remove_file(d.join("g")).unwrap(); std::fs::create_dir(d.join("g")).unwrap();
+    let (rc, r) = review(&t, g); assert_eq!(rc, C::Different as i32); assert_eq!(r.live_state, 2); assert_eq!(r.live.kind, 1);
+    // Gone: no live data, zeroed.
+    std::fs::remove_file(d.join("h")).unwrap();
+    let (rc, r) = review(&t, h); assert_eq!(rc, C::Gone as i32); assert_eq!(r.live_state, 0); assert_eq!((r.live.ino, r.live.logical), (0, 0));
+    // Ancestor symlink: leaf never inspected, so no live data.
+    std::fs::rename(d.join("a"), d.join("a2")).unwrap(); std::os::unix::fs::symlink(d.join("a2"), d.join("a")).unwrap();
+    let (rc, r) = review(&t, z); assert_eq!(rc, C::AncestorSymlink as i32); assert_eq!(r.live_state, 0); assert_eq!(r.live.ino, 0);
+    // Errors: out untouched.
+    let (rc, r) = review(&t, 9999); assert_eq!(rc, -1); assert_eq!((r.live_state, r.live.ino), (77, 0xDEAD));
+    assert_eq!(unsafe { spz_tree_review(&t as *const Tree, f, std::ptr::null_mut()) }, -1);
+}
+
+#[test]
+fn review_of_lossy_name_and_missing_identity_never_inspects() {
+    let d = fixture("review2"); let bad = d.join(std::ffi::OsStr::from_bytes(b"q\xff")); if std::fs::write(&bad, b"x").is_err() { return; }
+    let t = scanned(&d); let id = (1..t.len() as u32).find(|&i| t.name(i).contains('\u{FFFD}')).unwrap();
+    let (rc, r) = review(&t, id); assert_eq!(rc, C::Unaddressable as i32); assert_eq!((r.live_state, r.live.ino), (0, 0));
+    let syn = Tree::synthetic(5); let (rc, r) = review(&syn, 1); assert_eq!(rc, C::NoScannedIdentity as i32); assert_eq!(r.live_state, 0);
+}
+
+#[test]
+fn review_layout_matches_header_numbers() {
+    let mut v = [0u64; 3]; unsafe { spz_review_layout(v.as_mut_ptr()); } assert_eq!(v, [56, 8, 48]);
+    unsafe { spz_review_layout(std::ptr::null_mut()); }
+}
+
+#[cfg(feature = "failpoints")]
+#[test]
+fn review_caught_panic_returns_minus_two_and_leaves_out_untouched() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let d = fixture("review3"); std::fs::write(d.join("f"), b"x").unwrap(); let t = scanned(&d); let id = node(&t, &d.join("f"));
+    spacelyzer_engine::tree::set_failpoint(9);
+    let (rc, r) = review(&t, id); spacelyzer_engine::tree::set_failpoint(0);
+    assert_eq!(rc, -2); assert_eq!((r.live_state, r.live.ino), (77, 0xDEAD));
+}
