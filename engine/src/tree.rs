@@ -180,6 +180,8 @@ pub struct Tree {
     pub(crate) ino: Vec<u64>,
     pub(crate) dev_ix: Vec<u8>,
     pub(crate) devs: Vec<u64>,
+    /// False when the identity reservation failed or for trees that never record one; push_identity then records nothing.
+    pub(crate) identity_enabled: bool,
     pub(crate) first_child: Vec<NodeId>,
     pub(crate) child_count: Vec<u32>,
     pub(crate) root_path: String,
@@ -459,12 +461,18 @@ pub const DEV_UNKNOWN: u8 = 255;
 impl Tree {
     /// Record the identity of the node about to be pushed (call once per node, in node order, before the other columns).
     pub(crate) fn push_identity(&mut self, dev: u64, ino: u64) {
+        if !self.identity_enabled { return; }
         let ix = match self.devs.iter().position(|&d| d == dev) {
             Some(i) => i as u8,
             None if self.devs.len() < DEV_UNKNOWN as usize => { self.devs.push(dev); (self.devs.len() - 1) as u8 }
             None => DEV_UNKNOWN, // more than 255 distinct devices: fail closed, identity unknown
         };
         self.ino.push(ino); self.dev_ix.push(ix);
+    }
+    /// Fallibly reserve identity columns for `n` nodes. On failure nothing is stored and `scanned_identity` stays None for every node
+    /// (fail closed) instead of aborting on this allocation. The other columns still use plain Vec growth (an abort on OOM there is unchanged).
+    pub(crate) fn reserve_identity(&mut self, n: usize) -> bool {
+        self.ino.try_reserve_exact(n).is_ok() && self.dev_ix.try_reserve_exact(n).is_ok()
     }
     /// Scanned (dev, ino) of `id`, or None when none was recorded.
     pub fn scanned_identity(&self, id: NodeId) -> Option<(u64, u64)> {
@@ -532,5 +540,19 @@ impl Tree {
         }
         t.items = t.names.len() as u64 - 1;
         t.seal()
+    }
+}
+
+#[cfg(test)]
+mod identity_reserve_tests {
+    use super::*;
+    #[test]
+    fn failed_reservation_records_nothing_and_fails_closed() {
+        let mut t = Tree::default();
+        assert!(!t.reserve_identity(usize::MAX / 2), "an impossible reservation must fail, not abort");
+        t.identity_enabled = false;
+        t.push_identity(1, 2);
+        assert!(t.ino.is_empty() && t.dev_ix.is_empty());
+        assert_eq!(t.scanned_identity(0), None);
     }
 }

@@ -219,6 +219,7 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
 fn flatten(root_path: String, root: DirNode, ctx: Ctx, progress: &ScanProgress) -> Tree {
     let root_ident = (ctx.root_dev, ctx.root_ino);
     let mut t = Tree { root_path, ..Default::default() };
+    t.identity_enabled = t.reserve_identity(ctx.progress.items.load(Ordering::Relaxed) as usize + 1);
     let push = |t: &mut Tree, name: &str, parent: u32, kind: Kind, size: u64, mtime: i64, ident: (u64, u64)| -> u32 {
         let id = t.names.len() as u32;
         t.push_identity(ident.0, ident.1);
