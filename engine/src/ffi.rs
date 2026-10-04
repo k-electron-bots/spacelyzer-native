@@ -1074,3 +1074,26 @@ pub unsafe extern "C" fn spz_volume_info_status(path: *const c_char, out: *mut S
         }
     })
 }
+
+// ---- Exclusions that matched nothing (so a reviewable exclusion list can say which entries did nothing). ----
+
+/// Number of requested exclusions that matched no scanned entry (0 for a cancelled scan). Status 3 for a null tree.
+#[no_mangle]
+pub unsafe extern "C" fn spz_tree_unmatched_exclusion_count_status(t: *const Tree, status: *mut i32) -> u32 {
+    guarded(status, 0, || {
+        if t.is_null() { if !status.is_null() { *status = 3; } return 0; }
+        if !status.is_null() { *status = 0; }
+        (&*t).unmatched_exclusions.len() as u32
+    })
+}
+
+/// The i-th unmatched exclusion (sorted, deduplicated; lossy display text; free with spz_string_free). Null plus status 3 for a null tree or index out of range.
+#[no_mangle]
+pub unsafe extern "C" fn spz_tree_unmatched_exclusion_status(t: *const Tree, i: u32, status: *mut i32) -> *mut c_char {
+    guarded(status, std::ptr::null_mut(), || {
+        if t.is_null() { if !status.is_null() { *status = 3; } return std::ptr::null_mut(); }
+        let Some(s) = (&*t).unmatched_exclusions.get(i as usize) else { if !status.is_null() { *status = 3; } return std::ptr::null_mut() };
+        if !status.is_null() { *status = 0; }
+        to_c(s.clone())
+    })
+}
