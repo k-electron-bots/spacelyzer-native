@@ -1941,6 +1941,25 @@ private actor PublicationBarrier {
             && lay[2] == UInt64(MemoryLayout<SpzRowInfo>.offset(of: \.node) ?? 9999) && lay[3] == UInt64(MemoryLayout<SpzRowInfo>.offset(of: \.shown) ?? 9999)
             && lay[4] == UInt64(MemoryLayout<SpzRowInfo>.offset(of: \.visible_children) ?? 9999)
         Check.expect("engine-row-info-abi-matches-rust", abiOK, "rust[size,align,node,shown,visible]=\(lay) swift[size=\(MemoryLayout<SpzRowInfo>.size) align=\(MemoryLayout<SpzRowInfo>.alignment) stride=\(MemoryLayout<SpzRowInfo>.stride) node=\(String(describing: MemoryLayout<SpzRowInfo>.offset(of: \.node))) shown=\(String(describing: MemoryLayout<SpzRowInfo>.offset(of: \.shown))) visible=\(String(describing: MemoryLayout<SpzRowInfo>.offset(of: \.visible_children)))]")
+        // Inspect ABI (UNCOMPILED/UNRUN until a Mac run): the imported SpzInspect must match Rust's layout.
+        var il = [UInt64](repeating: 0, count: 7)
+        il.withUnsafeMutableBufferPointer { spz_inspect_layout($0.baseAddress) }
+        let inspOK: Bool = il[0] == UInt64(MemoryLayout<SpzInspect>.size) && il[1] == UInt64(MemoryLayout<SpzInspect>.alignment)
+            && il[2] == UInt64(MemoryLayout<SpzInspect>.offset(of: \.mtime) ?? 9999) && il[3] == UInt64(MemoryLayout<SpzInspect>.offset(of: \.dev) ?? 9999)
+            && il[4] == UInt64(MemoryLayout<SpzInspect>.offset(of: \.ino) ?? 9999) && il[5] == UInt64(MemoryLayout<SpzInspect>.offset(of: \.nlink) ?? 9999)
+            && il[6] == UInt64(MemoryLayout<SpzInspect>.offset(of: \.kind) ?? 9999)
+        Check.expect("engine-inspect-abi-matches-rust", inspOK, "rust[size,align,mtime,dev,ino,nlink,kind]=\(il) swift[size=\(MemoryLayout<SpzInspect>.size) align=\(MemoryLayout<SpzInspect>.alignment)]")
+        // Same real files, three views: the scanner's recorded identity (macOS bulk backend), the engine's live lstat, and Foundation's own lstat.
+        // Every item must read Same, and the independent lstat must agree with the engine's on ino, 32-bit dev and logical size.
+        var identOK = true; var identDetail = ""
+        for id in [UInt32(0), f1, f2, f3] {
+            let code = spz_tree_check_identity(t1.ptr, id)
+            var insp = SpzInspect(); let rc = spz_inspect_path(t1.path(id), &insp)
+            var lst = stat(); let lrc = lstat(t1.path(id), &lst)
+            let agree = rc == 0 && lrc == 0 && UInt64(lst.st_ino) == insp.ino && UInt32(truncatingIfNeeded: lst.st_dev) == UInt32(truncatingIfNeeded: insp.dev) && (id == 0 || UInt64(lst.st_size) == insp.logical)
+            if code != 0 || !agree { identOK = false; identDetail += " id=\(id) check=\(code) inspect=\(rc) lstat=\(lrc) ino=\(lst.st_ino)/\(insp.ino) dev=\(lst.st_dev)/\(insp.dev);" }
+        }
+        Check.expect("engine-scanned-identity-matches-lstat-on-fixture", identOK, identOK ? "root and 3 files Same; Foundation lstat agrees with engine lstat" : identDetail)
         // Real engine forget on the OLD tree handle after a second tree exists: only the old tree changes.
         let v1 = t1.version, v2 = t2.version, r1 = t1.info(0).size, r2 = t2.info(0).size, s1 = t1.info(f1).size, s2 = t1.info(f2).size, s3 = t1.info(f3).size
         let st = t1.forget(f1)
@@ -2420,6 +2439,8 @@ final class BusyFlag: @unchecked Sendable {
         "view-outline-filtered-count-v-of-t-false-pair-and-all-match",
         "view-outline-last-match-removal-hides-folder",
         "engine-row-info-abi-matches-rust",
+        "engine-inspect-abi-matches-rust",
+        "engine-scanned-identity-matches-lstat-on-fixture",
         "view-poison-outline-cells-show-unavailable-not-stale-names",
         "view-poison-outline-latch-persists-in-mounted-table",
         "engine-old-tree-forget-advances-old-only-after-swap",
