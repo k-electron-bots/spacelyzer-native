@@ -7,7 +7,7 @@
 #
 # Every section prints RAN PASS / RAN FAIL / NOT-RUN so a log cannot imply a Mac pass it did not earn.
 # Logs go OUTSIDE the repo: ${SPZ_LOCAL_LOGS:-$HOME/spz-local-logs}/<UTC stamp>/.
-# Expect each driver launch to take over to ~6 minutes max; it opens a real window and takes focus, so do not use the Mac meanwhile.
+# Each driver launch can take up to ~6 minutes; it opens a real window and takes focus, so do not use the Mac meanwhile.
 # The app under test uses a unique bundle id and a unique path; only the PID launched from that path is ever killed.
 set -uo pipefail
 cd "$(dirname "$0")/.."
