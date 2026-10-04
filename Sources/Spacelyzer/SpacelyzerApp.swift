@@ -932,6 +932,18 @@ private actor PublicationBarrier {
         }
         return nil
     }
+    /// After a removal commit lands, the outline and derived surfaces publish by themselves but the layout surface needs a
+    /// view (there is none in this model-level driver), so the model keeps requiredVersion set and rowsPending true. The
+    /// suite acts as the missing view exactly once per settled removal, then requires a quiet model before the next action.
+    /// Returns false (and the caller's check will fail on its own conditions) if the model never goes quiet.
+    static func settleSurfaces(_ m: AppModel) async -> Bool {
+        _ = await m.settleRemoval()
+        _ = await wait { !m.removalInFlight && m.commitsInFlight == 0 && m.outlineVersion == m.tree?.version && m.derivedVersion == m.tree?.version }
+        if let v = m.tree?.version { m.layoutPublished(v) }
+        let quiet = await wait { !m.rowsPending }
+        if !quiet { Check.note("settleSurfaces: model never quiet: mutationPending=\(m.mutationPending) commits=\(m.commitsInFlight) required=\(String(describing: m.requiredVersion))") }
+        return quiet
+    }
     static func wait(_ condition: () async -> Bool) async -> Bool {
         let deadline = Date().addingTimeInterval(10)
         while Date() < deadline {
@@ -1070,6 +1082,7 @@ private actor PublicationBarrier {
         Check.expect("async-removal-main-actor-stays-responsive", inFlight && responsive && refused && counter.value == 1 && !m.removalInFlight, "inFlight=\(inFlight) responsive=\(responsive) refused=\(refused) calls=\(counter.value)")
         Check.expect("async-removal-forgets-after-success", m.tree?.info(0).size == rootSize - t0.info(a).size || m.tree?.info(a).size == 0, "root=\(m.tree?.info(0).size ?? 0)")
 
+        _ = await PublicationRegression.settleSurfaces(m)   // act as the missing view so the next removal is not paused by the layout surface
         // 2. A failure with the original still present leaves the tree, epoch and journal untouched and reports THAT error
         // (a blocked-commit message must not satisfy this check).
         m.removalMessage = nil
@@ -1128,6 +1141,7 @@ private actor PublicationBarrier {
             Check.expect("async-undo-refused-while-commit-parked", parkedOK && journaled && refused && settled && m2.commitsInFlight == 0, "parked=\(parkedOK) journaled=\(journaled) refused=\(refused) settled=\(settled)")
             // After the commit has landed, undo is ATTEMPTED (not refused as in-progress). The mock left the file in place,
             // so the attempt ends as a collision and the journal entry is kept.
+            _ = await PublicationRegression.settleSurfaces(m2)
             m2.removalMessage = nil
             m2.undoRemoval(); await m2.settleRemoval()
             let msg = m2.removalMessage ?? ""
@@ -1337,9 +1351,11 @@ private actor PublicationBarrier {
         // 5. Selected, expanded and displayed root inside a removed subtree are reset with the new numbers.
         if let m = await scanned(root), let dir = node(m, "dirA"), let sub = node(m, "sub"), let deep = node(m, "deep.txt") {
             m.expanded = [dir, sub]; m.selected = deep; m.displayedRoot = sub
+            let v5 = m.tree?.version ?? 0
             let acc = remove(m, dir)
-            _ = await PublicationRegression.wait { m.commitsInFlight == 0 && !m.destructiveBlocked }
-            Check.expect("commit-order-subtree-state-reset", acc && m.selected == nil && !m.expanded.contains(dir) && !m.expanded.contains(sub) && m.displayedRoot == 0, "selected=\(String(describing: m.selected)) root=\(m.displayedRoot)")
+            _ = await PublicationRegression.wait { !m.removalInFlight && m.commitsInFlight == 0 && (m.tree?.version ?? 0) > v5 }
+            _ = await PublicationRegression.settleSurfaces(m)
+            Check.expect("commit-order-subtree-state-reset", acc && (m.tree?.version ?? 0) > v5 && m.selected == nil && !m.expanded.contains(dir) && !m.expanded.contains(sub) && m.displayedRoot == 0, "selected=\(String(describing: m.selected)) root=\(m.displayedRoot)")
         } else { Check.expect("commit-order-subtree-state-reset", false, "fixture") }
 
         // 6. An engine failure after a successful filesystem move marks the view out of date and blocks further removals.
@@ -1349,7 +1365,7 @@ private actor PublicationBarrier {
             m.trashItem = { trashCalls.append($0.lastPathComponent); return $0 }
             m.commitOverride = { _, _ in overrideCalls += 1; return .mutationFailed }
             let acc = remove(m, id)
-            _ = await PublicationRegression.wait { m.commitsInFlight == 0 }
+            _ = await PublicationRegression.wait { !m.removalInFlight && m.commitsInFlight == 0 }
             let blocked = m.destructiveBlocked
             m.removalMessage = nil
             if let other = node(m, "b.txt") { remove(m, other, expectAccepted: false) }
@@ -1363,7 +1379,7 @@ private actor PublicationBarrier {
         if let m = await scanned(root), let id = node(m, "dirB") {
             m.tab = .treemap
             let acc = remove(m, id)
-            _ = await PublicationRegression.wait { m.commitsInFlight == 0 && m.outlineVersion == m.tree?.version && m.derivedVersion == m.tree?.version }
+            _ = await PublicationRegression.wait { !m.removalInFlight && m.commitsInFlight == 0 && m.outlineVersion == m.tree?.version && m.derivedVersion == m.tree?.version }
             let layoutLagging = m.navigationBlocked && m.requiredVersion != nil          // layout has not published yet
             m.layoutPublished(m.tree?.version ?? 0)
             let released = !m.navigationBlocked && m.requiredVersion == nil
@@ -1400,7 +1416,7 @@ private actor PublicationBarrier {
         if let m = await scanned(root), let id = node(m, "dirB") {
             m.tab = .treemap
             let acc = remove(m, id)
-            _ = await PublicationRegression.wait { m.commitsInFlight == 0 && m.outlineVersion == m.tree?.version && m.derivedVersion == m.tree?.version }
+            _ = await PublicationRegression.wait { !m.removalInFlight && m.commitsInFlight == 0 && m.outlineVersion == m.tree?.version && m.derivedVersion == m.tree?.version }
             let held = m.requiredVersion != nil
             m.layoutNotRenderable()
             Check.expect("commit-order-layout-not-renderable-releases", acc && held && m.requiredVersion == nil && !m.navigationBlocked, "held=\(held) req=\(String(describing: m.requiredVersion))")
@@ -1511,7 +1527,7 @@ private actor PublicationBarrier {
         if let m = await scanned(root), let id = node(m, "dirB") {
             let k0 = (m.outlineInputKey, m.derivedInputKey, m.filterInputKey, m.layoutInputKey(root: 0, size: CGSize(width: 100, height: 100)))
             let acc = remove(m, id)
-            _ = await PublicationRegression.wait { m.commitsInFlight == 0 }
+            _ = await PublicationRegression.wait { !m.removalInFlight && m.commitsInFlight == 0 }
             let k1 = (m.outlineInputKey, m.derivedInputKey, m.filterInputKey, m.layoutInputKey(root: 0, size: CGSize(width: 100, height: 100)))
             Check.expect("commit-order-retry-keys-change-with-version", acc && k0.0 != k1.0 && k0.1 != k1.1 && k0.2 != k1.2 && k0.3 != k1.3, "outlineChanged=\(k0.0 != k1.0) derivedChanged=\(k0.1 != k1.1) filterChanged=\(k0.2 != k1.2) layoutChanged=\(k0.3 != k1.3) (model-level)")
         } else { Check.expect("commit-order-retry-keys-change-with-version", false, "fixture") }
