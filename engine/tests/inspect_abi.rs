@@ -68,12 +68,13 @@ fn hard_link_dedup_does_not_make_either_link_look_changed() {
 }
 
 #[test]
-fn non_utf8_name_is_unaddressable_and_errors_are_distinct() {
+fn replacement_char_name_is_unaddressable_and_errors_are_distinct() {
     #[cfg(feature = "failpoints")]
     let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let d = fixture("lossy");
-    let bad = d.join(std::ffi::OsStr::from_bytes(b"bad\xff"));
-    if std::fs::write(&bad, b"x").is_err() { return; } // filesystem refuses non-UTF-8 names: nothing to test here
+    let bad = d.join("bad\u{FFFD}");
+    // A scan no longer produces nodes for non-UTF-8 names (see skipped_abi), so the unaddressable guard is exercised with a literal U+FFFD name, which fails closed.
+    if std::fs::write(&bad, b"x").is_err() { return; }
     let t = scanned(&d);
     let id = (1..t.len() as u32).find(|&i| t.name(i).contains('\u{FFFD}')).expect("lossy name node");
     assert_eq!(check(&t, id), C::Unaddressable as i32);
@@ -169,10 +170,10 @@ fn review_carries_live_data_only_when_the_leaf_was_observed_and_labels_the_item(
 }
 
 #[test]
-fn review_of_lossy_name_and_missing_identity_never_inspects() {
+fn review_of_replacement_char_name_and_missing_identity_never_inspects() {
     #[cfg(feature = "failpoints")]
     let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    let d = fixture("review2"); let bad = d.join(std::ffi::OsStr::from_bytes(b"q\xff")); if std::fs::write(&bad, b"x").is_err() { return; }
+    let d = fixture("review2"); let bad = d.join("q\u{FFFD}"); if std::fs::write(&bad, b"x").is_err() { return; }
     let t = scanned(&d); let id = (1..t.len() as u32).find(|&i| t.name(i).contains('\u{FFFD}')).unwrap();
     let (rc, r) = review(&t, id); assert_eq!(rc, C::Unaddressable as i32); assert_eq!((r.live_state, r.live.ino), (0, 0));
     let syn = Tree::synthetic(5); let (rc, r) = review(&syn, 1); assert_eq!(rc, C::NoScannedIdentity as i32); assert_eq!(r.live_state, 0);
