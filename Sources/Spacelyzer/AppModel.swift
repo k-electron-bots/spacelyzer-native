@@ -8,7 +8,7 @@ enum TreemapColoring: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-enum TrailingTab: Hashable { case treemap, kinds, largest }
+enum TrailingTab: Hashable { case treemap, kinds, largest, folders }
 
 struct RemovedItem { var original: URL; var trashed: URL; var size: UInt64 }
 
@@ -189,6 +189,15 @@ final class AppModel {
     }
     /// Largest-files and per-kind lists are computed in Rust off the main thread, never inside a view body.
     var largestIDs: [UInt32] = []
+    /// Largest folders (Folders tab). Loaded only while that tab is shown, from one engine capture, and dropped when the tree changes.
+    var folderIDs: [UInt32] = []
+    var folderSizes: [UInt64] = []
+    var folderVersion: UInt64?
+    /// nil = not loaded for the current tree/version; a message = the load failed or was refused (never shown as an empty list).
+    var folderProblem: String?
+    @ObservationIgnored var folderTask: Task<Void, Never>?
+    @ObservationIgnored private var folderGeneration: UInt64 = 0
+    static let folderCount = 200
     /// Result words for the CSV export. Separate from `removalMessage`, which belongs to Trash (and its Undo button).
     var exportMessage: String?
     @ObservationIgnored var exportTask: Task<Void, Never>?
@@ -538,6 +547,7 @@ final class AppModel {
                 outlineRows = []; outlineInfos = []; outlineShown = []; outlineIndex = [:]; outlineRevision += 1; expanded = []; largestIDs = []; largestSizes = []; kindRows = []; activeFilter = nil
                 outlineRootSize = 0; publishedTotalBytes = nil; outlineVersion = nil; derivedVersion = nil; layoutVersion = nil; layoutNotRenderableVersion = nil; requiredVersion = nil
                 pendingRemoval = nil
+                folderTask?.cancel(); folderGeneration &+= 1; folderIDs = []; folderSizes = []; folderVersion = nil; folderProblem = nil
                 exportTask?.cancel()   // an export prepared for the old tree must not write
                 if fsEpoch != epochAtStart || mutatingAtStart || mutationPending || commitsInFlight > 0 {
                     markOutOfDate("Files were moved while this scan ran, so it may not match the disk. Rescan.")
@@ -556,6 +566,33 @@ final class AppModel {
                 error = "The scan failed. Check that the folder exists and you can read it."
             }
             await completed?("scan-completion", generation, publication)
+        }
+    }
+
+    /// Reads the largest folders off the main actor and publishes only if the tree, the generation and the table version still match.
+    /// A failure or a poisoned engine shows a message, never an empty list or old rows.
+    func refreshFolders() {
+        folderTask?.cancel()
+        folderGeneration &+= 1
+        let generation = folderGeneration
+        guard let tree else { folderIDs = []; folderSizes = []; folderVersion = nil; folderProblem = nil; return }
+        if enginePoisoned { folderIDs = []; folderSizes = []; folderVersion = nil; folderProblem = "The engine reported an internal error. Rescan to continue."; return }
+        folderTask = Task.detached(priority: .userInitiated) { [weak self] in
+            let result = tree.largestFolders(count: AppModel.folderCount)
+            if Task.isCancelled { return }
+            await MainActor.run {
+                guard let self, self.folderGeneration == generation, self.tree === tree else { return }
+                if self.enginePoisoned { self.folderIDs = []; self.folderSizes = []; self.folderVersion = nil; self.folderProblem = "The engine reported an internal error. Rescan to continue."; return }
+                switch result {
+                case .success(let snap) where snap.version == tree.version:
+                    self.folderIDs = snap.ids; self.folderSizes = snap.sizes; self.folderVersion = snap.version; self.folderProblem = nil
+                case .success:
+                    self.folderIDs = []; self.folderSizes = []; self.folderVersion = nil; self.folderProblem = "The results changed while loading. Reloading…"
+                    self.refreshFolders()
+                case .failure:
+                    self.folderIDs = []; self.folderSizes = []; self.folderVersion = nil; self.folderProblem = "The folder list could not be read. Rescan to refresh."
+                }
+            }
         }
     }
 

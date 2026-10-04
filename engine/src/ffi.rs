@@ -732,6 +732,19 @@ pub unsafe extern "C" fn spz_largest_sized_status(t: *const Tree, h: *const Filt
     })
 }
 
+/// Largest folders (directories and packages, not the root), by cumulative size, with each size from the SAME table capture. Unfiltered only.
+/// Returns the count written (at most `cap`). `out` and `sizes_out` must each hold `cap` entries.
+#[no_mangle]
+pub unsafe extern "C" fn spz_largest_dirs_status(t: *const Tree, cap: u32, out: *mut NodeId, sizes_out: *mut u64, expected: u64, version: *mut u64, status: *mut i32) -> u32 {
+    guarded(status, 0, || {
+        if (out.is_null() || sizes_out.is_null()) && cap > 0 { if !status.is_null() { *status = 3; } return 0; }
+        let Some(c) = snapshot(t, std::ptr::null(), expected, status, version) else { return 0 };
+        let v = (*t).largest_dirs_in(&c.table, cap as usize);
+        for (i, id) in v.iter().enumerate() { *out.add(i) = *id; *sizes_out.add(i) = c.table.sizes[*id as usize]; }
+        v.len() as u32
+    })
+}
+
 /// Category totals into `out` (CATEGORY_COUNT * 2 u64s). Untouched on a non-OK status.
 #[no_mangle]
 pub unsafe extern "C" fn spz_category_totals_status(t: *const Tree, h: *const FilterHandle, out: *mut u64, expected: u64, version: *mut u64, status: *mut i32) {

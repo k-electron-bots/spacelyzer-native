@@ -55,6 +55,13 @@ struct DerivedSnapshot {
     var version: UInt64
 }
 
+/// The largest folders by cumulative size, from one table capture (unfiltered).
+struct FolderSnapshot: Sendable, Equatable {
+    var ids: [UInt32]
+    var sizes: [UInt64]
+    var version: UInt64
+}
+
 /// Engine status codes (spacelyzer.h). A non-ok status is never turned into an empty or zero value.
 enum EngineStatus: Int32, Error {
     case ok = 0, stale, mutationFailed, invalid, busy, internalError
@@ -236,6 +243,17 @@ final class Tree: @unchecked Sendable {
             return .success(DerivedSnapshot(ids: Array(ids.prefix(Int(c))), sizes: Array(sizes.prefix(Int(c))), kinds: kinds, version: v))
         }
         return .failure(.stale)
+    }
+
+    /// Largest folders (directories and packages, not the root, not removed ones), sizes from the same capture as the ids. Unfiltered only.
+    /// A non-ok status is returned as a failure, never as an empty list.
+    func largestFolders(count: Int) -> Result<FolderSnapshot, EngineStatus> {
+        var ids = [UInt32](repeating: 0, count: count)
+        var sizes = [UInt64](repeating: 0, count: count)
+        var v: UInt64 = 0, st: Int32 = -1
+        let c = ids.withUnsafeMutableBufferPointer { b in sizes.withUnsafeMutableBufferPointer { sb in spz_largest_dirs_status(ptr, UInt32(count), b.baseAddress, sb.baseAddress, UInt64.max, &v, &st) } }
+        guard st == 0 else { return .failure(EngineStatus(raw: st)) }
+        return .success(FolderSnapshot(ids: Array(ids.prefix(Int(c))), sizes: Array(sizes.prefix(Int(c))), version: v))
     }
 
     /// True when `node` is `ancestor` or lies inside its subtree. Parent links are never changed by a removal.

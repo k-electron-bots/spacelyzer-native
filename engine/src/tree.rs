@@ -361,6 +361,27 @@ impl Tree {
         self
     }
 
+    /// The `n` largest folders (directories and packages, never the scan root, never a removed one, never an empty-size one), largest
+    /// first, by CUMULATIVE size from the given table. A folder and its parent can both appear: the list is by size, not by disjoint subtree.
+    /// Ties break by node id so the order is deterministic.
+    pub fn largest_dirs_in(&self, tab: &SizeTable, n: usize) -> Vec<NodeId> {
+        let sizes = &tab.sizes;
+        let dead = tab.dead_mask(self);
+        let mut v: Vec<NodeId> = (1..self.len() as NodeId)
+            .filter(|&i| {
+                let k = self.kind[i as usize];
+                (k == Kind::Directory as u8 || k == Kind::Package as u8) && sizes[i as usize] > 0 && !dead.as_ref().map_or(false, |d| d[i as usize])
+            })
+            .collect();
+        let n = n.min(v.len());
+        if n == 0 { return vec![]; }
+        let key = |i: &NodeId| (std::cmp::Reverse(sizes[*i as usize]), *i);
+        v.select_nth_unstable_by_key(n - 1, key);
+        v.truncate(n);
+        v.sort_by_key(key);
+        v
+    }
+
     /// The `n` largest regular files, largest first.
     pub fn largest_files(&self, n: usize) -> Vec<NodeId> {
         self.largest_files_in(&self.table(), n)

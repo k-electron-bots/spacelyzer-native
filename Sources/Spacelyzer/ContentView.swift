@@ -56,6 +56,7 @@ struct ContentView: View {
                     Text("Treemap").tag(TrailingTab.treemap)
                     Text("Kinds").tag(TrailingTab.kinds)
                     Text("Largest").tag(TrailingTab.largest)
+                    Text("Folders").tag(TrailingTab.folders)
                 }.pickerStyle(.segmented)
             }
         }
