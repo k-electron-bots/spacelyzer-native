@@ -208,7 +208,7 @@ unsafe fn spz_tree_node_impl(t: *const Tree, id: NodeId) -> SpzNode {
         size: tab.sizes[id as usize],
         own_bytes: t.own_bytes_in(&tab.sizes, id),
         parent: t.parent(id).unwrap_or(u32::MAX),
-        child_count: t.child_count(id),
+        child_count: t.live_child_count_in(&tab, id),
         first_child: if r.is_empty() { u32::MAX } else { r.start },
         kind: t.kind(id) as u8,
         category: t.category(id) as u8,
@@ -755,7 +755,7 @@ pub unsafe extern "C" fn spz_tree_node_status(t: *const Tree, id: NodeId, out: *
             size: c.table.sizes[id as usize],
             own_bytes: tr.own_bytes_in(&c.table.sizes, id),
             parent: tr.parent(id).unwrap_or(u32::MAX),
-            child_count: tr.child_count(id),
+            child_count: tr.live_child_count_in(&c.table, id),
             first_child: if r.is_empty() { u32::MAX } else { r.start },
             kind: tr.kind(id) as u8,
             category: tr.category(id) as u8,
@@ -805,7 +805,7 @@ pub unsafe extern "C" fn spz_outline_snapshot_status(
                 *infos_out.add(i) = SpzRowInfo {
                     node: SpzNode {
                         size: sizes[r.node as usize], own_bytes: tr.own_bytes_in(sizes, r.node),
-                        parent: tr.parent(r.node).unwrap_or(u32::MAX), child_count: tr.child_count(r.node),
+                        parent: tr.parent(r.node).unwrap_or(u32::MAX), child_count: tr.live_child_count_in(&c.table, r.node),
                         first_child: if ch.is_empty() { u32::MAX } else { ch.start },
                         kind: tr.kind(r.node) as u8, category: tr.category(r.node) as u8,
                     },
