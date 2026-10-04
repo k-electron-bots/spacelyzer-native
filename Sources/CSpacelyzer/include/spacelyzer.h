@@ -84,9 +84,11 @@ uint64_t spz_layout_version(const SpzLayout *l);
 typedef struct SpzRowInfo { SpzNode node; uint64_t shown; uint32_t visible_children; } SpzRowInfo;
 void spz_row_info_layout(uint64_t *out);
 uint32_t spz_outline_snapshot_status(const SpzTree *t, uint32_t root, const uint32_t *expanded, uint32_t n_expanded, const SpzFilterResult *h, uint32_t sort, SpzRow *rows_out, SpzRowInfo *infos_out, uint32_t cap, uint64_t expected, uint64_t *version, uint64_t *root_shown, uint64_t *total_bytes, int32_t *status);
-/* Live lstat (never follows a final symlink). Returns 0 ok, >0 OS errno (2 = gone), -1 bad argument, -2 caught panic. kind: 0 file, 1 dir, 2 symlink, 3 other. Uncompiled on macOS until a Mac run. */
+/* Live lstat (never follows a final symlink). Returns 0 ok, >0 OS errno (2 = gone), -1 null argument, -2 caught panic, -3 failure without errno. kind: 0 file, 1 dir, 2 symlink, 3 other. Uncompiled on macOS until a Mac run. */
 typedef struct SpzInspect { uint64_t allocated; uint64_t logical; int64_t mtime; uint64_t dev; uint64_t ino; uint32_t nlink; uint8_t kind; uint8_t pad[3]; } SpzInspect;
-int32_t spz_inspect_path(const char *path, SpzInspect *out);
+int32_t spz_inspect_path(const char *path, SpzInspect *out); /* 0 ok, >0 errno, -1 null arg, -2 panic, -3 no errno */
+void spz_inspect_layout(uint64_t *out); /* [size, align, off mtime, off dev, off ino, off nlink, off kind]; Swift must compare with MemoryLayout at startup (not written yet) */
+int32_t spz_tree_check_identity(const SpzTree *t, uint32_t id); /* 0 same, 1 different, 2 none scanned, 3 lossy name, 4 ancestor symlink, 5 gone; <0 error: -1 arg, -2 panic, -3 no errno, <=-1000 -(1000+errno) */
 
 /* Sticky count of panics caught at any FFI boundary. A legacy call returning 0/null/empty may be a caught-panic fallback; compare before/after a publication. */
 uint64_t spz_engine_panic_count(void);
