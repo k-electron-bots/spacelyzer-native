@@ -1574,6 +1574,13 @@ private actor PublicationBarrier {
         }
         return out
     }
+    private static func snapshot(_ view: NSView, _ file: String) {
+        view.layoutSubtreeIfNeeded()
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        let dir = (Check.path as NSString).deletingLastPathComponent
+        if let png = rep.representation(using: .png, properties: [:]) { try? png.write(to: URL(fileURLWithPath: dir + "/" + file)) }
+    }
     private static func hasLabel(_ l: [String], _ name: String) -> Bool { l.contains { $0.hasPrefix(name + ",") } }
 
     static func run() async {
@@ -1595,6 +1602,7 @@ private actor PublicationBarrier {
         }
         try? await Task.sleep(nanoseconds: 400_000_000)
         let l0 = labels(table)
+        snapshot(host, "outline-before-removal.png")
         let rowsMatch: Bool = table.numberOfRows == m.outlineRows.count
         let allNames: Bool = ["big.bin", "mid.bin", "small.bin", "tiny.bin"].allSatisfy { hasLabel(l0, $0) }
         let bigSized: Bool = l0.contains { $0.hasPrefix("big.bin,") && $0.contains("item") }
@@ -1617,6 +1625,7 @@ private actor PublicationBarrier {
         let settled = await PublicationRegression.wait { !m.removalInFlight && m.commitsInFlight == 0 && (m.tree?.version ?? 0) > v0 && !m.rowsPending && table.numberOfRows == m.outlineRows.count }
         try? await Task.sleep(nanoseconds: 400_000_000)
         let l1 = labels(table)
+        snapshot(host, "outline-after-removal.png")
         let gone: Bool = !hasLabel(l1, "big.bin")
         let others: Bool = ["mid.bin", "small.bin", "tiny.bin"].allSatisfy { hasLabel(l1, $0) }
         let selClear: Bool = m.selected != big && (table.selectedRow < 0 || table.selectedRow >= l1.count || !l1[table.selectedRow].hasPrefix("big.bin,"))
@@ -1630,6 +1639,7 @@ private actor PublicationBarrier {
         m.markPoisoned()
         let repainted = await PublicationRegression.wait { labels(table).allSatisfy { $0.hasPrefix("Unavailable,") } && table.numberOfRows > 0 }
         let l2 = labels(table)
+        snapshot(host, "outline-poisoned.png")
         let noStaleName: Bool = !l2.contains { $0.contains(".bin") }
         let flagged: Bool = m.viewOutOfDate && m.poisoned
         Check.expect("view-poison-outline-cells-show-unavailable-not-stale-names", repainted && noStaleName && flagged, "repainted=\(repainted) noStaleName=\(noStaleName) outOfDate=\(m.viewOutOfDate) poisoned=\(m.poisoned) labels=\(l2)")
