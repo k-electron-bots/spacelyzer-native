@@ -76,20 +76,30 @@ struct ItemReviewResult: Sendable, Equatable {
 enum ItemReview {
     /// The imported C layout must equal Rust's, or the answer is refused. Checked once.
     private static let layoutOK: Bool = {
-        var v = [UInt64](repeating: 0, count: 3)
-        v.withUnsafeMutableBufferPointer { spz_review_layout($0.baseAddress) }
-        return v[0] == UInt64(MemoryLayout<SpzReview>.size) && v[1] == UInt64(MemoryLayout<SpzReview>.alignment)
-            && v[2] == UInt64(MemoryLayout<SpzReview>.offset(of: \.live_state) ?? 9999)
+        var r = [UInt64](repeating: 0, count: 4)
+        r.withUnsafeMutableBufferPointer { spz_review_layout($0.baseAddress) }
+        var i = [UInt64](repeating: 0, count: 7)
+        i.withUnsafeMutableBufferPointer { spz_inspect_layout($0.baseAddress) }
+        let reviewOK = r[0] == UInt64(MemoryLayout<SpzReview>.size) && r[1] == UInt64(MemoryLayout<SpzReview>.alignment)
+            && r[2] == UInt64(MemoryLayout<SpzReview>.offset(of: \.live_state) ?? 9999) && r[3] == UInt64(MemoryLayout<SpzReview>.offset(of: \.live) ?? 9999)
+        // The nested SpzInspect: size, alignment and every field offset.
+        let inspectOK = i[0] == UInt64(MemoryLayout<SpzInspect>.size) && i[1] == UInt64(MemoryLayout<SpzInspect>.alignment)
+            && i[2] == UInt64(MemoryLayout<SpzInspect>.offset(of: \.mtime) ?? 9999) && i[3] == UInt64(MemoryLayout<SpzInspect>.offset(of: \.dev) ?? 9999)
+            && i[4] == UInt64(MemoryLayout<SpzInspect>.offset(of: \.ino) ?? 9999) && i[5] == UInt64(MemoryLayout<SpzInspect>.offset(of: \.nlink) ?? 9999)
+            && i[6] == UInt64(MemoryLayout<SpzInspect>.offset(of: \.kind) ?? 9999)
+        return reviewOK && inspectOK
     }()
 
     /// Reads the filesystem OFF the main actor. Cancelling the calling task cancels the inner task too (a detached task does not
     /// inherit cancellation, so the handler forwards it) and the call then throws CancellationError. The result names its tree,
     /// node and table version; `ItemReviewModel` is the single place that decides whether it is still current.
-    static func review(tree: Tree, id: UInt32) async throws -> ItemReviewResult {
+    /// `version` is the table version the caller captured ONCE when it made the request; it is copied into the result unchanged.
+    /// `parkForTest` runs inside the inner task before any read (a test hook that lets a test hold the read open and cancel it).
+    static func review(tree: Tree, id: UInt32, version: UInt64, parkForTest: (@Sendable () async throws -> Void)? = nil) async throws -> ItemReviewResult {
         let treeID = ObjectIdentifier(tree)
-        let version = tree.version
         let work = Task.detached(priority: .userInitiated) { () throws -> ItemReviewResult in
             try Task.checkCancellation()
+            if let park = parkForTest { try await park() }
             let path = tree.path(id)
             // tree.path returns "" for a stale id from an older tree; an empty path is never inspected.
             guard !path.isEmpty, layoutOK else {
@@ -108,42 +118,54 @@ enum ItemReview {
                                              hardLinks: raw.live.nlink, kind: kind)
             }
             let verdict = IdentityVerdict(engineCode: code)
-            if verdict.isUnexpected { Perf.log("item-review unexpected engine code \(code) for node \(id)") }
             return ItemReviewResult(treeID: treeID, node: id, treeVersion: version, path: path, verdict: verdict, live: live)
         }
         return try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
     }
 }
 
-/// Owns the one review in flight. A new request or `invalidate()` cancels the old one, and a late result is dropped unless its tree,
-/// node and request token all still match. This is the only place a result is accepted.
+/// Owns the one review in flight. A new request or `invalidate()` cancels the old one. A result is shown only if its request token,
+/// tree, node and the table version captured at request time ALL still match, and the tree's version has not moved since. A result that
+/// arrives for the current request but is stale ends the in-progress state and sets `outdated`, so the UI never spins forever or shows old data.
+/// Nothing calls `invalidate()` yet: the model is not mounted and no selection is wired to it.
 @MainActor
 final class ItemReviewModel: ObservableObject {
+    typealias Reviewer = @Sendable (Tree, UInt32, UInt64) async throws -> ItemReviewResult
     @Published private(set) var result: ItemReviewResult?
     @Published private(set) var inProgress = false
+    /// True when the answer for the current request was dropped as stale; the UI should ask the user to select the item again.
+    @Published private(set) var outdated = false
     private var task: Task<Void, Never>?
     private var token = 0
-    private var wanted: (tree: ObjectIdentifier, node: UInt32)?
+    private var wanted: (tree: ObjectIdentifier, node: UInt32, version: UInt64)?
+    private let reviewer: Reviewer
+
+    init(reviewer: @escaping Reviewer = { tree, id, version in try await ItemReview.review(tree: tree, id: id, version: version) }) { self.reviewer = reviewer }
 
     func request(tree: Tree, node: UInt32) {
         task?.cancel()
         token += 1
         let mine = token
-        wanted = (ObjectIdentifier(tree), node)
-        result = nil
-        inProgress = true
+        let version = tree.version                      // captured once; the result echoes it
+        wanted = (ObjectIdentifier(tree), node, version)
+        result = nil; outdated = false; inProgress = true
+        let reviewer = self.reviewer
         task = Task { [weak self] in
             let r: ItemReviewResult?
-            do { r = try await ItemReview.review(tree: tree, id: node) } catch { r = nil }   // cancelled: nothing is shown for it
-            guard let self, mine == self.token, let r, let w = self.wanted, r.treeID == w.tree, r.node == w.node, r.treeVersion == tree.version else { return }   // a version change since the request means the answer is stale: dropped
+            do { r = try await reviewer(tree, node, version) } catch { r = nil }       // cancelled or failed: nothing is shown for it
+            guard let self, mine == self.token else { return }                          // superseded or invalidated: the newer owner decides the state
+            defer { self.inProgress = false }
+            guard let r, let w = self.wanted, r.treeID == w.tree, r.node == w.node, r.treeVersion == w.version, tree.version == w.version else {
+                self.result = nil; self.outdated = true; return
+            }
+            if r.verdict.isUnexpected { Perf.log("item-review unexpected engine code for node \(node)") }   // main actor only
             self.result = r
-            self.inProgress = false
         }
     }
 
     /// Selection cleared, tree replaced or filter changed: forget the result and cancel any read.
     func invalidate() {
-        task?.cancel(); token += 1; wanted = nil; result = nil; inProgress = false
+        task?.cancel(); token += 1; wanted = nil; result = nil; inProgress = false; outdated = false
     }
 }
 
