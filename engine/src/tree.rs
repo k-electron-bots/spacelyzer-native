@@ -568,6 +568,19 @@ mod identity_reserve_tests {
         t.push_identity(1, 1000); assert!(t.ino.is_empty());
     }
     #[test]
+    fn nodes_on_different_devices_resolve_to_their_own_device_and_unknown_resolves_to_none() {
+        // A directory whose children sit on other devices (mount points) gets per-node indexes into the shared table.
+        let mut t = Tree::default();
+        t.identity_enabled = t.reserve_identity(5); t.devs = vec![10, 20];
+        t.push_identity_ix(0, 100); t.push_identity_ix(1, 200); t.push_identity_ix(1, 201); t.push_identity_ix(0, 101); t.push_identity_ix(DEV_UNKNOWN, 300);
+        assert_eq!(t.scanned_identity(0), Some((10, 100)));
+        assert_eq!(t.scanned_identity(1), Some((20, 200)));
+        assert_eq!(t.scanned_identity(2), Some((20, 201)));
+        assert_eq!(t.scanned_identity(3), Some((10, 101)));
+        assert_eq!(t.scanned_identity(4), None, "overflowed device: no identity, so the check refuses");
+        assert_eq!(t.scanned_identity(5), None);
+    }
+    #[test]
     fn failed_reservation_records_nothing_and_fails_closed() {
         let mut t = Tree::default();
         assert!(!t.reserve_identity(usize::MAX / 2), "an impossible reservation must fail, not abort");
