@@ -38,7 +38,7 @@ fn groups_identical_files_not_same_size_different_content_and_not_hardlinks_or_s
     assert!(r.hardlink_aliases <= 1);
     assert!(!r.groups[0].ids.contains(&node(&t, &d.join("b"))) && !r.groups[0].ids.contains(&node(&t, &d.join("c"))));
     assert!(!r.groups[0].ids.contains(&node(&t, &d.join("sym"))), "symlinks are never candidates");
-    assert_eq!(r.wasted, r.groups[0].size * 2);
+    assert_eq!(r.duplicate_allocated_bytes, r.groups[0].size * 2);
     assert_eq!((r.unreadable, r.changed, r.cancelled), (0, 0, false));
     assert_eq!(r.version, t.table().version);
 }
@@ -67,6 +67,7 @@ fn files_that_changed_or_vanished_after_the_scan_are_counted_not_reported() {
     for n in ["f1", "f2", "f3", "f4"] { std::fs::write(d.join(n), vec![5u8; 40_000]).unwrap(); }
     let t = scanned(&d);
     std::fs::remove_file(d.join("f1")).unwrap();                                              // vanished
+    std::fs::hard_link(d.join("f2"), d.join("keep_old_f2_inode")).unwrap();                  // pins the old inode so the replacement cannot reuse it
     std::fs::remove_file(d.join("f2")).unwrap(); std::fs::write(d.join("f2"), vec![5u8; 40_000]).unwrap(); // replaced: new inode
     std::fs::write(d.join("f3"), vec![5u8; 10]).unwrap();                                     // same inode, different length (truncate + write)
     let r = find(&t);
@@ -113,7 +114,7 @@ fn cancel_before_work_reports_cancelled_and_no_groups() {
     for n in ["k1", "k2", "k3"] { std::fs::write(d.join(n), vec![9u8; 40_000]).unwrap(); }
     let t = scanned(&d);
     let r = find_duplicates(&t, 1, &AtomicBool::new(true));
-    assert!(r.cancelled && r.groups.is_empty() && r.wasted == 0, "{:?}", r);
+    assert!(r.cancelled && r.groups.is_empty() && r.duplicate_allocated_bytes == 0, "{:?}", r);
 }
 
 #[test]
@@ -164,6 +165,61 @@ fn cancel_in_the_middle_stops_reading_and_reports_only_proven_groups() {
     let full_pr = DupProgress::default(); let _ = find_duplicates_with(&t, 1, &AtomicBool::new(false), &full_pr);
     assert!(total_work < full_pr.bytes_read.load(Relaxed), "stopped early: {} < {}", total_work, full_pr.bytes_read.load(Relaxed));
     for g in &r.groups { assert!(full.groups.contains(g), "a cancelled pass may omit groups but never invents or truncates one: {:?}", g); }
-    assert_eq!(r.wasted, r.groups.iter().map(|g| g.size * (g.ids.len() as u64 - 1)).sum::<u64>());
+    assert_eq!(r.duplicate_allocated_bytes, r.groups.iter().map(|g| g.size * (g.ids.len() as u64 - 1)).sum::<u64>());
     assert_eq!((r.unreadable, r.changed), (0, 0), "a cancel is not counted as unreadable files: {:?}", r);
+}
+
+#[test]
+fn read_budget_stops_the_pass_with_budget_exhausted_and_only_complete_groups() {
+    let d = fixture("budget");
+    for n in ["x1", "x2", "x3"] { std::fs::write(d.join(n), vec![1u8; 600_000]).unwrap(); }
+    for n in ["y1", "y2"] { std::fs::write(d.join(n), vec![2u8; 300_000]).unwrap(); }
+    let t = scanned(&d);
+    let full = find(&t);
+    assert_eq!(full.groups.len(), 2); assert!(!full.incomplete && !full.budget_exhausted);
+    let pr = DupProgress::default();
+    let r = find_duplicates_opts(&t, DupOptions { min_size: 1, max_read_bytes: 50_000 }, &AtomicBool::new(false), &pr);
+    use std::sync::atomic::Ordering::Relaxed;
+    assert!(r.budget_exhausted && r.incomplete && !r.cancelled, "{:?}", r);
+    let read = pr.bytes_read.load(Relaxed);
+    // overshoot is bounded: the budget is checked per chunk (64 KiB read, or two files' chunks in a compare), per worker (rayon may run both size groups at once)
+    assert!(read >= 50_000 && read < 50_000 + 4 * 2 * 65_536, "read {}", read);
+    for g in &r.groups { assert!(full.groups.contains(g), "never a group with missing members: {:?}", g); }
+    assert_eq!((r.unreadable, r.changed), (0, 0), "{:?}", r);
+}
+
+#[test]
+fn a_member_with_a_link_outside_the_scan_is_flagged_linked_and_still_listed() {
+    let d = fixture("linked");
+    let root = d.join("root"); std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a"), vec![3u8; 40_000]).unwrap(); std::fs::write(root.join("b"), vec![3u8; 40_000]).unwrap();
+    std::fs::hard_link(root.join("a"), d.join("outside_link_to_a")).unwrap();   // another path to a's storage, outside the scanned root
+    let t = scanned(&root);
+    let r = find(&t);
+    assert_eq!(r.groups.len(), 1, "{:?}", r);
+    assert_eq!(r.groups[0].linked, 1, "a has link count 2: removing it frees nothing: {:?}", r);
+    assert_eq!(r.groups[0].ids.len(), 2);
+}
+
+#[test]
+fn a_file_replaced_during_the_full_hash_stage_counts_as_changed_not_unreadable() {
+    let d = fixture("midchange");
+    for n in ["x1", "x2", "x3"] { std::fs::write(d.join(n), vec![4u8; 100_000]).unwrap(); }
+    let t = scanned(&d);
+    let pin = d.join("pin"); std::fs::hard_link(d.join("x2"), &pin).unwrap();    // keeps x2's inode alive so the replacement gets a new one
+    let x2 = d.join("x2");
+    let done = std::sync::Arc::new(AtomicBool::new(false));
+    let mut pr = DupProgress::default();
+    let (done2, x2c) = (done.clone(), x2.clone());
+    // after the three prefix reads (3 x 4096 bytes), replace x2 once: the full-hash stage then finds a different inode
+    pr.on_read = Some(Box::new(move |total| {
+        if total >= 3 * 4096 && !done2.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            std::fs::remove_file(&x2c).unwrap(); std::fs::write(&x2c, vec![4u8; 100_000]).unwrap();
+        }
+    }));
+    let r = find_duplicates_with(&t, 1, &AtomicBool::new(false), &pr);
+    assert!(done.load(std::sync::atomic::Ordering::SeqCst), "the replacement ran (precondition)");
+    assert_eq!((r.changed, r.unreadable), (1, 0), "{:?}", r);
+    assert_eq!(r.groups.len(), 1); assert_eq!(r.groups[0].ids.len(), 2);
+    assert!(!r.groups[0].ids.contains(&node(&t, &d.join("x2"))));
 }
