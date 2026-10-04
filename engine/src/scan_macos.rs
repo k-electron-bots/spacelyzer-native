@@ -174,5 +174,5 @@ fn parse_record(rec: &[u8]) -> Option<RawEntry> {
         VREG => Kind::File,
         _ => Kind::File, // devices, sockets, fifos: recorded as files with whatever size they report
     };
-    Some(RawEntry { name, name_lossy, kind, alloc, nlink, dev, ino, mtime })
+    Some(RawEntry { name, name_lossy, failed: 0, kind, alloc, nlink, dev, ino, mtime })
 }

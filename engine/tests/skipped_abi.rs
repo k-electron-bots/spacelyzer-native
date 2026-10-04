@@ -114,3 +114,24 @@ fn a_non_utf8_scan_root_is_refused_and_a_non_utf8_exclusion_matches_nothing() {
     assert_eq!((1..t.len() as u32).filter(|&i| t.name(i) == "f").count(), 1);
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// Audit gap: an entry whose metadata cannot be read (directory readable but not searchable: readdir works, lstat of each entry gets EACCES) used to
+/// vanish from the tree AND from the skipped list, silently undercounting. Needs a non-root user; the test refuses to pass vacuously.
+#[test]
+fn entries_whose_metadata_cannot_be_read_are_listed_as_skipped_not_dropped() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = std::env::temp_dir().join(format!("skp-nostat-{}", std::process::id())); let _ = std::fs::remove_dir_all(&d);
+    let sub = d.join("noexec"); std::fs::create_dir_all(&sub).unwrap();
+    for n in ["a", "b"] { std::fs::write(sub.join(n), vec![1u8; 5000]).unwrap(); }
+    std::fs::write(d.join("visible"), vec![1u8; 5000]).unwrap();
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let probe = std::fs::symlink_metadata(sub.join("a")).is_err(); // precondition: lstat really fails for this user
+    let d = d.canonicalize().unwrap();
+    let t = scan(&d, &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(probe, "precondition: running as root or lstat succeeded, so this test proves nothing");
+    let names: Vec<_> = t.skipped.iter().map(|s| (s.path.rsplit('/').next().unwrap().to_string(), s.reason as u8)).collect();
+    assert_eq!(names, vec![("a".to_string(), 0), ("b".to_string(), 0)], "{:?}", t.skipped);
+    assert_eq!((1..t.len() as u32).filter(|&i| t.name(i) == "a" || t.name(i) == "b").count(), 0);
+    let _ = std::fs::remove_dir_all(&d);
+}
