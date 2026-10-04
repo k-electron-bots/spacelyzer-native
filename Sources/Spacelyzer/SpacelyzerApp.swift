@@ -1943,7 +1943,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
 
     /// UNCOMPILED/UNRUN until a Mac run. Deterministic: every step that must happen after another waits on a gate, not on a sleep.
     private static func reviewModelChecks() async {
-        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state", "review-model-refuses-and-drops-when-engine-untrusted", "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", "review-bare-model-selection-change-makes-no-review-request"]
+        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state", "review-model-refuses-and-drops-when-engine-untrusted", "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", "review-bare-model-selection-change-makes-no-review-request", "copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write"]
         let d = fixture("review-model", [("a.bin", 30_000), ("b.bin", 20_000), ("c.bin", 10_000)])
         defer { try? FileManager.default.removeItem(at: d) }
         guard let t = await ScanSession(root: d.path, excludes: [])?.run({ _ in }), let a = node(t, "a.bin"), let b = node(t, "b.bin"), let c = node(t, "c.bin") else {
@@ -2028,6 +2028,24 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         Check.expect("review-bare-model-selection-change-makes-no-review-request", none6, "requests during bare-model selection changes: \(ItemReviewModel.requestCountForTests - before6)")
     }
 
+    /// UNCOMPILED/UNRUN. Pure policy, no pasteboard: `write` is a counter. Refusals must never write (so never clear the clipboard).
+    private static func copyPathChecks() {
+        var writes: [String] = []
+        let ok = CopyPathPolicy.perform(path: "/Users/x/My File.txt", enginePoisoned: false) { writes.append($0) }
+        let empty = CopyPathPolicy.perform(path: "", enginePoisoned: false) { writes.append($0) }
+        let none = CopyPathPolicy.perform(path: nil, enginePoisoned: false) { writes.append($0) }
+        let lossy = CopyPathPolicy.perform(path: "/Users/x/bad\u{FFFD}name", enginePoisoned: false) { writes.append($0) }
+        let newline = CopyPathPolicy.perform(path: "/Users/x/a\nrm -rf", enginePoisoned: false) { writes.append($0) }
+        let esc = CopyPathPolicy.perform(path: "/Users/x/a\u{1B}[2J", enginePoisoned: false) { writes.append($0) }
+        let c1 = CopyPathPolicy.perform(path: "/Users/x/a\u{85}b", enginePoisoned: false) { writes.append($0) }
+        let sep = CopyPathPolicy.perform(path: "/Users/x/a\u{2028}b", enginePoisoned: false) { writes.append($0) }
+        let poisoned = CopyPathPolicy.perform(path: "/Users/x/ok", enginePoisoned: true) { writes.append($0) }
+        let good = ok == .copy("/Users/x/My File.txt") && writes == ["/Users/x/My File.txt"]   // exact, unaltered, written once; spaces are fine
+        let refused = empty == .refuse(.emptyPath) && none == .refuse(.noItem) && lossy == .refuse(.lossyName) && newline == .refuse(.controlCharacters)
+            && esc == .refuse(.controlCharacters) && c1 == .refuse(.controlCharacters) && sep == .refuse(.controlCharacters) && poisoned == .refuse(.engineUntrusted)
+        Check.expect("copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write", good && refused && writes.count == 1, "good=\(good) refused=\(refused) writes=\(writes.count)")
+    }
+
     private static func engine() async {
         let d1 = fixture("engine-old", [("f1.bin", 40_000), ("f2.bin", 24_000), ("f3.bin", 8_000)])
         let d2 = fixture("engine-new", [("g1.bin", 30_000), ("g2.bin", 10_000)])
@@ -2065,6 +2083,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         }
         Check.expect("engine-scanned-identity-matches-lstat-on-fixture", identOK, identOK ? "root and 3 files Same; Foundation lstat agrees with engine lstat" : identDetail)
         await reviewModelChecks()
+        copyPathChecks()
         // Real engine forget on the OLD tree handle after a second tree exists: only the old tree changes.
         let v1 = t1.version, v2 = t2.version, r1 = t1.info(0).size, r2 = t2.info(0).size, s1 = t1.info(f1).size, s2 = t1.info(f2).size, s3 = t1.info(f3).size
         let st = t1.forget(f1)
@@ -2551,6 +2570,7 @@ final class BusyFlag: @unchecked Sendable {
         "review-model-refuses-and-drops-when-engine-untrusted",
         "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding",
         "review-bare-model-selection-change-makes-no-review-request",
+        "copy-path-policy-valid-empty-lossy-control-poison-refusals-never-write",
         "engine-scanned-identity-matches-lstat-on-fixture",
         "view-poison-outline-cells-show-unavailable-not-stale-names",
         "view-poison-outline-latch-persists-in-mounted-table",

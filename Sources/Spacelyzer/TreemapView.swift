@@ -279,6 +279,9 @@ struct SelectionBar: View {
         let snap = model.nodeSnapshot(id)
         let title = snap.map { $0.name.isEmpty ? $0.path : $0.name } ?? (tree.name(id).isEmpty ? tree.path(id) : tree.name(id))
         let detail = snap.map { "\(formatBytes($0.info.size))  ·  \($0.info.category.label)" } ?? "Updating…"
+        // Computed once per render for the menu state; the click decides AGAIN from the current state (copyScannedPath).
+        let copyDecision = currentCopyDecision()
+        let copyHelp: String = { if case .refuse(let r) = copyDecision { return r.help }; return "Copy the path the scan recorded for this item (not a check of the disk now)" }()
         HStack {
             VStack(alignment: .leading) {
                 Text(title).font(.headline).lineLimit(1).truncationMode(.middle)
@@ -291,13 +294,15 @@ struct SelectionBar: View {
                 }
             }
             Spacer()
-            Button("Show in Finder") { model.reveal(id) }
-                .help("Reveal the selected item in Finder")
-                .accessibilityLabel("Show selected item in Finder")
-            Button("Copy Path") { copyPath() }
-                .disabled(model.enginePoisoned || tree.path(id).contains("\u{FFFD}"))
-                .help(tree.path(id).contains("\u{FFFD}") ? "This name has bytes the scan could not keep exactly, so a copied path could point somewhere else" : "Copy the full path of the selected item")
-                .accessibilityLabel("Copy path of selected item")
+            Menu("More") {
+                Button("Show in Finder") { model.reveal(id) }
+                    .accessibilityLabel("Show selected item in Finder")
+                Button("Copy Scanned Path") { copyScannedPath() }
+                    .disabled(copyDecision.isRefused)
+                    .accessibilityLabel("Copy the scanned path of the selected item")
+            }
+            .help(copyHelp)
+            .accessibilityLabel("More actions for the selected item")
             Button("Check on disk…") { showReview = true }
                 .disabled(model.enginePoisoned || model.mutationPending)
                 .help("Read only: compare this item on disk with the scan")
@@ -315,12 +320,25 @@ struct SelectionBar: View {
 }
 
 extension SelectionBar {
-    /// Read only: puts the scanned path on the clipboard as plain text. Does not touch the disk, the tree or the selection.
-    fileprivate func copyPath() {
-        let pb = NSPasteboard.general
-        pb.clearContents()
-        pb.setString(tree.path(id), forType: .string)
+    /// Current decision from live state. The item must still be the selected node of the model's current tree.
+    fileprivate func currentCopyDecision() -> CopyPathPolicy.Decision {
+        let live = model.tree === tree && model.selected == id && UInt64(id) < tree.nodeCount
+        return CopyPathPolicy.decide(path: live ? tree.path(id) : nil, enginePoisoned: model.enginePoisoned)
     }
+    /// Read only. Decides again at click time and clears the clipboard only when it is about to write a valid path. Does not touch the
+    /// disk, the tree or the selection. A refusal leaves the clipboard exactly as it was.
+    fileprivate func copyScannedPath() {
+        let live = model.tree === tree && model.selected == id && UInt64(id) < tree.nodeCount
+        CopyPathPolicy.perform(path: live ? tree.path(id) : nil, enginePoisoned: model.enginePoisoned) { p in
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(p, forType: .string)
+        }
+    }
+}
+
+extension CopyPathPolicy.Decision {
+    var isRefused: Bool { if case .refuse = self { return true }; return false }
 }
 
 struct KindsView: View {
