@@ -1943,7 +1943,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
 
     /// UNCOMPILED/UNRUN until a Mac run. Deterministic: every step that must happen after another waits on a gate, not on a sleep.
     private static func reviewModelChecks() async {
-        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state", "review-model-refuses-and-drops-when-engine-untrusted", "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", "review-selection-and-filter-changes-start-no-review"]
+        let names = ["review-model-version-change-drops-result-and-clears-progress", "review-model-newer-request-wins-and-late-result-is-ignored", "review-cancel-reaches-the-inner-read-and-clears-state", "review-model-refuses-and-drops-when-engine-untrusted", "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", "review-bare-model-selection-change-makes-no-review-request"]
         let d = fixture("review-model", [("a.bin", 30_000), ("b.bin", 20_000), ("c.bin", 10_000)])
         defer { try? FileManager.default.removeItem(at: d) }
         guard let t = await ScanSession(root: d.path, excludes: [])?.run({ _ in }), let a = node(t, "a.bin"), let b = node(t, "b.bin"), let c = node(t, "c.bin") else {
@@ -2019,13 +2019,13 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         let mapped = IdentityVerdict(engineCode: 0) == .same && IdentityVerdict(engineCode: 5) == .gone && IdentityVerdict(engineCode: -1013) == .unreadable(errno: 13) && IdentityVerdict(engineCode: 42) == .engineFault(code: 42)
         Check.expect("review-verdict-messages-are-nonempty-and-only-same-allows-proceeding", wordsOK && onlySame && refusalsNotMatch && mapped, "words=\(wordsOK) onlySame=\(onlySame) refusalsNotMatch=\(refusalsNotMatch) mapped=\(mapped)")
 
-        // 6. Selection and filter changes on the app model start no review (nothing calls request(); the popover is opened only by a click).
+        // 6. BARE-MODEL check only, not a mounted-window or popover check: setting `selected` on a bare AppModel makes no review request.
+        // Filter text is deliberately NOT touched here: it schedules real filter tasks that would outlive this check and leak into later ones.
         let am = AppModel(); am.tree = t
         let before6 = ItemReviewModel.requestCountForTests
         am.selected = a; am.selected = b; am.selected = nil
-        am.filterText = "a"; am.filterText = ""
         let none6 = ItemReviewModel.requestCountForTests == before6
-        Check.expect("review-selection-and-filter-changes-start-no-review", none6, "requests during selection/filter changes: \(ItemReviewModel.requestCountForTests - before6)")
+        Check.expect("review-bare-model-selection-change-makes-no-review-request", none6, "requests during bare-model selection changes: \(ItemReviewModel.requestCountForTests - before6)")
     }
 
     private static func engine() async {
@@ -2550,7 +2550,7 @@ final class BusyFlag: @unchecked Sendable {
         "review-cancel-reaches-the-inner-read-and-clears-state",
         "review-model-refuses-and-drops-when-engine-untrusted",
         "review-verdict-messages-are-nonempty-and-only-same-allows-proceeding",
-        "review-selection-and-filter-changes-start-no-review",
+        "review-bare-model-selection-change-makes-no-review-request",
         "engine-scanned-identity-matches-lstat-on-fixture",
         "view-poison-outline-cells-show-unavailable-not-stale-names",
         "view-poison-outline-latch-persists-in-mounted-table",
