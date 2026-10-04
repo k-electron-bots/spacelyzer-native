@@ -1022,3 +1022,32 @@ pub unsafe extern "C" fn spz_dup_report_ids(r: *const DupReportHandle, index: u3
 
 #[no_mangle]
 pub unsafe extern "C" fn spz_dup_report_free(r: *mut DupReportHandle) { if !r.is_null() { drop(Box::from_raw(r)); } }
+
+// ---- Skipped entries with status and bounds (the older spz_tree_skipped_* above return a real-looking value for a bad index). ----
+// The list is fixed when the scan ends (removals do not change it) and sorted by (path, reason), so an index names the same entry for the tree's life.
+
+/// Skipped entries per reason into `out` (4 u32: permission denied, unreadable, separate volume, user excluded). Untouched on a non-OK status.
+#[no_mangle]
+pub unsafe extern "C" fn spz_tree_skipped_counts_status(t: *const Tree, out: *mut u32, status: *mut i32) {
+    guarded(status, (), || {
+        if t.is_null() || out.is_null() { if !status.is_null() { *status = 3; } return; }
+        let c = (&*t).skipped_counts();
+        for (i, n) in c.iter().enumerate() { *out.add(i) = *n; }
+        if !status.is_null() { *status = 0; }
+    })
+}
+
+/// One skipped entry: its path (free with spz_string_free), reason (SkipReason) and whether the path is a lossy rendering of a non-UTF-8 path. Null plus
+/// INVALID for a null tree or an index out of range, with the outputs untouched.
+#[no_mangle]
+pub unsafe extern "C" fn spz_tree_skipped_item_status(t: *const Tree, i: u32, reason: *mut u8, lossy: *mut u8, status: *mut i32) -> *mut c_char {
+    guarded(status, std::ptr::null_mut(), || {
+        if t.is_null() { if !status.is_null() { *status = 3; } return std::ptr::null_mut(); }
+        let tr = &*t;
+        let Some(s) = tr.skipped.get(i as usize) else { if !status.is_null() { *status = 3; } return std::ptr::null_mut() };
+        if !reason.is_null() { *reason = s.reason as u8; }
+        if !lossy.is_null() { *lossy = s.lossy as u8; }
+        if !status.is_null() { *status = 0; }
+        to_c(s.path.clone())
+    })
+}

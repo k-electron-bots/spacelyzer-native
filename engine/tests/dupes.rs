@@ -414,3 +414,19 @@ fn randomized_differential_against_a_brute_force_oracle() {
     assert!(with_groups >= 10, "the generator must produce duplicates often enough to mean something: {with_groups}");
     assert!(same_alloc_diff_len >= 3, "the generator must hit equal-allocation/different-length cases: {same_alloc_diff_len}");
 }
+
+#[test]
+fn characterization_non_utf8_file_names_cannot_be_reopened_so_they_are_unreadable_never_grouped() {
+    use std::os::unix::ffi::OsStrExt;
+    let d = fixture("nonutf8");
+    for n in [&b"dup\xff1"[..], &b"dup\xff2"[..]] { std::fs::write(d.join(std::ffi::OsStr::from_bytes(n)), vec![8u8; 40_000]).unwrap(); }
+    std::fs::write(d.join("ok1"), vec![8u8; 40_000]).unwrap(); std::fs::write(d.join("ok2"), vec![8u8; 40_000]).unwrap();
+    let t = scanned(&d);
+    let r = find(&t);
+    // The scanner stores names lossily (U+FFFD), so the path the tree builds does not exist. Those two files are left out and counted, which is a recall
+    // limit of the current scanner, not a false duplicate. The two UTF-8 names still group.
+    assert_eq!(r.groups.len(), 1, "{:?}", r);
+    assert_eq!(r.groups[0].ids.len(), 2);
+    assert!(r.groups[0].ids.iter().all(|&i| t.name(i).starts_with("ok")));
+    assert_eq!(r.unreadable + r.changed, 2, "{:?}", r);
+}

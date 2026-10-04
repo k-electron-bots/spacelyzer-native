@@ -167,7 +167,7 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
             } else {
                 SkipReason::Unreadable
             };
-            ctx.skipped.lock().unwrap().push(Skipped { path: dir.to_string_lossy().into_owned(), reason });
+            ctx.skipped.lock().unwrap().push(Skipped::new(dir, reason));
             return DirNode { ents: vec![], total: 0 };
         }
     };
@@ -183,18 +183,12 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
                 if !ctx.exclude.is_empty() {
                     let p = path.to_string_lossy();
                     if ctx.exclude.iter().any(|x| *x == *p) {
-                        ctx.skipped.lock().unwrap().push(Skipped {
-                            path: p.into_owned(),
-                            reason: SkipReason::UserExcluded,
-                        });
+                        ctx.skipped.lock().unwrap().push(Skipped::new(&path, SkipReason::UserExcluded));
                         continue;
                     }
                 }
                 if !ctx.opts.cross_devices && r.dev != ctx.root_dev {
-                    ctx.skipped.lock().unwrap().push(Skipped {
-                        path: path.to_string_lossy().into_owned(),
-                        reason: SkipReason::SeparateVolume,
-                    });
+                    ctx.skipped.lock().unwrap().push(Skipped::new(&path, SkipReason::SeparateVolume));
                     continue;
                 }
                 // Same directory reachable twice (macOS firmlinks): walk it once.
@@ -277,6 +271,8 @@ fn flatten(root_path: String, root: DirNode, ctx: Ctx, progress: &ScanProgress) 
     t.items = t.len() as u64 - 1;
     t.cancelled = progress.cancel.load(Ordering::Relaxed);
     t.skipped = ctx.skipped.into_inner().unwrap();
+    // Pushed from parallel workers in whatever order they finish; sort so index i means the same entry on every scan of the same disk state.
+    t.skipped.sort_by(|a, b| a.path.cmp(&b.path).then((a.reason as u8).cmp(&(b.reason as u8))));
     t.seal()
 }
 

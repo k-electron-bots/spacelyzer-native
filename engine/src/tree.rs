@@ -194,8 +194,18 @@ pub struct Tree {
 
 #[derive(Clone, Debug)]
 pub struct Skipped {
+    /// The path as UTF-8. When the real path is not valid UTF-8 this is a LOSSY rendering (invalid bytes replaced), see `lossy`.
     pub path: String,
     pub reason: SkipReason,
+    /// True when `path` may be a lossy rendering that cannot be used to reopen the entry. Conservative: the scanner's directory backend already
+    /// converts entry NAMES to UTF-8 lossily, so a non-UTF-8 name arrives as U+FFFD text; any path containing U+FFFD (or not valid UTF-8) is flagged.
+    /// A real name that legitimately contains U+FFFD is flagged too (fail closed).
+    pub lossy: bool,
+}
+impl Skipped {
+    pub fn new(path: &std::path::Path, reason: SkipReason) -> Skipped {
+        Skipped { path: path.to_string_lossy().into_owned(), reason, lossy: path.to_str().map_or(true, |p| p.contains('\u{FFFD}')) }
+    }
 }
 
 #[repr(u8)]
@@ -208,6 +218,12 @@ pub enum SkipReason {
 }
 
 impl Tree {
+    /// Skipped entries per reason, indexed by `SkipReason as usize` (PermissionDenied, Unreadable, SeparateVolume, UserExcluded).
+    pub fn skipped_counts(&self) -> [u32; 4] {
+        let mut c = [0u32; 4];
+        for s in &self.skipped { c[s.reason as usize] += 1; }
+        c
+    }
     pub fn len(&self) -> usize {
         self.names.len()
     }
