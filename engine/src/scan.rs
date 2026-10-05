@@ -107,6 +107,9 @@ struct Ctx<'a> {
     bulk: bool,
 }
 
+/// Stack for each walker thread. Linux PATH_MAX (4096) bounds depth near 2000 one-letter levels; this leaves roughly 30x headroom on that.
+const WALK_STACK_BYTES: usize = 64 << 20;
+
 pub fn scan(root: &Path, opts: &ScanOptions, progress: &ScanProgress) -> std::io::Result<Tree> {
     let root = root.canonicalize()?;
     // Fail closed: every path the tree builds is root + node names, and the root is stored as text. A root that is not valid UTF-8 would be stored lossily
@@ -144,13 +147,14 @@ pub fn scan(root: &Path, opts: &ScanOptions, progress: &ScanProgress) -> std::io
     ctx.excl_by_parent = build_exclusion_index(&ctx.exclude);
     ctx.dirs.claim(md.dev(), md.ino());
 
+    // `walk` recurses once per directory level. The pool's workers get an explicit large stack (address space only; pages are touched on use) so a pathologically
+    // deep tree returns a result instead of aborting the process. `install` runs the walk on a worker, never on the caller's thread, whose stack we do not own.
     let run = || walk(&root, &ctx);
-    let node = if opts.threads > 0 {
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(opts.threads).build().unwrap();
-        pool.install(run)
-    } else {
-        run()
-    };
+    let mut pool = rayon::ThreadPoolBuilder::new().stack_size(WALK_STACK_BYTES);
+    if opts.threads > 0 {
+        pool = pool.num_threads(opts.threads);
+    }
+    let node = pool.build().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?.install(run);
 
     Ok(flatten(root.to_string_lossy().into_owned(), node, ctx, progress))
 }
