@@ -1,13 +1,25 @@
 # Verification status
 
-Status snapshot: October 3, 2026. Latest completed checkpoint: run124 at `374af122073dce6461d3271ee3f79a1c8bf29bd0`, 90 PASS / 1 FAIL of 91 checks and 48 captured states; release skipped. This is a development app, **not release-ready**. The sole failure remains native footer full-label retrieval: six objects were discovered, two readable and four branches rejected. Separate external same-node exact Help+Value passed. Bounded click0/arrow0 chronology is available, but historical stalls remain unresolved and no equivalent-build speed comparison exists. See the [checkpoint ledger](checkpoints.md#run123-and-run124-bounded-chronology-native-footer-still-failed) and [performance notes](../development/performance.md).
+Status snapshot: October 6, 2026. **Not release-ready.** Latest completed execution is [CI128](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37480280298) at `24dff915c4aba1e567cdb6e1769688c766d23047`, not run124. Source main at this audit: `8b7d24b7388e52b46616c1d6255d88ff80109e30`; feature branch `item-inspect-engine-stack`: `9bc4143542ffcd97362ccbe92b6010a17aa54a6b`. They are separate versions.
 
-Current source is `d594cb64725cc9c6e76f3c49b7fe78a2cbc416b8`: the footer uses a count-only unreadable accessor and outline cells reuse one full path for two tooltips. These changes are landed, not yet runtime-verified or benchmarked. The separate native footer hosting proposal remains paused. Earlier scoped treemap, compact-footer and focus evidence remains bounded; no whole-app, VoiceOver or release acceptance follows.
+| CI128 stage | Result | Limit |
+|---|---|---|
+| Linux engine job | Passed | Not Mac UI evidence |
+| Mac engine gate | 145 exercised passes, 5 platform-unexercised names, 2 ignored tests | Raw cargo count of 150 includes those 5 skips; APFS refused non-UTF-8 fixtures |
+| Production Swift / universal engine / DMG packaging | Passed | Packaging is not a delivered artifact or release |
+| Test-only Swift with `SPZ_CI_TESTS` | Failed compilation | Missing progress argument labels and tuple-predicate compile issue |
+| UI assertions, screenshots, artifact upload, release | Did not run / skipped | No current UI evidence or downloadable DMG |
+
+The latest branch correction adds the required progress labels and names the equivalent strict tuple predicate only inside `SPZ_CI_TESTS`. Independent source review confirmed the published tree exactly matches the reviewed candidate (`d84560499f23a6fcab0e6b2a0cc91266e6232898`); no checks were weakened. **The corrected version has not compiled or run on Mac.** A follow-up run remains a separate permission gate.
+
+CI128's `/Applications` backend agreement is bounded. Its HOME/Library mismatch was informational, not a pass; nonzero real-kernel `ATTR_CMN_ERROR` coverage is not demonstrated. No clean speed comparison, complete filesystem coverage, UI or release acceptance follows. [Latest checkpoint details](checkpoints.md#ci128-engine-pass-production-build-pass-test-only-compile-failure).
+
+Run124 remains the latest historical completed UI checkpoint: 90 PASS / 1 FAIL of 91, 48 states, with native footer full-label retrieval failed and separate external same-node Help+Value passed. It does not verify new branch controls. [Historical ledger](checkpoints.md) and [performance notes](../development/performance.md) retain scope and failures.
 
 ## What evidence supports
 | Area | Accepted scope | Limits |
 |---|---|---|
-| Engine | Linux/macOS engine jobs through run124; 33 tests in run124 | Not exhaustive filesystem, permission, mount or APFS coverage |
+| Engine | CI128 Mac engine gate: 145 exercised passes, 5 platform skips and 2 ignored; older jobs retained in ledger | Not exhaustive filesystem, permission, mount or APFS coverage |
 | E1 outline and filters | Scoped acceptance across runs96/97, including deep-row/count and actual choice-submenu images | Not a whole-app accessibility or real-Mac approval |
 | Async publication | Six specific UUID-barrier/cache/scan interleavings accepted; run113 actual mounted resize publication and pixels inspected, independently accepted within this bounded resize scope | Named resize/tree/filter/first-pending unmount cases are recorded in the ledger; Rust hit and publication checks are not gesture dispatch or a universal race guarantee |
 | Count readability and layout | Inspected light/dark/injected contrast states, active reload after real alternate-window restoration, measured 960x600 root | Not actual OS notifications, offscreen cell reuse or formal contrast compliance |
@@ -35,7 +47,7 @@ Real-Mac use, VoiceOver/AX tree, actual IME, real OS accessibility notification/
 
 [Run111](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37094174463) adds bounded compact presentation and causal diagnostics, not performance or release acceptance. Actual footer help/AX, sample-stage overlap and FDA-copy pixels remain unverified.
 
-## Latest failed checkpoints and bounded progress
+## Historical failed checkpoints and bounded progress
 [Run112](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37096739621): 81 PASS / 1 FAIL of82,40states. NSHostingView-root full-label retrieval failed. The paired clock/PID showed the raw sampler header283.47ms after input trace began, after the115.5ms selection wait, so startup acknowledgement did not prove cold-click coverage.
 
 [Run113](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37098640048): 83 PASS / 1 FAIL of84,42states. Native mixed AX/view discovery still failed the full-label check. Mounted resize evidence and pixels41/42 passed within the narrow scope above. The explicit1s profiler-start settling arm has altered idle conditions and no cold comparability. MatchingPID/rawheader precedes trace by893.619ms, with subprocess end separately recorded; this is temporal alignment, not per-stack chronology or a performance pass. See the [ledger](checkpoints.md) and [performance notes](../development/performance.md).
@@ -78,5 +90,5 @@ Mixed click704.6ms/stall700.9ms,warm30.0ms; arrows p50/p95/max17.6/41.6/738.1ms,
 
 [Run121](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37120426167) · [Run122 artifact](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37121764101/artifacts/11273437286). Native failure,120 missing exact identities and prior narrow safety boundaries remain unchanged.
 
-## Latest checkpoint limits
+## Historical run123/run124 limits
 Run123 profiler finalization timed out and is inconclusive. Run124 produced a raw trace and bounded time-resolved click0/arrow0 observations, not a CPU cause or speed win. The successful path does not exercise macOS partial-failure preservation. [Full evidence and limits](checkpoints.md#run123-and-run124-bounded-chronology-native-footer-still-failed).
