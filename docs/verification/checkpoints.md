@@ -322,3 +322,11 @@ Native discovery found six objects, two readable and four rejected branches (thr
 Pixels 40/48 were inspected: compact warnings and count/filter fields remained readable; compact "Partial" and omitted timing fields do not mean the full details string is visibly displayed. The 48 unmount placeholder showed no returned old layout. These retain prior narrow scopes, not whole-app/release acceptance.
 
 [Run123](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37124882700) · [Artifact123](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37124882700/artifacts/11274785978) · [Run124](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37130261714) · [Artifact124](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37130261714/artifacts/11276524103).
+
+## CI128: engine pass, production build pass, test-only compile failure
+
+October 6, 2026, source `24dff915c4aba1e567cdb6e1769688c766d23047`. [Run](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37480280298) / [Mac job](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37480280298/job/112326297005). Whole run failed; Linux job passed. Mac raw cargo 150 passed, 0 failed; a fresh manifest identifies 5 APFS/EILSEQ unexercised names, leaving **145 exercised passes**, with 2 ignored tests separately. Deep-nesting and directory-permission checks passed within their fixture scope. The real-kernel nonzero ATTR_CMN_ERROR path remains undemonstrated.
+
+Universal engine, production Swift and signed DMG packaging succeeded. `SPZ_CI_TESTS` compilation failed, so app launch, screenshots, UI assertions, artifact upload and release were skipped. No downloadable DMG. `/Applications` backend agreement was observed; a HOME/Library mismatch was informational, not a pass. Benchmark samples on a shared runner are not a speed-win claim.
+
+Published correction `9bc4143542ffcd97362ccbe92b6010a17aa54a6b` changes only test-only progress labels and equivalent tuple-predicate syntax. Exact independently reviewed tree: `d84560499f23a6fcab0e6b2a0cc91266e6232898`. Source acceptance only: corrected test compilation, branch UI, screenshots, runtime, performance and release gates remain open. No repeat run was authorized by this documentation refresh.
