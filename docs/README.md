@@ -4,7 +4,8 @@ Spacelyzer has two audiences: people exploring disk space and people building or
 
 ## Use the app
 - [Install and permissions](guide/install.md)
-- [Visual tour](guide/tour.md)
+- [Visual tour](guide/tour.md): earlier authentic CI screenshots, labeled with their checkpoint
+- [Branch feature guide](guide/branch-features.md): Folders, CSV export and read-only item review, not UI-verified
 - [Space, filters and safe removal](guide/space-and-safety.md)
 
 ## Build and understand it
