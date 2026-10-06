@@ -20,5 +20,7 @@ pub use tree::{SkipReason, Skipped};
 pub use scan::{scan, ScanOptions, ScanProgress};
 pub use tree::{Kind, NodeId, Tree};
 
+#[cfg(any(target_os = "macos", test))]
+pub(crate) mod bulk_record;
 #[cfg(target_os = "macos")]
 pub(crate) mod scan_macos;
