@@ -26,16 +26,20 @@ fn build(depth: usize) -> (std::path::PathBuf, usize) {
 
 #[test]
 fn nesting_past_the_stack_budget_returns_a_tree_and_reports_what_it_could_not_read() {
+    let t0 = std::time::Instant::now();
     let (d, made) = build(6000);
+    eprintln!("phase build: {:?} depth={made}", t0.elapsed());
     assert!(made >= 1500, "fixture only reached depth {made}; this filesystem cannot exercise the case");
     // The caller's stack is not ours to size: run the scan from a deliberately small (128 KiB) caller thread, with the default and an explicit worker count (see CALLER_STACK).
     // Without the fix the default-count walk runs on this thread and aborts the whole test process (SIGABRT), which is the failure being guarded.
     for threads in [0usize, 2] {
+        let ts = std::time::Instant::now();
         let dd = d.clone();
         let t = std::thread::Builder::new().stack_size(CALLER_STACK).spawn(move || {
             let opts = ScanOptions { threads, ..Default::default() };
             scan(&dd, &opts, &new_progress()).expect("scan must return, not abort")
         }).unwrap().join().unwrap();
+        eprintln!("phase scan threads={threads}: {:?} nodes={}", ts.elapsed(), t.len());
         // Floor: macOS PATH_MAX is 1024, and at 2 bytes per level plus a ~40 byte temp prefix that is ~480 levels (CI run 37384155568 reached 478 nodes). Linux reaches ~2040.
         // So 400 nodes is reachable everywhere and, with the caller stack below, still deeper than the old recursion could survive (checked on Linux against the old code).
         assert!(t.len() > MIN_NODES, "threads={threads}: tree has {} nodes (min {MIN_NODES})", t.len());
@@ -43,5 +47,7 @@ fn nesting_past_the_stack_budget_returns_a_tree_and_reports_what_it_could_not_re
         let sk: u32 = t.skipped_counts().iter().sum();
         assert!(sk >= 1, "threads={threads}: nothing reported as unreadable at the PATH_MAX boundary");
     }
+    let tr = std::time::Instant::now();
     let _ = std::process::Command::new("rm").arg("-rf").arg(&d).status();
+    eprintln!("phase rm: {:?}", tr.elapsed());
 }
