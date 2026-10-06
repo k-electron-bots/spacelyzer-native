@@ -38,11 +38,32 @@ jobs:
         run: |
           rustup update stable --no-self-update
           set -o pipefail
-          cargo test --release -p spacelyzer-engine -- --nocapture 2>&1 | tee /tmp/cargotest.log || {
-            grep -E -A3 "panicked|firmlink check" /tmp/cargotest.log | grep -v "^--" | sort -u | head -12 | while IFS= read -r l; do echo "::error::${l//%/%25}"; done
-            exit 1
-          }
-          grep -E "firmlink check" /tmp/cargotest.log | while IFS= read -r l; do echo "::notice::${l//%/%25}"; done
+          # APFS refuses non-UTF-8 names (EILSEQ). The test helper turns ONLY that error into a recorded skip when this opt-in is set
+          # (any other fixture error still panics). cargo prints such a skipped test as ok, so the manifest below is the record of what did not run.
+          export SPZ_ALLOW_PLATFORM_SKIP=1
+          export SPZ_SKIP_MANIFEST="$RUNNER_TEMP/spz-skip-manifest.txt"
+          : > "$SPZ_SKIP_MANIFEST"
+          # --no-fail-fast: one failing binary must not hide the results of the binaries after it.
+          status=0
+          cargo test --release -p spacelyzer-engine --no-fail-fast -- --nocapture 2>&1 | tee /tmp/cargotest.log || status=$?
+          if [ "$status" -ne 0 ]; then
+            grep -E -A3 "panicked|firmlink check" /tmp/cargotest.log | grep -v "^--" | sort -u | head -12 | while IFS= read -r l; do echo "::error::${l//%/%25}"; done || true
+          fi
+          { grep -E "firmlink check" /tmp/cargotest.log || true; } | while IFS= read -r l; do echo "::notice::${l//%/%25}"; done
+          # Accounting: skipped tests are reported ok by cargo, so subtract the manifest names from the raw total.
+          raw_passed=$(awk '/^test result:/ {for (i = 2; i <= NF; i++) if ($i == "passed;") n += $(i-1)} END {print n + 0}' /tmp/cargotest.log)
+          raw_failed=$(awk '/^test result:/ {for (i = 2; i <= NF; i++) if ($i == "failed;") n += $(i-1)} END {print n + 0}' /tmp/cargotest.log)
+          skipped=$(grep -c . "$SPZ_SKIP_MANIFEST" || true)
+          exercised=$((raw_passed - skipped))
+          [ "$exercised" -lt 0 ] && exercised=0
+          if [ "$status" -eq 0 ]; then note=""; else note=" (APPROXIMATE and possibly incomplete: the run failed or aborted, so cargo summaries may be missing; the manifest below is the authoritative list of unexercised names)"; fi
+          echo "::notice title=engine-tests::raw passed=$raw_passed failed=$raw_failed; NOT EXERCISED (platform skips, counted as passed by cargo)=$skipped; exercised passes=$exercised$note; cargo exit=$status"
+          if [ "$skipped" -gt 0 ]; then
+            echo "Tests NOT exercised on this runner (from $SPZ_SKIP_MANIFEST):"
+            cat "$SPZ_SKIP_MANIFEST"
+            echo "::warning title=not-exercised::$(tr '\n' ';' < "$SPZ_SKIP_MANIFEST" | sed 's/%/%25/g')"
+          fi
+          exit "$status"
       - name: Bulk backend vs portable backend on real macOS trees
         run: |
           cargo build --release -p spacelyzer-engine
