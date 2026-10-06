@@ -119,7 +119,7 @@ fn a_non_utf8_scan_root_is_refused_and_a_non_utf8_exclusion_matches_nothing() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// Audit gap: an entry whose metadata cannot be read (directory readable but not searchable: readdir works, lstat of each entry gets EACCES) used to
+/// Audit gap (Linux exact names; other platforms accept directory-level reporting, see the branch below): an entry whose metadata cannot be read (directory readable but not searchable: readdir works, lstat of each entry gets EACCES) used to
 /// vanish from the tree AND from the skipped list, silently undercounting. Needs a non-root user; the test refuses to pass vacuously.
 #[test]
 fn entries_whose_metadata_cannot_be_read_are_listed_as_skipped_not_dropped() {
@@ -131,11 +131,24 @@ fn entries_whose_metadata_cannot_be_read_are_listed_as_skipped_not_dropped() {
     std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o444)).unwrap();
     let probe = std::fs::symlink_metadata(sub.join("a")).is_err(); // precondition: lstat really fails for this user
     let d = d.canonicalize().unwrap();
+    let sub_canon = d.join("noexec");
     let t = scan(&d, &ScanOptions::default(), &ScanProgress::default()).unwrap();
     std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert!(probe, "precondition: running as root or lstat succeeded, so this test proves nothing");
-    let names: Vec<_> = t.skipped.iter().map(|s| (s.path.rsplit('/').next().unwrap().to_string(), s.reason as u8)).collect();
-    assert_eq!(names, vec![("a".to_string(), 0), ("b".to_string(), 0)], "{:?}", t.skipped);
+    if cfg!(target_os = "linux") {
+        // Linux: the portable walk can list the directory but not stat the entries, so each entry is reported by name.
+        let names: Vec<_> = t.skipped.iter().map(|s| (s.path.rsplit('/').next().unwrap().to_string(), s.reason as u8)).collect();
+        assert_eq!(names, vec![("a".to_string(), 0), ("b".to_string(), 0)], "{:?}", t.skipped);
+    } else {
+        // macOS (CI run 37394942945): the bulk backend's getattrlistbulk call fails for the whole directory, so the directory itself is reported as PermissionDenied and its children
+        // are not listed one by one. Nothing may be missing without an explanation: every child must be covered by a PermissionDenied entry that is the child or one of its
+        // path-component ancestors (inside the scanned root), and no child may appear as a tree node (asserted below for every platform).
+        for child in ["a", "b"] {
+            let cp = sub_canon.join(child);
+            let covered = t.skipped.iter().any(|s| s.reason as u8 == 0 && (Path::new(&s.path) == cp || cp.starts_with(&s.path)) && Path::new(&s.path).starts_with(&d));
+            assert!(covered, "child {child} has no PermissionDenied skipped entry at or above it: {:?}", t.skipped);
+        }
+    }
     assert_eq!((1..t.len() as u32).filter(|&i| t.name(i) == "a" || t.name(i) == "b").count(), 0);
     let _ = std::fs::remove_dir_all(&d);
 }
