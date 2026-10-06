@@ -292,4 +292,4 @@ mod tests {
             let _ = parse_batch(&b, (next() % 6) as usize, &mut out);
         }
     }
-                            }
+}
