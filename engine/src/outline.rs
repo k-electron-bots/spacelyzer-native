@@ -94,16 +94,23 @@ fn ordered_children(tree: &Tree, id: NodeId, mode: SortMode, filter: Option<&Fil
         }
         SortMode::SizeAsc => v.sort_by_key(|&n| key_size(n)),
         SortMode::NameAsc => {
-            // Case-insensitive (Unicode lowercase) name ascending. Comparator-only:
-            // ASCII names compare allocation-free (byte fold); non-ASCII names
-            // compare full-string lowercase, the exact old key semantics (incl.
-            // contextual final sigma). The explicit position tiebreak keeps the
-            // pre-sort sibling order on equal keys, matching the old stable sort.
-            let mut order: Vec<u32> = (0..v.len() as u32).collect();
-            order.sort_unstable_by(|&a, &b| name_cmp(tree.name(v[a as usize]), tree.name(v[b as usize])).then(a.cmp(&b)));
-            let mut sorted = Vec::with_capacity(v.len());
-            for &i in &order { sorted.push(v[i as usize]); }
-            v = sorted;
+            // Case-insensitive (Unicode lowercase) name ascending.
+            if v.iter().any(|&n| !tree.name(n).is_ascii()) {
+                // Any non-ASCII name: the original per-key lowercase sort. Exact
+                // Unicode semantics (incl. contextual final sigma), one String
+                // allocation per sibling as before - no per-comparison allocs.
+                v.sort_by_cached_key(|&n| tree.name(n).to_lowercase());
+            } else {
+                // All-ASCII: allocation-free comparator (byte fold, identical to
+                // the old lowercase keys for ASCII). The explicit position
+                // tiebreak keeps the pre-sort order on equal keys, matching the
+                // old stable sort.
+                let mut order: Vec<u32> = (0..v.len() as u32).collect();
+                order.sort_unstable_by(|&a, &b| name_cmp(tree.name(v[a as usize]), tree.name(v[b as usize])).then(a.cmp(&b)));
+                let mut sorted = Vec::with_capacity(v.len());
+                for &i in &order { sorted.push(v[i as usize]); }
+                v = sorted;
+            }
         }
         SortMode::ItemsDesc => v.sort_by_key(|&n| std::cmp::Reverse(tree.child_count(n))),
         SortMode::ModifiedDesc => v.sort_by_key(|&n| std::cmp::Reverse(tree.mtime(n))),
