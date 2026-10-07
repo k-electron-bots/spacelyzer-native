@@ -8,6 +8,7 @@ pub mod filter;
 pub mod outline;
 pub mod ffi;
 pub mod layout;
+pub mod preview;
 pub mod scan;
 pub mod tree;
 
@@ -15,7 +16,8 @@ pub use category::Category;
 pub use filter::{apply as apply_filter, Filter, FilterResult};
 pub use layout::{layout, layout_with, hit_test, LayoutOptions, Rect};
 pub use tree::{SkipReason, Skipped};
-pub use events::{Admit, EventKind, PreviewCollector, PreviewEvents, PreviewRecord, PreviewRegistry, PreviewSnapshot, ScanEvent, ScanIdentity, CHANNEL_BOUND, PREVIEW_INTERVAL, REGISTRY_CAP};
+pub use events::{Admit, EventKind, PreviewCollector, PreviewEvents, PreviewRecord, PreviewRegistry, PreviewSnapshot, Recv, ScanEvent, ScanIdentity, CHANNEL_BOUND, PREVIEW_INTERVAL, REGISTRY_CAP};
+pub use preview::{drive, DriveOutcome, PreviewDriver, Publication};
 pub use scan::{scan, scan_with_events, ScanOptions, ScanProgress};
 pub use tree::{Kind, NodeId, Tree};
 
