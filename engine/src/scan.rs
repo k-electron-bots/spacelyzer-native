@@ -120,8 +120,10 @@ struct Ctx<'a> {
     bulk: bool,
     /// Test-only: runs once per walk right after the pre-walk identity capture, so
     /// tests can swap the directory mid-walk deterministically. Absent in release.
+    /// A borrowed closure (not a fn pointer) so each test carries its OWN arming
+    /// state - a process-global flag let parallel tests disarm each other (R2).
     #[cfg(test)]
-    mid_walk_hook: Option<fn(&Path)>,
+    mid_walk_hook: Option<&'a (dyn Fn(&Path) + Sync + 'a)>,
 }
 
 pub fn scan(root: &Path, opts: &ScanOptions, progress: &ScanProgress) -> std::io::Result<Tree> {
@@ -148,7 +150,7 @@ pub(crate) fn scan_with_events_hook(
     opts: &ScanOptions,
     progress: &ScanProgress,
     events: &PreviewEvents,
-    hook: fn(&Path),
+    hook: &(dyn Fn(&Path) + Sync),
 ) -> std::io::Result<Tree> {
     scan_inner(root, opts, progress, Some(events), Some(hook))
 }
@@ -158,7 +160,7 @@ fn scan_inner(
     opts: &ScanOptions,
     progress: &ScanProgress,
     events: Option<&PreviewEvents>,
-    #[cfg(test)] mid_walk_hook: Option<fn(&Path)>,
+    #[cfg(test)] mid_walk_hook: Option<&(dyn Fn(&Path) + Sync)>,
 ) -> std::io::Result<Tree> {
     let root = root.canonicalize()?;
     if let Some(ev) = events {
@@ -441,16 +443,20 @@ pub fn new_progress() -> Arc<ScanProgress> {
     Arc::new(ScanProgress::default())
 }
 
+/// Test-only: one-shot arming against PER-TEST state. True exactly once per flag.
+/// No process-global state: parallel tests each hold their own flag and cannot
+/// disarm one another (the R2 flake).
 #[cfg(test)]
-pub(crate) static SWAP_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub(crate) fn armed_once(flag: &std::sync::atomic::AtomicBool) -> bool {
+    !flag.swap(true, std::sync::atomic::Ordering::SeqCst)
+}
 
-/// Test-only mid-walk hook: replace the walked directory with a different identity
-/// at the same path, exactly once (mkdir aside first, then rename over - no
-/// inode-recycling race). Shared by scan.rs and events.rs tests.
+/// Test-only mid-walk effect: replace the walked directory with a different identity
+/// at the same path, exactly once per `flag` (mkdir aside first, then rename over -
+/// no inode-recycling race). Tests install it as `move |d| swap_dir_once(d, &flag)`.
 #[cfg(test)]
-pub(crate) fn swap_once(dir: &Path) {
-    use std::sync::atomic::Ordering as AOrd;
-    if SWAP_DONE.swap(true, AOrd::SeqCst) {
+pub(crate) fn swap_dir_once(dir: &Path, flag: &std::sync::atomic::AtomicBool) {
+    if !armed_once(flag) {
         return;
     }
     let staging = dir.with_file_name(format!("{}-staging", dir.file_name().unwrap().to_string_lossy()));
@@ -465,7 +471,6 @@ pub(crate) fn swap_once(dir: &Path) {
 mod tests {
     use super::*;
     use std::fs;
-    use std::sync::atomic::Ordering as AOrd;
 
     fn ctx_for<'a>(opts: &'a ScanOptions, progress: &'a ScanProgress, events: &'a PreviewEvents, root_dev: u64) -> Ctx<'a> {
         Ctx {
@@ -528,15 +533,28 @@ mod tests {
     }
 
     #[test]
+    fn hook_arming_is_per_state_not_global() {
+        // Regression pin for the R2 process-global flake: independent flags must not
+        // share firing state - firing one leaves the other armed.
+        let a = std::sync::atomic::AtomicBool::new(false);
+        let b = std::sync::atomic::AtomicBool::new(false);
+        assert!(armed_once(&a), "first use of state A fires");
+        assert!(armed_once(&b), "independent state B still fires - a global would have consumed it");
+        assert!(!armed_once(&a), "state A is consumed");
+        assert!(armed_once(&b) == false, "state B is consumed");
+    }
+
+    #[test]
     fn walk_suppresses_record_marks_previews_incomplete_when_identity_changes_mid_walk() {
-        SWAP_DONE.store(false, AOrd::SeqCst);
+        let swapped = std::sync::atomic::AtomicBool::new(false);
+        let hook = |d: &Path| swap_dir_once(d, &swapped);
         let dir = fixture("swap", 2048);
         let want = ScanIdentity::live(&dir).unwrap();
         let opts = ScanOptions::default();
         let progress = ScanProgress::default();
         let (events, rx) = PreviewEvents::new(1, &dir);
         let mut ctx = ctx_for(&opts, &progress, &events, want.dev);
-        ctx.mid_walk_hook = Some(swap_once);
+        ctx.mid_walk_hook = Some(&hook);
         let (node, complete, previews) = walk(&dir, &ctx);
         assert!(complete, "walk completed on the swapped-in directory");
         assert!(!previews, "suppressed record must mark previews incomplete");
