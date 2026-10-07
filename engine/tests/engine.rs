@@ -450,8 +450,11 @@ fn nameasc_matches_reference_lowercase_order_on_unicode_edges() {
         order(&["\u{039F}\u{03A3}\u{0301}\u{0391}", "\u{039F}\u{03A3}\u{0301}"]).0,
         vec!["\u{039F}\u{03A3}\u{0301}", "\u{039F}\u{03A3}\u{0301}\u{0391}"]
     );
-    // Mixed battery: reference equality across ASCII, accented, and Greek names.
+    // Mixed battery: reference equality across ASCII, accented, and Greek names
+    // (exercises the any-non-ASCII fallback path).
     order(&["apple", "Apple", "APPLE", "\u{00E4}", "Z", "z", "\u{039F}\u{03A3}", "\u{039F}\u{03C3}", "\u{03BF}\u{03C2}", "\u{03BF}\u{03C3}", "\u{00DF}", "\u{0130}"]);
+    // All-ASCII battery: exercises the allocation-free comparator path.
+    order(&["apple", "Apple", "APPLE", "Zebra", "zebra", "10", "02", "_hidden", "Report", "REPORT", "delta", "Delta"]);
 }
 
 #[test]
