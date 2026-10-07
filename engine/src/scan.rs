@@ -118,6 +118,10 @@ struct Ctx<'a> {
     events: Option<&'a PreviewEvents>,
     #[allow(dead_code)]
     bulk: bool,
+    /// Test-only: runs once per walk right after the pre-walk identity capture, so
+    /// tests can swap the directory mid-walk deterministically. Absent in release.
+    #[cfg(test)]
+    mid_walk_hook: Option<fn(&Path)>,
 }
 
 pub fn scan(root: &Path, opts: &ScanOptions, progress: &ScanProgress) -> std::io::Result<Tree> {
@@ -176,10 +180,12 @@ fn scan_inner(
             .collect(),
         events,
         bulk: cfg!(target_os = "macos") && !opts.force_portable,
+        #[cfg(test)]
+        mid_walk_hook: None,
     };
     ctx.dirs.claim(md.dev(), md.ino());
 
-    let run = || walk(&root, &ctx, md.dev(), md.ino());
+    let run = || walk(&root, &ctx);
     let (node, complete) = if opts.threads > 0 {
         let pool = rayon::ThreadPoolBuilder::new().num_threads(opts.threads).build().unwrap();
         pool.install(run)
@@ -205,7 +211,24 @@ fn is_package(name: &str) -> bool {
     }
 }
 
-fn walk(dir: &Path, ctx: &Ctx, dev: u64, ino: u64) -> (DirNode, bool) {
+/// Live (dev, ino) of a path without following symlinks; None when it cannot be read.
+fn dir_identity(p: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::symlink_metadata(p).ok().map(|m| (m.dev(), m.ino()))
+}
+
+fn walk(dir: &Path, ctx: &Ctx) -> (DirNode, bool) {
+    // Pre-walk identity binding: the preview record carries the identity of the
+    // directory ACTUALLY traversed, captured at walk start - not the parent's
+    // earlier enumeration. If the directory was swapped between enumeration and
+    // this walk, the record simply describes the directory that was walked; if it
+    // is swapped mid-walk, the post-walk check below suppresses the record. Tree
+    // accounting is unchanged either way.
+    let pre = dir_identity(dir);
+    #[cfg(test)]
+    if let Some(h) = ctx.mid_walk_hook {
+        h(dir);
+    }
     ctx.progress.note_dir();
     if ctx.progress.cancel.load(Ordering::Relaxed) {
         return (DirNode { ents: vec![], total: 0 }, false);
@@ -224,7 +247,7 @@ fn walk(dir: &Path, ctx: &Ctx, dev: u64, ino: u64) -> (DirNode, bool) {
     };
 
     let mut ents: Vec<Ent> = Vec::with_capacity(raw.len());
-    let mut subdirs: Vec<(usize, PathBuf, u64, u64)> = Vec::new();
+    let mut subdirs: Vec<(usize, PathBuf)> = Vec::new();
     let mut local_bytes = 0u64;
     for r in raw {
         match r.kind {
@@ -252,7 +275,7 @@ fn walk(dir: &Path, ctx: &Ctx, dev: u64, ino: u64) -> (DirNode, bool) {
                     continue;
                 }
                 let kind = if is_package(&r.name) { Kind::Package } else { Kind::Directory };
-                subdirs.push((ents.len(), path, r.dev, r.ino));
+                subdirs.push((ents.len(), path));
                 ents.push(Ent { mtime: r.mtime, name: r.name, kind, size: 0, dir: None });
             }
             k => {
@@ -270,9 +293,9 @@ fn walk(dir: &Path, ctx: &Ctx, dev: u64, ino: u64) -> (DirNode, bool) {
     ctx.progress.bytes.fetch_add(local_bytes, Ordering::Relaxed);
 
     let results: Vec<(usize, (DirNode, bool))> = if subdirs.len() > 1 {
-        subdirs.par_iter().map(|(i, p, d, n)| (*i, walk(p, ctx, *d, *n))).collect()
+        subdirs.par_iter().map(|(i, p)| (*i, walk(p, ctx))).collect()
     } else {
-        subdirs.iter().map(|(i, p, d, n)| (*i, walk(p, ctx, *d, *n))).collect()
+        subdirs.iter().map(|(i, p)| (*i, walk(p, ctx))).collect()
     };
     let mut total = local_bytes;
     let mut complete = true;
@@ -283,13 +306,18 @@ fn walk(dir: &Path, ctx: &Ctx, dev: u64, ino: u64) -> (DirNode, bool) {
         complete &= child_complete;
     }
     if complete {
-        if let Some(ev) = ctx.events {
-            ev.emit(EventKind::DirComplete {
-                path: dir.to_path_buf(),
-                size: total,
-                dev,
-                ino,
-            });
+        if let (Some(ev), Some((dev, ino))) = (ctx.events, pre) {
+            // Post-walk re-check: emit only when the traversed directory's identity
+            // survived the walk unchanged. A mid-walk swap suppresses the preview
+            // record; the Tree above already accounted the bytes as walked.
+            if dir_identity(dir) == Some((dev, ino)) {
+                ev.emit(EventKind::DirComplete {
+                    path: dir.to_path_buf(),
+                    size: total,
+                    dev,
+                    ino,
+                });
+            }
         }
     }
     (DirNode { ents, total }, complete)
@@ -385,4 +413,93 @@ pub(crate) fn enumerate_portable(dir: &Path) -> std::io::Result<Vec<RawEntry>> {
 /// Convenience for callers that want a shared handle.
 pub fn new_progress() -> Arc<ScanProgress> {
     Arc::new(ScanProgress::default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::sync::atomic::{AtomicBool, Ordering as AOrd};
+
+    fn ctx_for<'a>(opts: &'a ScanOptions, progress: &'a ScanProgress, events: &'a PreviewEvents, root_dev: u64) -> Ctx<'a> {
+        Ctx {
+            opts,
+            progress,
+            files: Seen::new(),
+            dirs: Seen::new(),
+            root_dev,
+            skipped: Mutex::new(Vec::new()),
+            exclude: Vec::new(),
+            events: Some(events),
+            bulk: false,
+            mid_walk_hook: None,
+        }
+    }
+
+    fn fixture(tag: &str, bytes: usize) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("spz-walk-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("f"), vec![1u8; bytes]).unwrap();
+        dir.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn walk_emits_preview_record_with_traversed_identity() {
+        // The record carries the walked directory's own live identity.
+        let dir = fixture("ok", 2048);
+        use std::os::unix::fs::MetadataExt;
+        let md = fs::symlink_metadata(&dir).unwrap();
+        let opts = ScanOptions::default();
+        let progress = ScanProgress::default();
+        let (events, rx) = PreviewEvents::new(1, &dir);
+        let ctx = ctx_for(&opts, &progress, &events, md.dev());
+        let (_node, complete) = walk(&dir, &ctx);
+        assert!(complete);
+        let ev = rx.recv_timeout(std::time::Duration::from_millis(100)).expect("record emitted");
+        match ev.kind {
+            EventKind::DirComplete { dev, ino, .. } => assert_eq!((dev, ino), (md.dev(), md.ino())),
+            other => panic!("unexpected event: {other:?}"),
+        }
+        events.finish(false, true);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    static SWAP_DONE: AtomicBool = AtomicBool::new(false);
+
+    /// Mid-walk hook: replace the walked directory with a different identity at the
+    /// same path (mkdir aside first, then rename over - no inode-recycling race).
+    fn swap_once(dir: &Path) {
+        if SWAP_DONE.swap(true, AOrd::SeqCst) {
+            return;
+        }
+        let staging = dir.with_file_name(format!("{}-staging", dir.file_name().unwrap().to_string_lossy()));
+        let _ = fs::remove_dir_all(&staging);
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(staging.join("g"), vec![1u8; 8192]).unwrap();
+        fs::remove_dir_all(dir).unwrap();
+        fs::rename(&staging, dir).unwrap();
+    }
+
+    #[test]
+    fn walk_suppresses_preview_record_when_identity_changes_mid_walk() {
+        SWAP_DONE.store(false, AOrd::SeqCst);
+        let dir = fixture("swap", 2048);
+        use std::os::unix::fs::MetadataExt;
+        let root_dev = fs::symlink_metadata(&dir).unwrap().dev();
+        let opts = ScanOptions::default();
+        let progress = ScanProgress::default();
+        let (events, rx) = PreviewEvents::new(1, &dir);
+        let mut ctx = ctx_for(&opts, &progress, &events, root_dev);
+        ctx.mid_walk_hook = Some(swap_once);
+        let (node, complete) = walk(&dir, &ctx);
+        assert!(complete, "walk completed on the swapped-in directory");
+        assert!(node.total >= 8192, "bytes accounted as walked: {}", node.total);
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(100)).is_none(),
+            "mid-walk identity change must suppress the preview record"
+        );
+        events.finish(false, true);
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
