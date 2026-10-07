@@ -7,6 +7,7 @@
 //! and directories reachable by two paths (firmlinks) are counted once.
 
 use crate::category::Category;
+use crate::events::{EventKind, PreviewEvents};
 use crate::tree::{Kind, SkipReason, Skipped, Tree, NO_NODE};
 use rayon::prelude::*;
 use std::collections::HashSet;
@@ -88,12 +89,42 @@ struct Ctx<'a> {
     root_dev: u64,
     skipped: Mutex<Vec<Skipped>>,
     exclude: Vec<String>,
+    events: Option<&'a PreviewEvents>,
     #[allow(dead_code)]
     bulk: bool,
 }
 
 pub fn scan(root: &Path, opts: &ScanOptions, progress: &ScanProgress) -> std::io::Result<Tree> {
+    scan_inner(root, opts, progress, None)
+}
+
+/// `scan` plus progressive preview events. The returned `Tree` is identical to what
+/// `scan` produces; events are best-effort extras bound to the sink's generation and
+/// canonical root. Errors when the sink was built for a different root.
+pub fn scan_with_events(
+    root: &Path,
+    opts: &ScanOptions,
+    progress: &ScanProgress,
+    events: &PreviewEvents,
+) -> std::io::Result<Tree> {
+    scan_inner(root, opts, progress, Some(events))
+}
+
+fn scan_inner(
+    root: &Path,
+    opts: &ScanOptions,
+    progress: &ScanProgress,
+    events: Option<&PreviewEvents>,
+) -> std::io::Result<Tree> {
     let root = root.canonicalize()?;
+    if let Some(ev) = events {
+        if !ev.root_matches(&root) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "preview event sink root does not match the canonical scan root",
+            ));
+        }
+    }
     let md = std::fs::symlink_metadata(&root)?;
     if !md.is_dir() {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a directory"));
@@ -111,6 +142,7 @@ pub fn scan(root: &Path, opts: &ScanOptions, progress: &ScanProgress) -> std::io
             .iter()
             .map(|p| p.to_string_lossy().trim_end_matches('/').to_string())
             .collect(),
+        events,
         bulk: cfg!(target_os = "macos") && !opts.force_portable,
     };
     ctx.dirs.claim(md.dev(), md.ino());
@@ -123,7 +155,11 @@ pub fn scan(root: &Path, opts: &ScanOptions, progress: &ScanProgress) -> std::io
         run()
     };
 
-    Ok(flatten(root.to_string_lossy().into_owned(), node, ctx, progress))
+    let tree = flatten(root.to_string_lossy().into_owned(), node, ctx, progress);
+    if let Some(ev) = events {
+        ev.emit(EventKind::Finished { cancelled: tree.cancelled });
+    }
+    Ok(tree)
 }
 
 fn is_package(name: &str) -> bool {
@@ -207,6 +243,12 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
         total += node.total;
         ents[i].size = node.total;
         ents[i].dir = Some(Box::new(node));
+    }
+    if let Some(ev) = ctx.events {
+        ev.emit(EventKind::DirComplete {
+            path: dir.to_string_lossy().into_owned().into_boxed_str(),
+            size: total,
+        });
     }
     DirNode { ents, total }
 }
