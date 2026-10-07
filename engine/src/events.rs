@@ -420,6 +420,12 @@ impl PreviewRegistry {
         Admit::Admitted
     }
 
+    /// The record under an admission key, if any (the driver publishes under the
+    /// record's canonical stored path so registry rows and ranking rows share one key).
+    pub(crate) fn record_by_key(&self, dev: u64, ino: u64) -> Option<&PreviewRecord> {
+        self.records.get(&(dev, ino))
+    }
+
     /// Re-verify ONE record against the live filesystem. The record is located by
     /// its own stored path FIRST; every failure removes exactly that record's key -
     /// never a different registered row, even when the live object at the path now
