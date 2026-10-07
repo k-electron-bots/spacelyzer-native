@@ -33,7 +33,9 @@ pub struct ScanProgress {
     pub items: AtomicU64,
     pub bytes: AtomicU64,
     pub cancel: AtomicBool,
+    #[cfg(test)]
     visited_dirs: AtomicU64,
+    #[cfg(test)]
     cancel_after: AtomicU64,
 }
 
@@ -44,11 +46,13 @@ impl ScanProgress {
 
     /// Deterministic cancel injection for tests: the scan cancels when the Nth
     /// directory walk begins. 0 (the default) disables the tripwire.
+    #[cfg(test)]
     #[doc(hidden)]
     pub fn cancel_after_dirs(&self, n: u64) {
         self.cancel_after.store(n, Ordering::Relaxed);
     }
 
+    #[cfg(test)]
     fn note_dir(&self) {
         let n = self.visited_dirs.fetch_add(1, Ordering::Relaxed) + 1;
         let trip = self.cancel_after.load(Ordering::Relaxed);
@@ -56,6 +60,11 @@ impl ScanProgress {
             self.cancel();
         }
     }
+
+    /// Shipping builds keep the per-directory path untouched.
+    #[cfg(not(test))]
+    #[inline(always)]
+    fn note_dir(&self) {}
 }
 
 pub(crate) struct RawEntry {
@@ -141,6 +150,12 @@ fn scan_inner(
                 "preview event sink root does not match the canonical scan root",
             ));
         }
+        if !ev.claim() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "preview event sink already claimed by a scan (sinks are one-shot)",
+            ));
+        }
     }
     let md = std::fs::symlink_metadata(&root)?;
     if !md.is_dir() {
@@ -174,8 +189,9 @@ fn scan_inner(
 
     let tree = flatten(root.to_string_lossy().into_owned(), node, ctx, progress);
     if let Some(ev) = events {
-        // Root completeness rides the terminal: a suppressed subtree leaves previews
-        // provisional even when the scan was neither cancelled nor lossy.
+        // Root completeness (under the scanner's accounting) rides the terminal: a
+        // suppressed subtree leaves previews provisional even when the scan was
+        // neither cancelled nor lossy.
         ev.finish(tree.cancelled, complete);
     }
     Ok(tree)
