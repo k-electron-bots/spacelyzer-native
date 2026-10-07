@@ -759,8 +759,11 @@ struct SpacelyzerApp: App {
                             let freshAck = FileManager.default.fileExists(atPath: "/tmp/spz-footer-ax-ack")
                             Check.expect("footer-external-same-node-help-value-exact-details", expectedFixture && freshAck && clientStatus == "EXIT_0" && externalResult == "VERIFIED", "external verified window/PID/role same-node exact UTF8 Help+Value; successful process exit required; denied/error/timeout/truncation is not a pass; native failed gate separate")
                             let footerAX = FooterAXEvidence.inspect(footerWindow)
-                            let fullLabel = footerAX.entries.contains { $0.label.contains("Stopped early, partial accounting") && $0.label.contains("Filter:") && $0.label.contains("1 file") && $0.label.contains("1,234,567 locations not readable") && $0.label.contains("Scanned in") }
-                            Check.expect("footer-native-accessibility-full-details", fullLabel, "native accessor from mixed AX/view discovery only; not external client reachability; truncated=\(footerAX.truncated); missing label inconclusive when truncated; not VoiceOver/client announcements or tooltip proof")
+                            // macOS 26.6.2 (run 37691004373): the combined footer static text carries the
+                            // authored accessibilityLabel in AXValue and .help in AXHelp; AXDescription is
+                            // unpopulated. Exact match on value or help - never a fragment/label-only test.
+                            let nativeFull = expectedDetails?.isEmpty == false && footerAX.entries.contains { $0.value == expectedDetails! || $0.help == expectedDetails! }
+                            Check.expect("footer-native-accessibility-full-details", nativeFull, "native accessor from mixed AX/view discovery only; exact exported-details match on AXValue or AXHelp; AXDescription unused by SwiftUI combined static text on macOS 26.6.2; truncated=\(footerAX.truncated); not VoiceOver/client announcements or tooltip proof")
                             mark(40)
                             footerWindow.close(); priorProductWindow?.makeKeyAndOrderFront(nil)
                             model.demoFooterUnreadable = nil; model.demoFooterPartial = nil
@@ -1144,7 +1147,7 @@ private actor PublicationBarrier {
 
 /// CI-only: read the real hosted native accessibility descendants, never substitute the authored SwiftUI label.
 @MainActor private enum FooterAXEvidence {
-    struct Entry { let label: String; let help: String }
+    struct Entry { let label: String; let help: String; let value: String }
     struct Result { let entries: [Entry]; let truncated: Bool }
     static func inspect(_ root: NSWindow) -> Result {
         var entries: [Entry] = []
@@ -1163,34 +1166,38 @@ private actor PublicationBarrier {
             let protocolNode = instance as? NSAccessibilityProtocol
             let view = instance as? NSView
             let window = instance as? NSWindow
-            let label: String?, help: String?, children: [Any]
+            let label: String?, help: String?, value: String?, children: [Any]
             // Typed AppKit methods are supported even when protocol discovery is rejected.
             // Hierarchy discovery does not depend on a successful accessibility protocol cast.
             if let view {
                 label = view.accessibilityLabel(); help = view.accessibilityHelp()
+                value = view.accessibilityValue() as? String
                 children = view.accessibilityChildren() ?? []
             } else if let window {
                 label = window.accessibilityLabel(); help = window.accessibilityHelp()
+                value = window.accessibilityValue() as? String
                 children = window.accessibilityChildren() ?? []
             } else if let protocolNode {
                 label = protocolNode.accessibilityLabel(); help = protocolNode.accessibilityHelp()
+                value = protocolNode.accessibilityValue() as? String
                 children = protocolNode.accessibilityChildren() ?? []
             } else {
                 // SwiftUI hosts accessibility through private proxy nodes (SwiftUI.AccessibilityNode,
                 // NSAccessibilityReparentingCellProxy) that reject the formal NSAccessibilityProtocol
                 // cast. Every NSObject answers the informal attribute accessors, so read
-                // AXDescription (the label attribute), AXHelp and AXChildren through them
+                // AXDescription (the label attribute), AXHelp, AXValue and AXChildren through them
                 // and keep walking the proxy subtree.
                 label = instance.accessibilityAttributeValue(.description) as? String
                 help = instance.accessibilityAttributeValue(.help) as? String
+                value = instance.accessibilityAttributeValue(.value) as? String
                 children = instance.accessibilityAttributeValue(.children) as? [Any] ?? []
-                if (label ?? "").isEmpty, (help ?? "").isEmpty, children.isEmpty { rejected += 1 }
+                if (label ?? "").isEmpty, (help ?? "").isEmpty, (value ?? "").isEmpty, children.isEmpty { rejected += 1 }
             }
-            let readable = view != nil || window != nil || protocolNode != nil || (label ?? "").isEmpty == false || (help ?? "").isEmpty == false
+            let readable = view != nil || window != nil || protocolNode != nil || (label ?? "").isEmpty == false || (help ?? "").isEmpty == false || (value ?? "").isEmpty == false
             Perf.log("footer-ax discovery edge=\(edge) depth=\(depth) class=\(NSStringFromClass(type(of: instance))) protocol=\(protocolNode != nil) view=\(view != nil) window=\(window != nil) readable=\(readable)")
             if readable {
-                entries.append(Entry(label: label ?? "", help: help ?? ""))
-                Perf.log("footer-ax edge=\(edge) depth=\(depth) label=\((label ?? "").debugDescription) help=\((help ?? "").debugDescription)")
+                entries.append(Entry(label: label ?? "", help: help ?? "", value: value ?? ""))
+                Perf.log("footer-ax edge=\(edge) depth=\(depth) label=\((label ?? "").debugDescription) help=\((help ?? "").debugDescription) value=\((value ?? "").debugDescription)")
             }
             let views = view?.subviews ?? []
             let content = window?.contentView.map { [$0] } ?? []
