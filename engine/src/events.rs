@@ -21,6 +21,10 @@
 //! - The collector is absorbing once finished, and a cancelled or lossy scan leaves every
 //!   later snapshot `partial: true` forever: only the authoritative `Tree` ends
 //!   provisionality, never the event stream.
+//! - A sink is ONE-SHOT: `scan_with_events` claims it atomically before walking and
+//!   refuses concurrent or sequential reuse. Without that, a second scan's sends would
+//!   race the first scan's done flag, and a reused receiver could never yield another
+//!   terminal.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -40,10 +44,12 @@ pub enum EventKind {
     /// incomplete subtree emit nothing, and neither do their ancestors.
     DirComplete { path: PathBuf, size: u64 },
     /// The scan ended. `cancelled` says whether it ended by cancellation; `complete`
-    /// says the walk covered every reachable byte (false when cancellation or an
-    /// unreadable subtree suppressed directories); `dropped` is how many preview data
-    /// events were lost to a full channel. Durable: see the module docs - this event
-    /// never enters the channel and is delivered exactly once.
+    /// says the walk finished every directory it entered under the scanner's
+    /// accounting (false on cancellation or an unreadable subtree; the portable
+    /// enumerator can silently skip per-entry errors, so this is not a proof that
+    /// every reachable byte was read); `dropped` is how many preview data events were
+    /// lost to a full channel. Durable: see the module docs - this event never enters
+    /// the channel and is delivered exactly once.
     Finished { cancelled: bool, complete: bool, dropped: u64 },
 }
 
@@ -71,6 +77,8 @@ pub struct PreviewEvents {
     generation: u64,
     root: PathBuf,
     dropped: AtomicU64,
+    /// One-shot claim: taken by `scan_with_events` before the walk starts.
+    claimed: AtomicBool,
     shared: Arc<Shared>,
 }
 
@@ -135,6 +143,7 @@ impl PreviewEvents {
                 generation,
                 root: root.to_path_buf(),
                 dropped: AtomicU64::new(0),
+                claimed: AtomicBool::new(false),
                 shared: shared.clone(),
             },
             PreviewReceiver { rx, shared },
@@ -155,6 +164,15 @@ impl PreviewEvents {
     /// Raw-path comparison: non-UTF-8 roots are compared byte for byte.
     pub(crate) fn root_matches(&self, canonical_root: &Path) -> bool {
         self.root == canonical_root
+    }
+
+    /// One-shot claim for exactly one scan. False when this sink is already running a
+    /// scan or finished one: concurrent sends would race the first scan's done flag,
+    /// and the receiver's terminal is single-use by design.
+    pub(crate) fn claim(&self) -> bool {
+        self.claimed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
     }
 
     pub(crate) fn emit(&self, kind: EventKind) {
@@ -207,8 +225,8 @@ pub struct PreviewSnapshot {
     pub finished: bool,
     /// The scan ended by cancellation.
     pub cancelled: bool,
-    /// The terminal reported a fully walked tree (false when cancellation or an
-    /// unreadable subtree suppressed directories).
+    /// The terminal reported a fully completed walk under the scanner's accounting
+    /// (false on cancellation or a suppressed unreadable subtree).
     pub complete: bool,
     /// Preview events lost to a full channel, as reported by the terminal event.
     pub events_dropped: u64,
@@ -573,6 +591,7 @@ mod tests {
             // the permission-denied path cannot be exercised on this platform.
             fs::set_permissions(&sealed, fs::Permissions::from_mode(0o755)).unwrap();
             let _ = fs::remove_dir_all(&root);
+            eprintln!("unreadable_child_suppresses_every_ancestor_event: UNEXERCISED - mode bits not enforced for this user/platform");
             return;
         }
         let (sink, rx) = PreviewEvents::new(1, &root);
@@ -750,6 +769,41 @@ mod tests {
             Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput),
             Ok(_) => panic!("a sink built for a different root must be refused"),
         }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sink_is_one_shot_sequential_reuse_refused() {
+        let root = fixture("oneshot");
+        let (sink, rx) = PreviewEvents::new(1, &root);
+        let progress = ScanProgress::default();
+        scan_with_events(&root, &ScanOptions::default(), &progress, &sink).unwrap();
+        while rx.recv_timeout(Duration::from_millis(500)).is_some() {}
+        match scan_with_events(&root, &ScanOptions::default(), &ScanProgress::default(), &sink) {
+            Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput),
+            Ok(_) => panic!("sequential reuse of a finished sink must be refused"),
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sink_concurrent_claim_lets_exactly_one_scan_run() {
+        // Deterministic: scan A's claim happens before its first event, so once the
+        // receiver sees that event, a second scan on the same sink must be refused.
+        let root = wide_fixture("concurrent");
+        let (sink, rx) = PreviewEvents::new(1, &root);
+        let progress = ScanProgress::default();
+        std::thread::scope(|s| {
+            let a = s.spawn(|| scan_with_events(&root, &ScanOptions::default(), &progress, &sink));
+            let first = rx.recv_timeout(Duration::from_secs(30)).expect("scan A emits an event");
+            assert!(matches!(first.kind, EventKind::DirComplete { .. }));
+            match scan_with_events(&root, &ScanOptions::default(), &ScanProgress::default(), &sink) {
+                Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput),
+                Ok(_) => panic!("concurrent use of a claimed sink must be refused"),
+            }
+            let tree = a.join().unwrap().unwrap();
+            assert!(!tree.cancelled, "the refused second scan must not disturb the first");
+        });
         let _ = fs::remove_dir_all(&root);
     }
 
