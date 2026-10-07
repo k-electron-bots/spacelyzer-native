@@ -1178,10 +1178,11 @@ private actor PublicationBarrier {
             } else {
                 // SwiftUI hosts accessibility through private proxy nodes (SwiftUI.AccessibilityNode,
                 // NSAccessibilityReparentingCellProxy) that reject the formal NSAccessibilityProtocol
-                // cast. They still answer the informal NSObject accessibility methods - the same
-                // accessors external clients read - so read them directly and keep walking children.
-                label = instance.accessibilityLabel(); help = instance.accessibilityHelp()
-                children = instance.accessibilityChildren() ?? []
+                // cast. Every NSObject answers the informal attribute accessors, so read
+                // label/help/children through them and keep walking the proxy subtree.
+                label = instance.accessibilityAttributeValue(.label) as? String
+                help = instance.accessibilityAttributeValue(.help) as? String
+                children = instance.accessibilityAttributeValue(.children) as? [Any] ?? []
                 if (label ?? "").isEmpty, (help ?? "").isEmpty, children.isEmpty { rejected += 1 }
             }
             let readable = view != nil || window != nil || protocolNode != nil || (label ?? "").isEmpty == false || (help ?? "").isEmpty == false
@@ -1201,7 +1202,7 @@ private actor PublicationBarrier {
             }
         }
         visit(root, depth: 0, edge: "root-window")
-        Perf.log("footer-ax complete nodes=\(entries.count) discovered=\(discovered) rejectedBranches=\(rejected) truncated=\(truncated); informal NSObject accessibility fallback inspects private proxy nodes, no authored substitution")
+        Perf.log("footer-ax complete nodes=\(entries.count) discovered=\(discovered) rejectedBranches=\(rejected) truncated=\(truncated); informal attribute accessors inspect private proxy nodes, no authored substitution")
         return Result(entries: entries, truncated: truncated)
     }
 
