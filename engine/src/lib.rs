@@ -15,7 +15,7 @@ pub use category::Category;
 pub use filter::{apply as apply_filter, Filter, FilterResult};
 pub use layout::{layout, layout_with, hit_test, LayoutOptions, Rect};
 pub use tree::{SkipReason, Skipped};
-pub use events::{EventKind, PreviewCollector, PreviewEvents, PreviewSnapshot, ScanEvent, CHANNEL_BOUND, PREVIEW_INTERVAL};
+pub use events::{Admit, EventKind, PreviewCollector, PreviewEvents, PreviewRecord, PreviewRegistry, PreviewSnapshot, ScanEvent, CHANNEL_BOUND, PREVIEW_INTERVAL};
 pub use scan::{scan, scan_with_events, ScanOptions, ScanProgress};
 pub use tree::{Kind, NodeId, Tree};
 
