@@ -179,7 +179,7 @@ fn scan_inner(
     };
     ctx.dirs.claim(md.dev(), md.ino());
 
-    let run = || walk(&root, &ctx);
+    let run = || walk(&root, &ctx, md.dev(), md.ino());
     let (node, complete) = if opts.threads > 0 {
         let pool = rayon::ThreadPoolBuilder::new().num_threads(opts.threads).build().unwrap();
         pool.install(run)
@@ -205,7 +205,7 @@ fn is_package(name: &str) -> bool {
     }
 }
 
-fn walk(dir: &Path, ctx: &Ctx) -> (DirNode, bool) {
+fn walk(dir: &Path, ctx: &Ctx, dev: u64, ino: u64) -> (DirNode, bool) {
     ctx.progress.note_dir();
     if ctx.progress.cancel.load(Ordering::Relaxed) {
         return (DirNode { ents: vec![], total: 0 }, false);
@@ -224,7 +224,7 @@ fn walk(dir: &Path, ctx: &Ctx) -> (DirNode, bool) {
     };
 
     let mut ents: Vec<Ent> = Vec::with_capacity(raw.len());
-    let mut subdirs: Vec<(usize, PathBuf)> = Vec::new();
+    let mut subdirs: Vec<(usize, PathBuf, u64, u64)> = Vec::new();
     let mut local_bytes = 0u64;
     for r in raw {
         match r.kind {
@@ -252,7 +252,7 @@ fn walk(dir: &Path, ctx: &Ctx) -> (DirNode, bool) {
                     continue;
                 }
                 let kind = if is_package(&r.name) { Kind::Package } else { Kind::Directory };
-                subdirs.push((ents.len(), path));
+                subdirs.push((ents.len(), path, r.dev, r.ino));
                 ents.push(Ent { mtime: r.mtime, name: r.name, kind, size: 0, dir: None });
             }
             k => {
@@ -270,9 +270,9 @@ fn walk(dir: &Path, ctx: &Ctx) -> (DirNode, bool) {
     ctx.progress.bytes.fetch_add(local_bytes, Ordering::Relaxed);
 
     let results: Vec<(usize, (DirNode, bool))> = if subdirs.len() > 1 {
-        subdirs.par_iter().map(|(i, p)| (*i, walk(p, ctx))).collect()
+        subdirs.par_iter().map(|(i, p, d, n)| (*i, walk(p, ctx, *d, *n))).collect()
     } else {
-        subdirs.iter().map(|(i, p)| (*i, walk(p, ctx))).collect()
+        subdirs.iter().map(|(i, p, d, n)| (*i, walk(p, ctx, *d, *n))).collect()
     };
     let mut total = local_bytes;
     let mut complete = true;
@@ -287,6 +287,8 @@ fn walk(dir: &Path, ctx: &Ctx) -> (DirNode, bool) {
             ev.emit(EventKind::DirComplete {
                 path: dir.to_path_buf(),
                 size: total,
+                dev,
+                ino,
             });
         }
     }
