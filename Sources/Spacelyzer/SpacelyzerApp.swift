@@ -1176,10 +1176,19 @@ private actor PublicationBarrier {
                 label = protocolNode.accessibilityLabel(); help = protocolNode.accessibilityHelp()
                 children = protocolNode.accessibilityChildren() ?? []
             } else {
-                label = nil; help = nil; children = []; rejected += 1
+                // SwiftUI hosts accessibility through private proxy nodes (SwiftUI.AccessibilityNode,
+                // NSAccessibilityReparentingCellProxy) that reject the formal NSAccessibilityProtocol
+                // cast. Every NSObject answers the informal attribute accessors, so read
+                // AXDescription (the label attribute), AXHelp and AXChildren through them
+                // and keep walking the proxy subtree.
+                label = instance.accessibilityAttributeValue(.description) as? String
+                help = instance.accessibilityAttributeValue(.help) as? String
+                children = instance.accessibilityAttributeValue(.children) as? [Any] ?? []
+                if (label ?? "").isEmpty, (help ?? "").isEmpty, children.isEmpty { rejected += 1 }
             }
-            Perf.log("footer-ax discovery edge=\(edge) depth=\(depth) class=\(NSStringFromClass(type(of: instance))) protocol=\(protocolNode != nil) view=\(view != nil) window=\(window != nil) readable=\(view != nil || window != nil || protocolNode != nil)")
-            if view != nil || window != nil || protocolNode != nil {
+            let readable = view != nil || window != nil || protocolNode != nil || (label ?? "").isEmpty == false || (help ?? "").isEmpty == false
+            Perf.log("footer-ax discovery edge=\(edge) depth=\(depth) class=\(NSStringFromClass(type(of: instance))) protocol=\(protocolNode != nil) view=\(view != nil) window=\(window != nil) readable=\(readable)")
+            if readable {
                 entries.append(Entry(label: label ?? "", help: help ?? ""))
                 Perf.log("footer-ax edge=\(edge) depth=\(depth) label=\((label ?? "").debugDescription) help=\((help ?? "").debugDescription)")
             }
@@ -1194,7 +1203,7 @@ private actor PublicationBarrier {
             }
         }
         visit(root, depth: 0, edge: "root-window")
-        Perf.log("footer-ax complete nodes=\(entries.count) discovered=\(discovered) rejectedBranches=\(rejected) truncated=\(truncated); rejected non-view/nonprotocol branches remain uninspected, no authored substitution")
+        Perf.log("footer-ax complete nodes=\(entries.count) discovered=\(discovered) rejectedBranches=\(rejected) truncated=\(truncated); informal attribute accessors inspect private proxy nodes, no authored substitution")
         return Result(entries: entries, truncated: truncated)
     }
 
