@@ -41,8 +41,10 @@ pub const PREVIEW_INTERVAL: Duration = Duration::from_millis(250);
 pub enum EventKind {
     /// A directory whose ENTIRE subtree finished scanning; `size` is its final
     /// allocated-byte total. Directories with a cancelled, unreadable, or otherwise
-    /// incomplete subtree emit nothing, and neither do their ancestors.
-    DirComplete { path: PathBuf, size: u64 },
+    /// incomplete subtree emit nothing, and neither do their ancestors. `dev`/`ino`
+    /// are the directory's volume and inode at scan time: consumers key preview
+    /// records by identity, never by path alone.
+    DirComplete { path: PathBuf, size: u64, dev: u64, ino: u64 },
     /// The scan ended. `cancelled` says whether it ended by cancellation; `complete`
     /// says the walk finished every directory it entered under the scanner's
     /// accounting (false on cancellation or an unreadable subtree; the portable
@@ -211,6 +213,114 @@ impl PreviewEvents {
     }
 }
 
+/// A preview record accepted into the registry: identity-bound, generation-bound,
+/// inside the scan root, on the scan's root volume.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreviewRecord {
+    pub path: PathBuf,
+    pub size: u64,
+    pub dev: u64,
+    pub ino: u64,
+    pub generation: u64,
+}
+
+/// Consumer-side store for preview records, kept deliberately separate from the
+/// authoritative arena `Tree`: nothing here is a node id and nothing here feeds
+/// totals. Records enter only from `DirComplete` events that pass containment and
+/// volume checks, and leave when they fail reconciliation (vanished, unreadable, or
+/// replaced: a re-read whose identity differs), when their generation is cancelled,
+/// or when the scan finishes (`finish` drops the whole generation: the complete tree
+/// supersedes every preview).
+pub struct PreviewRegistry {
+    root: PathBuf,
+    root_dev: u64,
+    records: Vec<PreviewRecord>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Admit {
+    Admitted,
+    /// Path is not inside the canonical scan root.
+    OutsideRoot,
+    /// Directory lives on a different volume than the root and cross-device scans are off.
+    ForeignVolume,
+    /// Not a DirComplete event: only completed directories become preview records.
+    NotARecord,
+}
+
+impl PreviewRegistry {
+    pub fn new(root: &Path, root_dev: u64) -> Self {
+        PreviewRegistry { root: root.to_path_buf(), root_dev, records: Vec::new() }
+    }
+
+    /// Admit one event's record. Root containment uses component-wise `Path::starts_with`,
+    /// so `/rootx` never counts as inside `/root`. Raw paths: non-UTF-8 components are
+    /// compared byte for byte.
+    pub fn admit(&mut self, ev: &ScanEvent) -> Admit {
+        let EventKind::DirComplete { path, size, dev, ino } = &ev.kind else {
+            return Admit::NotARecord;
+        };
+        if !path.starts_with(&self.root) {
+            return Admit::OutsideRoot;
+        }
+        if *dev != self.root_dev {
+            return Admit::ForeignVolume;
+        }
+        // Identity-keyed: a second event for the same (dev, ino) replaces the earlier one.
+        self.records.retain(|r| !(r.dev == *dev && r.ino == *ino));
+        self.records.push(PreviewRecord {
+            path: path.clone(),
+            size: *size,
+            dev: *dev,
+            ino: *ino,
+            generation: ev.generation,
+        });
+        Admit::Admitted
+    }
+
+    /// Re-verify one record against the live filesystem. Returns the record when the
+    /// path still resolves to the SAME directory (dev, ino); removes and rejects it
+    /// when it vanished, became unreadable, or now names a different identity.
+    pub fn reconcile(&mut self, path: &Path) -> Option<&PreviewRecord> {
+        use std::os::unix::fs::MetadataExt;
+        let live = std::fs::symlink_metadata(path).ok().filter(|m| m.is_dir());
+        let want = live.map(|m| (m.dev(), m.ino()));
+        let pos = self.records.iter().position(|r| r.path == path);
+        let Some(i) = pos else { return None };
+        if want == Some((self.records[i].dev, self.records[i].ino)) {
+            return self.records.get(i);
+        }
+        self.records.remove(i);
+        None
+    }
+
+    /// Drop every record of a generation (root or filter changed, scan superseded).
+    pub fn cancel_generation(&mut self, generation: u64) -> usize {
+        let before = self.records.len();
+        self.records.retain(|r| r.generation != generation);
+        before - self.records.len()
+    }
+
+    /// The scan finished: the complete tree supersedes every preview record.
+    pub fn finish(&mut self, generation: u64) -> usize {
+        self.cancel_generation(generation)
+    }
+
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    /// Test-only peek at the first record's inode (fixture sanity checks).
+    #[cfg(test)]
+    fn reconcile_probe_ino(&self) -> u64 {
+        self.records[0].ino
+    }
+}
+
 /// One throttled preview publication: the largest completed directories seen so far.
 /// `partial` is true until the authoritative `Tree` exists - a cancelled or lossy
 /// (`dropped > 0`) event stream can never clear it.
@@ -282,7 +392,7 @@ impl PreviewCollector {
             return None;
         }
         match &ev.kind {
-            EventKind::DirComplete { path, size } => {
+            EventKind::DirComplete { path, size, .. } => {
                 self.dirs_completed += 1;
                 self.insert(path.clone(), *size);
             }
@@ -353,7 +463,7 @@ mod tests {
         ScanEvent {
             generation,
             root: root.to_path_buf(),
-            kind: EventKind::DirComplete { path: path.to_path_buf(), size },
+            kind: EventKind::DirComplete { path: path.to_path_buf(), size, dev: 1, ino: 1 },
         }
     }
 
@@ -382,7 +492,7 @@ mod tests {
     fn full_channel_drops_events_and_never_blocks() {
         let (sink, _rx) = PreviewEvents::with_bound(7, Path::new("/tmp"), 2);
         for i in 0..5u64 {
-            sink.emit(EventKind::DirComplete { path: PathBuf::from(format!("/tmp/d{i}")), size: i });
+            sink.emit(EventKind::DirComplete { path: PathBuf::from(format!("/tmp/d{i}")), size: i, dev: 1, ino: i });
         }
         assert_eq!(sink.dropped(), 3);
         assert_eq!(sink.generation(), 7);
@@ -804,6 +914,138 @@ mod tests {
             let tree = a.join().unwrap().unwrap();
             assert!(!tree.cancelled, "the refused second scan must not disturb the first");
         });
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn dir_event(generation: u64, root: &Path, path: &Path, size: u64) -> ScanEvent {
+        use std::os::unix::fs::MetadataExt;
+        let md = fs::symlink_metadata(path).unwrap();
+        ScanEvent {
+            generation,
+            root: root.to_path_buf(),
+            kind: EventKind::DirComplete {
+                path: path.to_path_buf(),
+                size,
+                dev: md.dev(),
+                ino: md.ino(),
+            },
+        }
+    }
+
+    #[test]
+    fn registry_admits_only_contained_same_volume_records_keyed_by_identity() {
+        let root = fixture("reg-admit");
+        use std::os::unix::fs::MetadataExt;
+        let root_dev = fs::symlink_metadata(&root).unwrap().dev();
+        let mut reg = PreviewRegistry::new(&root, root_dev);
+
+        // Inside root, same volume: admitted; re-admission of the same identity replaces.
+        let ev1 = dir_event(1, &root, &root.join("alpha"), 100);
+        assert_eq!(reg.admit(&ev1), Admit::Admitted);
+        assert_eq!(reg.admit(&ev1), Admit::Admitted);
+        assert_eq!(reg.len(), 1);
+
+        // Prefix trap: /rootx is not inside /root.
+        let other = root.with_file_name(format!("{}x", root.file_name().unwrap().to_string_lossy()));
+        let outside = ScanEvent {
+            generation: 1,
+            root: root.to_path_buf(),
+            kind: EventKind::DirComplete { path: other, size: 1, dev: root_dev, ino: 999 },
+        };
+        assert_eq!(reg.admit(&outside), Admit::OutsideRoot);
+
+        // Foreign volume is refused even inside the root.
+        let foreign = ScanEvent {
+            generation: 1,
+            root: root.to_path_buf(),
+            kind: EventKind::DirComplete { path: root.join("alpha"), size: 100, dev: root_dev + 1, ino: 42 },
+        };
+        assert_eq!(reg.admit(&foreign), Admit::ForeignVolume);
+
+        // Finished is not a record.
+        let fin = fin(1, &root, false, true, 0);
+        assert_eq!(reg.admit(&fin), Admit::NotARecord);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reconcile_rejects_vanished_and_replaced_paths() {
+        let root = fixture("reg-reconcile");
+        use std::os::unix::fs::MetadataExt;
+        let root_dev = fs::symlink_metadata(&root).unwrap().dev();
+        let mut reg = PreviewRegistry::new(&root, root_dev);
+        let alpha = root.join("alpha");
+        reg.admit(&dir_event(1, &root, &alpha, 100));
+        // Live and identical: confirmed.
+        assert!(reg.reconcile(&alpha).is_some());
+        // Vanished: removed and rejected.
+        let beta = root.join("beta");
+        reg.admit(&dir_event(1, &root, &beta, 200));
+        fs::remove_dir_all(&beta).unwrap();
+        assert!(reg.reconcile(&beta).is_none());
+        assert_eq!(reg.len(), 1);
+        // Replaced by a different identity at the same path: removed and rejected.
+        // mkdir while the original still exists guarantees a different inode, then the
+        // rename puts that new identity at the old path (no inode-recycling race).
+        let gamma = root.join("alpha");
+        let staging = root.join("staging");
+        fs::create_dir_all(&staging).unwrap();
+        fs::remove_dir_all(&gamma).unwrap();
+        fs::rename(&staging, &gamma).unwrap();
+        let live_ino = fs::symlink_metadata(&gamma).unwrap().ino();
+        assert_ne!(live_ino, reg.reconcile_probe_ino(), "fixture must replace the inode");
+        assert!(reg.reconcile(&gamma).is_none());
+        assert!(reg.is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cancel_and_finish_drop_the_generation() {
+        let root = fixture("reg-cancel");
+        use std::os::unix::fs::MetadataExt;
+        let root_dev = fs::symlink_metadata(&root).unwrap().dev();
+        let mut reg = PreviewRegistry::new(&root, root_dev);
+        reg.admit(&dir_event(1, &root, &root.join("alpha"), 100));
+        reg.admit(&dir_event(1, &root, &root.join("beta"), 200));
+        reg.admit(&dir_event(2, &root, &root.join("beta/nested"), 50));
+        assert_eq!(reg.cancel_generation(1), 2);
+        assert_eq!(reg.len(), 1);
+        assert_eq!(reg.finish(2), 1);
+        assert!(reg.is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn real_scan_events_carry_live_identity_and_feed_the_registry() {
+        let root = fixture("reg-e2e");
+        use std::os::unix::fs::MetadataExt;
+        let (sink, rx) = PreviewEvents::new(11, &root);
+        let progress = ScanProgress::default();
+        scan_with_events(&root, &ScanOptions::default(), &progress, &sink).unwrap();
+        let mut events = Vec::new();
+        while let Some(e) = rx.recv_timeout(Duration::from_millis(500)) {
+            events.push(e);
+        }
+        let root_dev = fs::symlink_metadata(&root).unwrap().dev();
+        let mut reg = PreviewRegistry::new(&root, root_dev);
+        let mut terminal = None;
+        for e in &events {
+            match &e.kind {
+                EventKind::DirComplete { path, dev, ino, .. } => {
+                    // Identity matches the live filesystem exactly.
+                    let md = fs::symlink_metadata(path).unwrap();
+                    assert_eq!((*dev, *ino), (md.dev(), md.ino()), "event identity for {path:?}");
+                    assert_eq!(reg.admit(e), Admit::Admitted);
+                }
+                k @ EventKind::Finished { .. } => terminal = Some(k.clone()),
+                _ => {}
+            }
+        }
+        assert!(terminal.is_some());
+        assert_eq!(reg.len(), 4, "root + alpha + beta + beta/nested");
+        // The scan finished: the complete tree supersedes every preview record.
+        assert_eq!(reg.finish(11), 4);
+        assert!(reg.is_empty());
         let _ = fs::remove_dir_all(&root);
     }
 
