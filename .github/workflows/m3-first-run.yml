@@ -108,7 +108,7 @@ jobs:
           if [ -z "$ok" ]; then echo "FOOTER WINDOW NEVER READY - findings only"; exit 10; fi
           swift scripts/ax-client.swift "$PID" /tmp/spz-footer-ax-expected.txt /tmp/spz-footer-ax-result.txt 2>&1 | tee "$ART/footer-ax-client.log"
           code=${PIPESTATUS[0]}
-          echo "EXIT_$code" > /tmp/spz-footer-ax-status.txt
+          printf 'EXIT_%s' "$code" > /tmp/spz-footer-ax-status.txt  # no trailing newline: the app compares clientStatus == "EXIT_0" exactly
           : > /tmp/spz-footer-ax-ack
           # Wait for the app's own final assertions about this exchange (not a fixed sleep).
           line=""
@@ -220,7 +220,10 @@ jobs:
           if [ "$remain" -lt 720 ]; then echo "SKIPPED: under 12 minutes remain" | tee -a "$ART/expansion-100k-decision.txt"; exit 0; fi
           [ -x "$RUNNER_TEMP/m3bench" ] || { echo "SKIPPED: bench binary missing" | tee -a "$ART/expansion-100k-decision.txt"; exit 0; }
           python3 scripts/make_fixtures.py generate "$RUNNER_TEMP/m3fix-exp100" --profile expansion-100k 2>&1 | tee "$ART/fixtures-expansion-100k.txt"
+          gs=${PIPESTATUS[0]}
           python3 scripts/make_fixtures.py verify "$RUNNER_TEMP/m3fix-exp100" --profile expansion-100k 2>&1 | tee -a "$ART/fixtures-expansion-100k.txt"
+          vs=${PIPESTATUS[0]}
+          if [ "$gs" != "0" ] || [ "$vs" != "0" ]; then echo "FIXTURE GENERATE/VERIFY FAILED (generate=$gs verify=$vs) - optional segment findings-only" | tee -a "$ART/expansion-100k-decision.txt"; exit 0; fi
           pgrep -x Spacelyzer >/dev/null && { echo "PRECHECK FAILED: Spacelyzer already running"; exit 10; }
           open -n "$GITHUB_WORKSPACE/dist/Spacelyzer.app" --env SPZ_AUTOSCAN="$RUNNER_TEMP/m3fix-exp100/expansion-100000"
           PID=""
