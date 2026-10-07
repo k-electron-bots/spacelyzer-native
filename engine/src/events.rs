@@ -213,92 +213,198 @@ impl PreviewEvents {
     }
 }
 
-/// A preview record accepted into the registry: identity-bound, generation-bound,
-/// inside the scan root, on the scan's root volume.
+/// Largest number of preview records the registry holds. Admissions beyond the cap
+/// are refused (`Admit::Full`): the registry is a bounded hint, never a full index,
+/// and admission stays O(1) (identity-keyed map, no per-admission sweeps).
+pub const REGISTRY_CAP: usize = 256;
+
+/// A preview record accepted into the registry: bound to the registry's ONE active
+/// generation and root, canonically inside the scan root, on the scan's root volume.
+/// `ctime`/`birthtime` corroborate identity across time: (dev, ino) alone can be
+/// recycled by the filesystem after a delete+recreate.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreviewRecord {
+    /// Canonical path at admission; re-resolved at every reconcile.
     pub path: PathBuf,
     pub size: u64,
     pub dev: u64,
     pub ino: u64,
+    pub ctime: i64,
+    pub ctime_nsec: i64,
+    pub birthtime: Option<(i64, i64)>,
     pub generation: u64,
 }
 
 /// Consumer-side store for preview records, kept deliberately separate from the
 /// authoritative arena `Tree`: nothing here is a node id and nothing here feeds
-/// totals. Records enter only from `DirComplete` events that pass containment and
-/// volume checks, and leave when they fail reconciliation (vanished, unreadable, or
-/// replaced: a re-read whose identity differs), when their generation is cancelled,
-/// or when the scan finishes (`finish` drops the whole generation: the complete tree
-/// supersedes every preview).
+/// totals. Records enter only from `DirComplete` events of the registry's active
+/// generation that pass scope, same-volume, resolved-containment and live-identity
+/// checks, and leave when reconciliation fails (vanished, escaped the root, replaced,
+/// metadata-changed, or unreadable) or when the generation ends. `cancel_generation`
+/// and `finish` are terminal: the registry then absorbs every later event, so a late
+/// event from a dead scan can never repopulate it.
+///
+/// Same-volume-only: previews never cross the volume the scan started on, matching
+/// the default no-cross-device walk.
 pub struct PreviewRegistry {
+    generation: u64,
     root: PathBuf,
     root_dev: u64,
-    records: Vec<PreviewRecord>,
+    active: bool,
+    records: std::collections::HashMap<(u64, u64), PreviewRecord>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Admit {
     Admitted,
-    /// Path is not inside the canonical scan root.
+    /// Resolved containment failed: canonicalizing the path (`..` components,
+    /// symlinked directories, or a moved parent reached through a replacement
+    /// symlink) lands outside the scan root.
     OutsideRoot,
-    /// Directory lives on a different volume than the root and cross-device scans are off.
+    /// Directory lives on a different volume than the root (registry is same-volume-only).
     ForeignVolume,
     /// Not a DirComplete event: only completed directories become preview records.
     NotARecord,
+    /// Wrong generation, wrong root, or the registry already saw cancel/finish and
+    /// is absorbing. An older generation can never overwrite newer data.
+    WrongScope,
+    /// The path vanished or its live identity differs from the event's (swapped
+    /// between scan and admission).
+    Replaced,
+    /// Registry is at REGISTRY_CAP and this is a new identity.
+    Full,
+}
+
+/// Birth (creation) time as (secs, nanos) where the platform provides it.
+fn birth_of(md: &std::fs::Metadata) -> Option<(i64, i64)> {
+    let bt = md.created().ok()?;
+    let d = bt.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some((d.as_secs() as i64, d.subsec_nanos() as i64))
 }
 
 impl PreviewRegistry {
-    pub fn new(root: &Path, root_dev: u64) -> Self {
-        PreviewRegistry { root: root.to_path_buf(), root_dev, records: Vec::new() }
+    /// `root` must be the canonical scan root, `root_dev` its volume, `generation`
+    /// the scan's generation. The registry admits only that exact scope.
+    pub fn new(generation: u64, root: &Path, root_dev: u64) -> Self {
+        PreviewRegistry {
+            generation,
+            root: root.to_path_buf(),
+            root_dev,
+            active: true,
+            records: std::collections::HashMap::new(),
+        }
     }
 
-    /// Admit one event's record. Root containment uses component-wise `Path::starts_with`,
-    /// so `/rootx` never counts as inside `/root`. Raw paths: non-UTF-8 components are
-    /// compared byte for byte.
+    /// Admit one event's record. TOCTOU, stated plainly: canonicalize-then-stat is
+    /// not atomic, so a swap between those two reads can slip one record through
+    /// until the next `reconcile` re-resolves it. Records are provisional hints and
+    /// never feed totals, so the cost of a brief miss is a stale row, never wrong
+    /// accounting.
     pub fn admit(&mut self, ev: &ScanEvent) -> Admit {
+        use std::os::unix::fs::MetadataExt;
         let EventKind::DirComplete { path, size, dev, ino } = &ev.kind else {
             return Admit::NotARecord;
         };
-        if !path.starts_with(&self.root) {
-            return Admit::OutsideRoot;
+        if !self.active || ev.generation != self.generation || ev.root != self.root {
+            return Admit::WrongScope;
         }
         if *dev != self.root_dev {
             return Admit::ForeignVolume;
         }
-        // Identity-keyed: a second event for the same (dev, ino) replaces the earlier one.
-        self.records.retain(|r| !(r.dev == *dev && r.ino == *ino));
-        self.records.push(PreviewRecord {
-            path: path.clone(),
+        // Resolved containment. The raw component-wise check stays as a fast reject
+        // (byte-exact for non-UTF-8); canonicalize then collapses `..` and follows
+        // symlinks so only a path that REALLY resolves inside the root is admitted.
+        if !path.starts_with(&self.root) {
+            return Admit::OutsideRoot;
+        }
+        let Ok(canon) = std::fs::canonicalize(path) else {
+            return Admit::Replaced; // vanished between scan and admission
+        };
+        if !canon.starts_with(&self.root) {
+            return Admit::OutsideRoot;
+        }
+        let Ok(md) = std::fs::symlink_metadata(&canon) else {
+            return Admit::Replaced;
+        };
+        if !md.is_dir() || md.dev() != *dev || md.ino() != *ino {
+            return Admit::Replaced;
+        }
+        if !self.records.contains_key(&(*dev, *ino)) && self.records.len() >= REGISTRY_CAP {
+            return Admit::Full;
+        }
+        // Identity-keyed: a second event for the same (dev, ino) replaces the earlier
+        // one. Only the active generation ever reaches this point, so no older
+        // generation can overwrite newer data.
+        self.records.insert((*dev, *ino), PreviewRecord {
+            path: canon,
             size: *size,
             dev: *dev,
             ino: *ino,
+            ctime: md.ctime(),
+            ctime_nsec: md.ctime_nsec(),
+            birthtime: birth_of(&md),
             generation: ev.generation,
         });
         Admit::Admitted
     }
 
-    /// Re-verify one record against the live filesystem. Returns the record when the
-    /// path still resolves to the SAME directory (dev, ino); removes and rejects it
-    /// when it vanished, became unreadable, or now names a different identity.
+    /// Re-verify one record against the live filesystem. Re-resolves the path (a
+    /// moved parent reached through a replacement symlink escapes the root even when
+    /// dev/ino survive the rename), re-checks identity AND ctime/birthtime (inode
+    /// recycling makes (dev, ino) alone insufficient across time; a metadata change
+    /// conservatively drops the record), and requires the directory to be readable.
+    /// Any failure removes the record. Pass the record's own path.
     pub fn reconcile(&mut self, path: &Path) -> Option<&PreviewRecord> {
         use std::os::unix::fs::MetadataExt;
-        let live = std::fs::symlink_metadata(path).ok().filter(|m| m.is_dir());
-        let want = live.map(|m| (m.dev(), m.ino()));
-        let pos = self.records.iter().position(|r| r.path == path);
-        let Some(i) = pos else { return None };
-        if want == Some((self.records[i].dev, self.records[i].ino)) {
-            return self.records.get(i);
+        let Some(canon) = std::fs::canonicalize(path).ok() else {
+            // Unresolvable: drop any record filed under this exact path.
+            let gone = self.records.iter().find(|(_, r)| r.path == path).map(|(k, _)| *k);
+            if let Some(k) = gone {
+                self.records.remove(&k);
+            }
+            return None;
+        };
+        let live = std::fs::symlink_metadata(&canon).ok().filter(|m| m.is_dir());
+        let Some(md) = live else {
+            let gone = self.records.iter().find(|(_, r)| r.path == canon).map(|(k, _)| *k);
+            if let Some(k) = gone {
+                self.records.remove(&k);
+            }
+            return None;
+        };
+        let k = (md.dev(), md.ino());
+        let Some((rc, rcn, rb)) = self.records.get(&k).map(|r| (r.ctime, r.ctime_nsec, r.birthtime)) else {
+            // Nothing under the live identity: drop any record filed for this exact
+            // canonical path under a previous identity (replaced since admission).
+            let gone = self.records.iter().find(|(_, r)| r.path == canon).map(|(k, _)| *k);
+            if let Some(old) = gone {
+                self.records.remove(&old);
+            }
+            return None;
+        };
+        let ok = canon.starts_with(&self.root)
+            && md.ctime() == rc
+            && md.ctime_nsec() == rcn
+            && match (birth_of(&md), rb) {
+                (Some(now), Some(was)) => now == was,
+                _ => true, // birthtime unavailable on either side: ctime still guards
+            }
+            && std::fs::read_dir(&canon).is_ok();
+        if ok {
+            return self.records.get(&k);
         }
-        self.records.remove(i);
+        self.records.remove(&k);
         None
     }
 
-    /// Drop every record of a generation (root or filter changed, scan superseded).
+    /// Cancel the active generation: drop its records and absorb everything after.
+    /// Any other generation is ignored - a stale cancel must not kill a live scan.
     pub fn cancel_generation(&mut self, generation: u64) -> usize {
-        let before = self.records.len();
-        self.records.retain(|r| r.generation != generation);
-        before - self.records.len()
+        if generation != self.generation || !self.active {
+            return 0;
+        }
+        self.active = false;
+        std::mem::take(&mut self.records).len()
     }
 
     /// The scan finished: the complete tree supersedes every preview record.
@@ -314,10 +420,20 @@ impl PreviewRegistry {
         self.records.is_empty()
     }
 
-    /// Test-only peek at the first record's inode (fixture sanity checks).
+    /// Test-only peek at any record's inode (fixture sanity checks).
     #[cfg(test)]
     fn reconcile_probe_ino(&self) -> u64 {
-        self.records[0].ino
+        self.records.values().next().unwrap().ino
+    }
+
+    /// Test-only: overwrite a stored record's ctime, simulating a metadata change
+    /// that happened after admission. (The sandbox filesystem does not reliably bump
+    /// ctime for chmod/rename issued by the creating session, so fs-level simulation
+    /// is not deterministic here.)
+    #[cfg(test)]
+    fn tamper_ctime(&mut self, dev: u64, ino: u64, ctime: i64) {
+        let r = self.records.get_mut(&(dev, ino)).unwrap();
+        r.ctime = ctime;
     }
 }
 
@@ -937,9 +1053,10 @@ mod tests {
         let root = fixture("reg-admit");
         use std::os::unix::fs::MetadataExt;
         let root_dev = fs::symlink_metadata(&root).unwrap().dev();
-        let mut reg = PreviewRegistry::new(&root, root_dev);
+        let mut reg = PreviewRegistry::new(1, &root, root_dev);
 
-        // Inside root, same volume: admitted; re-admission of the same identity replaces.
+        // Inside root, same volume, active generation: admitted; re-admission of the
+        // same identity replaces (still one record).
         let ev1 = dir_event(1, &root, &root.join("alpha"), 100);
         assert_eq!(reg.admit(&ev1), Admit::Admitted);
         assert_eq!(reg.admit(&ev1), Admit::Admitted);
@@ -969,11 +1086,86 @@ mod tests {
     }
 
     #[test]
+    fn registry_rejects_dotdot_and_symlink_escapes() {
+        let root = fixture("reg-escape");
+        use std::os::unix::fs::MetadataExt;
+        let root_dev = fs::symlink_metadata(&root).unwrap().dev();
+        let mut reg = PreviewRegistry::new(1, &root, root_dev);
+        // A sibling OUTSIDE the root, on the same volume.
+        let sibling = root.with_file_name(format!("{}-escape-sibling", root.file_name().unwrap().to_string_lossy()));
+        let _ = fs::remove_dir_all(&sibling);
+        fs::create_dir_all(&sibling).unwrap();
+        let sib_md = fs::symlink_metadata(&sibling).unwrap();
+
+        // Lexical containment says INSIDE (.. is just a component); resolution says OUTSIDE.
+        let dotdot = root.join("..").join(sibling.file_name().unwrap());
+        assert!(dotdot.starts_with(&root), "fixture: lexical prefix holds for the .. spelling");
+        let ev = ScanEvent {
+            generation: 1,
+            root: root.to_path_buf(),
+            kind: EventKind::DirComplete { path: dotdot, size: 1, dev: sib_md.dev(), ino: sib_md.ino() },
+        };
+        assert_eq!(reg.admit(&ev), Admit::OutsideRoot);
+
+        // A symlink INSIDE the root pointing OUTSIDE: lexical prefix holds, resolved
+        // path escapes. Identity matches the target, dev matches the volume.
+        std::os::unix::fs::symlink(&sibling, root.join("link")).unwrap();
+        let ev = ScanEvent {
+            generation: 1,
+            root: root.to_path_buf(),
+            kind: EventKind::DirComplete { path: root.join("link"), size: 1, dev: sib_md.dev(), ino: sib_md.ino() },
+        };
+        assert_eq!(reg.admit(&ev), Admit::OutsideRoot);
+        assert!(reg.is_empty());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&sibling);
+    }
+
+    #[test]
+    fn registry_binds_generation_and_root_and_absorbs_after_terminal() {
+        let root = fixture("reg-scope");
+        use std::os::unix::fs::MetadataExt;
+        let root_dev = fs::symlink_metadata(&root).unwrap().dev();
+        let mut reg = PreviewRegistry::new(5, &root, root_dev);
+        reg.admit(&dir_event(5, &root, &root.join("alpha"), 100));
+        assert_eq!(reg.len(), 1);
+
+        // Older generation, same identity: cannot overwrite newer data.
+        assert_eq!(reg.admit(&dir_event(4, &root, &root.join("beta"), 50)), Admit::WrongScope);
+        // Wrong root: rejected before any filesystem check.
+        let wrong_root = ScanEvent {
+            generation: 5,
+            root: root.parent().unwrap().to_path_buf(),
+            kind: dir_event(5, &root, &root.join("beta"), 50).kind,
+        };
+        assert_eq!(reg.admit(&wrong_root), Admit::WrongScope);
+        assert_eq!(reg.len(), 1);
+
+        // A stale cancel for another generation changes nothing.
+        assert_eq!(reg.cancel_generation(99), 0);
+        assert_eq!(reg.len(), 1);
+
+        // Cancelling the active generation drops records and absorbs everything after:
+        // a late event from the dead scan can never repopulate the registry.
+        assert_eq!(reg.cancel_generation(5), 1);
+        assert!(reg.is_empty());
+        assert_eq!(reg.admit(&dir_event(5, &root, &root.join("alpha"), 100)), Admit::WrongScope);
+        assert!(reg.is_empty());
+        // finish is terminal the same way.
+        let mut reg2 = PreviewRegistry::new(7, &root, root_dev);
+        reg2.admit(&dir_event(7, &root, &root.join("alpha"), 100));
+        assert_eq!(reg2.finish(7), 1);
+        assert_eq!(reg2.admit(&dir_event(7, &root, &root.join("beta"), 50)), Admit::WrongScope);
+        assert!(reg2.is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn reconcile_rejects_vanished_and_replaced_paths() {
         let root = fixture("reg-reconcile");
         use std::os::unix::fs::MetadataExt;
         let root_dev = fs::symlink_metadata(&root).unwrap().dev();
-        let mut reg = PreviewRegistry::new(&root, root_dev);
+        let mut reg = PreviewRegistry::new(1, &root, root_dev);
         let alpha = root.join("alpha");
         reg.admit(&dir_event(1, &root, &alpha, 100));
         // Live and identical: confirmed.
@@ -1000,17 +1192,104 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_rejects_moved_parent_reached_through_symlink() {
+        // The reviewer's case: parent renamed OUTSIDE the root, then a symlink put at
+        // the old parent path. dev/ino of the child survive the rename, ctime too -
+        // only resolved containment catches it.
+        let root = fixture("reg-moved");
+        use std::os::unix::fs::MetadataExt;
+        let root_dev = fs::symlink_metadata(&root).unwrap().dev();
+        let inner = root.join("p/a");
+        fs::create_dir_all(&inner).unwrap();
+        let mut reg = PreviewRegistry::new(1, &root, root_dev);
+        assert_eq!(reg.admit(&dir_event(1, &root, &inner, 100)), Admit::Admitted);
+
+        let outside = root.with_file_name(format!("{}-moved-parent", root.file_name().unwrap().to_string_lossy()));
+        let _ = fs::remove_dir_all(&outside);
+        fs::rename(root.join("p"), &outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("p")).unwrap();
+        // Sanity: identity really did survive the move.
+        let md = fs::symlink_metadata(outside.join("a")).unwrap();
+        assert_eq!(md.dev(), root_dev);
+        assert!(reg.reconcile(&root.join("p/a")).is_none(), "escaped record must be dropped");
+        assert!(reg.is_empty());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn reconcile_rejects_metadata_change_and_unreadable_dirs() {
+        let root = fixture("reg-meta");
+        use std::os::unix::fs::MetadataExt;
+        use std::os::unix::fs::PermissionsExt;
+        let root_dev = fs::symlink_metadata(&root).unwrap().dev();
+        let mut reg = PreviewRegistry::new(1, &root, root_dev);
+
+        // ctime corroboration: a record whose stored ctime no longer matches the live
+        // metadata is conservatively dropped. The live re-read and comparison are the
+        // real code path; the post-admission change is simulated through a test-only
+        // stored-value tamper because this filesystem does not reliably bump ctime
+        // for chmod/rename issued by the creating session (verified by probe).
+        let alpha = root.join("alpha");
+        reg.admit(&dir_event(1, &root, &alpha, 100));
+        let md = fs::symlink_metadata(&alpha).unwrap();
+        reg.tamper_ctime(md.dev(), md.ino(), md.ctime() + 60);
+        assert!(reg.reconcile(&alpha).is_none(), "ctime mismatch must drop the record");
+        assert!(reg.is_empty());
+
+        // Unreadable: chmod BEFORE admission so the stored ctime matches the live
+        // one - only the read_dir probe can catch this.
+        let beta = root.join("beta");
+        fs::set_permissions(&beta, fs::Permissions::from_mode(0o000)).unwrap();
+        reg.admit(&dir_event(1, &root, &beta, 200));
+        if fs::read_dir(&beta).is_ok() {
+            println!("UNEXERCISED: tests run with a privilege that reads mode-000 dirs (euid 0)");
+        } else {
+            assert!(reg.reconcile(&beta).is_none(), "unreadable dir must be dropped");
+            assert!(reg.is_empty());
+        }
+        fs::set_permissions(&beta, fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn registry_caps_size_and_replace_stays_bounded() {
+        let root = fixture("reg-cap");
+        use std::os::unix::fs::MetadataExt;
+        let root_dev = fs::symlink_metadata(&root).unwrap().dev();
+        let mut reg = PreviewRegistry::new(1, &root, root_dev);
+        // REGISTRY_CAP + 4 distinct real directories.
+        for i in 0..(REGISTRY_CAP + 4) {
+            let d = root.join(format!("d{i}"));
+            fs::create_dir_all(&d).unwrap();
+        }
+        let mut full = 0;
+        for i in 0..(REGISTRY_CAP + 4) {
+            let ev = dir_event(1, &root, &root.join(format!("d{i}")), i as u64);
+            match reg.admit(&ev) {
+                Admit::Admitted => {}
+                Admit::Full => full += 1,
+                other => panic!("unexpected admit result: {other:?}"),
+            }
+        }
+        assert_eq!(reg.len(), REGISTRY_CAP);
+        assert_eq!(full, 4, "exactly the overflow admissions are refused");
+        // Replacing an existing identity is still allowed at the cap (no growth).
+        let again = dir_event(1, &root, &root.join("d0"), 999);
+        assert_eq!(reg.admit(&again), Admit::Admitted);
+        assert_eq!(reg.len(), REGISTRY_CAP);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn cancel_and_finish_drop_the_generation() {
         let root = fixture("reg-cancel");
         use std::os::unix::fs::MetadataExt;
         let root_dev = fs::symlink_metadata(&root).unwrap().dev();
-        let mut reg = PreviewRegistry::new(&root, root_dev);
+        let mut reg = PreviewRegistry::new(1, &root, root_dev);
         reg.admit(&dir_event(1, &root, &root.join("alpha"), 100));
         reg.admit(&dir_event(1, &root, &root.join("beta"), 200));
-        reg.admit(&dir_event(2, &root, &root.join("beta/nested"), 50));
         assert_eq!(reg.cancel_generation(1), 2);
-        assert_eq!(reg.len(), 1);
-        assert_eq!(reg.finish(2), 1);
         assert!(reg.is_empty());
         let _ = fs::remove_dir_all(&root);
     }
@@ -1027,7 +1306,7 @@ mod tests {
             events.push(e);
         }
         let root_dev = fs::symlink_metadata(&root).unwrap().dev();
-        let mut reg = PreviewRegistry::new(&root, root_dev);
+        let mut reg = PreviewRegistry::new(11, &root, root_dev);
         let mut terminal = None;
         for e in &events {
             match &e.kind {
@@ -1038,7 +1317,6 @@ mod tests {
                     assert_eq!(reg.admit(e), Admit::Admitted);
                 }
                 k @ EventKind::Finished { .. } => terminal = Some(k.clone()),
-                _ => {}
             }
         }
         assert!(terminal.is_some());
