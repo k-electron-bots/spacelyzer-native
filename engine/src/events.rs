@@ -426,6 +426,11 @@ impl PreviewRegistry {
         self.records.get(&(dev, ino))
     }
 
+    /// True when a record lives at this exact path spelling (no alias resolution).
+    pub(crate) fn holds_path(&self, path: &Path) -> bool {
+        self.records.values().any(|r| r.path == path)
+    }
+
     /// Re-verify ONE record against the live filesystem. The record is located by
     /// its own stored path FIRST; every failure removes exactly that record's key -
     /// never a different registered row, even when the live object at the path now
