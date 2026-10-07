@@ -1179,8 +1179,9 @@ private actor PublicationBarrier {
                 // SwiftUI hosts accessibility through private proxy nodes (SwiftUI.AccessibilityNode,
                 // NSAccessibilityReparentingCellProxy) that reject the formal NSAccessibilityProtocol
                 // cast. Every NSObject answers the informal attribute accessors, so read
-                // label/help/children through them and keep walking the proxy subtree.
-                label = instance.accessibilityAttributeValue(.label) as? String
+                // AXDescription (the label attribute), AXHelp and AXChildren through them
+                // and keep walking the proxy subtree.
+                label = instance.accessibilityAttributeValue(.description) as? String
                 help = instance.accessibilityAttributeValue(.help) as? String
                 children = instance.accessibilityAttributeValue(.children) as? [Any] ?? []
                 if (label ?? "").isEmpty, (help ?? "").isEmpty, children.isEmpty { rejected += 1 }
