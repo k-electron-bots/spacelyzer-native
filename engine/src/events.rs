@@ -132,32 +132,67 @@ impl PreviewReceiver {
     /// are drained first and the durable terminal event is yielded after them, exactly
     /// once; later calls return None.
     pub fn recv_timeout(&self, d: Duration) -> Option<ScanEvent> {
+        match self.recv_timeout_kind(d) {
+            Recv::Event(ev) => Some(ev),
+            Recv::Timeout | Recv::Closed => None,
+        }
+    }
+
+    /// Like `recv_timeout`, but says WHY nothing came: `Timeout` means the scan is
+    /// still live and simply emitted nothing within `d` (call again); `Closed` means
+    /// no event will ever come - the terminal was already taken, or the sender died
+    /// without finishing. A consumer draining to the terminal must not treat a quiet
+    /// interval as the end of the stream.
+    pub fn recv_timeout_kind(&self, d: Duration) -> Recv {
         let deadline = Instant::now() + d;
         loop {
             if self.shared.done.load(Ordering::Acquire) {
                 // Every data send happened-before done: the queue can only shrink now.
                 match self.rx.try_recv() {
-                    Ok(ev) => return Some(ev),
+                    Ok(ev) => return Recv::Event(ev),
                     Err(_) => {
                         if !self.shared.taken.swap(true, Ordering::AcqRel) {
-                            return self.shared.terminal.lock().unwrap().clone();
+                            return match self.shared.terminal.lock().unwrap().clone() {
+                                Some(ev) => Recv::Event(ev),
+                                None => Recv::Closed,
+                            };
                         }
-                        return None;
+                        return Recv::Closed;
                     }
                 }
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             match self.rx.recv_timeout(remaining) {
-                Ok(ev) => return Some(ev),
-                Err(RecvTimeoutError::Timeout) | Err(RecvTimeoutError::Disconnected) => {
+                Ok(ev) => return Recv::Event(ev),
+                Err(RecvTimeoutError::Timeout) => {
                     if !self.shared.done.load(Ordering::Acquire) {
-                        return None;
+                        return Recv::Timeout;
+                    }
+                    // done landed during the wait: loop into the drain path.
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    if !self.shared.done.load(Ordering::Acquire) {
+                        // The sender died before the durable terminal: no event will
+                        // ever come, and none was lost silently - this is its own outcome.
+                        return Recv::Closed;
                     }
                     // done landed during the wait: loop into the drain path.
                 }
             }
         }
     }
+}
+
+/// What a `PreviewReceiver::recv_timeout_kind` call yielded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Recv {
+    /// An event arrived (data, or the durable terminal).
+    Event(ScanEvent),
+    /// The scan is still live; nothing arrived within the deadline. Call again.
+    Timeout,
+    /// No event will ever come: the terminal was already taken, or the sender died
+    /// without finishing. Distinct from `Timeout` - never keep waiting on this.
+    Closed,
 }
 
 impl PreviewEvents {
@@ -464,7 +499,7 @@ impl PreviewRegistry {
 
     /// Test-only: plant a fabricated record, bypassing admission (wrong-row traps).
     #[cfg(test)]
-    fn plant_record(&mut self, record: PreviewRecord) {
+    pub(crate) fn plant_record(&mut self, record: PreviewRecord) {
         self.records.insert((record.id.dev, record.id.ino), record);
     }
 }
@@ -574,11 +609,24 @@ impl PreviewCollector {
         self.published
     }
 
+    /// Drop a path from the visible ranking (the driver's reconcile found it
+    /// vanished, unreadable, or replaced). True when a row was removed.
+    pub(crate) fn remove_path(&mut self, path: &Path) -> bool {
+        let before = self.largest.len();
+        self.largest.retain(|(p, _)| p != path);
+        self.largest.len() != before
+    }
+
     pub fn dirs_completed(&self) -> u64 {
         self.dirs_completed
     }
 
     fn insert(&mut self, path: PathBuf, size: u64) {
+        // One row per path: a re-emitted or replaced directory UPDATES its entry
+        // instead of duplicating it in the ranking.
+        if let Some(i) = self.largest.iter().position(|(p, _)| *p == path) {
+            self.largest.remove(i);
+        }
         let pos = self
             .largest
             .iter()
@@ -935,6 +983,23 @@ mod tests {
         assert!(matches!(events.last().map(|e| &e.kind), Some(EventKind::Finished { .. })),
                 "terminal is last");
         assert!(rx.recv_timeout(Duration::from_millis(100)).is_none(), "terminal yields once");
+    }
+
+    #[test]
+    fn recv_kind_distinguishes_timeout_from_disconnect() {
+        let root = fixture("recv-kind");
+        let (sink, rx) = PreviewEvents::new(1, &root);
+        // Scan live, nothing sent: Timeout - the caller must keep waiting.
+        assert!(matches!(rx.recv_timeout_kind(Duration::from_millis(50)), Recv::Timeout));
+        // Sender dies without the durable terminal: Closed - its own outcome, never Timeout.
+        drop(sink);
+        assert!(matches!(rx.recv_timeout_kind(Duration::from_millis(50)), Recv::Closed));
+        // After the terminal is taken, the stream is Closed (not a silent Timeout).
+        let (sink2, rx2) = PreviewEvents::new(2, &root);
+        sink2.finish(false, true, true);
+        assert!(matches!(rx2.recv_timeout_kind(Duration::from_millis(50)), Recv::Event(_)));
+        assert!(matches!(rx2.recv_timeout_kind(Duration::from_millis(50)), Recv::Closed));
+        let _ = std::fs::remove_dir_all(&root);
         let _ = fs::remove_dir_all(&root);
     }
 
