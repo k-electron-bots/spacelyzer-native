@@ -60,6 +60,8 @@ impl SortMode {
 
 fn name_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     if a.is_ascii() && b.is_ascii() {
+        // ASCII fast path: allocation-free byte fold. For ASCII-only strings this
+        // is byte-identical to comparing `to_lowercase()` on both sides.
         let mut ai = a.bytes().map(|c| c.to_ascii_lowercase());
         let mut bi = b.bytes().map(|c| c.to_ascii_lowercase());
         loop {
@@ -74,7 +76,10 @@ fn name_cmp(a: &str, b: &str) -> std::cmp::Ordering {
             }
         }
     }
-    a.chars().flat_map(char::to_lowercase).cmp(b.chars().flat_map(char::to_lowercase))
+    // Non-ASCII: full-string lowercase, exactly the old sort key. This keeps the
+    // context-sensitive Unicode rules (e.g. Greek final sigma) that a per-char
+    // mapping would get wrong. Non-ASCII names allocate, as they did before.
+    a.to_lowercase().cmp(&b.to_lowercase())
 }
 
 fn ordered_children(tree: &Tree, id: NodeId, mode: SortMode, filter: Option<&FilterResult>) -> Vec<NodeId> {
@@ -90,8 +95,9 @@ fn ordered_children(tree: &Tree, id: NodeId, mode: SortMode, filter: Option<&Fil
         SortMode::SizeAsc => v.sort_by_key(|&n| key_size(n)),
         SortMode::NameAsc => {
             // Case-insensitive (Unicode lowercase) name ascending. Comparator-only:
-            // no per-key String allocation (ASCII byte-fold fast path, Unicode
-            // char-lowercase fallback). The explicit position tiebreak keeps the
+            // ASCII names compare allocation-free (byte fold); non-ASCII names
+            // compare full-string lowercase, the exact old key semantics (incl.
+            // contextual final sigma). The explicit position tiebreak keeps the
             // pre-sort sibling order on equal keys, matching the old stable sort.
             let mut order: Vec<u32> = (0..v.len() as u32).collect();
             order.sort_unstable_by(|&a, &b| name_cmp(tree.name(v[a as usize]), tree.name(v[b as usize])).then(a.cmp(&b)));
