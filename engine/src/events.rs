@@ -84,7 +84,7 @@ pub enum EventKind {
     /// every reachable byte was read); `dropped` is how many preview data events were
     /// lost to a full channel. `previews_complete` is false when any DirComplete was
     /// suppressed by a mid-walk identity change: the preview stream then lacks a
-    /// record the (byte-accurate) Tree still covers, so previews must stay
+    /// record the authoritative Tree still accounts for, so previews must stay
     /// provisional. Durable: see the module docs - this event never enters the
     /// channel and is delivered exactly once.
     Finished { cancelled: bool, complete: bool, previews_complete: bool, dropped: u64 },
@@ -1410,7 +1410,8 @@ mod tests {
         // read as a complete preview set. Tree bytes and `complete` are unaffected;
         // `previews_complete` is false and the collector keeps partial=true.
         let root = fixture("reg-partial");
-        crate::scan::SWAP_DONE.store(false, std::sync::atomic::Ordering::SeqCst);
+        let swapped = std::sync::atomic::AtomicBool::new(false);
+        let hook = |d: &Path| crate::scan::swap_dir_once(d, &swapped);
         let (sink, rx) = PreviewEvents::new(21, &root);
         let progress = ScanProgress::default();
         let tree = crate::scan::scan_with_events_hook(
@@ -1418,7 +1419,7 @@ mod tests {
             &ScanOptions::default(),
             &progress,
             &sink,
-            crate::scan::swap_once,
+            &hook,
         )
         .unwrap();
         assert!(!tree.cancelled);
