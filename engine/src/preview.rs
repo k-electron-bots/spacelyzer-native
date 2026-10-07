@@ -6,7 +6,10 @@
 //! `PreviewCollector` (and any publication) only when admission accepts. Rejected
 //! records (outside root, foreign volume, changed identity, cap full) never become
 //! visible, and they mark the generation: every later publication stays `partial`.
-//! Publications come out one at a time, never more than one per event.
+//! Registry records and ranking rows share one key - the registry's canonical stored
+//! path - so in-root symlink/dotdot aliases never appear as a second spelling, and an
+//! identity rename updates its single row in both stores. Publications come out one
+//! at a time, never more than one per event.
 //!
 //! The driver's own generation/root gate stands in front of both stores. Data events
 //! are also scope-checked independently by the collector and by `admit`, but the
@@ -75,15 +78,44 @@ impl PreviewDriver {
             return None;
         }
         match &ev.kind {
-            EventKind::DirComplete { path, .. } => {
-                // Purge a stale row for this path first (the directory was replaced
-                // since its earlier event): the fresh admit then UPDATES the visible
-                // set instead of leaving two rows for one path. No-op (no fs probes)
-                // when no record exists at the path.
-                let _ = self.registry.reconcile(path);
+            EventKind::DirComplete { path, size, id } => {
+                // The identity's previous home, if any: a rename moves the path, not
+                // the (dev, ino) key, so the old spelling is found by identity.
+                let prior = self.registry.record_by_key(id.dev, id.ino).map(|r| r.path.clone());
+                // Central invalidation, one path shared with `reconcile`: a stale row
+                // leaves BOTH stores, so a rejected re-admission can never leave a
+                // ghost row behind - at the event's path AND at the identity's old
+                // path. A still-valid row is kept. No fs probes when nothing is held.
+                let _ = self.invalidate_stale(path);
+                if let Some(old) = prior.as_deref() {
+                    if old != path {
+                        let _ = self.invalidate_stale(old);
+                    }
+                }
                 match self.registry.admit(ev) {
                     Admit::Admitted => {
-                        let snap = self.collector.push(ev, now);
+                        // Publish under the registry's canonical stored path: registry
+                        // records and ranking rows share one key, and in-root
+                        // symlink/dotdot aliases never reach the ranking as a second
+                        // spelling (which no reconcile could then remove).
+                        let canon = self
+                            .registry
+                            .record_by_key(id.dev, id.ino)
+                            .map(|r| r.path.clone())
+                            .unwrap_or_else(|| path.clone());
+                        // Identity rename: one ranking row per identity - the old
+                        // spelling leaves when the new one lands.
+                        if let Some(old) = prior {
+                            if old != canon {
+                                self.collector.remove_path(&old);
+                            }
+                        }
+                        let admitted = ScanEvent {
+                            generation: ev.generation,
+                            root: ev.root.clone(),
+                            kind: EventKind::DirComplete { path: canon, size: *size, id: *id },
+                        };
+                        let snap = self.collector.push(&admitted, now);
                         Self::publish(snap, self.impaired, false)
                     }
                     _ => {
@@ -111,14 +143,38 @@ impl PreviewDriver {
     /// identity-replaced row is removed from the registry AND from the visible
     /// ranking, and later publications stay partial. True when the row is held and
     /// still valid. Reconciling a path the driver never held is a no-op (false).
+    /// An in-root alias (symlink, `..`) of a LIVE directory resolves to the canonical
+    /// stored path first; an alias of a vanished directory cannot resolve and is a
+    /// no-op - reconcile the canonical spelling.
     pub fn reconcile(&mut self, path: &Path) -> bool {
+        let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let before = self.registry.len();
+        if self.registry.reconcile(&canon).is_some() {
+            return true;
+        }
+        // Not held (anymore): no row may stay visible under this path either. Any
+        // removal - registry or ranking - is an invalidation and stays partial.
+        let registry_removed = self.registry.len() < before;
+        let ranking_removed = self.collector.remove_path(&canon);
+        if registry_removed || ranking_removed {
+            self.impaired = true;
+        }
+        false
+    }
+
+    /// The central invalidation both callers share: if a held row for `path` fails
+    /// re-verification it leaves the registry AND the ranking. True when a row was
+    /// removed. Never touches a still-valid row. Impairment is the caller's policy:
+    /// `reconcile` (app-initiated) impairs; the pump purge leaves it to the admit
+    /// verdict, so a clean replacement or rename self-heals.
+    fn invalidate_stale(&mut self, path: &Path) -> bool {
         let before = self.registry.len();
         if self.registry.reconcile(path).is_some() {
-            return true;
+            return false; // row held and still valid
         }
         if self.registry.len() < before {
             self.collector.remove_path(path);
-            self.impaired = true;
+            return true;
         }
         false
     }
@@ -163,7 +219,11 @@ pub enum DriveOutcome {
 }
 
 /// Drain a receiver to its terminal event, publishing through `on_pub` with a real
-/// clock. Blocks the calling thread; the app runs this off-main. Silent intervals
+/// clock. Blocks the calling thread; running it off the main thread is the caller's
+/// requirement, nothing here enforces it. Pairing is caller-controlled too: the
+/// driver refuses events whose generation/root differ from its own binding, but
+/// handing it the receiver of the SAME scan is the caller's job - no automatic
+/// same-scan pairing is claimed. Silent intervals
 /// (a slow scan emitting nothing for a while) are waited through, never treated as
 /// the end: the loop leaves only on the terminal publication or on the channel
 /// closing without one. Returns the publication count and why it stopped.
@@ -450,6 +510,111 @@ mod tests {
         assert!(!drv2.reconcile(&root.join("beta/nested")));
         match drv2.pump(&fin_ev(9, &root), t0) {
             Some(Publication::Finished(s)) => assert!(!s.partial, "a no-op reconcile impairs nothing"),
+            other => panic!("terminal publishes Finished: {other:?}"),
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rejected_re_admission_after_purge_leaves_no_ghost_in_registry_or_ranking() {
+        let root = fixture("ghost");
+        let alpha = root.join("alpha");
+        let mut drv = PreviewDriver::new(1, &root, root_dev(&root), 10);
+        let t0 = Instant::now();
+        let ev1 = dir_ev(1, &root, &alpha, 100);
+        assert!(matches!(drv.pump(&ev1, t0), Some(Publication::Interim(_))));
+        assert_eq!(drv.registry().len(), 1);
+        // alpha vanishes; a STALE event (identity captured before the delete) re-arrives.
+        let stale = dir_ev(1, &root, &alpha, 100);
+        fs::remove_dir_all(&alpha).unwrap();
+        assert!(drv.pump(&stale, t0 + Duration::from_millis(251)).is_none(), "stale event is rejected");
+        assert!(drv.registry().is_empty(), "the old row is purged from the registry");
+        match drv.pump(&fin_ev(1, &root), t0 + Duration::from_millis(502)) {
+            Some(Publication::Finished(s)) => {
+                assert!(s.partial, "terminal stays provisional after the invalidation");
+                assert!(s.largest.is_empty(), "no ghost row publishes: {:?}", s.largest);
+            }
+            other => panic!("terminal publishes Finished: {other:?}"),
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn two_spellings_of_one_identity_publish_one_canonical_row() {
+        let root = fixture("spellings");
+        let target = root.join("alpha");
+        let link = root.join("link-alpha");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let dotdot = root.join("beta/../alpha");
+        let mut drv = PreviewDriver::new(1, &root, root_dev(&root), 10);
+        let t0 = Instant::now();
+        let id = crate::events::ScanIdentity::live(&target).unwrap();
+        // The same identity under two alias spellings: an in-root symlink and a `..` path.
+        for (i, spelling) in [link.clone(), dotdot.clone()].into_iter().enumerate() {
+            let ev = ScanEvent { generation: 1, root: root.clone(),
+                kind: EventKind::DirComplete { path: spelling, size: 100, id } };
+            let now = t0 + Duration::from_millis(251 * i as u64);
+            assert!(matches!(drv.pump(&ev, now), Some(Publication::Interim(_))));
+        }
+        assert_eq!(drv.registry().len(), 1, "one registry row per identity");
+        // The canonical spelling reconciles; an alias of the LIVE dir resolves to it too.
+        assert!(drv.reconcile(&target));
+        assert!(drv.reconcile(&link), "alias of a live dir resolves to the canonical row");
+        match drv.pump(&fin_ev(1, &root), t0 + Duration::from_millis(502)) {
+            Some(Publication::Finished(s)) => {
+                let rows: Vec<_> = s.largest.iter().filter(|(p, _)| *p == target).collect();
+                assert_eq!(rows.len(), 1, "one canonical ranking row: {:?}", s.largest);
+                assert!(s.largest.iter().all(|(p, _)| *p != link && *p != dotdot), "no alias spelling publishes");
+                assert!(!s.partial, "clean aliases do not impair");
+            }
+            other => panic!("terminal publishes Finished: {other:?}"),
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn identity_rename_updates_both_stores_to_the_new_path() {
+        let root = fixture("rename");
+        let alpha = root.join("alpha");
+        let renamed = root.join("renamed");
+        let mut drv = PreviewDriver::new(1, &root, root_dev(&root), 10);
+        let t0 = Instant::now();
+        let ev1 = dir_ev(1, &root, &alpha, 100);
+        assert!(matches!(drv.pump(&ev1, t0), Some(Publication::Interim(_))));
+        // Rename keeps the inode: the (dev, ino) key survives; the path moves.
+        fs::rename(&alpha, &renamed).unwrap();
+        let ev2 = dir_ev(1, &root, &renamed, 100);
+        let Some(Publication::Interim(s)) = drv.pump(&ev2, t0 + Duration::from_millis(251)) else {
+            panic!("renamed event publishes")
+        };
+        assert_eq!(drv.registry().len(), 1, "one registry row per identity");
+        assert!(drv.reconcile(&renamed), "the row lives at the new path");
+        assert!(s.largest.iter().all(|(p, _)| *p != alpha), "old spelling left the ranking: {:?}", s.largest);
+        let rows: Vec<_> = s.largest.iter().filter(|(p, _)| *p == renamed).collect();
+        assert_eq!(rows.len(), 1, "new spelling has exactly one row");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rejected_event_for_a_renamed_identity_purges_the_old_row_from_both_stores() {
+        let root = fixture("rename-reject");
+        let alpha = root.join("alpha");
+        let renamed = root.join("renamed");
+        let mut drv = PreviewDriver::new(1, &root, root_dev(&root), 10);
+        let t0 = Instant::now();
+        let ev1 = dir_ev(1, &root, &alpha, 100);
+        assert!(matches!(drv.pump(&ev1, t0), Some(Publication::Interim(_))));
+        // The identity moves, then vanishes entirely; its event arrives too late.
+        fs::rename(&alpha, &renamed).unwrap();
+        let ev2 = dir_ev(1, &root, &renamed, 100);
+        fs::remove_dir_all(&renamed).unwrap();
+        assert!(drv.pump(&ev2, t0 + Duration::from_millis(251)).is_none(), "vanished identity is rejected");
+        assert!(drv.registry().is_empty(), "old row purged even though the new admission failed");
+        match drv.pump(&fin_ev(1, &root), t0 + Duration::from_millis(502)) {
+            Some(Publication::Finished(s)) => {
+                assert!(s.partial, "terminal stays provisional after the invalidation");
+                assert!(s.largest.is_empty(), "no ghost under either spelling: {:?}", s.largest);
+            }
             other => panic!("terminal publishes Finished: {other:?}"),
         }
         let _ = fs::remove_dir_all(&root);
