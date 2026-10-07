@@ -8,21 +8,23 @@
 //! - `DirComplete` fires only for a directory whose ENTIRE subtree completed (a cancelled
 //!   or unreadable child makes every ancestor incomplete), so an event never presents a
 //!   partial subtree as final.
-//! - The terminal `Finished` event is durable: it is always recorded in the terminal slot
-//!   (and only best-effort queued), so a full channel can never lose it. It carries the
-//!   cancel flag and the number of dropped events.
+//! - The terminal `Finished` event never enters the channel. After the scan's workers
+//!   are joined, the sink records it in a terminal slot and sets a done flag (Release);
+//!   the receiver, on seeing the flag (Acquire), drains the queue first and only then
+//!   yields the terminal, exactly once. All data sends happen-before done, so ordering
+//!   is linearized: a full channel can lose data events but never the terminal, and no
+//!   data event can arrive after it. It carries the cancel flag, the root-completeness
+//!   flag, and the number of dropped data events.
 //! - Every event carries the scan generation and the canonical root as a raw `PathBuf`
 //!   (never a lossy UTF-8 string), and `scan_with_events` refuses a sink built for a
 //!   different root.
 //! - The collector is absorbing once finished, and a cancelled or lossy scan leaves every
 //!   later snapshot `partial: true` forever: only the authoritative `Tree` ends
 //!   provisionality, never the event stream.
-//!
-//! Design inspired by dua-cli's bounded entry/finished channel; no code is copied.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -37,10 +39,12 @@ pub enum EventKind {
     /// allocated-byte total. Directories with a cancelled, unreadable, or otherwise
     /// incomplete subtree emit nothing, and neither do their ancestors.
     DirComplete { path: PathBuf, size: u64 },
-    /// The scan ended. `cancelled` says whether it ended by cancellation; `dropped` is
-    /// how many preview events were lost to a full channel. Durable: see the module
-    /// docs - this event is recorded even when the channel is full.
-    Finished { cancelled: bool, dropped: u64 },
+    /// The scan ended. `cancelled` says whether it ended by cancellation; `complete`
+    /// says the walk covered every reachable byte (false when cancellation or an
+    /// unreadable subtree suppressed directories); `dropped` is how many preview data
+    /// events were lost to a full channel. Durable: see the module docs - this event
+    /// never enters the channel and is delivered exactly once.
+    Finished { cancelled: bool, complete: bool, dropped: u64 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,8 +56,13 @@ pub struct ScanEvent {
     pub kind: EventKind,
 }
 
-struct Terminal {
-    slot: Mutex<Option<ScanEvent>>,
+struct Shared {
+    terminal: Mutex<Option<ScanEvent>>,
+    /// Set (Release) after the terminal is recorded and all workers are joined; every
+    /// data send happens-before this store.
+    done: AtomicBool,
+    /// Terminal handed out already: delivery is exactly once.
+    taken: AtomicBool,
 }
 
 /// The scan side of the event channel. Share by reference; safe from worker threads.
@@ -62,7 +71,7 @@ pub struct PreviewEvents {
     generation: u64,
     root: PathBuf,
     dropped: AtomicU64,
-    terminal: Arc<Terminal>,
+    shared: Arc<Shared>,
 }
 
 /// The consumer side. Drains queued events; once the queue is empty and the terminal
@@ -70,17 +79,39 @@ pub struct PreviewEvents {
 /// scan finished.
 pub struct PreviewReceiver {
     rx: Receiver<ScanEvent>,
-    terminal: Arc<Terminal>,
+    shared: Arc<Shared>,
 }
 
 impl PreviewReceiver {
-    /// Next event, waiting up to `d`. After the queued events, the durable terminal
-    /// event is returned exactly once; later calls return None.
+    /// Next event, waiting up to `d`. Once the scan signals done, queued data events
+    /// are drained first and the durable terminal event is yielded after them, exactly
+    /// once; later calls return None.
     pub fn recv_timeout(&self, d: Duration) -> Option<ScanEvent> {
-        if let Ok(ev) = self.rx.recv_timeout(d) {
-            return Some(ev);
+        let deadline = Instant::now() + d;
+        loop {
+            if self.shared.done.load(Ordering::Acquire) {
+                // Every data send happened-before done: the queue can only shrink now.
+                match self.rx.try_recv() {
+                    Ok(ev) => return Some(ev),
+                    Err(_) => {
+                        if !self.shared.taken.swap(true, Ordering::AcqRel) {
+                            return self.shared.terminal.lock().unwrap().clone();
+                        }
+                        return None;
+                    }
+                }
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match self.rx.recv_timeout(remaining) {
+                Ok(ev) => return Some(ev),
+                Err(RecvTimeoutError::Timeout) | Err(RecvTimeoutError::Disconnected) => {
+                    if !self.shared.done.load(Ordering::Acquire) {
+                        return None;
+                    }
+                    // done landed during the wait: loop into the drain path.
+                }
+            }
         }
-        self.terminal.slot.lock().unwrap().take()
     }
 }
 
@@ -93,16 +124,20 @@ impl PreviewEvents {
 
     pub fn with_bound(generation: u64, root: &Path, bound: usize) -> (Self, PreviewReceiver) {
         let (tx, rx) = sync_channel(bound);
-        let terminal = Arc::new(Terminal { slot: Mutex::new(None) });
+        let shared = Arc::new(Shared {
+            terminal: Mutex::new(None),
+            done: AtomicBool::new(false),
+            taken: AtomicBool::new(false),
+        });
         (
             PreviewEvents {
                 tx,
                 generation,
                 root: root.to_path_buf(),
                 dropped: AtomicU64::new(0),
-                terminal: terminal.clone(),
+                shared: shared.clone(),
             },
-            PreviewReceiver { rx, terminal },
+            PreviewReceiver { rx, shared },
         )
     }
 
@@ -139,19 +174,22 @@ impl PreviewEvents {
         }
     }
 
-    /// Terminal event: ALWAYS recorded in the durable slot, best-effort queued. The
-    /// dropped count is frozen at finish time so the consumer can see the loss.
-    pub(crate) fn finish(&self, cancelled: bool) {
+    /// Terminal event: recorded in the durable slot, then the done flag is released.
+    /// Called after all scan workers are joined, so every data send (and its possible
+    /// drop) happened-before the flag; the dropped count is therefore stable here.
+    /// The terminal itself never enters the channel: it cannot be dropped or doubled.
+    pub(crate) fn finish(&self, cancelled: bool, complete: bool) {
         let ev = ScanEvent {
             generation: self.generation,
             root: self.root.clone(),
             kind: EventKind::Finished {
                 cancelled,
+                complete: complete && !cancelled,
                 dropped: self.dropped(),
             },
         };
-        *self.terminal.slot.lock().unwrap() = Some(ev.clone());
-        self.send(ev);
+        *self.shared.terminal.lock().unwrap() = Some(ev);
+        self.shared.done.store(true, Ordering::Release);
     }
 }
 
@@ -169,10 +207,14 @@ pub struct PreviewSnapshot {
     pub finished: bool,
     /// The scan ended by cancellation.
     pub cancelled: bool,
+    /// The terminal reported a fully walked tree (false when cancellation or an
+    /// unreadable subtree suppressed directories).
+    pub complete: bool,
     /// Preview events lost to a full channel, as reported by the terminal event.
     pub events_dropped: u64,
-    /// True while the ranking is incomplete. After a cancelled or lossy finish this
-    /// stays true forever; only the authoritative `Tree` supersedes the preview.
+    /// True while the ranking is incomplete. After a cancelled, lossy, or partially
+    /// walked finish this stays true forever; only the authoritative `Tree`
+    /// supersedes the preview.
     pub partial: bool,
 }
 
@@ -188,6 +230,7 @@ pub struct PreviewCollector {
     dirs_completed: u64,
     finished: bool,
     cancelled: bool,
+    complete: bool,
     events_dropped: u64,
     last_pub: Option<Instant>,
     published: u64,
@@ -203,6 +246,7 @@ impl PreviewCollector {
             dirs_completed: 0,
             finished: false,
             cancelled: false,
+            complete: false,
             events_dropped: 0,
             last_pub: None,
             published: 0,
@@ -224,9 +268,10 @@ impl PreviewCollector {
                 self.dirs_completed += 1;
                 self.insert(path.clone(), *size);
             }
-            EventKind::Finished { cancelled, dropped } => {
+            EventKind::Finished { cancelled, complete, dropped } => {
                 self.finished = true;
                 self.cancelled = *cancelled;
+                self.complete = *complete;
                 self.events_dropped = *dropped;
             }
         }
@@ -271,9 +316,11 @@ impl PreviewCollector {
             dirs_completed: self.dirs_completed,
             finished: self.finished,
             cancelled: self.cancelled,
+            complete: self.complete,
             events_dropped: self.events_dropped,
-            // Provisional until the scan finished WITHOUT cancellation and WITHOUT loss.
-            partial: !self.finished || self.cancelled || self.events_dropped > 0,
+            // Provisional until the scan finished WITHOUT cancellation, WITHOUT loss,
+            // and WITHOUT suppressed subtrees.
+            partial: !self.finished || self.cancelled || !self.complete || self.events_dropped > 0,
         }
     }
 }
@@ -292,11 +339,11 @@ mod tests {
         }
     }
 
-    fn fin(generation: u64, root: &Path, cancelled: bool, dropped: u64) -> ScanEvent {
+    fn fin(generation: u64, root: &Path, cancelled: bool, complete: bool, dropped: u64) -> ScanEvent {
         ScanEvent {
             generation,
             root: root.to_path_buf(),
-            kind: EventKind::Finished { cancelled, dropped },
+            kind: EventKind::Finished { cancelled, complete, dropped },
         }
     }
 
@@ -360,11 +407,11 @@ mod tests {
         let mut c = PreviewCollector::new(1, Path::new("/root"), 5);
         let t0 = Instant::now();
         c.push(&ev(1, Path::new("/root"), Path::new("/root/a"), 10), t0);
-        let s = c.push(&fin(1, Path::new("/root"), true, 0), t0 + Duration::from_millis(10)).unwrap();
+        let s = c.push(&fin(1, Path::new("/root"), true, false, 0), t0 + Duration::from_millis(10)).unwrap();
         assert!(s.finished && s.cancelled && s.partial, "a cancelled scan must stay provisional");
         // Absorbing: late events change nothing and publish nothing.
         assert!(c.push(&ev(1, Path::new("/root"), Path::new("/root/late"), 99), t0 + Duration::from_secs(60)).is_none());
-        assert!(c.push(&fin(1, Path::new("/root"), false, 0), t0 + Duration::from_secs(61)).is_none());
+        assert!(c.push(&fin(1, Path::new("/root"), false, true, 0), t0 + Duration::from_secs(61)).is_none());
         assert_eq!(c.dirs_completed(), 1);
         assert_eq!(c.published(), 2);
     }
@@ -372,16 +419,26 @@ mod tests {
     #[test]
     fn loss_then_finished_stays_partial() {
         let mut c = PreviewCollector::new(1, Path::new("/root"), 5);
-        let s = c.push(&fin(1, Path::new("/root"), false, 3), Instant::now()).unwrap();
+        let s = c.push(&fin(1, Path::new("/root"), false, true, 3), Instant::now()).unwrap();
         assert!(s.finished && !s.cancelled && s.events_dropped == 3 && s.partial,
                 "dropped events mean the preview was never complete");
     }
 
     #[test]
+    fn incomplete_finish_stays_partial() {
+        // The walk covered only part of the tree (a suppressed subtree): not cancelled,
+        // no loss, still provisional forever.
+        let mut c = PreviewCollector::new(1, Path::new("/root"), 5);
+        let s = c.push(&fin(1, Path::new("/root"), false, false, 0), Instant::now()).unwrap();
+        assert!(s.finished && !s.cancelled && !s.complete && s.events_dropped == 0 && s.partial,
+                "a partially walked tree can never clear provisional status");
+    }
+
+    #[test]
     fn clean_finished_clears_partial() {
         let mut c = PreviewCollector::new(1, Path::new("/root"), 5);
-        let s = c.push(&fin(1, Path::new("/root"), false, 0), Instant::now()).unwrap();
-        assert!(s.finished && !s.partial);
+        let s = c.push(&fin(1, Path::new("/root"), false, true, 0), Instant::now()).unwrap();
+        assert!(s.finished && s.complete && !s.partial);
     }
 
     #[test]
@@ -411,7 +468,7 @@ mod tests {
         want.sort();
         assert_eq!(completes, want);
         assert!(matches!(events.last().map(|e| &e.kind),
-                         Some(EventKind::Finished { cancelled: false, dropped: 0 })));
+                         Some(EventKind::Finished { cancelled: false, complete: true, dropped: 0 })));
         // Full parity with a plain scan: every authoritative field matches.
         let plain = scan(&root, &ScanOptions::default(), &ScanProgress::default()).unwrap();
         assert_eq!(tree.root_path, plain.root_path);
@@ -421,9 +478,15 @@ mod tests {
         assert_eq!(tree.size, plain.size);
         assert_eq!(tree.first_child, plain.first_child);
         assert_eq!(tree.child_count, plain.child_count);
+        assert_eq!(tree.mtime, plain.mtime, "metadata (mtime) parity");
+        assert_eq!(tree.category, plain.category, "category parity");
         assert_eq!(tree.items, plain.items);
         assert_eq!(tree.cancelled, plain.cancelled);
-        assert_eq!(tree.skipped.len(), plain.skipped.len());
+        let mut skipped_a: Vec<(String, String)> = tree.skipped.iter().map(|s| (s.path.clone(), format!("{:?}", s.reason))).collect();
+        let mut skipped_b: Vec<(String, String)> = plain.skipped.iter().map(|s| (s.path.clone(), format!("{:?}", s.reason))).collect();
+        skipped_a.sort();
+        skipped_b.sort();
+        assert_eq!(skipped_a, skipped_b, "skipped-record parity");
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -440,13 +503,14 @@ mod tests {
             events.push(e);
         }
         assert!(events.iter().all(|e| !matches!(e.kind, EventKind::DirComplete { .. })));
+        assert_eq!(events.len(), 1, "terminal only, exactly once");
         assert!(matches!(events.last().map(|e| &e.kind),
-                         Some(EventKind::Finished { cancelled: true, .. })));
+                         Some(EventKind::Finished { cancelled: true, complete: false, dropped: 0 })));
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// Wide fixture: 300 single-file directories, so a scan is still in flight when the
-    /// cancel lands after the first completed directory.
+    /// Wide fixture: 5000 single-file directories, so a mid-scan cancel tripwire always
+    /// has unvisited directories left to suppress.
     fn wide_fixture(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("spz-events-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -462,51 +526,40 @@ mod tests {
 
     #[test]
     fn mid_scan_cancel_suppresses_incomplete_subtrees() {
-        // The cancel must land while the scan is running; allow a few attempts in case a
-        // fast machine finishes the fixture before the receiver wakes.
-        for attempt in 0..3 {
-            let root = wide_fixture(&format!("cancelmid{attempt}"));
-            let (sink, rx) = PreviewEvents::new(1, &root);
-            let progress = ScanProgress::default();
-            let (tree, mut events) = std::thread::scope(|s| {
-                let handle = s.spawn(|| {
-                    scan_with_events(&root, &ScanOptions::default(), &progress, &sink).unwrap()
-                });
-                let mut collected = Vec::new();
-                if let Some(first) = rx.recv_timeout(Duration::from_secs(10)) {
-                    assert!(matches!(first.kind, EventKind::DirComplete { .. }));
-                    collected.push(first);
-                    progress.cancel();
-                }
-                let tree = handle.join().unwrap();
-                while let Some(e) = rx.recv_timeout(Duration::from_millis(500)) {
-                    collected.push(e);
-                }
-                (tree, collected)
-            });
-            if !tree.cancelled {
-                let _ = fs::remove_dir_all(&root);
-                continue; // scan finished before the cancel landed; retry wider window
-            }
-            let completes: Vec<&PathBuf> = events
-                .iter()
-                .filter_map(|e| match &e.kind {
-                    EventKind::DirComplete { path, .. } => Some(path),
-                    _ => None,
-                })
-                .collect();
-            assert!(!completes.is_empty(), "at least the first directory completed");
-            // Whatever completed before the cancel is fine; the root (whose subtree was
-            // cut short) must NEVER be emitted as complete.
-            assert!(!completes.iter().any(|p| **p == root), "incomplete root emitted: {completes:?}");
-            assert!(completes.len() < 5001, "every directory completed despite cancel");
-            assert!(matches!(events.last().map(|e| &e.kind),
-                             Some(EventKind::Finished { cancelled: true, .. })));
-            events.clear();
-            let _ = fs::remove_dir_all(&root);
-            return;
+        // Deterministic cancel injection: the tripwire fires when the 150th directory
+        // walk begins, whatever the thread schedule. No sleeps, no retries.
+        let root = wide_fixture("cancelmid");
+        let (sink, rx) = PreviewEvents::new(1, &root);
+        let progress = ScanProgress::default();
+        progress.cancel_after_dirs(150);
+        let tree = scan_with_events(&root, &ScanOptions::default(), &progress, &sink).unwrap();
+        assert!(tree.cancelled);
+        let mut events = Vec::new();
+        while let Some(e) = rx.recv_timeout(Duration::from_millis(500)) {
+            events.push(e);
         }
-        panic!("cancel never landed mid-scan in 3 attempts");
+        let completes: Vec<&PathBuf> = events
+            .iter()
+            .filter_map(|e| match &e.kind {
+                EventKind::DirComplete { path, .. } => Some(path),
+                _ => None,
+            })
+            .collect();
+        assert!(!completes.is_empty(), "directories walked before the tripwire still complete");
+        // Whatever completed before the cancel is fine; the root (whose subtree was cut
+        // short) must NEVER be emitted as complete.
+        assert!(!completes.iter().any(|p| **p == root), "incomplete root emitted: {completes:?}");
+        assert!(completes.len() < 5001, "every directory completed despite cancel");
+        let terminals: Vec<&ScanEvent> = events
+            .iter()
+            .filter(|e| matches!(e.kind, EventKind::Finished { .. }))
+            .collect();
+        assert_eq!(terminals.len(), 1, "exactly one terminal event");
+        assert!(matches!(terminals[0].kind,
+                         EventKind::Finished { cancelled: true, complete: false, .. }));
+        assert!(matches!(events.last().map(|e| &e.kind), Some(EventKind::Finished { .. })),
+                "terminal is last");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -515,6 +568,13 @@ mod tests {
         let root = fixture("unreadable");
         let sealed = root.join("beta/nested");
         fs::set_permissions(&sealed, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read_dir(&sealed).is_ok() {
+            // Mode bits not enforced here (root, or a filesystem without unix modes):
+            // the permission-denied path cannot be exercised on this platform.
+            fs::set_permissions(&sealed, fs::Permissions::from_mode(0o755)).unwrap();
+            let _ = fs::remove_dir_all(&root);
+            return;
+        }
         let (sink, rx) = PreviewEvents::new(1, &root);
         let progress = ScanProgress::default();
         let tree = scan_with_events(&root, &ScanOptions::default(), &progress, &sink).unwrap();
@@ -534,9 +594,24 @@ mod tests {
         assert!(!completes.iter().any(|p| **p == root.join("beta")), "parent of unreadable child suppressed");
         assert!(!completes.iter().any(|p| **p == root), "root with unreadable descendant suppressed");
         assert!(matches!(events.last().map(|e| &e.kind),
-                         Some(EventKind::Finished { cancelled: false, .. })));
+                         Some(EventKind::Finished { cancelled: false, complete: false, dropped: 0 })),
+                "terminal reports the incomplete walk");
         // Tree behavior unchanged: the unreadable directory is recorded as skipped.
         assert!(tree.skipped.iter().any(|s| s.path.ends_with("beta/nested")));
+        // Collector: not cancelled, no loss, but the walk was incomplete -> provisional
+        // forever. Only the authoritative Tree supersedes the preview.
+        let mut c = PreviewCollector::new(1, &root, 10);
+        let mut last = None;
+        let mut now = Instant::now();
+        for e in &events {
+            if let Some(s) = c.push(e, now) {
+                last = Some(s);
+            }
+            now += Duration::from_millis(1);
+        }
+        let s = last.unwrap();
+        assert!(s.finished && !s.cancelled && !s.complete && s.events_dropped == 0 && s.partial,
+                "suppressed subtree leaves the preview provisional");
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -547,7 +622,8 @@ mod tests {
         let progress = ScanProgress::default();
         let _tree = scan_with_events(&root, &ScanOptions::default(), &progress, &sink).unwrap();
         assert!(sink.dropped() > 0, "bound=1 must drop under a 4-directory scan");
-        // Drain: one queued event, then the durable terminal exactly once, then None.
+        // Drain AFTER the scan: exactly one terminal, last, and its dropped count must
+        // account for every data event that never arrived (consistent snapshot).
         let mut events = Vec::new();
         while let Some(e) = rx.recv_timeout(Duration::from_millis(500)) {
             events.push(e);
@@ -556,10 +632,85 @@ mod tests {
             .iter()
             .filter(|e| matches!(e.kind, EventKind::Finished { .. }))
             .collect();
-        assert_eq!(terminals.len(), 1, "exactly one terminal event, queued or slotted");
-        assert!(matches!(terminals[0].kind, EventKind::Finished { cancelled: false, dropped } if dropped > 0));
+        assert_eq!(terminals.len(), 1, "exactly one terminal event");
+        let dropped = match terminals[0].kind {
+            EventKind::Finished { cancelled: false, complete: true, dropped } => dropped,
+            _ => panic!("unexpected terminal: {:?}", terminals[0]),
+        };
+        let received_data = (events.len() - 1) as u64;
+        assert_eq!(received_data + dropped, 4,
+                   "every DirComplete is either received or counted dropped: {events:?}");
+        assert_eq!(dropped, sink.dropped(), "terminal snapshot matches the sink's final count");
+        assert!(matches!(events.last().map(|e| &e.kind), Some(EventKind::Finished { .. })),
+                "terminal is last");
         assert!(rx.recv_timeout(Duration::from_millis(100)).is_none(), "terminal yields once");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn terminal_delivered_exactly_once_on_the_lossless_path() {
+        let root = fixture("once");
+        let (sink, rx) = PreviewEvents::new(3, &root);
+        let progress = ScanProgress::default();
+        scan_with_events(&root, &ScanOptions::default(), &progress, &sink).unwrap();
+        let mut events = Vec::new();
+        while let Some(e) = rx.recv_timeout(Duration::from_millis(500)) {
+            events.push(e);
+        }
+        let terminals = events.iter().filter(|e| matches!(e.kind, EventKind::Finished { .. })).count();
+        assert_eq!(terminals, 1, "terminal exactly once on the lossless path: {events:?}");
+        assert_eq!(events.len(), 5, "4 DirComplete + 1 terminal: {events:?}");
+        assert!(matches!(events.last().map(|e| &e.kind),
+                         Some(EventKind::Finished { cancelled: false, complete: true, dropped: 0 })));
+        assert!(rx.recv_timeout(Duration::from_millis(100)).is_none(), "no second terminal");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn queued_data_events_drain_before_the_terminal() {
+        // Bound large enough to hold every event; never poll during the scan, so the
+        // done flag lands while the queue still holds all data events.
+        let root = fixture("ordering");
+        let (sink, rx) = PreviewEvents::with_bound(4, &root, 8);
+        let progress = ScanProgress::default();
+        scan_with_events(&root, &ScanOptions::default(), &progress, &sink).unwrap();
+        let mut events = Vec::new();
+        while let Some(e) = rx.recv_timeout(Duration::from_millis(500)) {
+            events.push(e);
+        }
+        assert_eq!(events.len(), 5, "all 4 data events retained + terminal: {events:?}");
+        assert!(events[..4].iter().all(|e| matches!(e.kind, EventKind::DirComplete { .. })),
+                "all data events precede the terminal: {events:?}");
+        assert!(matches!(events[4].kind, EventKind::Finished { .. }));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn non_utf8_roots_with_identical_lossy_text_stay_distinct() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let base = std::env::temp_dir().join(format!("spz-events-utf8pair-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let dir_a = base.join(OsStr::from_bytes(b"root-\xff"));
+        let dir_b = base.join(OsStr::from_bytes(b"root-\xfe"));
+        fs::create_dir_all(&dir_a).unwrap();
+        fs::create_dir_all(&dir_b).unwrap();
+        let root_a = dir_a.canonicalize().unwrap();
+        let root_b = dir_b.canonicalize().unwrap();
+        assert_ne!(root_a, root_b);
+        assert_eq!(root_a.to_string_lossy(), root_b.to_string_lossy(),
+                   "fixtures must collide under lossy UTF-8");
+        let (sink_a, _rx) = PreviewEvents::new(1, &root_a);
+        assert!(sink_a.root_matches(&root_a));
+        assert!(!sink_a.root_matches(&root_b), "lossy-equal roots must not bind");
+        // A scan of root B must not emit into root A's sink.
+        let progress = ScanProgress::default();
+        assert!(scan_with_events(&root_b, &ScanOptions::default(), &progress, &sink_a).is_err());
+        // And a collector bound to root A ignores root B's events.
+        let mut c = PreviewCollector::new(1, &root_a, 5);
+        assert!(c.push(&ev(1, &root_b, &root_b, 10), Instant::now()).is_none());
+        assert_eq!(c.dirs_completed(), 0);
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
