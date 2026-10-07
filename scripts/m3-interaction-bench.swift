@@ -210,7 +210,7 @@ if mode == "typing" {
     guard until(now(), 2, { frontmostAndFocused(field) }) != nil else { print("filter field did not take focus"); exit(7) }
     let stream = Array("invoice backup photo archive render cache export draft ")
     var fieldMs = [Double](), rowcountMs = [Double]()
-    var inconclusive = 0
+    var inconclusive = 0, degradedEvents = 0
     var typed = ""
     for i in 0..<keystrokes {
         guard frontmostAndFocused(field) else { print("focus lost before key \(i); aborting"); exit(7) }
@@ -232,7 +232,9 @@ if mode == "typing" {
         // A field-update timeout breaks the per-key premise: stop, do not keep
         // typing blind and do not fire deletes into an unknown field state.
         guard let f else {
-            emit(["event": "abort", "reason": "field update timeout", "i": i, "expected_field": expected] + stats.dict)
+            var abortEvent: [String: Any] = ["event": "abort", "reason": "field update timeout", "i": i, "expected_field": expected]
+            for (k, v) in stats.dict { abortEvent[k] = v }
+            emit(abortEvent)
             print("field update timeout at key \(i); aborting"); exit(7)
         }
         // Row-count observation: UNCORRELATED with this keystroke's filter
@@ -244,15 +246,24 @@ if mode == "typing" {
             guard !failed, let c, let rowsBefore else { return false }
             return c != rowsBefore
         })
+        // Quality accounting: a late-returning read or any failed AX read makes
+        // the event degraded - excluded from percentile samples and counted,
+        // so a degraded run can never summarize as clean.
+        let fieldLow = f > fWindow * 1000
+        let rowcountLow = (r ?? .infinity) > rWindow * 1000
+        let degraded = fieldLow || rowcountLow || stats.failures > 0
         var event: [String: Any] = ["event": "key", "i": i, "char": String(ch), "expected_field": expected,
-            "field_ms": f, "field_low_quality": f > fWindow * 1000,
+            "field_ms": f, "field_low_quality": fieldLow,
             "rowcount_ms": r ?? -1, "rowcount_verdict": r != nil ? "changed" : "inconclusive",
-            "rowcount_low_quality": (r ?? .infinity) > rWindow * 1000,
-            "rowcount_uncorrelated": true, "rows_before": rowsBefore ?? -1]
+            "rowcount_low_quality": rowcountLow,
+            "rowcount_uncorrelated": true, "rows_before": rowsBefore ?? -1,
+            "degraded": degraded]
         for (k, v) in stats.dict { event[k] = v }
         emit(event)
-        fieldMs.append(f)
-        if let r { rowcountMs.append(r) } else { inconclusive += 1 }
+        if !degraded {
+            fieldMs.append(f)
+            if let r { rowcountMs.append(r) } else { inconclusive += 1 }
+        } else { degradedEvents += 1; if r == nil { inconclusive += 1 } }
         usleep(30_000) // serial-latency mode: one key measured at a time; no rate claim
         typed.append(ch)
         if typed.count >= 24 { // keep the filter short; clear with real delete-key events
@@ -272,13 +283,13 @@ if mode == "typing" {
         "field_p50": percentile(fieldMs, 50), "field_p95": percentile(fieldMs, 95),
         "rowcount_p50": percentile(rowcountMs, 50), "rowcount_p95": percentile(rowcountMs, 95),
         "rowcount_note": "uncorrelated AX observation; not verified per-keystroke application latency",
-        "rowcount_inconclusive": inconclusive], inconclusive: inconclusive)
+        "rowcount_inconclusive": inconclusive, "degraded_events": degradedEvents], inconclusive: inconclusive + degradedEvents)
 }
 
 if mode == "hover" {
     // AX HIT-TEST request latency only: how long until the element under the new
     // pointer position resolves. No hover-render or highlight causality is claimed.
-    var lagMs = [Double](), queryMs = [Double](), over100 = 0, inconclusive = 0
+    var lagMs = [Double](), queryMs = [Double](), over100 = 0, inconclusive = 0, degradedEvents = 0
     let cols = 6, rows = 4
     for s in 0..<sweeps {
         guard frontmost() else { print("frontmost lost before hover \(s); aborting"); exit(4) }
@@ -303,14 +314,18 @@ if mode == "hover" {
             role = rv as? String ?? "unknown"
             return true
         })
+        // Quality accounting includes per-event hit-test failures: any failed
+        // AX call inside the event degrades it.
+        let lagLow = (lag ?? .infinity) > window * 1000
+        let degraded = lagLow || stats.failures > 0
         var event: [String: Any] = ["event": "hover", "sweep": s, "x": x, "y": y, "element_role": role,
-            "hittest_ms": lag ?? -1, "hittest_low_quality": (lag ?? .infinity) > window * 1000]
+            "hittest_ms": lag ?? -1, "hittest_low_quality": lagLow, "degraded": degraded]
         for (k, v) in stats.dict { event[k] = v }
         emit(event)
-        if let lag {
+        if let lag, !degraded {
             lagMs.append(lag); if lag > 100 { over100 += 1 }
             if stats.maxMs > 0 { queryMs.append(stats.maxMs) }
-        } else { inconclusive += 1 }
+        } else if lag == nil { inconclusive += 1 } else { degradedEvents += 1 }
         usleep(50_000)
     }
     lagMs.sort(); queryMs.sort()
@@ -318,7 +333,7 @@ if mode == "hover" {
         "note": "AX hit-test request latency only; no hover-render or highlight causality",
         "hittest_p50": percentile(lagMs, 50), "hittest_p95": percentile(lagMs, 95),
         "ax_query_max_p50": percentile(queryMs, 50), "ax_query_max_p95": percentile(queryMs, 95),
-        "over_100ms": over100, "timeouts": inconclusive], inconclusive: inconclusive)
+        "over_100ms": over100, "timeouts": inconclusive, "degraded_events": degradedEvents], inconclusive: inconclusive + degradedEvents)
 }
 
 if mode == "expansion" {
@@ -340,7 +355,7 @@ if mode == "expansion" {
     let cells0 = read(row, "AXChildren") as? [AXUIElement] ?? []
     guard let tri = (cells0.first { string($0, "AXRole") == "AXDisclosureTriangle" } ?? (string(row, "AXRole") == "AXDisclosureTriangle" ? row : nil)),
           frame(tri) != nil else { print("target row has no usable disclosure triangle: \(rowName)"); exit(6) }
-    var latMs = [Double](), jank = 0, inconclusive = 0
+    var latMs = [Double](), jank = 0, inconclusive = 0, degradedEvents = 0
     for rep in 0..<reps {
         // Disclosure STATE must be a valid Bool before any input - a missing or
         // failed read aborts the run rather than defaulting to false.
@@ -371,13 +386,16 @@ if mode == "expansion" {
         let flippedState = (dva as? Bool).map { $0 == expectExpand } ?? false
         let stateFlipped = !dfa && flippedState
         let countMoved = rowsAfter.map { expectExpand ? $0 > rowsBefore : $0 < rowsBefore } ?? false
-        let ok = lat != nil && countMoved && stateFlipped
+        let latLow = (lat ?? .infinity) > window * 1000
+        let degraded = latLow || stats.failures > 0
+        let ok = lat != nil && countMoved && stateFlipped && !degraded
         if !ok { inconclusive += 1 }
+        if degraded { degradedEvents += 1 }
         if ok, expectExpand, let lat { latMs.append(lat); if lat > 100 { jank += 1 } }
         var event: [String: Any] = ["event": expectExpand ? "expand" : "collapse", "rep": rep,
             "rows_before": rowsBefore, "rows_after": rowsAfter ?? -1,
-            "latency_ms": lat ?? -1, "latency_low_quality": (lat ?? .infinity) > window * 1000,
-            "ok": ok, "state_flipped": stateFlipped,
+            "latency_ms": lat ?? -1, "latency_low_quality": latLow,
+            "ok": ok, "state_flipped": stateFlipped, "degraded": degraded,
             "jank_over_100ms": ok && expectExpand && (lat ?? 0) > 100]
         for (k, v) in stats.dict { event[k] = v }
         emit(event)
@@ -388,5 +406,5 @@ if mode == "expansion" {
         "capability_note": "named-row/disclosure mechanism unverified until the first approved Mac run",
         "expand_p50": percentile(latMs, 50), "expand_p95": percentile(latMs, 95),
         "jank_over_100ms": jank, "expansions_measured": latMs.count,
-        "inconclusive_or_failed": inconclusive], inconclusive: inconclusive)
+        "inconclusive_or_failed": inconclusive, "degraded_events": degradedEvents], inconclusive: inconclusive)
 }
