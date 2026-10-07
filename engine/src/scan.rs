@@ -33,11 +33,28 @@ pub struct ScanProgress {
     pub items: AtomicU64,
     pub bytes: AtomicU64,
     pub cancel: AtomicBool,
+    visited_dirs: AtomicU64,
+    cancel_after: AtomicU64,
 }
 
 impl ScanProgress {
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    /// Deterministic cancel injection for tests: the scan cancels when the Nth
+    /// directory walk begins. 0 (the default) disables the tripwire.
+    #[doc(hidden)]
+    pub fn cancel_after_dirs(&self, n: u64) {
+        self.cancel_after.store(n, Ordering::Relaxed);
+    }
+
+    fn note_dir(&self) {
+        let n = self.visited_dirs.fetch_add(1, Ordering::Relaxed) + 1;
+        let trip = self.cancel_after.load(Ordering::Relaxed);
+        if trip != 0 && n >= trip {
+            self.cancel();
+        }
     }
 }
 
@@ -148,7 +165,7 @@ fn scan_inner(
     ctx.dirs.claim(md.dev(), md.ino());
 
     let run = || walk(&root, &ctx);
-    let (node, _complete) = if opts.threads > 0 {
+    let (node, complete) = if opts.threads > 0 {
         let pool = rayon::ThreadPoolBuilder::new().num_threads(opts.threads).build().unwrap();
         pool.install(run)
     } else {
@@ -157,7 +174,9 @@ fn scan_inner(
 
     let tree = flatten(root.to_string_lossy().into_owned(), node, ctx, progress);
     if let Some(ev) = events {
-        ev.finish(tree.cancelled);
+        // Root completeness rides the terminal: a suppressed subtree leaves previews
+        // provisional even when the scan was neither cancelled nor lossy.
+        ev.finish(tree.cancelled, complete);
     }
     Ok(tree)
 }
@@ -171,6 +190,7 @@ fn is_package(name: &str) -> bool {
 }
 
 fn walk(dir: &Path, ctx: &Ctx) -> (DirNode, bool) {
+    ctx.progress.note_dir();
     if ctx.progress.cancel.load(Ordering::Relaxed) {
         return (DirNode { ents: vec![], total: 0 }, false);
     }
