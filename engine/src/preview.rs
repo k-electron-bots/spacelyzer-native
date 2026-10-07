@@ -143,19 +143,28 @@ impl PreviewDriver {
     /// identity-replaced row is removed from the registry AND from the visible
     /// ranking, and later publications stay partial. True when the row is held and
     /// still valid. Reconciling a path the driver never held is a no-op (false).
-    /// An in-root alias (symlink, `..`) of a LIVE directory resolves to the canonical
-    /// stored path first; an alias of a vanished directory cannot resolve and is a
-    /// no-op - reconcile the canonical spelling.
+    /// A record held at this exact path spelling is located FIRST and re-verified
+    /// as itself: when the live object there changed meaning (a moved parent
+    /// reached through a replacement symlink, or the path replaced by a symlink
+    /// into another held row) exactly that row leaves both stores - never the row
+    /// an alias would resolve to. Only when nothing is held at the exact spelling
+    /// does an in-root alias (symlink, `..`) of a LIVE directory resolve to the
+    /// canonical stored path; an alias of a vanished directory cannot resolve and
+    /// is a no-op - reconcile the canonical spelling.
     pub fn reconcile(&mut self, path: &Path) -> bool {
-        let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let target = if self.registry.holds_path(path) {
+            path.to_path_buf()
+        } else {
+            std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+        };
         let before = self.registry.len();
-        if self.registry.reconcile(&canon).is_some() {
+        if self.registry.reconcile(&target).is_some() {
             return true;
         }
         // Not held (anymore): no row may stay visible under this path either. Any
         // removal - registry or ranking - is an invalidation and stays partial.
         let registry_removed = self.registry.len() < before;
-        let ranking_removed = self.collector.remove_path(&canon);
+        let ranking_removed = self.collector.remove_path(&target);
         if registry_removed || ranking_removed {
             self.impaired = true;
         }
@@ -510,6 +519,73 @@ mod tests {
         assert!(!drv2.reconcile(&root.join("beta/nested")));
         match drv2.pump(&fin_ev(9, &root), t0) {
             Some(Publication::Finished(s)) => assert!(!s.partial, "a no-op reconcile impairs nothing"),
+            other => panic!("terminal publishes Finished: {other:?}"),
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reconcile_finds_the_exact_row_when_its_parent_is_moved_out_and_symlinked_back() {
+        let root = fixture("exact-parent");
+        let held = root.join("beta/nested");
+        let mut drv = PreviewDriver::new(1, &root, root_dev(&root), 10);
+        let t0 = Instant::now();
+        let ev = dir_ev(1, &root, &held, 100);
+        assert!(matches!(drv.pump(&ev, t0), Some(Publication::Interim(_))));
+        assert_eq!(drv.registry().len(), 1);
+        // The parent moves outside the root; a symlink at the old parent spelling
+        // points at the moved directory, so the held path still RESOLVES - to a
+        // different canonical spelling than the stored record's.
+        let outside = std::env::temp_dir().join(format!("spz-preview-exact-parent-out-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&outside);
+        fs::rename(root.join("beta"), &outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("beta")).unwrap();
+        // Exact-stored-path-first: the row held at beta/nested is re-verified as
+        // itself, fails (its resolved target moved), and leaves BOTH stores.
+        // Canonicalizing first would look the moved spelling up, find no record,
+        // and leave the stale row visible with impaired still false.
+        assert!(!drv.reconcile(&held), "the exact stored row is invalidated");
+        assert_eq!(drv.registry().len(), 0, "registry drops the stored row");
+        match drv.pump(&fin_ev(1, &root), t0 + Duration::from_millis(502)) {
+            Some(Publication::Finished(s)) => {
+                assert!(s.partial, "the removal is an invalidation: terminal stays partial");
+                assert!(s.largest.iter().all(|(p, _)| *p != held), "ranking drops the stored row: {:?}", s.largest);
+            }
+            other => panic!("terminal publishes Finished: {other:?}"),
+        }
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn reconcile_of_a_held_path_now_aliasing_another_row_removes_only_its_own_row() {
+        let root = fixture("exact-alias");
+        let alpha = root.join("alpha");
+        let beta = root.join("beta");
+        let mut drv = PreviewDriver::new(1, &root, root_dev(&root), 10);
+        let t0 = Instant::now();
+        let ev_a = dir_ev(1, &root, &alpha, 100);
+        let ev_b = dir_ev(1, &root, &beta, 200);
+        assert!(matches!(drv.pump(&ev_a, t0), Some(Publication::Interim(_))));
+        assert!(matches!(drv.pump(&ev_b, t0 + Duration::from_millis(251)), Some(Publication::Interim(_))));
+        assert_eq!(drv.registry().len(), 2);
+        // alpha's directory is replaced by a symlink to beta: the held spelling now
+        // RESOLVES to the other row's directory. Canonicalizing first would
+        // validate beta's row and call alpha reconciled - and could remove beta's
+        // ranking row. Exact-first invalidates alpha's own row and nothing else.
+        fs::remove_dir_all(&alpha).unwrap();
+        std::os::unix::fs::symlink(&beta, &alpha).unwrap();
+        assert!(!drv.reconcile(&alpha), "alpha's own row fails re-verification");
+        assert_eq!(drv.registry().len(), 1, "only alpha's row leaves the registry");
+        assert!(drv.reconcile(&beta), "beta's row is untouched");
+        assert_eq!(drv.registry().len(), 1);
+        match drv.pump(&fin_ev(1, &root), t0 + Duration::from_millis(753)) {
+            Some(Publication::Finished(s)) => {
+                assert!(s.partial, "the removal is an invalidation: terminal stays partial");
+                assert!(s.largest.iter().all(|(p, _)| *p != alpha), "alpha left the ranking: {:?}", s.largest);
+                let rows: Vec<_> = s.largest.iter().filter(|(p, _)| *p == beta).collect();
+                assert_eq!(rows.len(), 1, "beta keeps its one ranking row");
+            }
             other => panic!("terminal publishes Finished: {other:?}"),
         }
         let _ = fs::remove_dir_all(&root);
