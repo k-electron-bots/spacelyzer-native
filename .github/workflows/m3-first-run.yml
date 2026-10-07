@@ -1,0 +1,163 @@
+name: m3-first-run
+on:
+  workflow_dispatch:
+
+# Single capped first measurement run for milestone M3-B
+# (docs/m3-measurement-protocol.md). Manual dispatch only: one approved run,
+# no retry without fresh approval. Every number this run produces is
+# BASELINE ONLY: event-to-AX-visible latency, not proof of main-thread block,
+# and not a calibrated result.
+
+permissions:
+  contents: read
+
+jobs:
+  m3-first-run:
+    runs-on: macos-latest
+    timeout-minutes: 35
+    env:
+      ART: ${{ runner.temp }}/m3-artifacts
+      BENCH: ${{ runner.temp }}/m3bench
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preflight context record
+        run: |
+          set -euo pipefail
+          mkdir -p "$ART"
+          date +%s > "$RUNNER_TEMP/m3-t0"
+          {
+            date -u
+            sw_vers
+            uname -m
+            xcodebuild -version
+            swift --version
+            echo "repo_sha=${{ github.sha }} run_id=${{ github.run_id }} run_attempt=${{ github.run_attempt }}"
+            shasum -a 256 scripts/m3-interaction-bench.swift scripts/ax-client.swift scripts/make_fixtures.py docs/m3-measurement-protocol.md
+          } 2>&1 | tee "$ART/preflight.txt"
+
+      - name: Rust toolchain and universal engine
+        run: |
+          rustup update stable --no-self-update
+          ./scripts/build-engine.sh
+
+      - name: Import self-signed identity
+        id: sign
+        env:
+          SIGNING_CERT_P12_BASE64: ${{ secrets.SIGNING_CERT_P12_BASE64 }}
+          SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+        run: |
+          HASH="$(./scripts/sign-setup.sh | tail -1)"
+          echo "hash=$HASH" >> "$GITHUB_OUTPUT"
+
+      - name: Build signed app bundle
+        run: ./scripts/package-dmg.sh "0.1.${{ github.run_number }}-m3" "${{ steps.sign.outputs.hash }}"
+
+      - name: Fixtures generate and verify (typing-200k, expansion-10k)
+        run: |
+          set -o pipefail
+          python3 scripts/make_fixtures.py generate "$RUNNER_TEMP/m3fix-typing" --profile typing-200k 2>&1 | tee "$ART/fixtures-typing.txt"
+          python3 scripts/make_fixtures.py verify "$RUNNER_TEMP/m3fix-typing" --profile typing-200k 2>&1 | tee -a "$ART/fixtures-typing.txt"
+          python3 scripts/make_fixtures.py generate "$RUNNER_TEMP/m3fix-exp" --profile expansion-10k 2>&1 | tee "$ART/fixtures-expansion.txt"
+          python3 scripts/make_fixtures.py verify "$RUNNER_TEMP/m3fix-exp" --profile expansion-10k 2>&1 | tee -a "$ART/fixtures-expansion.txt"
+
+      - name: Footer accessibility proof (gate)
+        run: |
+          set -uo pipefail
+          APP="$GITHUB_WORKSPACE/dist/Spacelyzer.app"
+          rm -f /tmp/spz-footer-* /tmp/spz-demo-ready-* /tmp/spz-demo-ack-* /tmp/spz-demo-step /tmp/spz-cold-click-*
+          open -n "$APP" --env SPZ_AUTOSCAN="$RUNNER_TEMP/m3fix-exp/expansion-10000" --env SPZ_DEMO=1
+          PID=""
+          for i in $(seq 1 30); do PID=$(pgrep -x Spacelyzer | head -1 || true); [ -n "$PID" ] && break; sleep 1; done
+          [ -n "$PID" ] || { echo "APP DID NOT LAUNCH - findings only"; exit 10; }
+          echo "app_pid=$PID" | tee "$ART/footer-app-pid.txt"
+          # Acknowledge the demo capture handshake so the scripted flow reaches the
+          # footer window inside the 35-minute cap. No screenshots are recorded;
+          # M3 consumes nothing from this segment's in-app captures.
+          ( while :; do
+              for n in 1 2 3 4 5 6 7 37 38 39; do
+                [ -f "/tmp/spz-demo-ready-$n" ] && [ ! -f "/tmp/spz-demo-ack-$n" ] && : > "/tmp/spz-demo-ack-$n"
+              done
+              [ -f /tmp/spz-cold-click-ready ] && [ ! -f /tmp/spz-cold-click-ack ] && : > /tmp/spz-cold-click-ack
+              [ -f /tmp/spz-footer-ax-ready ] && break
+              sleep 0.5
+            done ) &
+          ACKLOOP=$!
+          ok=""
+          for i in $(seq 1 480); do [ -f /tmp/spz-footer-ax-ready ] && { ok=1; break; }; sleep 1; done
+          kill "$ACKLOOP" 2>/dev/null || true
+          [ -n "$ok" ] || { echo "FOOTER WINDOW NEVER READY - findings only"; kill "$PID" 2>/dev/null; exit 10; }
+          swift scripts/ax-client.swift "$PID" /tmp/spz-footer-ax-expected.txt /tmp/spz-footer-ax-result.txt 2>&1 | tee "$ART/footer-ax-client.log"
+          code=${PIPESTATUS[0]}
+          echo "EXIT_$code" > /tmp/spz-footer-ax-status.txt
+          : > /tmp/spz-footer-ax-ack
+          sleep 3
+          cp /tmp/spz-footer-ax-expected.txt /tmp/spz-footer-ax-result.txt /tmp/spz-footer-ax-status.txt "$ART/" 2>/dev/null || true
+          cp /tmp/spz-timing.txt "$ART/footer-demo-timing.txt" 2>/dev/null || true
+          cp /tmp/spz-geom.txt "$ART/footer-demo-geom.txt" 2>/dev/null || true
+          kill "$PID" 2>/dev/null || true
+          for i in $(seq 1 15); do pgrep -x Spacelyzer >/dev/null || break; sleep 1; done
+          RESULT=$(cat /tmp/spz-footer-ax-result.txt 2>/dev/null || echo MISSING)
+          echo "footer_ax_result=$RESULT" | tee "$ART/footer-verdict.txt"
+          [ "$RESULT" = "VERIFIED" ] || { echo "NO VERIFIED footer AX result - run stops findings-only"; exit 10; }
+
+      - name: Compile M3-B interaction bench
+        run: |
+          set -euo pipefail
+          swiftc -O -o "$BENCH" scripts/m3-interaction-bench.swift 2>&1 | tee "$ART/bench-compile.txt"
+          shasum -a 256 "$BENCH" | tee -a "$ART/bench-compile.txt"
+
+      - name: Expansion measurement (expansion-10k, 5 reps)
+        run: |
+          set -uo pipefail
+          open -n "$GITHUB_WORKSPACE/dist/Spacelyzer.app" --env SPZ_AUTOSCAN="$RUNNER_TEMP/m3fix-exp/expansion-10000"
+          PID=""
+          for i in $(seq 1 30); do PID=$(pgrep -x Spacelyzer | head -1 || true); [ -n "$PID" ] && break; sleep 1; done
+          [ -n "$PID" ] || { echo "APP DID NOT LAUNCH"; exit 10; }
+          sleep 20
+          "$BENCH" expansion "$PID" "$ART/m3-expansion-10k.jsonl" expansion-10000 5 2>&1 | tee "$ART/m3-expansion-10k.log"
+          echo "expansion_exit=${PIPESTATUS[0]}" | tee "$ART/m3-expansion-exit.txt"
+          kill "$PID" 2>/dev/null || true
+          for i in $(seq 1 15); do pgrep -x Spacelyzer >/dev/null || break; sleep 1; done
+          true
+
+      - name: Typing (200 keys, typing-200k) then hover (60 sweeps)
+        run: |
+          set -uo pipefail
+          open -n "$GITHUB_WORKSPACE/dist/Spacelyzer.app" --env SPZ_AUTOSCAN="$RUNNER_TEMP/m3fix-typing/typing-200k"
+          PID=""
+          for i in $(seq 1 30); do PID=$(pgrep -x Spacelyzer | head -1 || true); [ -n "$PID" ] && break; sleep 1; done
+          [ -n "$PID" ] || { echo "APP DID NOT LAUNCH"; exit 10; }
+          sleep 60
+          "$BENCH" typing "$PID" "$ART/m3-typing-200k.jsonl" 200 2>&1 | tee "$ART/m3-typing-200k.log"
+          echo "typing_exit=${PIPESTATUS[0]}" | tee "$ART/m3-typing-exit.txt"
+          "$BENCH" hover "$PID" "$ART/m3-hover.jsonl" 60 2>&1 | tee "$ART/m3-hover.log"
+          echo "hover_exit=${PIPESTATUS[0]}" | tee "$ART/m3-hover-exit.txt"
+          kill "$PID" 2>/dev/null || true
+          true
+
+      - name: Optional expansion-100k (only if 12+ minutes remain)
+        run: |
+          set -uo pipefail
+          elapsed=$(( $(date +%s) - $(cat "$RUNNER_TEMP/m3-t0") ))
+          remain=$(( 35*60 - elapsed ))
+          echo "elapsed=${elapsed}s remain=${remain}s" | tee "$ART/expansion-100k-decision.txt"
+          if [ "$remain" -lt 720 ]; then echo "SKIPPED: under 12 minutes remain" | tee -a "$ART/expansion-100k-decision.txt"; exit 0; fi
+          python3 scripts/make_fixtures.py generate "$RUNNER_TEMP/m3fix-exp100" --profile expansion-100k 2>&1 | tee "$ART/fixtures-expansion-100k.txt"
+          python3 scripts/make_fixtures.py verify "$RUNNER_TEMP/m3fix-exp100" --profile expansion-100k 2>&1 | tee -a "$ART/fixtures-expansion-100k.txt"
+          open -n "$GITHUB_WORKSPACE/dist/Spacelyzer.app" --env SPZ_AUTOSCAN="$RUNNER_TEMP/m3fix-exp100/expansion-100000"
+          PID=""
+          for i in $(seq 1 30); do PID=$(pgrep -x Spacelyzer | head -1 || true); [ -n "$PID" ] && break; sleep 1; done
+          [ -n "$PID" ] || { echo "APP DID NOT LAUNCH"; exit 0; }
+          sleep 30
+          "$BENCH" expansion "$PID" "$ART/m3-expansion-100k.jsonl" expansion-100000 3 2>&1 | tee "$ART/m3-expansion-100k.log"
+          echo "expansion100k_exit=${PIPESTATUS[0]}" | tee "$ART/m3-expansion-100k-exit.txt"
+          kill "$PID" 2>/dev/null || true
+          true
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m3-first-run-${{ github.run_id }}
+          path: ${{ runner.temp }}/m3-artifacts
