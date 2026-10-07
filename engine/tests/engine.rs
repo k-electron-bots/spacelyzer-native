@@ -407,6 +407,57 @@ fn outline_sort_modes_order_siblings_and_keep_every_row() {
 }
 
 #[test]
+fn nameasc_matches_reference_lowercase_order_on_unicode_edges() {
+    use spacelyzer_engine::outline::{visible_rows_sorted, SortMode};
+    use spacelyzer_engine::scan::{scan, ScanOptions, ScanProgress};
+    use std::collections::HashSet;
+    // Regression for the NameAsc comparator: sibling order must equal the
+    // original sort_by_cached_key(|n| tree.name(n).to_lowercase()) exactly,
+    // including context-sensitive Greek final sigma (a per-char lowercase
+    // maps word-final capital sigma differently) and stable tie order.
+    // Returns (sorted names, pre-sort scan order) for a tree of `names`.
+    let order = |names: &[&str]| -> (Vec<String>, Vec<String>) {
+        let t = tempdir::T::new();
+        for n in names {
+            std::fs::create_dir_all(t.path().join(n)).unwrap();
+        }
+        let tree = scan(t.path(), &ScanOptions::default(), &ScanProgress::default()).unwrap();
+        let prescan: Vec<String> = tree.children(0).map(|n| tree.name(n).to_string()).collect();
+        let got: Vec<String> = visible_rows_sorted(&tree, 0, &HashSet::new(), None, SortMode::NameAsc)
+            .iter().map(|r| tree.name(r.node).to_string()).collect();
+        // Reference: the original algorithm on the same input vector.
+        let mut expect: Vec<u32> = tree.children(0).collect();
+        expect.sort_by_cached_key(|&n| tree.name(n).to_lowercase());
+        let expect: Vec<String> = expect.iter().map(|&n| tree.name(n).to_string()).collect();
+        assert_eq!(got, expect, "NameAsc diverges from the reference lowercase order for {names:?}");
+        (got, prescan)
+    };
+    // Final sigma: "\u{039F}\u{03A3}" lowercases to "o\u{03C2}" which sorts before "o\u{03C3}".
+    // Deterministic in both input orders (no tie).
+    assert_eq!(order(&["\u{039F}\u{03A3}", "\u{039F}\u{03C3}"]).0, vec!["\u{039F}\u{03A3}", "\u{039F}\u{03C3}"]);
+    assert_eq!(order(&["\u{039F}\u{03C3}", "\u{039F}\u{03A3}"]).0, vec!["\u{039F}\u{03A3}", "\u{039F}\u{03C3}"]);
+    // "\u{039F}\u{03A3}" and "\u{039F}\u{03C2}" tie under lowercase ("o\u{03C2}" both):
+    // the pre-sort sibling order decides, whatever the scan handed us.
+    for names in [["\u{039F}\u{03A3}", "\u{039F}\u{03C2}"], ["\u{039F}\u{03C2}", "\u{039F}\u{03A3}"]] {
+        let (got, prescan) = order(&names);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0], prescan[0], "tied names must keep the pre-sort order for {names:?}");
+        assert_eq!(got[1], prescan[1]);
+    }
+    // Sigma next to case-ignorable marks: trailing combining acute does not
+    // block final-sigma; a following cased letter does. Deterministic (no tie).
+    assert_eq!(
+        order(&["\u{039F}\u{03A3}\u{0301}\u{0391}", "\u{039F}\u{03A3}\u{0301}"]).0,
+        vec!["\u{039F}\u{03A3}\u{0301}", "\u{039F}\u{03A3}\u{0301}\u{0391}"]
+    );
+    // Mixed battery: reference equality across ASCII, accented, and Greek names
+    // (exercises the any-non-ASCII fallback path).
+    order(&["apple", "Apple", "APPLE", "\u{00E4}", "Z", "z", "\u{039F}\u{03A3}", "\u{039F}\u{03C3}", "\u{03BF}\u{03C2}", "\u{03BF}\u{03C3}", "\u{00DF}", "\u{0130}"]);
+    // All-ASCII battery: exercises the allocation-free comparator path.
+    order(&["apple", "Apple", "APPLE", "Zebra", "zebra", "10", "02", "_hidden", "Report", "REPORT", "delta", "Delta"]);
+}
+
+#[test]
 fn filtered_outline_shows_zero_byte_matches_and_their_folders() {
     use spacelyzer_engine::filter::{apply, Filter};
     use spacelyzer_engine::outline::{visible_rows_sorted, SortMode};

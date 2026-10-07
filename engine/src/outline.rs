@@ -57,6 +57,31 @@ impl SortMode {
     }
 }
 
+
+fn name_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    if a.is_ascii() && b.is_ascii() {
+        // ASCII fast path: allocation-free byte fold. For ASCII-only strings this
+        // is byte-identical to comparing `to_lowercase()` on both sides.
+        let mut ai = a.bytes().map(|c| c.to_ascii_lowercase());
+        let mut bi = b.bytes().map(|c| c.to_ascii_lowercase());
+        loop {
+            match (ai.next(), bi.next()) {
+                (None, None) => return std::cmp::Ordering::Equal,
+                (None, Some(_)) => return std::cmp::Ordering::Less,
+                (Some(_), None) => return std::cmp::Ordering::Greater,
+                (Some(x), Some(y)) => {
+                    let o = x.cmp(&y);
+                    if o != std::cmp::Ordering::Equal { return o; }
+                }
+            }
+        }
+    }
+    // Non-ASCII: full-string lowercase, exactly the old sort key. This keeps the
+    // context-sensitive Unicode rules (e.g. Greek final sigma) that a per-char
+    // mapping would get wrong. Non-ASCII names allocate, as they did before.
+    a.to_lowercase().cmp(&b.to_lowercase())
+}
+
 fn ordered_children(tree: &Tree, id: NodeId, mode: SortMode, filter: Option<&FilterResult>) -> Vec<NodeId> {
     let sizes = filter.map(|f| f.sizes.as_slice());
     let mut v: Vec<NodeId> = tree.children(id).collect();
@@ -68,7 +93,25 @@ fn ordered_children(tree: &Tree, id: NodeId, mode: SortMode, filter: Option<&Fil
             }
         }
         SortMode::SizeAsc => v.sort_by_key(|&n| key_size(n)),
-        SortMode::NameAsc => v.sort_by_cached_key(|&n| tree.name(n).to_lowercase()),
+        SortMode::NameAsc => {
+            // Case-insensitive (Unicode lowercase) name ascending.
+            if v.iter().any(|&n| !tree.name(n).is_ascii()) {
+                // Any non-ASCII name: the original per-key lowercase sort. Exact
+                // Unicode semantics (incl. contextual final sigma), one String
+                // allocation per sibling as before - no per-comparison allocs.
+                v.sort_by_cached_key(|&n| tree.name(n).to_lowercase());
+            } else {
+                // All-ASCII: allocation-free comparator (byte fold, identical to
+                // the old lowercase keys for ASCII). The explicit position
+                // tiebreak keeps the pre-sort order on equal keys, matching the
+                // old stable sort.
+                let mut order: Vec<u32> = (0..v.len() as u32).collect();
+                order.sort_unstable_by(|&a, &b| name_cmp(tree.name(v[a as usize]), tree.name(v[b as usize])).then(a.cmp(&b)));
+                let mut sorted = Vec::with_capacity(v.len());
+                for &i in &order { sorted.push(v[i as usize]); }
+                v = sorted;
+            }
+        }
         SortMode::ItemsDesc => v.sort_by_key(|&n| std::cmp::Reverse(tree.child_count(n))),
         SortMode::ModifiedDesc => v.sort_by_key(|&n| std::cmp::Reverse(tree.mtime(n))),
     }
