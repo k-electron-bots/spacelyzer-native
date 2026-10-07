@@ -7,6 +7,7 @@
 //! and directories reachable by two paths (firmlinks) are counted once.
 
 use crate::category::Category;
+use crate::events::{EventKind, PreviewEvents};
 use crate::tree::{Kind, SkipReason, Skipped, Tree, NO_NODE};
 use rayon::prelude::*;
 use std::collections::HashSet;
@@ -32,12 +33,38 @@ pub struct ScanProgress {
     pub items: AtomicU64,
     pub bytes: AtomicU64,
     pub cancel: AtomicBool,
+    #[cfg(test)]
+    visited_dirs: AtomicU64,
+    #[cfg(test)]
+    cancel_after: AtomicU64,
 }
 
 impl ScanProgress {
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
+
+    /// Deterministic cancel injection for tests: the scan cancels when the Nth
+    /// directory walk begins. 0 (the default) disables the tripwire.
+    #[cfg(test)]
+    #[doc(hidden)]
+    pub fn cancel_after_dirs(&self, n: u64) {
+        self.cancel_after.store(n, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    fn note_dir(&self) {
+        let n = self.visited_dirs.fetch_add(1, Ordering::Relaxed) + 1;
+        let trip = self.cancel_after.load(Ordering::Relaxed);
+        if trip != 0 && n >= trip {
+            self.cancel();
+        }
+    }
+
+    /// Shipping builds keep the per-directory path untouched.
+    #[cfg(not(test))]
+    #[inline(always)]
+    fn note_dir(&self) {}
 }
 
 pub(crate) struct RawEntry {
@@ -88,12 +115,48 @@ struct Ctx<'a> {
     root_dev: u64,
     skipped: Mutex<Vec<Skipped>>,
     exclude: Vec<String>,
+    events: Option<&'a PreviewEvents>,
     #[allow(dead_code)]
     bulk: bool,
 }
 
 pub fn scan(root: &Path, opts: &ScanOptions, progress: &ScanProgress) -> std::io::Result<Tree> {
+    scan_inner(root, opts, progress, None)
+}
+
+/// `scan` plus progressive preview events. The returned `Tree` is identical to what
+/// `scan` produces; events are best-effort extras bound to the sink's generation and
+/// canonical root. Errors when the sink was built for a different root.
+pub fn scan_with_events(
+    root: &Path,
+    opts: &ScanOptions,
+    progress: &ScanProgress,
+    events: &PreviewEvents,
+) -> std::io::Result<Tree> {
+    scan_inner(root, opts, progress, Some(events))
+}
+
+fn scan_inner(
+    root: &Path,
+    opts: &ScanOptions,
+    progress: &ScanProgress,
+    events: Option<&PreviewEvents>,
+) -> std::io::Result<Tree> {
     let root = root.canonicalize()?;
+    if let Some(ev) = events {
+        if !ev.root_matches(&root) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "preview event sink root does not match the canonical scan root",
+            ));
+        }
+        if !ev.claim() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "preview event sink already claimed by a scan (sinks are one-shot)",
+            ));
+        }
+    }
     let md = std::fs::symlink_metadata(&root)?;
     if !md.is_dir() {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a directory"));
@@ -111,19 +174,27 @@ pub fn scan(root: &Path, opts: &ScanOptions, progress: &ScanProgress) -> std::io
             .iter()
             .map(|p| p.to_string_lossy().trim_end_matches('/').to_string())
             .collect(),
+        events,
         bulk: cfg!(target_os = "macos") && !opts.force_portable,
     };
     ctx.dirs.claim(md.dev(), md.ino());
 
     let run = || walk(&root, &ctx);
-    let node = if opts.threads > 0 {
+    let (node, complete) = if opts.threads > 0 {
         let pool = rayon::ThreadPoolBuilder::new().num_threads(opts.threads).build().unwrap();
         pool.install(run)
     } else {
         run()
     };
 
-    Ok(flatten(root.to_string_lossy().into_owned(), node, ctx, progress))
+    let tree = flatten(root.to_string_lossy().into_owned(), node, ctx, progress);
+    if let Some(ev) = events {
+        // Root completeness (under the scanner's accounting) rides the terminal: a
+        // suppressed subtree leaves previews provisional even when the scan was
+        // neither cancelled nor lossy.
+        ev.finish(tree.cancelled, complete);
+    }
+    Ok(tree)
 }
 
 fn is_package(name: &str) -> bool {
@@ -134,9 +205,10 @@ fn is_package(name: &str) -> bool {
     }
 }
 
-fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
+fn walk(dir: &Path, ctx: &Ctx) -> (DirNode, bool) {
+    ctx.progress.note_dir();
     if ctx.progress.cancel.load(Ordering::Relaxed) {
-        return DirNode { ents: vec![], total: 0 };
+        return (DirNode { ents: vec![], total: 0 }, false);
     }
     let raw = match enumerate(dir, ctx) {
         Ok(r) => r,
@@ -147,7 +219,7 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
                 SkipReason::Unreadable
             };
             ctx.skipped.lock().unwrap().push(Skipped { path: dir.to_string_lossy().into_owned(), reason });
-            return DirNode { ents: vec![], total: 0 };
+            return (DirNode { ents: vec![], total: 0 }, false);
         }
     };
 
@@ -197,18 +269,28 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
     ctx.progress.items.fetch_add(ents.len() as u64, Ordering::Relaxed);
     ctx.progress.bytes.fetch_add(local_bytes, Ordering::Relaxed);
 
-    let results: Vec<(usize, DirNode)> = if subdirs.len() > 1 {
+    let results: Vec<(usize, (DirNode, bool))> = if subdirs.len() > 1 {
         subdirs.par_iter().map(|(i, p)| (*i, walk(p, ctx))).collect()
     } else {
         subdirs.iter().map(|(i, p)| (*i, walk(p, ctx))).collect()
     };
     let mut total = local_bytes;
-    for (i, node) in results {
+    let mut complete = true;
+    for (i, (node, child_complete)) in results {
         total += node.total;
         ents[i].size = node.total;
         ents[i].dir = Some(Box::new(node));
+        complete &= child_complete;
     }
-    DirNode { ents, total }
+    if complete {
+        if let Some(ev) = ctx.events {
+            ev.emit(EventKind::DirComplete {
+                path: dir.to_path_buf(),
+                size: total,
+            });
+        }
+    }
+    (DirNode { ents, total }, complete)
 }
 
 /// Breadth-first flatten so each directory's children are contiguous and size-sorted.
