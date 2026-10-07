@@ -148,7 +148,7 @@ fn scan_inner(
     ctx.dirs.claim(md.dev(), md.ino());
 
     let run = || walk(&root, &ctx);
-    let node = if opts.threads > 0 {
+    let (node, _complete) = if opts.threads > 0 {
         let pool = rayon::ThreadPoolBuilder::new().num_threads(opts.threads).build().unwrap();
         pool.install(run)
     } else {
@@ -157,7 +157,7 @@ fn scan_inner(
 
     let tree = flatten(root.to_string_lossy().into_owned(), node, ctx, progress);
     if let Some(ev) = events {
-        ev.emit(EventKind::Finished { cancelled: tree.cancelled });
+        ev.finish(tree.cancelled);
     }
     Ok(tree)
 }
@@ -170,9 +170,9 @@ fn is_package(name: &str) -> bool {
     }
 }
 
-fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
+fn walk(dir: &Path, ctx: &Ctx) -> (DirNode, bool) {
     if ctx.progress.cancel.load(Ordering::Relaxed) {
-        return DirNode { ents: vec![], total: 0 };
+        return (DirNode { ents: vec![], total: 0 }, false);
     }
     let raw = match enumerate(dir, ctx) {
         Ok(r) => r,
@@ -183,7 +183,7 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
                 SkipReason::Unreadable
             };
             ctx.skipped.lock().unwrap().push(Skipped { path: dir.to_string_lossy().into_owned(), reason });
-            return DirNode { ents: vec![], total: 0 };
+            return (DirNode { ents: vec![], total: 0 }, false);
         }
     };
 
@@ -233,24 +233,28 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
     ctx.progress.items.fetch_add(ents.len() as u64, Ordering::Relaxed);
     ctx.progress.bytes.fetch_add(local_bytes, Ordering::Relaxed);
 
-    let results: Vec<(usize, DirNode)> = if subdirs.len() > 1 {
+    let results: Vec<(usize, (DirNode, bool))> = if subdirs.len() > 1 {
         subdirs.par_iter().map(|(i, p)| (*i, walk(p, ctx))).collect()
     } else {
         subdirs.iter().map(|(i, p)| (*i, walk(p, ctx))).collect()
     };
     let mut total = local_bytes;
-    for (i, node) in results {
+    let mut complete = true;
+    for (i, (node, child_complete)) in results {
         total += node.total;
         ents[i].size = node.total;
         ents[i].dir = Some(Box::new(node));
+        complete &= child_complete;
     }
-    if let Some(ev) = ctx.events {
-        ev.emit(EventKind::DirComplete {
-            path: dir.to_string_lossy().into_owned().into_boxed_str(),
-            size: total,
-        });
+    if complete {
+        if let Some(ev) = ctx.events {
+            ev.emit(EventKind::DirComplete {
+                path: dir.to_path_buf(),
+                size: total,
+            });
+        }
     }
-    DirNode { ents, total }
+    (DirNode { ents, total }, complete)
 }
 
 /// Breadth-first flatten so each directory's children are contiguous and size-sorted.
