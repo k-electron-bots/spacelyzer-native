@@ -143,6 +143,7 @@ pub unsafe extern "C" fn spz_tree_node_count(t: *const Tree) -> u64 {
 
 #[no_mangle]
 pub unsafe extern "C" fn spz_tree_cancelled(t: *const Tree) -> u8 {
+    if t.is_null() { return 0; }
     (*t).cancelled as u8
 }
 
@@ -180,6 +181,7 @@ pub unsafe extern "C" fn spz_tree_path(t: *const Tree, id: NodeId) -> *mut c_cha
 /// Node for an absolute path under the scanned root, or u32::MAX.
 #[no_mangle]
 pub unsafe extern "C" fn spz_tree_find(t: *const Tree, path: *const c_char) -> NodeId {
+    if t.is_null() { return u32::MAX; }
     (*t).find(&cstr(path)).unwrap_or(u32::MAX)
 }
 
@@ -193,6 +195,7 @@ pub unsafe extern "C" fn spz_tree_forget(t: *mut Tree, id: NodeId) {
 /// Writes (bytes, items) pairs for each category into `out` (CATEGORY_COUNT * 2 u64s).
 #[no_mangle]
 pub unsafe extern "C" fn spz_tree_category_totals(t: *const Tree, out: *mut u64) {
+    if t.is_null() || out.is_null() { return; }
     let totals = (*t).category_totals();
     for (i, (b, n)) in totals.iter().enumerate().take(CATEGORY_COUNT) {
         *out.add(i * 2) = *b;
@@ -203,6 +206,7 @@ pub unsafe extern "C" fn spz_tree_category_totals(t: *const Tree, out: *mut u64)
 /// Fill `out` with up to `cap` ids of the largest files; returns the count written.
 #[no_mangle]
 pub unsafe extern "C" fn spz_tree_largest_files(t: *const Tree, cap: u32, out: *mut NodeId) -> u32 {
+    if t.is_null() || out.is_null() { return 0; }
     let v = (*t).largest_files(cap as usize);
     for (i, id) in v.iter().enumerate() {
         *out.add(i) = *id;
@@ -313,6 +317,7 @@ unsafe fn expanded_set(t: *const Tree, expanded: *const NodeId, n: u32) -> std::
 /// Run a filter over the whole tree in Rust. `text` and `ext` may be null.
 #[no_mangle]
 pub unsafe extern "C" fn spz_filter_apply(t: *const Tree, text: *const c_char, ext: *const c_char, f: SpzFilter) -> *mut FilterHandle {
+    if t.is_null() { return std::ptr::null_mut(); }
     let flt = crate::filter::Filter {
         text: cstr(text),
         category_mask: f.category_mask,
