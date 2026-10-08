@@ -238,7 +238,6 @@ fn filtered_category_totals_parity_with_independent_recompute() {
     let t = scan_fixture(&root);
     let r = filter::apply(&t, &Filter { category_mask: filter::mask(&[Category::Image, Category::Code, Category::Audio]), ..Default::default() });
     let got = filter::category_totals(&t, &r);
-    let mut want = [(0u64, u64::MAX); spacelyzer_engine::category::CATEGORY_COUNT];
     let mut want = [(0u64, 0u64); spacelyzer_engine::category::CATEGORY_COUNT];
     for i in files_under(&t) {
         if r.counts[i as usize] == 1 {
