@@ -136,9 +136,9 @@ func frame(_ element: AXUIElement) -> CGRect? {
     return CGRect(origin: p, size: s)
 }
 func click(_ point: CGPoint) {
-    CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .leftMouse)?.post(tap: .cghidEventTap)
+    CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
     usleep(40_000)
-    CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .leftMouse)?.post(tap: .cghidEventTap)
+    CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
 }
 func type(_ character: Character) {
     let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)
@@ -298,7 +298,7 @@ if mode == "hover" {
         let y = winFrame.minY + winFrame.height * (0.15 + 0.75 * Double(gy) / Double(rows - 1))
         var stats = ReadStats()
         let t0 = now() // anchor BEFORE the posted move
-        CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: .leftMouse)?.post(tap: .cghidEventTap)
+        CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: CGPoint(x: x, y: y), mouseButton: .left)?.post(tap: .cghidEventTap)
         var role = "none"
         let window = 1.0
         let lag = until(t0, window, {
