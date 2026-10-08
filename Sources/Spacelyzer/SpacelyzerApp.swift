@@ -1,4 +1,5 @@
 import SwiftUI
+import ApplicationServices
 
 @main
 struct SpacelyzerApp: App {
@@ -1234,7 +1235,57 @@ private actor PublicationBarrier {
             }
         }
         visit(root, depth: 0, edge: "root-window")
-        Perf.log("footer-ax complete nodes=\(entries.count) discovered=\(discovered) rejectedBranches=\(rejected) truncated=\(truncated); informal attribute accessors inspect private proxy nodes, no authored substitution")
+        // Same-PID AXUIElement walk. Run 37834771695: the in-process NSObject graph
+        // stops at the NSHostingView - typed accessibilityChildren() and the informal
+        // AXChildren both return nothing on macOS 26.6.2 - while the out-of-process
+        // ax-client sees the full SwiftUI subtree with exact Help+Value. Read the
+        // app's OWN exported AX tree through the AX server the same way the external
+        // client does (AXUIElementCreateApplication on this PID, window matched by
+        // the footer title, AXDescription/AXHelp/AXValue per node). The attributes
+        // are still SwiftUI's own exports via the AX server: no authored
+        // substitution, no private API. If the self-AX read is unavailable the
+        // NSObject-graph entries above stand alone and the gate keeps its prior
+        // verdict - an unavailable walk is logged, never silently treated as proof.
+        let selfAX = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+        var axWalkAvailable = false
+        func axVisit(_ element: AXUIElement, depth: Int, edge: String) {
+            guard depth < 24, discovered < 512 else { truncated = true; return }
+            discovered += 1
+            var labelRef: CFTypeRef?, helpRef: CFTypeRef?, valueRef: CFTypeRef?, childrenRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(element, kAXDescriptionAttribute as CFString, &labelRef)
+            AXUIElementCopyAttributeValue(element, kAXHelpAttribute as CFString, &helpRef)
+            AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &valueRef)
+            let label = labelRef as? String ?? ""
+            let help = helpRef as? String ?? ""
+            let value = valueRef as? String ?? ""
+            if !label.isEmpty || !help.isEmpty || !value.isEmpty {
+                entries.append(Entry(label: label, help: help, value: value))
+                Perf.log("footer-ax axuielement edge=\(edge) depth=\(depth) label=\(label.debugDescription) help=\(help.debugDescription) value=\(value.debugDescription)")
+            } else {
+                rejected += 1
+            }
+            guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+                  let axChildren = childrenRef as? [AXUIElement] else { return }
+            for child in axChildren {
+                if discovered >= 512 { truncated = true; break }
+                axVisit(child, depth: depth + 1, edge: "axuielement-child")
+            }
+        }
+        var windowsRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(selfAX, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+           let axWindows = windowsRef as? [AXUIElement] {
+            for axWindow in axWindows {
+                var titleRef: CFTypeRef?
+                AXUIElementCopyAttributeValue(axWindow, kAXTitleAttribute as CFString, &titleRef)
+                guard (titleRef as? String) == root.title else { continue }
+                axWalkAvailable = true
+                axVisit(axWindow, depth: 0, edge: "axuielement-window")
+            }
+        }
+        if !axWalkAvailable {
+            Perf.log("footer-ax axuielement self-walk unavailable (window list unreadable or footer window not found by title); NSObject-graph entries only, prior verdict preserved")
+        }
+        Perf.log("footer-ax complete nodes=\(entries.count) discovered=\(discovered) rejectedBranches=\(rejected) truncated=\(truncated) axuielementWalk=\(axWalkAvailable); informal attribute accessors plus same-PID AX server reads, no authored substitution")
         return Result(entries: entries, truncated: truncated, discovered: discovered, rejected: rejected)
     }
 
