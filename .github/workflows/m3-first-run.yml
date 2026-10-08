@@ -147,17 +147,30 @@ jobs:
             sleep 0.5
           done
           [ -n "$line" ] || echo "FOOTER EVIDENCE: INCONCLUSIVE - footer-native assertion or walker-entries marker missing (entries dump may have failed)"
-          cp /tmp/spz-footer-ax-expected.txt /tmp/spz-footer-ax-result.txt /tmp/spz-footer-ax-status.txt "$ART/" 2>/dev/null
-          cp /tmp/spz-assertions.txt "$ART/footer-assertions.txt" 2>/dev/null
-          cp /tmp/spz-timing.txt "$ART/footer-demo-timing.txt" 2>/dev/null
-          cp /tmp/spz-geom.txt "$ART/footer-demo-geom.txt" 2>/dev/null
+          # Evidence copies must never fail silently: a swallowed cp leaves the
+          # artifact MISSING/EMPTY while the verdict says VERIFIED, which reads as
+          # inconclusive evidence. Copy each file loudly so the step log names the
+          # exact failure (run 37814251307: all three footer-ax-* artifact copies
+          # were MISSING/EMPTY with the error hidden by 2>/dev/null).
+          for pair in "/tmp/spz-footer-ax-expected.txt:$ART/footer-ax-expected.txt" "/tmp/spz-footer-ax-result.txt:$ART/footer-ax-result.txt" "/tmp/spz-footer-ax-status.txt:$ART/footer-ax-status.txt" "/tmp/spz-assertions.txt:$ART/footer-assertions.txt" "/tmp/spz-timing.txt:$ART/footer-demo-timing.txt" "/tmp/spz-geom.txt:$ART/footer-demo-geom.txt"; do
+            src="${pair%%:*}"; dst="${pair##*:}"
+            if cp "$src" "$dst" 2>&1; then
+              echo "artifact copy OK: $src -> $dst"
+            else
+              echo "ARTIFACT COPY FAILED: $src -> $dst (source exists: $([ -e "$src" ] && echo yes || echo no), size: $(stat -f%z "$src" 2>/dev/null || echo n/a), dest dir exists: $([ -d "$ART" ] && echo yes || echo no))"
+            fi
+          done
           RESULT=$(cat /tmp/spz-footer-ax-result.txt 2>/dev/null || echo MISSING)
           {
             echo "ax_client_exit=$code"
             echo "footer_ax_result=$RESULT"
             echo "app_assertions_line_seen=${line:-0}"
           } | tee "$ART/footer-verdict.txt"
-          cp /tmp/spz-footer-ax-entries.txt "$ART/footer-ax-entries.txt" 2>/dev/null
+          if cp /tmp/spz-footer-ax-entries.txt "$ART/footer-ax-entries.txt" 2>&1; then
+            echo "artifact copy OK: /tmp/spz-footer-ax-entries.txt -> $ART/footer-ax-entries.txt"
+          else
+            echo "ARTIFACT COPY FAILED: /tmp/spz-footer-ax-entries.txt (exists: $([ -e /tmp/spz-footer-ax-entries.txt ] && echo yes || echo no), size: $(stat -f%z /tmp/spz-footer-ax-entries.txt 2>/dev/null || echo n/a))"
+          fi
           # Observability: everything the gate knows is printed into the step LOG.
           # The artifact is a copy, never the only record.
           for f in "$ART/footer-verdict.txt" "$ART/footer-assertions.txt" "$ART/footer-ax-entries.txt" "$ART/footer-ax-expected.txt" "$ART/footer-ax-result.txt" "$ART/footer-ax-status.txt"; do

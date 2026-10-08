@@ -759,9 +759,10 @@ struct SpacelyzerApp: App {
                             let freshAck = FileManager.default.fileExists(atPath: "/tmp/spz-footer-ax-ack")
                             Check.expect("footer-external-same-node-help-value-exact-details", expectedFixture && freshAck && clientStatus == "EXIT_0" && externalResult == "VERIFIED", "external verified window/PID/role same-node exact UTF8 Help+Value; successful process exit required; denied/error/timeout/truncation is not a pass; native failed gate separate")
                             let footerAX = FooterAXEvidence.inspect(footerWindow)
-                            // macOS 26.6.2 (run 37691004373): the combined footer static text carries the
-                            // authored accessibilityLabel in AXValue and .help in AXHelp; AXDescription is
-                            // unpopulated. Exact match on value or help - never a fragment/label-only test.
+                            // macOS 26.6.2 (run 37814251307): the external client verifies the combined
+                            // footer static text carries exact Help+Value, but a typed-only native walk
+                            // never reached the SwiftUI subtree (help/value empty on the 3 discovered
+                            // nodes). Exact match on value or help - never a fragment/label-only test.
                             let nativeFull = expectedDetails?.isEmpty == false && footerAX.entries.contains { $0.value == expectedDetails! || $0.help == expectedDetails! }
                             Check.expect("footer-native-accessibility-full-details", nativeFull, "native accessor from mixed AX/view discovery only; exact exported-details match on AXValue or AXHelp; AXDescription unused by SwiftUI combined static text on macOS 26.6.2; truncated=\(footerAX.truncated); not VoiceOver/client announcements or tooltip proof")
                             // Observability: the workflow launches the app via `open -n`, which detaches
@@ -1182,18 +1183,28 @@ private actor PublicationBarrier {
             let label: String?, help: String?, value: String?, children: [Any]
             // Typed AppKit methods are supported even when protocol discovery is rejected.
             // Hierarchy discovery does not depend on a successful accessibility protocol cast.
+            // Run 37814251307 evidence: on macOS 26.6.2 the typed accessibilityChildren()
+            // of NSHostingView returns nothing even though an external AX client sees the
+            // full SwiftUI subtree, so the walk stopped at the hosting view (3 readable
+            // nodes, footer element never reached). Typed branches therefore merge the
+            // informal AXChildren attribute into the child list and fall back to informal
+            // attribute reads for label/help/value; `seen` deduplicates shared nodes.
+            let informalChildren = instance.accessibilityAttributeValue(.children) as? [Any] ?? []
+            let informalLabel = instance.accessibilityAttributeValue(.description) as? String
+            let informalHelp = instance.accessibilityAttributeValue(.help) as? String
+            let informalValue = instance.accessibilityAttributeValue(.value) as? String
             if let view {
-                label = view.accessibilityLabel(); help = view.accessibilityHelp()
-                value = view.accessibilityValue() as? String
-                children = view.accessibilityChildren() ?? []
+                label = view.accessibilityLabel() ?? informalLabel; help = view.accessibilityHelp() ?? informalHelp
+                value = (view.accessibilityValue() as? String) ?? informalValue
+                children = (view.accessibilityChildren() ?? []) + informalChildren
             } else if let window {
-                label = window.accessibilityLabel(); help = window.accessibilityHelp()
-                value = window.accessibilityValue() as? String
-                children = window.accessibilityChildren() ?? []
+                label = window.accessibilityLabel() ?? informalLabel; help = window.accessibilityHelp() ?? informalHelp
+                value = (window.accessibilityValue() as? String) ?? informalValue
+                children = (window.accessibilityChildren() ?? []) + informalChildren
             } else if let protocolNode {
-                label = protocolNode.accessibilityLabel(); help = protocolNode.accessibilityHelp()
-                value = protocolNode.accessibilityValue() as? String
-                children = protocolNode.accessibilityChildren() ?? []
+                label = protocolNode.accessibilityLabel() ?? informalLabel; help = protocolNode.accessibilityHelp() ?? informalHelp
+                value = (protocolNode.accessibilityValue() as? String) ?? informalValue
+                children = (protocolNode.accessibilityChildren() ?? []) + informalChildren
             } else {
                 // SwiftUI hosts accessibility through private proxy nodes (SwiftUI.AccessibilityNode,
                 // NSAccessibilityReparentingCellProxy) that reject the formal NSAccessibilityProtocol
