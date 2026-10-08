@@ -103,7 +103,12 @@ pub fn layout_with(tree: &Tree, root: NodeId, opts: &LayoutOptions, sizes: Optio
             }
         }
         if sizes.is_some() {
-            items.sort_unstable_by_key(|i| std::cmp::Reverse(sz(i.id)));
+            // Contract: descending external size, ties in native (NodeId ascending)
+            // order. Items are collected in tree order, so a stable sort yields exactly
+            // that. With a total order the survivor sequence equals the survivor
+            // subsequence of a fully sorted child list, which keeps partition-first
+            // exactly output-preserving apart from the remainder sum order (f64 ulps).
+            items.sort_by_key(|i| std::cmp::Reverse(sz(i.id)));
         }
         let mut rects: Vec<(Option<NodeId>, f64, f32, f32, f32, f32)> = Vec::new();
         let mut all: Vec<(Option<NodeId>, f64)> = items.iter().map(|i| (Some(i.id), i.area)).collect();
