@@ -49,9 +49,25 @@ fn contains_ci(hay: &str, needle_lower: &str) -> bool {
     // An empty name query matches every name without scanning or allocating it.
     if needle_lower.is_empty() { return true; }
     if hay.is_ascii() && needle_lower.is_ascii() {
+        // ASCII fast path: manual first-byte skip, then verify the remaining bytes
+        // folded. Same predicate as a folded windows() scan, restructured so most
+        // positions cost one comparison. Byte-identical results, no allocation.
         let needle = needle_lower.as_bytes();
-        return needle.is_empty() || hay.as_bytes().windows(needle.len()).any(|w|
-            w.iter().zip(needle).all(|(h, n)| h.to_ascii_lowercase() == *n));
+        let hayb = hay.as_bytes();
+        if hayb.len() < needle.len() { return false; }
+        let n0 = needle[0];
+        let end = hayb.len() - needle.len();
+        let mut i = 0;
+        while i <= end {
+            if hayb[i].to_ascii_lowercase() == n0 {
+                if hayb[i + 1..i + needle.len()].iter().zip(&needle[1..])
+                    .all(|(h, n)| h.to_ascii_lowercase() == *n) {
+                    return true;
+                }
+            }
+            i += 1;
+        }
+        return false;
     }
     hay.to_lowercase().contains(needle_lower)
 }
@@ -65,7 +81,7 @@ pub fn apply(tree: &Tree, f: &Filter) -> FilterResult {
     let (mf, mt) = (f.modified_from.unwrap_or(i64::MIN), f.modified_to.unwrap_or(i64::MAX));
 
     // Leaf pass, parallel. Directories contribute only through their descendants.
-    let leaf: Vec<(u64, u32)> = (0..n)
+    let leaf: (Vec<u64>, Vec<u32>) = (0..n)
         .into_par_iter()
         .map(|i| {
             let kind = tree.kind[i];
@@ -99,10 +115,9 @@ pub fn apply(tree: &Tree, f: &Filter) -> FilterResult {
             }
             (size, 1)
         })
-        .collect();
+        .unzip();
 
-    let mut sizes: Vec<u64> = leaf.iter().map(|l| l.0).collect();
-    let mut counts: Vec<u32> = leaf.iter().map(|l| l.1).collect();
+    let (mut sizes, mut counts): (Vec<u64>, Vec<u32>) = leaf;
     // Children come after parents in the arena, so a reverse sweep rolls everything up.
     for i in (1..n).rev() {
         let p = tree.parent[i] as usize;
