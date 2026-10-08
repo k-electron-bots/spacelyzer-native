@@ -1,6 +1,15 @@
 name: m3-first-run
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "compile-only: build and compile checks only, no app launch or measurement. full: the single approved measurement run."
+        required: true
+        default: "compile-only"
+        type: choice
+        options:
+          - compile-only
+          - full
 
 # Single capped first measurement run for milestone M3-B
 # (docs/m3-measurement-protocol.md). Manual dispatch only: one approved run,
@@ -42,6 +51,7 @@ jobs:
             xcodebuild -version
             swift --version
             echo "repo_sha=${{ github.sha }} run_id=${{ github.run_id }} run_attempt=${{ github.run_attempt }}"
+            echo "mode=${{ inputs.mode }}"
             shasum -a 256 scripts/m3-interaction-bench.swift scripts/m3-readiness.swift scripts/ax-client.swift scripts/make_fixtures.py docs/m3-measurement-protocol.md
           } 2>&1 | tee "$ART/preflight.txt"
 
@@ -76,6 +86,7 @@ jobs:
 
       - name: Footer accessibility proof (recorded finding)
         id: footer
+        if: ${{ !cancelled() && github.run_attempt == 1 && inputs.mode == 'full' }}
         run: |
           set -uo pipefail
           set +e
@@ -203,7 +214,7 @@ jobs:
           shasum -a 256 "$RUNNER_TEMP/m3bench" "$RUNNER_TEMP/m3-readiness" | tee -a "$ART/bench-compile.txt"
 
       - name: Expansion measurement (expansion-10k, 5 reps)
-        if: ${{ !cancelled() && github.run_attempt == 1 && steps.build.outcome == 'success' && steps.fixtures.outcome == 'success' && steps.compile.outcome == 'success' }}
+        if: ${{ inputs.mode == 'full' && !cancelled() && github.run_attempt == 1 && steps.build.outcome == 'success' && steps.fixtures.outcome == 'success' && steps.compile.outcome == 'success' }}
         run: |
           set -uo pipefail
           set +e
@@ -232,7 +243,7 @@ jobs:
           exit 0
 
       - name: Typing (200 keys, typing-200k) then hover (60 sweeps)
-        if: ${{ !cancelled() && github.run_attempt == 1 && steps.build.outcome == 'success' && steps.fixtures.outcome == 'success' && steps.compile.outcome == 'success' }}
+        if: ${{ inputs.mode == 'full' && !cancelled() && github.run_attempt == 1 && steps.build.outcome == 'success' && steps.fixtures.outcome == 'success' && steps.compile.outcome == 'success' }}
         run: |
           set -uo pipefail
           set +e
@@ -265,7 +276,7 @@ jobs:
           exit 0
 
       - name: Optional expansion-100k (only if 12+ minutes remain)
-        if: ${{ !cancelled() && github.run_attempt == 1 && steps.build.outcome == 'success' && steps.fixtures.outcome == 'success' && steps.compile.outcome == 'success' }}
+        if: ${{ inputs.mode == 'full' && !cancelled() && github.run_attempt == 1 && steps.build.outcome == 'success' && steps.fixtures.outcome == 'success' && steps.compile.outcome == 'success' }}
         timeout-minutes: 8
         run: |
           set -uo pipefail
