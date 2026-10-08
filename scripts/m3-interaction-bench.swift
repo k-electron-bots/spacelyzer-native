@@ -300,8 +300,21 @@ if mode == "typing" {
                 key(kDelete); usleep(5_000)
             }
             typed = ""
-            let (vc, _, vcFailed) = readTimed(field, "AXValue")
-            guard !vcFailed, let sc = vc as? String, sc.isEmpty else {
+            // Run 37848565420 evidence: the delete burst is processed by the app
+            // asynchronously (24 deletes at 5ms on a 200k-row fixture, each
+            // re-applying the filter - filterPending in the app is async), so a
+            // single immediate AXValue read raced the app's own event queue;
+            // run 37834771695 passed the identical step on timing luck. The
+            // REQUIREMENT is unchanged: the field must read verifiably empty
+            // before typing resumes, otherwise abort. The verification now
+            // polls with the same bounded-until pattern as the focus and
+            // field-update checks above instead of reading exactly once.
+            let cleared = until(now(), 5.0, {
+                let (vc, _, vcFailed) = readTimed(field, "AXValue")
+                guard !vcFailed, let sc = vc as? String else { return false }
+                return sc.isEmpty
+            })
+            guard cleared != nil else {
                 print("filter field failed to clear verifiably; aborting"); exit(7)
             }
             guard let settledCleared = settleRowCount(5.0, &stats) else {
@@ -372,22 +385,50 @@ if mode == "expansion" {
     // Bounded preflight: poll the visible-row COUNT only - at 10k/100k rows the
     // flat AXRows array materialization is the expensive step (AXRowCount
     // polling is proven at 100001 rows), so the old 256-row cap on AXRows made
-    // the mode refuse exactly the fixtures it exists to measure. The named
-    // target row is now located via the outline's TOP-LEVEL AXChildren, small
-    // by fixture design (expansion fixtures have one root row); the 256 cap
-    // stays as a guard on THAT read. The validated row handle is REUSED for
-    // every rep (no per-rep scans). If the app's identity churn invalidates the
-    // handle, its reads fail and the run aborts - it never rescans blind.
+    // the mode refuse exactly the fixtures it exists to measure.
+    // Run 37848565420 evidence corrected the follow-on assumption too: the
+    // expansion fixtures START FULLY EXPANDED, so the table's top-level
+    // AXChildren holds every visible row (observed 10002 and 100002) - one
+    // bulk AXChildren read materializes the entire outline and the 256-row
+    // guard refused both fixtures (exit 6) without measuring anything. The
+    // named target row is now located by CHUNKED top-level reads
+    // (AXUIElementCopyAttributeValues with a CFRange, 256 rows per chunk)
+    // over a bounded window of at most maxChunks chunks. Exactly one match
+    // within that window is required: zero matches, multiple matches, a
+    // short chunk (identity churn mid-scan), or a chunk read error all
+    // abort - the bench never rescans blind and never clicks an unverified
+    // row. Uniqueness is verified over the bounded window, not the whole
+    // outline; fixture evidence places the named root row at index 0. The
+    // validated row handle is REUSED for every rep (no per-rep scans). If
+    // the app's identity churn invalidates the handle, its reads fail and
+    // the run aborts.
     let (initialCount, _, initialFailed) = rowCountTimed(table)
     guard !initialFailed, let initialCount else { print("row count unreadable at preflight"); exit(6) }
-    let topRows = read(table, "AXChildren") as? [AXUIElement] ?? []
-    guard !topRows.isEmpty, topRows.count <= 256 else { print("top-level rows \(topRows.count) empty or over the bounded-lookup cap (visible count \(initialCount)); not scanning"); exit(6) }
-    let matches = topRows.filter { row in
-        if string(row, "AXDescription") == rowName { return true }
-        let cells = read(row, "AXChildren") as? [AXUIElement] ?? []
-        return cells.contains { string($0, "AXDescription") == rowName || string($0, "AXValue") == rowName }
+    var topChildCount: CFIndex = 0
+    let countErr = AXUIElementGetAttributeValueCount(table, kAXChildrenAttribute as CFString, &topChildCount)
+    guard countErr == .success else { axReadFailures += 1; print("top-level children count unreadable at preflight"); exit(6) }
+    let totalChildren = Int(topChildCount)
+    let chunkSize = 256, maxChunks = 8 // bounded window: at most 2048 rows scanned
+    let windowRows = min(totalChildren, chunkSize * maxChunks)
+    var matches = [AXUIElement](), scanned = 0
+    while scanned < windowRows {
+        let want = min(chunkSize, windowRows - scanned)
+        var chunkRef: CFTypeRef?
+        let err = AXUIElementCopyAttributeValues(table, kAXChildrenAttribute as CFString,
+                                                 CFRange(location: scanned, length: want), &chunkRef)
+        guard err == .success, let chunkRows = chunkRef as? [AXUIElement] else {
+            if err != .success && err != .noValue { axReadFailures += 1 }
+            print("chunked top-level children read failed at offset \(scanned) of \(totalChildren) (AXError \(err.rawValue)); not scanning blind"); exit(6)
+        }
+        guard chunkRows.count == want else { print("short chunked read at offset \(scanned): got \(chunkRows.count) of \(want) (identity churn mid-scan); aborting"); exit(6) }
+        for candidate in chunkRows {
+            if string(candidate, "AXDescription") == rowName { matches.append(candidate); continue }
+            let cells = read(candidate, "AXChildren") as? [AXUIElement] ?? []
+            if cells.contains(where: { string($0, "AXDescription") == rowName || string($0, "AXValue") == rowName }) { matches.append(candidate) }
+        }
+        scanned += chunkRows.count
     }
-    guard matches.count == 1, let row = matches.first else { print("target row not unique or absent: \(rowName)"); exit(6) }
+    guard matches.count == 1, let row = matches.first else { print("target row not unique or absent within bounded scan (\(matches.count) matches in \(scanned) scanned rows of \(totalChildren) top-level children, visible count \(initialCount)): \(rowName)"); exit(6) }
     let cells0 = read(row, "AXChildren") as? [AXUIElement] ?? []
     guard let tri = (cells0.first { string($0, "AXRole") == "AXDisclosureTriangle" } ?? (string(row, "AXRole") == "AXDisclosureTriangle" ? row : nil)),
           frame(tri) != nil else { print("target row has no usable disclosure triangle: \(rowName)"); exit(6) }
