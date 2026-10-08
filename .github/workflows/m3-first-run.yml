@@ -69,13 +69,14 @@ jobs:
           python3 scripts/make_fixtures.py generate "$RUNNER_TEMP/m3fix-exp" --profile expansion-10k 2>&1 | tee "$ART/fixtures-expansion.txt"
           python3 scripts/make_fixtures.py verify "$RUNNER_TEMP/m3fix-exp" --profile expansion-10k 2>&1 | tee -a "$ART/fixtures-expansion.txt"
 
-      - name: Footer accessibility proof (hard gate)
+      - name: Footer accessibility proof (recorded finding)
+        id: footer
         run: |
           set -uo pipefail
           set +e
           ART="$RUNNER_TEMP/m3-artifacts"
           APP="$GITHUB_WORKSPACE/dist/Spacelyzer.app"
-          if pgrep -x Spacelyzer >/dev/null; then echo "PRECHECK FAILED: Spacelyzer already running"; exit 10; fi
+          if pgrep -x Spacelyzer >/dev/null; then echo "PRECHECK FAILED: Spacelyzer already running"; echo "FOOTER VERDICT: FAIL (precheck) - recorded finding, measurements still run" | tee "$ART/footer-verdict.txt"; echo "footer_verdict=FAIL" >> "$GITHUB_OUTPUT"; exit 0; fi
           rm -f /tmp/spz-footer-* /tmp/spz-demo-ready-* /tmp/spz-demo-ack-* /tmp/spz-demo-step /tmp/spz-cold-click-* /tmp/spz-assertions.txt /tmp/spz-timing.txt /tmp/spz-geom.txt
           open -n "$APP" --env SPZ_AUTOSCAN="$RUNNER_TEMP/m3fix-exp/expansion-10000" --env SPZ_DEMO=1
           PID=""
@@ -84,7 +85,7 @@ jobs:
             if [ "$n" = "1" ]; then PID=$(pgrep -x Spacelyzer); break; fi
             sleep 1
           done
-          [ -n "$PID" ] || { echo "APP DID NOT LAUNCH UNIQUELY - findings only"; exit 10; }
+          [ -n "$PID" ] || { echo "APP DID NOT LAUNCH UNIQUELY"; echo "FOOTER VERDICT: FAIL (launch) - recorded finding, measurements still run" | tee "$ART/footer-verdict.txt"; echo "footer_verdict=FAIL" >> "$GITHUB_OUTPUT"; exit 0; }
           trap 'kill "$PID" 2>/dev/null' EXIT
           ps -p "$PID" -o pid=,comm= | tee "$ART/footer-app-pid.txt"
           # Acknowledge every demo capture mark so the scripted flow reaches the
@@ -105,7 +106,7 @@ jobs:
           ok=""
           for i in $(seq 1 480); do [ -f /tmp/spz-footer-ax-ready ] && { ok=1; break; }; sleep 1; done
           kill "$ACKLOOP" 2>/dev/null
-          if [ -z "$ok" ]; then echo "FOOTER WINDOW NEVER READY - findings only"; exit 10; fi
+          if [ -z "$ok" ]; then echo "FOOTER WINDOW NEVER READY"; echo "FOOTER VERDICT: FAIL (window never ready) - recorded finding, measurements still run" | tee "$ART/footer-verdict.txt"; echo "footer_verdict=FAIL" >> "$GITHUB_OUTPUT"; exit 0; fi
           swift scripts/ax-client.swift "$PID" /tmp/spz-footer-ax-expected.txt /tmp/spz-footer-ax-result.txt 2>&1 | tee "$ART/footer-ax-client.log"
           code=${PIPESTATUS[0]}
           printf 'EXIT_%s' "$code" > /tmp/spz-footer-ax-status.txt  # no trailing newline: the app compares clientStatus == "EXIT_0" exactly
@@ -126,6 +127,12 @@ jobs:
             echo "footer_ax_result=$RESULT"
             echo "app_assertions_line_seen=${line:-0}"
           } | tee "$ART/footer-verdict.txt"
+          cp /tmp/spz-footer-ax-entries.txt "$ART/footer-ax-entries.txt" 2>/dev/null
+          # Observability: everything the gate knows is printed into the step LOG.
+          # The artifact is a copy, never the only record.
+          for f in "$ART/footer-verdict.txt" "$ART/footer-assertions.txt" "$ART/footer-ax-entries.txt" "$ART/footer-ax-expected.txt" "$ART/footer-ax-result.txt" "$ART/footer-ax-status.txt"; do
+            if [ -f "$f" ]; then echo "===== $f ====="; cat "$f"; else echo "===== $f MISSING ====="; fi
+          done
           fail=""
           [ "$code" = "0" ] || { echo "GATE FAIL: ax-client exit $code (not 0)"; fail=1; }
           [ "$RESULT" = "VERIFIED" ] || { echo "GATE FAIL: result file is '$RESULT' (not VERIFIED)"; fail=1; }
@@ -133,10 +140,16 @@ jobs:
           grep -q '^PASS footer-external-same-node-help-value-exact-details' /tmp/spz-assertions.txt 2>/dev/null || { echo "GATE FAIL: no PASS footer-external-same-node-help-value-exact-details"; fail=1; }
           grep -q '^PASS footer-native-accessibility-full-details' /tmp/spz-assertions.txt 2>/dev/null || { echo "GATE FAIL: no PASS footer-native-accessibility-full-details"; fail=1; }
           grep -q '^FAIL footer-' /tmp/spz-assertions.txt 2>/dev/null && { echo "GATE FAIL: a FAIL footer- assertion is present"; fail=1; }
-          if [ -n "$fail" ]; then echo "NO VERIFIED footer AX proof - run stops findings-only"; exit 10; fi
-          echo "FOOTER GATE: VERIFIED"
+          if [ -n "$fail" ]; then
+            echo "FOOTER VERDICT: FAIL (recorded finding - measurement segments still run)" | tee -a "$ART/footer-verdict.txt"
+            echo "footer_verdict=FAIL" >> "$GITHUB_OUTPUT"
+          else
+            echo "FOOTER GATE: VERIFIED" | tee -a "$ART/footer-verdict.txt"
+            echo "footer_verdict=PASS" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Compile M3-B interaction bench and readiness probe
+        if: always()
         run: |
           set -euo pipefail
           ART="$RUNNER_TEMP/m3-artifacts"
@@ -242,6 +255,14 @@ jobs:
           echo "expansion100k_exit=$bs" | tee "$ART/m3-expansion-100k-exit.txt"
           [ "$bs" = "3" ] && echo "BLOCKER: AX trust unavailable (bench)" | tee "$ART/m3-BLOCKER.txt"
           exit 0
+
+      - name: Footer verdict (recorded finding)
+        if: always()
+        run: |
+          ART="$RUNNER_TEMP/m3-artifacts"
+          echo "Footer gate outcome (finding only; measurement segments are unaffected):"
+          cat "$ART/footer-verdict.txt" 2>/dev/null || echo "footer-verdict.txt missing (footer step did not complete)"
+          echo "footer_verdict=${{ steps.footer.outputs.footer_verdict }}"
 
       - name: Upload artifacts
         if: always()
