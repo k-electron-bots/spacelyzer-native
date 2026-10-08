@@ -208,6 +208,27 @@ if mode == "typing" {
     guard frontmost() else { exit(4) }
     click(CGPoint(x: fieldFrame.midX, y: fieldFrame.midY))
     guard until(now(), 2, { frontmostAndFocused(field) }) != nil else { print("filter field did not take focus"); exit(7) }
+    // Settle-then-measure: a row-count baseline is only trusted once the count
+    // STABILIZES (two consecutive equal successful reads; a failed read resets
+    // the streak). The previous run read the baseline ~30ms after the prior
+    // keystroke, before that key's filter had settled, making per-key
+    // correlation impossible (187/200 keys inconclusive).
+    func settleRowCount(_ window: Double, _ stats: inout ReadStats) -> Int? {
+        let deadline = now() + window
+        var last: Int? = nil
+        while now() < deadline {
+            let (c, ms, failed) = rowCountTimed(table)
+            stats.add(ms, failed: failed)
+            guard !failed, let c else { last = nil; usleep(20_000); continue }
+            if c == last { return c }
+            last = c
+            usleep(20_000)
+        }
+        return nil
+    }
+    var preStats = ReadStats()
+    guard let settledStart = settleRowCount(5.0, &preStats) else { print("row count did not settle before typing; aborting"); exit(7) }
+    var baseline = settledStart
     let stream = Array("invoice backup photo archive render cache export draft ")
     var fieldMs = [Double](), rowcountMs = [Double]()
     var inconclusive = 0, degradedEvents = 0
@@ -217,8 +238,7 @@ if mode == "typing" {
         let ch = stream[i % stream.count]
         let expected = typed + String(ch)
         var stats = ReadStats()
-        let (rowsBefore, beforeMs, beforeFailed) = rowCountTimed(table)
-        stats.add(beforeMs, failed: beforeFailed)
+        let rowsBefore: Int? = baseline // settled after the previous key, never a 30ms-stale read
         let t0 = now()
         type(ch)
         // Field: exact full-string equality on SUCCESSFUL reads only.
@@ -237,8 +257,9 @@ if mode == "typing" {
             emit(abortEvent)
             print("field update timeout at key \(i); aborting"); exit(7)
         }
-        // Row-count observation: UNCORRELATED with this keystroke's filter
-        // application - logged as such, never as verified application latency.
+        // Row-count observation against the SETTLED baseline: t0(type) until
+        // the count moves shows this key's filter applied; it is not a
+        // render-completion claim.
         let rWindow = 2.0
         let r = until(t0, rWindow, {
             let (c, ms, failed) = rowCountTimed(table)
@@ -256,7 +277,7 @@ if mode == "typing" {
             "field_ms": f, "field_low_quality": fieldLow,
             "rowcount_ms": r ?? -1, "rowcount_verdict": r != nil ? "changed" : "inconclusive",
             "rowcount_low_quality": rowcountLow,
-            "rowcount_uncorrelated": true, "rows_before": rowsBefore ?? -1,
+            "rowcount_baseline": "settled", "rows_before": rowsBefore ?? -1,
             "degraded": degraded]
         for (k, v) in stats.dict { event[k] = v }
         emit(event)
@@ -264,6 +285,13 @@ if mode == "typing" {
             fieldMs.append(f)
             if let r { rowcountMs.append(r) } else { inconclusive += 1 }
         } else { degradedEvents += 1; if r == nil { inconclusive += 1 } }
+        // Settle before the next key: without a fresh verified baseline the
+        // serial per-key premise is broken, so a settle failure aborts the run
+        // rather than degrading into uncorrelated measurements.
+        guard let settled = settleRowCount(5.0, &stats) else {
+            print("row count did not settle after key \(i); next baseline unverifiable; aborting"); exit(7)
+        }
+        baseline = settled
         usleep(30_000) // serial-latency mode: one key measured at a time; no rate claim
         typed.append(ch)
         if typed.count >= 24 { // keep the filter short; clear with real delete-key events
@@ -276,13 +304,17 @@ if mode == "typing" {
             guard !vcFailed, let sc = vc as? String, sc.isEmpty else {
                 print("filter field failed to clear verifiably; aborting"); exit(7)
             }
+            guard let settledCleared = settleRowCount(5.0, &stats) else {
+                print("row count did not settle after clearing; next baseline unverifiable; aborting"); exit(7)
+            }
+            baseline = settledCleared
         }
     }
     fieldMs.sort(); rowcountMs.sort()
     summary(["kind": "m3-typing", "pid": pid, "n": keystrokes, "mode_note": "serial per-key latency; not a burst/typist-rate measurement",
         "field_p50": percentile(fieldMs, 50), "field_p95": percentile(fieldMs, 95),
         "rowcount_p50": percentile(rowcountMs, 50), "rowcount_p95": percentile(rowcountMs, 95),
-        "rowcount_note": "uncorrelated AX observation; not verified per-keystroke application latency",
+        "rowcount_note": "t0(type) until the settled row count moves; shows the filter applied, not render completion",
         "rowcount_inconclusive": inconclusive, "degraded_events": degradedEvents], inconclusive: inconclusive + degradedEvents)
 }
 
@@ -337,16 +369,20 @@ if mode == "hover" {
 }
 
 if mode == "expansion" {
-    // Bounded preflight: check the visible-row COUNT first and refuse to
-    // materialize a large AXRows array. The one array read happens once, before
-    // any expansion; the validated row handle is then REUSED for every rep (no
-    // per-rep array scans). If the app's identity churn invalidates the handle,
-    // its reads fail and the run aborts - it never rescans blind.
+    // Bounded preflight: poll the visible-row COUNT only - at 10k/100k rows the
+    // flat AXRows array materialization is the expensive step (AXRowCount
+    // polling is proven at 100001 rows), so the old 256-row cap on AXRows made
+    // the mode refuse exactly the fixtures it exists to measure. The named
+    // target row is now located via the outline's TOP-LEVEL AXChildren, small
+    // by fixture design (expansion fixtures have one root row); the 256 cap
+    // stays as a guard on THAT read. The validated row handle is REUSED for
+    // every rep (no per-rep scans). If the app's identity churn invalidates the
+    // handle, its reads fail and the run aborts - it never rescans blind.
     let (initialCount, _, initialFailed) = rowCountTimed(table)
     guard !initialFailed, let initialCount else { print("row count unreadable at preflight"); exit(6) }
-    guard initialCount <= 256 else { print("visible rows \(initialCount) exceed the bounded-lookup cap; not materializing AXRows"); exit(6) }
-    let visibleRows = read(table, "AXRows") as? [AXUIElement] ?? []
-    let matches = visibleRows.filter { row in
+    let topRows = read(table, "AXChildren") as? [AXUIElement] ?? []
+    guard !topRows.isEmpty, topRows.count <= 256 else { print("top-level rows \(topRows.count) empty or over the bounded-lookup cap (visible count \(initialCount)); not scanning"); exit(6) }
+    let matches = topRows.filter { row in
         if string(row, "AXDescription") == rowName { return true }
         let cells = read(row, "AXChildren") as? [AXUIElement] ?? []
         return cells.contains { string($0, "AXDescription") == rowName || string($0, "AXValue") == rowName }
