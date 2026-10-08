@@ -146,6 +146,7 @@ jobs:
             [ -f /tmp/spz-footer-ax-entries-done ] && grep -q 'footer-native-accessibility-full-details' /tmp/spz-assertions.txt 2>/dev/null && { line=1; break; }
             sleep 0.5
           done
+          [ -n "$line" ] || echo "FOOTER EVIDENCE: INCONCLUSIVE - footer-native assertion or walker-entries marker missing (entries dump may have failed)"
           cp /tmp/spz-footer-ax-expected.txt /tmp/spz-footer-ax-result.txt /tmp/spz-footer-ax-status.txt "$ART/" 2>/dev/null
           cp /tmp/spz-assertions.txt "$ART/footer-assertions.txt" 2>/dev/null
           cp /tmp/spz-timing.txt "$ART/footer-demo-timing.txt" 2>/dev/null
@@ -160,7 +161,7 @@ jobs:
           # Observability: everything the gate knows is printed into the step LOG.
           # The artifact is a copy, never the only record.
           for f in "$ART/footer-verdict.txt" "$ART/footer-assertions.txt" "$ART/footer-ax-entries.txt" "$ART/footer-ax-expected.txt" "$ART/footer-ax-result.txt" "$ART/footer-ax-status.txt"; do
-            if [ -f "$f" ]; then echo "===== $f ====="; cat "$f"; else echo "===== $f MISSING ====="; fi
+            if [ -s "$f" ]; then echo "===== $f ====="; cat "$f"; else echo "===== $f MISSING/EMPTY - evidence INCONCLUSIVE ====="; fi
           done
           fail=""
           [ "$code" = "0" ] || { echo "GATE FAIL: ax-client exit $code (not 0)"; fail=1; }
@@ -179,7 +180,7 @@ jobs:
 
       - name: Compile M3-B interaction bench and readiness probe
         id: compile
-        if: github.run_attempt == 1 && steps.guard.result == 'success' && steps.preflight.result == 'success' && steps.toolchain.result == 'success' && steps.sign.result == 'success' && steps.build.result == 'success' && steps.fixtures.result == 'success'
+        if: ${{ !cancelled() && github.run_attempt == 1 && steps.guard.outcome == 'success' && steps.preflight.outcome == 'success' && steps.toolchain.outcome == 'success' && steps.sign.outcome == 'success' && steps.build.outcome == 'success' && steps.fixtures.outcome == 'success' }}
         run: |
           set -euo pipefail
           ART="$RUNNER_TEMP/m3-artifacts"
@@ -189,7 +190,7 @@ jobs:
           shasum -a 256 "$RUNNER_TEMP/m3bench" "$RUNNER_TEMP/m3-readiness" | tee -a "$ART/bench-compile.txt"
 
       - name: Expansion measurement (expansion-10k, 5 reps)
-        if: github.run_attempt == 1 && steps.build.result == 'success' && steps.fixtures.result == 'success' && steps.compile.result == 'success'
+        if: ${{ !cancelled() && github.run_attempt == 1 && steps.build.outcome == 'success' && steps.fixtures.outcome == 'success' && steps.compile.outcome == 'success' }}
         run: |
           set -uo pipefail
           set +e
@@ -218,7 +219,7 @@ jobs:
           exit 0
 
       - name: Typing (200 keys, typing-200k) then hover (60 sweeps)
-        if: github.run_attempt == 1 && steps.build.result == 'success' && steps.fixtures.result == 'success' && steps.compile.result == 'success'
+        if: ${{ !cancelled() && github.run_attempt == 1 && steps.build.outcome == 'success' && steps.fixtures.outcome == 'success' && steps.compile.outcome == 'success' }}
         run: |
           set -uo pipefail
           set +e
@@ -251,7 +252,7 @@ jobs:
           exit 0
 
       - name: Optional expansion-100k (only if 12+ minutes remain)
-        if: github.run_attempt == 1 && steps.build.result == 'success' && steps.fixtures.result == 'success' && steps.compile.result == 'success'
+        if: ${{ !cancelled() && github.run_attempt == 1 && steps.build.outcome == 'success' && steps.fixtures.outcome == 'success' && steps.compile.outcome == 'success' }}
         timeout-minutes: 8
         run: |
           set -uo pipefail
