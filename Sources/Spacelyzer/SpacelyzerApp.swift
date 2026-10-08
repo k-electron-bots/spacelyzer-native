@@ -764,6 +764,19 @@ struct SpacelyzerApp: App {
                             // unpopulated. Exact match on value or help - never a fragment/label-only test.
                             let nativeFull = expectedDetails?.isEmpty == false && footerAX.entries.contains { $0.value == expectedDetails! || $0.help == expectedDetails! }
                             Check.expect("footer-native-accessibility-full-details", nativeFull, "native accessor from mixed AX/view discovery only; exact exported-details match on AXValue or AXHelp; AXDescription unused by SwiftUI combined static text on macOS 26.6.2; truncated=\(footerAX.truncated); not VoiceOver/client announcements or tooltip proof")
+                            // Observability: the workflow launches the app via `open -n`, which detaches
+                            // stdout/stderr, so the walker's Perf.log diagnostics never reach the runner.
+                            // Write every candidate entry and the walk counters to a file the workflow
+                            // prints into the step log; the artifact must never be the only copy.
+                            var footerWalkDump = "nodes=\(footerAX.entries.count) discovered=\(footerAX.discovered) rejectedBranches=\(footerAX.rejected) truncated=\(footerAX.truncated)\n"
+                            for (walkIndex, walkEntry) in footerAX.entries.enumerated() {
+                                footerWalkDump += "entry \(walkIndex) label=\(walkEntry.label.debugDescription) help=\(walkEntry.help.debugDescription) value=\(walkEntry.value.debugDescription)\n"
+                            }
+                            // Completion marker: written only when the dump itself succeeded,
+                            // so the workflow never reads the marker as proof when evidence is missing.
+                            if (try? footerWalkDump.write(toFile: "/tmp/spz-footer-ax-entries.txt", atomically: true, encoding: .utf8)) != nil {
+                                try? Data().write(to: URL(fileURLWithPath: "/tmp/spz-footer-ax-entries-done"))
+                            }
                             mark(40)
                             footerWindow.close(); priorProductWindow?.makeKeyAndOrderFront(nil)
                             model.demoFooterUnreadable = nil; model.demoFooterPartial = nil
@@ -1148,7 +1161,7 @@ private actor PublicationBarrier {
 /// CI-only: read the real hosted native accessibility descendants, never substitute the authored SwiftUI label.
 @MainActor private enum FooterAXEvidence {
     struct Entry { let label: String; let help: String; let value: String }
-    struct Result { let entries: [Entry]; let truncated: Bool }
+    struct Result { let entries: [Entry]; let truncated: Bool; let discovered: Int; let rejected: Int }
     static func inspect(_ root: NSWindow) -> Result {
         var entries: [Entry] = []
         var seen = Set<ObjectIdentifier>()
@@ -1211,7 +1224,7 @@ private actor PublicationBarrier {
         }
         visit(root, depth: 0, edge: "root-window")
         Perf.log("footer-ax complete nodes=\(entries.count) discovered=\(discovered) rejectedBranches=\(rejected) truncated=\(truncated); informal attribute accessors inspect private proxy nodes, no authored substitution")
-        return Result(entries: entries, truncated: truncated)
+        return Result(entries: entries, truncated: truncated, discovered: discovered, rejected: rejected)
     }
 
 }
