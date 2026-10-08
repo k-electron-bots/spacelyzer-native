@@ -772,10 +772,11 @@ struct SpacelyzerApp: App {
                             for (walkIndex, walkEntry) in footerAX.entries.enumerated() {
                                 footerWalkDump += "entry \(walkIndex) label=\(walkEntry.label.debugDescription) help=\(walkEntry.help.debugDescription) value=\(walkEntry.value.debugDescription)\n"
                             }
-                            try? footerWalkDump.write(toFile: "/tmp/spz-footer-ax-entries.txt", atomically: true, encoding: .utf8)
-                            // Completion marker: the workflow polls for this before copying the
-                            // entries, so the dump can never race the step's cat/kill.
-                            try? Data().write(to: URL(fileURLWithPath: "/tmp/spz-footer-ax-entries-done"))
+                            // Completion marker: written only when the dump itself succeeded,
+                            // so the workflow never reads the marker as proof when evidence is missing.
+                            if (try? footerWalkDump.write(toFile: "/tmp/spz-footer-ax-entries.txt", atomically: true, encoding: .utf8)) != nil {
+                                try? Data().write(to: URL(fileURLWithPath: "/tmp/spz-footer-ax-entries-done"))
+                            }
                             mark(40)
                             footerWindow.close(); priorProductWindow?.makeKeyAndOrderFront(nil)
                             model.demoFooterUnreadable = nil; model.demoFooterPartial = nil
