@@ -84,12 +84,12 @@ pub fn layout_with(tree: &Tree, root: NodeId, opts: &LayoutOptions, sizes: Optio
         let mut small = 0.0f64;
         let mut small_bytes = 0u64;
         let min_area = (opts.min_edge as f64) * (opts.min_edge as f64);
-        let mut kids: Vec<NodeId> = tree.children(dir).collect();
-        if sizes.is_some() {
-            kids.retain(|&c| sz(c) > 0);
-            kids.sort_unstable_by_key(|&c| std::cmp::Reverse(sz(c)));
-        }
-        for c in kids {
+        // Partition by min_area first (the predicate is per-child, order-independent),
+        // so only the surviving items ever get sorted. A directory with very many
+        // children folds almost all of them into the remainder in one pass instead of
+        // sorting them all. With external sizes the remainder sum order changes from
+        // size-sorted to tree order; item set and item order class are unchanged.
+        for c in tree.children(dir) {
             let s = sz(c);
             if s == 0 {
                 continue;
@@ -101,6 +101,9 @@ pub fn layout_with(tree: &Tree, root: NodeId, opts: &LayoutOptions, sizes: Optio
             } else {
                 items.push(Item { id: c, area: a });
             }
+        }
+        if sizes.is_some() {
+            items.sort_unstable_by_key(|i| std::cmp::Reverse(sz(i.id)));
         }
         let mut rects: Vec<(Option<NodeId>, f64, f32, f32, f32, f32)> = Vec::new();
         let mut all: Vec<(Option<NodeId>, f64)> = items.iter().map(|i| (Some(i.id), i.area)).collect();
