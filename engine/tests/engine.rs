@@ -624,3 +624,63 @@ fn unicode_name_and_extension_lowercase_contract() {
         assert_eq!(r.total_count, 1);
     }
                             }
+
+#[test]
+fn layout_with_equal_size_ties_emit_in_native_order() {
+    // Equal external sizes, different names and extensions (categories). Ties must
+    // emit in native (NodeId ascending) order, deterministically.
+    let t = tempdir::T::new();
+    let r = t.path();
+    for n in ["delta.txt", "alpha.rs", "charlie.png", "bravo.txt"] {
+        fs::write(r.join(n), b"x").unwrap();
+    }
+    let tree = scan(r, &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    let mut sizes = vec![0u64; tree.len()];
+    sizes[0] = 4000;
+    for c in tree.children(0) { sizes[c as usize] = 1000; }
+    let opts = LayoutOptions { width: 400.0, height: 400.0, min_edge: 0.0, inset: 0.0, ..Default::default() };
+    let rects = layout_with(&tree, 0, &opts, Some(&sizes));
+    let ids: Vec<u32> = rects.iter().filter(|x| x.depth == 1).map(|x| x.node).collect();
+    assert_eq!(ids.len(), 4);
+    let mut sorted = ids.clone();
+    sorted.sort();
+    assert_eq!(ids, sorted, "equal-size ties must emit in NodeId (native) order");
+    // Arena tie order for equal on-disk sizes is name ascending; the files share a
+    // size, so native order here is also name order.
+    let names: Vec<&str> = rects.iter().filter(|x| x.depth == 1).map(|x| tree.name(x.node)).collect();
+    assert_eq!(names, ["alpha.rs", "bravo.txt", "charlie.png", "delta.txt"]);
+    let sig = |v: &[Rect]| v.iter().map(|x| (x.node, x.x, x.y, x.w, x.h, x.size, x.flags, x.depth, x.branch)).collect::<Vec<_>>();
+    let rects2 = layout_with(&tree, 0, &opts, Some(&sizes));
+    assert_eq!(sig(&rects), sig(&rects2), "same input must give bit-identical output");
+}
+
+#[test]
+fn layout_with_equal_size_dirs_deterministic_under_rect_cap() {
+    // Two equal-size directories with unequal subtree shapes under a tight max_rects
+    // cap: which descendants get emitted is decided by the tie contract, so it must
+    // be deterministic.
+    let t = tempdir::T::new();
+    let r = t.path();
+    fs::create_dir_all(r.join("aa")).unwrap();
+    fs::create_dir_all(r.join("zz")).unwrap();
+    for i in 0..5 { fs::write(r.join("aa").join(format!("f{i}")), b"x").unwrap(); }
+    fs::write(r.join("zz").join("only"), b"x").unwrap();
+    let tree = scan(r, &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    let mut sizes = vec![0u64; tree.len()];
+    let aa = tree.children(0).find(|&c| tree.name(c) == "aa").unwrap();
+    let zz = tree.children(0).find(|&c| tree.name(c) == "zz").unwrap();
+    sizes[0] = 20000;
+    sizes[aa as usize] = 10000;
+    sizes[zz as usize] = 10000;
+    for c in tree.children(aa) { sizes[c as usize] = 2000; }
+    for c in tree.children(zz) { sizes[c as usize] = 10000; }
+    let opts = LayoutOptions { width: 400.0, height: 400.0, min_edge: 0.0, inset: 0.0, max_rects: 4, ..Default::default() };
+    let sig = |v: &[Rect]| v.iter().map(|x| (x.node, x.x, x.y, x.w, x.h, x.size, x.flags, x.depth, x.branch)).collect::<Vec<_>>();
+    let r1 = layout_with(&tree, 0, &opts, Some(&sizes));
+    let r2 = layout_with(&tree, 0, &opts, Some(&sizes));
+    assert_eq!(sig(&r1), sig(&r2), "same input must give bit-identical output");
+    // Equal-size dirs emit in native order (aa before zz); breadth-first descent then
+    // emits aa's first native-order child before the cap cuts.
+    let names: Vec<&str> = r1.iter().skip(1).map(|x| tree.name(x.node)).collect();
+    assert_eq!(names, ["aa", "zz", "f0"]);
+}
