@@ -29,6 +29,7 @@ struct ContentView: View {
             }
         }
         .transaction { if reduceMotion { $0.animation = nil } }
+        .safeAreaInset(edge: .top, spacing: 0) { FullDiskAccessBanner() }
         .safeAreaInset(edge: .bottom, spacing: 0) { StatusBar() }
         .toolbar {
             ToolbarItemGroup {

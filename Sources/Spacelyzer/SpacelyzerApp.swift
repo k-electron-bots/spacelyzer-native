@@ -2396,6 +2396,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         await IdentityGateChecks.run()
         await RemovalHistoryChecks.run()
         await DuplicatesRemovalChecks.run()
+        await FullDiskAccessChecks.run()
         QuickLookChecks.run()
         copyPathChecks()
         csvChecks()
@@ -2988,7 +2989,13 @@ final class BusyFlag: @unchecked Sendable {
         "quicklook-relative-path-refused-before-panel",
         "quicklook-empty-path-refused-before-panel",
         "quicklook-second-preview-replaces-first",
-        "quicklook-present-synchronous-before-return"
+        "quicklook-present-synchronous-before-return",
+        "fda-copy-has-no-health-wording",
+        "fda-error-mapping-only-permission-refusal-is-refused",
+        "fda-indeterminate-probe-is-unknown-never-granted",
+        "fda-readable-probe-grants-and-hides-banner",
+        "fda-refresh-supersedes-parked-probe",
+        "fda-refused-probe-opens-banner-with-settings-and-recheck"
     ]
     static func run(tree: Tree) async -> Never {
         // Results go to a unique per-run directory chosen by the runner (SPZ_RESULT_DIR). Nothing shared is deleted or
