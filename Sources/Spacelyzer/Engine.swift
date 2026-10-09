@@ -111,6 +111,62 @@ struct UnobservedExclusion: Equatable {
     var reason: UnobservedExclusionReason
 }
 
+/// Summary of one duplicate-finder pass. Caps are REPORT-ONLY: a summary with
+/// `groupsTruncated`, `incomplete` or `budgetExhausted` is not "all duplicates" and must
+/// never drive removal. `duplicateAllocatedBytes` counts ALLOCATED bytes, never
+/// reclaimable space (removing one copy of a hard-linked set frees nothing, for example).
+struct DupSummary: Equatable {
+    var duplicateAllocatedBytes: UInt64
+    var groupsTotal: Int
+    var groupsListed: Int
+    var unreadable: Int
+    var changed: Int
+    var hardlinkAliases: Int
+    var cancelled: Bool
+    var incomplete: Bool
+    var budgetExhausted: Bool
+    var groupsTruncated: Bool
+    /// Any cap flag: the report is partial and must be labeled so.
+    var partial: Bool { incomplete || budgetExhausted || groupsTruncated }
+}
+
+/// One duplicate group from one report: `size` ALLOCATED bytes per member, `memberCount`
+/// copies in total, `paths` the listed members (a capped report lists fewer, never zero
+/// while members exist). `linked` means the members share one inode.
+struct DupGroup: Equatable {
+    var size: UInt64
+    var memberCount: Int
+    var linked: Bool
+    var paths: [String]
+    /// The group has more members than the report lists.
+    var listingCapped: Bool { memberCount > paths.count }
+}
+
+/// One frozen answer from one duplicate pass: summary and groups from one report on one
+/// table version.
+struct DupFindResult: Equatable {
+    var summary: DupSummary
+    var groups: [DupGroup]
+}
+
+/// Cancel/progress handle for one duplicate pass. The pass reads file contents and blocks
+/// its thread, so Task cancellation alone would leave it running: cancel() sets the
+/// engine's sticky flag and the pass returns early with its cancelled flag set. The C
+/// control is single use. Its raw handle may be cancelled or read from any thread but may
+/// be FREED only once every thread using it has stopped, so every raw call is serialized
+/// here and the free runs on the pass's own thread after spz_dup_find_status returns.
+final class DupScanControl: @unchecked Sendable {
+    private let lock = NSLock()
+    private var raw: OpaquePointer? = spz_dup_control_new()
+    /// The handle for spz_dup_find_status. Valid until freeAfterPass() runs on the pass thread.
+    var passPointer: OpaquePointer? { lock.lock(); defer { lock.unlock() }; return raw }
+    func cancel() { lock.lock(); if let p = raw { spz_dup_control_cancel(p) }; lock.unlock() }
+    func progress() -> SpzDupProgress { lock.lock(); defer { lock.unlock() }; return raw.map { spz_dup_control_progress($0) } ?? SpzDupProgress() }
+    /// Frees the raw handle. Call ONLY on the pass's thread after spz_dup_find_status has
+    /// returned (the engine forbids freeing while another thread may still use the handle).
+    func freeAfterPass() { lock.lock(); if let p = raw { spz_dup_control_free(p); raw = nil }; lock.unlock() }
+}
+
 /// Raw statvfs capacity of one filesystem. total-free is NOT "used by files": purgeable
 /// space, APFS snapshots and container sharing are not separated by statvfs, so none of
 /// these figures is a reclaimable-space number.
@@ -421,6 +477,46 @@ final class Tree: @unchecked Sendable {
             items.append(UnobservedExclusion(path: take(s), reason: r))
         }
         return .success(items)
+    }
+
+    /// Runs the duplicate finder ON THE CALLER'S THREAD (a blocking pass over file
+    /// contents; callers run it off-main). `expected` = a table version the caller holds,
+    /// nil for any. Caps are report-only: a capped result carries its partial flags and is
+    /// never "all duplicates". When a `control` is passed, this call frees it (on this
+    /// thread, after the pass returns); cancel it from any thread to end the pass early,
+    /// and its result then carries summary.cancelled. Any non-ok status, an unknown flags
+    /// bit, or a stale report fails the whole read.
+    func duplicatesChecked(minSize: UInt64 = 1, maxGroups: UInt32 = 0, maxMembers: UInt32 = 0, maxReadBytes: UInt64 = 0, control: DupScanControl? = nil, expected: UInt64? = nil) -> Result<DupFindResult, EngineStatus> {
+        defer { control?.freeAfterPass() }
+        var st: Int32 = -1
+        guard let r = spz_dup_find_status(ptr, minSize, maxGroups, maxMembers, maxReadBytes, control?.passPointer, expected ?? UInt64.max, &st), st == 0 else { return .failure(EngineStatus(raw: st)) }
+        defer { spz_dup_report_free(r) }
+        let rst = spz_dup_report_status(ptr, r)
+        guard rst == 0 else { return .failure(EngineStatus(raw: rst)) }
+        var sum = SpzDupSummary()
+        spz_dup_report_summary(r, &sum, &st)
+        guard st == 0 else { return .failure(EngineStatus(raw: st)) }
+        guard sum.flags & ~UInt32(0xF) == 0 else { return .failure(.internalError) }   // an unknown flag is never relabeled
+        let summary = DupSummary(duplicateAllocatedBytes: sum.duplicate_allocated_bytes,
+                                 groupsTotal: Int(sum.groups_total), groupsListed: Int(sum.groups_listed),
+                                 unreadable: Int(sum.unreadable), changed: Int(sum.changed),
+                                 hardlinkAliases: Int(sum.hardlink_aliases),
+                                 cancelled: sum.flags & 1 != 0, incomplete: sum.flags & 2 != 0,
+                                 budgetExhausted: sum.flags & 4 != 0, groupsTruncated: sum.flags & 8 != 0)
+        var groups: [DupGroup] = []
+        groups.reserveCapacity(summary.groupsListed)
+        for i in 0..<UInt32(summary.groupsListed) {
+            var g = SpzDupGroup()
+            var gst: Int32 = -1
+            spz_dup_report_group(r, i, &g, &gst)
+            guard gst == 0 else { return .failure(EngineStatus(raw: gst)) }
+            var ids = [UInt32](repeating: 0, count: Int(g.ids_listed))
+            var ist: Int32 = -1
+            let n = ids.withUnsafeMutableBufferPointer { b in spz_dup_report_ids(r, i, b.baseAddress, UInt32(b.count), &ist) }
+            guard ist == 0, n == g.ids_listed else { return .failure(EngineStatus(raw: ist)) }
+            groups.append(DupGroup(size: g.size, memberCount: Int(g.member_count), linked: g.linked != 0, paths: ids.map { path($0) }))
+        }
+        return .success(DupFindResult(summary: summary, groups: groups))
     }
 
     func layout(root: UInt32, size: CGSize, filter: FilterResult? = nil) -> TreemapLayout {
