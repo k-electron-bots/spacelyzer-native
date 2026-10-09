@@ -54,6 +54,17 @@ struct ContentView: View {
                     .help(model.tab != .largest ? "Open the Largest tab to export its list as CSV" : (model.largestExportBlockedReason ?? "Export the Largest list as CSV (read only, as the scan recorded it)"))
                     .accessibilityLabel("Export the Largest list as CSV")
             }
+            ToolbarItem {
+                Button { if let s = model.selected { model.proposeReview(of: s) } } label: { Label("Check on disk", systemImage: "doc.text.magnifyingglass") }
+                    .disabled(model.selected == nil || model.selected == 0 || model.tree == nil)
+                    .help("Compare the selected item with what the scan recorded (read only)")
+                    .accessibilityLabel("Check the selected item on disk")
+                    .popover(isPresented: Binding(get: { model.reviewItem != nil }, set: { if !$0 { model.reviewItem = nil } })) {
+                        if let id = model.reviewItem, let t = model.tree {
+                            ItemReviewPopover(model: model, tree: t, id: id, dismiss: { model.reviewItem = nil })
+                        }
+                    }
+            }
             ToolbarItem(placement: .principal) {
                 Picker("View", selection: $model.tab) {
                     Text("Treemap").tag(TrailingTab.treemap)
