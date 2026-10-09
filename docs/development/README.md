@@ -13,7 +13,7 @@ cargo build --release
 The native app requires macOS 14+. The Rust engine tests can also run on Linux. [Dependencies](../DEPENDENCIES.md) are deliberately limited; CI enforces the policy.
 
 ## Navigate the implementation
-[Architecture](architecture.md) explains the Rust/Swift boundary. [CLI reference](cli.md) covers scan/verification tools. [Performance notes](performance.md) distinguish engine time from publication and drawing.
+[Architecture](architecture.md) explains the Rust/Swift boundary. [CLI reference](cli.md) covers scan/verification tools. [Performance notes](performance.md) distinguish engine time from publication and drawing. The [E4 removal concurrency audit](e4-removal-concurrency.md) records the mutation/read concurrency evidence for the cleanup gate.
 
 ## Validation and delivery
 CI assertions and inspected images are scoped evidence. Consult [verification status](../verification/README.md), then add dated results to the [checkpoint ledger](../verification/checkpoints.md). Keep failures and missing evidence explicit. Do not append test narratives to the product README or label a source-only fix verified.
