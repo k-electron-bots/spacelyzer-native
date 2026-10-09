@@ -352,7 +352,7 @@ private struct OutlineTable: NSViewRepresentable {
             c.shownRevision = revision
             let tReload = Perf.now()
             c.table?.reloadData()
-            Perf.timingLog("outline-reloadData rows=\(model.outlineRows.count) reload_ms=\(Perf.ms(since: tReload))")
+            Perf.timingLog("outline-reloadData rows=\(model.outlineRows.count) reload_ms=\(Perf.ms(since: tReload)) at_ns=\(tReload)")
         }
         c.syncSelection(selected)
         if let table = c.table {
