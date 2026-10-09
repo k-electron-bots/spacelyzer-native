@@ -272,7 +272,11 @@ if mode == "typing" {
         // Row-count observation against the SETTLED baseline: t0(type) until
         // the count moves shows this key's filter applied; it is not a
         // render-completion claim.
-        let rWindow = 2.0
+        // Run 37867383313 evidence: with the toggle stream every key is a
+        // large count delta (2001 <-> ~50k rows) and the materialization
+        // exceeded the old 2s window on ALL 200 keys (rowcount_inconclusive
+        // 200/200, 0 ax_read_failures, settle-within-5s always succeeded).
+        let rWindow = 6.0
         let r = until(t0, rWindow, {
             let (c, ms, failed) = rowCountTimed(table)
             stats.add(ms, failed: failed)
@@ -303,6 +307,7 @@ if mode == "typing" {
         guard let settled = settleRowCount(5.0, &stats) else {
             print("row count did not settle after key \(i); next baseline unverifiable; aborting"); exit(7)
         }
+        if settled != baseline { print("settled baseline \(baseline) -> \(settled) after key \(i)") }
         baseline = settled
         usleep(30_000) // serial-latency mode: one key measured at a time; no rate claim
         typed = expected
@@ -408,14 +413,43 @@ if mode == "expansion" {
             print("chunked top-level children read failed at offset \(scanned) of \(totalChildren) (AXError \(err.rawValue)); not scanning blind"); exit(6)
         }
         guard chunkRows.count == want else { print("short chunked read at offset \(scanned): got \(chunkRows.count) of \(want) (identity churn mid-scan); aborting"); exit(6) }
+        // Run 37867383313 evidence: under the wrapper scan the target row
+        // EXISTS (2 top-level children) but exact == on AXDescription/AXValue
+        // found 0 matches - the row's accessible name form is unknown. Match
+        // on CONTAINS across the name-bearing attributes on the row and its
+        // direct cells; the fixture name is unique in the tree by design, so
+        // a substring match stays exact in effect. On failure, dump the
+        // scanned rows' attributes so the log discloses the real form.
+        func exposedText(_ el: AXUIElement) -> [String] {
+            ["AXDescription", "AXTitle", "AXValue", "AXLabel"].map { string(el, $0) }.filter { !$0.isEmpty }
+        }
+        func named(_ el: AXUIElement) -> Bool {
+            if exposedText(el).contains(where: { $0.contains(rowName) }) { return true }
+            let cells = read(el, "AXChildren") as? [AXUIElement] ?? []
+            return cells.contains(where: { exposedText($0).contains(where: { $0.contains(rowName) }) })
+        }
         for candidate in chunkRows {
-            if string(candidate, "AXDescription") == rowName { matches.append(candidate); continue }
-            let cells = read(candidate, "AXChildren") as? [AXUIElement] ?? []
-            if cells.contains(where: { string($0, "AXDescription") == rowName || string($0, "AXValue") == rowName }) { matches.append(candidate) }
+            if named(candidate) { matches.append(candidate) }
         }
         scanned += chunkRows.count
     }
-    guard matches.count == 1, let row = matches.first else { print("target row not unique or absent within bounded scan (\(matches.count) matches in \(scanned) scanned rows of \(totalChildren) top-level children, visible count \(initialCount)): \(rowName)"); exit(6) }
+    if matches.count != 1 {
+        let dump = min(scanned, 8)
+        var diag = ""
+        var diagRef: CFArray?
+        let diagErr = AXUIElementCopyAttributeValues(table, kAXChildrenAttribute as CFString, 0, dump, &diagRef)
+        if diagErr == AXError.success, let diagRows = diagRef as? [AXUIElement] {
+            for (i, r) in diagRows.enumerated() {
+                let role = string(r, "AXRole")
+                let texts = ["AXDescription", "AXTitle", "AXValue", "AXLabel"].map { "\($0)=\(string(r, $0))" }.joined(separator: " ")
+                let cells = read(r, "AXChildren") as? [AXUIElement] ?? []
+                let cellTexts = cells.prefix(4).map { c in "[" + ["AXDescription", "AXTitle", "AXValue", "AXLabel"].map { "\($0)=\(string(c, $0))" }.joined(separator: " ") + "]" }.joined(separator: " ")
+                diag += " row[\(i)] role=\(role) \(texts) cells=\(cellTexts);"
+            }
+        } else { diag = " diagnostic re-read failed (AXError \(diagErr.rawValue))" }
+        print("target row not unique or absent within bounded scan (\(matches.count) matches in \(scanned) scanned rows of \(totalChildren) top-level children, visible count \(initialCount)): \(rowName);\(diag)"); exit(6)
+    }
+    let row = matches[0]
     let cells0 = read(row, "AXChildren") as? [AXUIElement] ?? []
     guard let tri = (cells0.first { string($0, "AXRole") == "AXDisclosureTriangle" } ?? (string(row, "AXRole") == "AXDisclosureTriangle" ? row : nil)),
           frame(tri) != nil else { print("target row has no usable disclosure triangle: \(rowName)"); exit(6) }
