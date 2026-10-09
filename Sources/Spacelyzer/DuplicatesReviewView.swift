@@ -1,3 +1,4 @@
+import CSpacelyzer
 import SwiftUI
 
 // UNCOMPILED and UNRUN until a Mac run. Read-only review of one duplicate-finder pass:

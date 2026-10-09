@@ -7,6 +7,12 @@ struct ContentView: View {
     @Environment(\.demoReduceMotion) private var demoReduceMotion
     private var reduceMotion: Bool { demoReduceMotion ?? systemReduceMotion }
 
+    // Windows opened from the toolbar below; the states live on this view so the buttons
+    // and their sheets stay in one struct.
+    @State private var showExclusions = false
+    @State private var showDuplicates = false
+    @State private var showRemovalHistory = false
+
     var body: some View {
         @Bindable var model = model
         Group {
@@ -103,6 +109,13 @@ struct ContentView: View {
         .alert("Export", isPresented: Binding(get: { model.exportMessage != nil }, set: { if !$0 { model.exportMessage = nil } })) {
             Button("OK", role: .cancel) {}
         } message: { Text(model.exportMessage ?? "") }
+        .sheet(isPresented: $showExclusions) {
+            ExclusionsView(exclusions: $model.exclusions, tree: model.tree)
+        }
+        .sheet(isPresented: $showDuplicates) {
+            // Captured at presentation: the review reads one frozen pass from this tree.
+            if let t = model.tree { DuplicatesReviewView(tree: t) }
+        }
         .background(GeometryReader { geometry in
             Color.clear.onChange(of: geometry.size, initial: true) { _, size in
                 if Perf.on { DemoRootLayout.size = size }
@@ -137,9 +150,6 @@ struct StatusBar: View {
     static let height: CGFloat = 26
     @Environment(AppModel.self) private var model
     @State private var showSkipped = false
-    @State private var showExclusions = false
-    @State private var showDuplicates = false
-    @State private var showRemovalHistory = false
     private var unreadable: Int { Perf.on ? (model.demoFooterUnreadable ?? model.tree?.skippedCount ?? 0) : (model.tree?.skippedCount ?? 0) }
     private var partial: Bool { Perf.on ? (model.demoFooterPartial ?? model.tree?.wasCancelled ?? false) : (model.tree?.wasCancelled ?? false) }
     var body: some View {
@@ -162,13 +172,6 @@ struct StatusBar: View {
             // Captured at presentation: the skipped list is fixed when the scan ends, so
             // this tree's list stays consistent even if a newer scan starts underneath.
             if let t = model.tree { SkippedListView(tree: t) }
-        }
-        .sheet(isPresented: $showExclusions) {
-            ExclusionsView(exclusions: $model.exclusions, tree: model.tree)
-        }
-        .sheet(isPresented: $showDuplicates) {
-            // Captured at presentation: the review reads one frozen pass from this tree.
-            if let t = model.tree { DuplicatesReviewView(tree: t) }
         }
         .onAppear { if Perf.on { demoDetailsCaptured?(fullDetails) } }
     }
