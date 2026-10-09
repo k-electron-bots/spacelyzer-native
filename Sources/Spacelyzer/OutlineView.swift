@@ -531,7 +531,8 @@ private struct OutlineTable: NSViewRepresentable {
             let m = NSMenu()
             let a = BlockItem(title: "Show in Finder") { [weak self] in self?.model.reveal(node) }
             let b = BlockItem(title: "Move to Trash…") { [weak self] in self?.model.proposeRemoval(of: node) }
-            m.addItem(a); m.addItem(b)
+            let c = BlockItem(title: "Check on disk") { [weak self] in self?.model.proposeReview(of: node) }
+            m.addItem(a); m.addItem(c); m.addItem(b)
             return m
         }
     }
