@@ -40,6 +40,8 @@ struct ContentView: View {
                     Button("Startup Disk") { model.scanStartupVolume() }
                     Button("Home Folder") { model.scanHome() }
                     Button("Exclusions…") { showExclusions = true }
+                    Button("Duplicates…") { showDuplicates = true }
+                        .disabled(model.tree == nil)
                 } label: { Label("Scan", systemImage: "externaldrive") }
                 if model.scanning {
                     Button { model.cancel() } label: { Label("Stop", systemImage: "stop.circle") }
@@ -115,6 +117,7 @@ struct StatusBar: View {
     @Environment(AppModel.self) private var model
     @State private var showSkipped = false
     @State private var showExclusions = false
+    @State private var showDuplicates = false
     private var unreadable: Int { Perf.on ? (model.demoFooterUnreadable ?? model.tree?.skippedCount ?? 0) : (model.tree?.skippedCount ?? 0) }
     private var partial: Bool { Perf.on ? (model.demoFooterPartial ?? model.tree?.wasCancelled ?? false) : (model.tree?.wasCancelled ?? false) }
     var body: some View {
@@ -140,6 +143,10 @@ struct StatusBar: View {
         }
         .sheet(isPresented: $showExclusions) {
             ExclusionsView(exclusions: $model.exclusions, tree: model.tree)
+        }
+        .sheet(isPresented: $showDuplicates) {
+            // Captured at presentation: the review reads one frozen pass from this tree.
+            if let t = model.tree { DuplicatesReviewView(tree: t) }
         }
         .onAppear { if Perf.on { demoDetailsCaptured?(fullDetails) } }
     }
