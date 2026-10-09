@@ -408,8 +408,11 @@ if mode == "expansion" {
     let countErr = AXUIElementGetAttributeValueCount(table, kAXChildrenAttribute as CFString, &topChildCount)
     guard countErr == AXError.success else { axReadFailures += 1; print("top-level children count unreadable at preflight"); exit(6) }
     let totalChildren = Int(topChildCount)
-    // Enum bases are spelled AXError.* explicitly below: compile-only run
-    // 37861420537 showed contextual-member inference failing on these lines.
+    // Chunked reads use this SDK's 5-argument AXUIElementCopyAttributeValues
+    // (CFIndex index, CFIndex maxValues - the compiler in run 37862559550 printed
+    // the signature; the CFRange form does not exist here, and run 37861420537's
+    // "cannot infer contextual base" was the same call misresolved). AXError
+    // bases stay explicit for consistency with the rest of the file.
     let chunkSize = 256, maxChunks = 8 // bounded window: at most 2048 rows scanned
     let windowRows = min(totalChildren, chunkSize * maxChunks)
     var matches = [AXUIElement](), scanned = 0
@@ -417,7 +420,7 @@ if mode == "expansion" {
         let want = min(chunkSize, windowRows - scanned)
         var chunkRef: CFTypeRef?
         let err = AXUIElementCopyAttributeValues(table, kAXChildrenAttribute as CFString,
-                                                 CFRange(location: scanned, length: want), &chunkRef)
+                                                 scanned, want, &chunkRef)
         guard err == AXError.success, let chunkRows = chunkRef as? [AXUIElement] else {
             if err != AXError.success && err != AXError.noValue { axReadFailures += 1 }
             print("chunked top-level children read failed at offset \(scanned) of \(totalChildren) (AXError \(err.rawValue)); not scanning blind"); exit(6)
