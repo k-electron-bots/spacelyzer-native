@@ -84,7 +84,7 @@ enum SkippedReason: UInt8 {
 
 /// One skipped location from one tree. `lossy` means the path text may not be the exact
 /// on-disk name (non-UTF-8 bytes); the app must say so rather than present it as exact.
-struct SkippedItem {
+struct SkippedItem: Equatable {
     var path: String
     var reason: SkippedReason
     var lossy: Bool
