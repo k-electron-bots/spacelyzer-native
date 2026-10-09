@@ -222,7 +222,7 @@ jobs:
           [ -f "$ART/m3-BLOCKER.txt" ] && { echo "SKIPPED: blocker recorded earlier"; exit 10; }
           [ -x "$RUNNER_TEMP/m3bench" ] || { echo "SKIPPED: bench binary missing (earlier step failed)"; exit 10; }
           pgrep -x Spacelyzer >/dev/null && { echo "PRECHECK FAILED: Spacelyzer already running"; exit 10; }
-          open -n "$GITHUB_WORKSPACE/dist/Spacelyzer.app" --env SPZ_AUTOSCAN="$RUNNER_TEMP/m3fix-exp/expansion-10000"
+          open -n "$GITHUB_WORKSPACE/dist/Spacelyzer.app" --env SPZ_AUTOSCAN="$RUNNER_TEMP/m3fix-exp"
           PID=""
           for i in $(seq 1 30); do
             n=$(pgrep -x Spacelyzer | wc -l | tr -d ' ')
@@ -232,7 +232,7 @@ jobs:
           [ -n "$PID" ] || { echo "APP DID NOT LAUNCH UNIQUELY"; exit 10; }
           trap 'kill "$PID" 2>/dev/null' EXIT
           ps -p "$PID" -o pid=,comm= | tee "$ART/m3-expansion-pid.txt"
-          "$RUNNER_TEMP/m3-readiness" "$PID" 90 "$RUNNER_TEMP/m3fix-exp/expansion-10000" 2>&1 | tee "$ART/m3-expansion-readiness.txt"
+          "$RUNNER_TEMP/m3-readiness" "$PID" 90 "$RUNNER_TEMP/m3fix-exp" 2>&1 | tee "$ART/m3-expansion-readiness.txt"
           rs=${PIPESTATUS[0]}
           if [ "$rs" = "3" ]; then echo "BLOCKER: AX trust unavailable (readiness probe)" | tee "$ART/m3-BLOCKER.txt"; exit 10; fi
           if [ "$rs" != "0" ]; then echo "READINESS NOT ESTABLISHED - expansion segment findings-only"; exit 10; fi
@@ -294,7 +294,7 @@ jobs:
           vs=${PIPESTATUS[0]}
           if [ "$gs" != "0" ] || [ "$vs" != "0" ]; then echo "FIXTURE GENERATE/VERIFY FAILED (generate=$gs verify=$vs) - optional segment findings-only" | tee -a "$ART/expansion-100k-decision.txt"; exit 0; fi
           pgrep -x Spacelyzer >/dev/null && { echo "PRECHECK FAILED: Spacelyzer already running"; exit 10; }
-          open -n "$GITHUB_WORKSPACE/dist/Spacelyzer.app" --env SPZ_AUTOSCAN="$RUNNER_TEMP/m3fix-exp100/expansion-100000"
+          open -n "$GITHUB_WORKSPACE/dist/Spacelyzer.app" --env SPZ_AUTOSCAN="$RUNNER_TEMP/m3fix-exp100"
           PID=""
           for i in $(seq 1 30); do
             n=$(pgrep -x Spacelyzer | wc -l | tr -d ' ')
@@ -303,7 +303,7 @@ jobs:
           done
           [ -n "$PID" ] || { echo "APP DID NOT LAUNCH UNIQUELY"; exit 0; }
           trap 'kill "$PID" 2>/dev/null' EXIT
-          "$RUNNER_TEMP/m3-readiness" "$PID" 120 "$RUNNER_TEMP/m3fix-exp100/expansion-100000" 2>&1 | tee "$ART/m3-expansion-100k-readiness.txt"
+          "$RUNNER_TEMP/m3-readiness" "$PID" 120 "$RUNNER_TEMP/m3fix-exp100" 2>&1 | tee "$ART/m3-expansion-100k-readiness.txt"
           rs=${PIPESTATUS[0]}
           if [ "$rs" != "0" ]; then echo "READINESS NOT ESTABLISHED (probe exit $rs) - segment findings-only"; [ "$rs" = "3" ] && echo "BLOCKER: AX trust unavailable (readiness probe)" | tee "$ART/m3-BLOCKER.txt"; exit 0; fi
           "$RUNNER_TEMP/m3bench" expansion "$PID" "$ART/m3-expansion-100k.jsonl" expansion-100000 3 2>&1 | tee "$ART/m3-expansion-100k.log"

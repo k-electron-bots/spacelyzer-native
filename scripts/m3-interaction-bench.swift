@@ -25,11 +25,14 @@ import Darwin
 //   so it is not a verified per-keystroke application latency.
 // - Expansion mode's mechanism (matching a named row, its AXDisclosureTriangle,
 //   and AXDisclosing state) is an UNVERIFIED CAPABILITY until the first approved
-//   Mac run: for a profile-direct scan the profile root may not be a displayed
-//   row, and whether the app exposes disclosure state through AX is unconfirmed.
+//   Mac run: run 37864247016 confirmed the profile root is NOT a displayed
+//   row under a direct scan; whether the app exposes disclosure state through
+//   AX is still unconfirmed (no successful expansion measurement yet).
 // - The scanned path cannot be verified through AX. External preflight
-//   (documented, not enforced): the operator scans the fixture PROFILE directory
-//   directly (ROOT/typing-200k or ROOT/expansion-N per make_fixtures.py verify).
+//   (documented, not enforced): typing scans the fixture PROFILE directory
+//   directly (ROOT/typing-200k); expansion scans the profile's WRAPPER
+//   directory (exactly one fixture inside) so the huge folder is a real
+//   outline row - see docs/m3-measurement-protocol.md.
 //
 //   m3-interaction-bench typing    <pid> <out.jsonl> [keystrokes=200]
 //   m3-interaction-bench hover     <pid> <out.jsonl> [sweeps=60]
@@ -198,7 +201,7 @@ emit(["header": "m3-interaction-bench", "mode": mode, "pid": pid,
       "limitation": "event-to-AX-visible latency only; not proof of main-thread block",
       "rowcount_note": "typing rowcount is an uncorrelated AX observation, not verified per-keystroke application latency",
       "expansion_note": "named-row/disclosure mechanism is an unverified capability until the first approved Mac run",
-      "preflight": "operator scanned the fixture profile dir directly; AX cannot verify the scanned path"])
+      "preflight": "typing scanned the profile dir directly; expansion scanned its one-fixture wrapper; AX cannot verify the scanned path"])
 
 if mode == "typing" {
     // Preflight: the field must read SUCCESSFULLY as empty - a failed read never
@@ -210,9 +213,10 @@ if mode == "typing" {
     guard until(now(), 2, { frontmostAndFocused(field) }) != nil else { print("filter field did not take focus"); exit(7) }
     // Settle-then-measure: a row-count baseline is only trusted once the count
     // STABILIZES (two consecutive equal successful reads; a failed read resets
-    // the streak). The previous run read the baseline ~30ms after the prior
-    // keystroke, before that key's filter had settled, making per-key
-    // correlation impossible (187/200 keys inconclusive).
+    // the streak). Run 37864247016 evidence: with these settled baselines
+    // in place, 187/200 keys STILL had no count change - the stale-baseline
+    // theory was wrong; the accumulating stream itself was the cause (see
+    // the toggle stream below).
     func settleRowCount(_ window: Double, _ stats: inout ReadStats) -> Int? {
         let deadline = now() + window
         var last: Int? = nil
@@ -229,18 +233,26 @@ if mode == "typing" {
     var preStats = ReadStats()
     guard let settledStart = settleRowCount(5.0, &preStats) else { print("row count did not settle before typing; aborting"); exit(7) }
     var baseline = settledStart
-    let stream = Array("invoice backup photo archive render cache export draft ")
     var fieldMs = [Double](), rowcountMs = [Double]()
     var inconclusive = 0, degradedEvents = 0
     var typed = ""
     for i in 0..<keystrokes {
         guard frontmostAndFocused(field) else { print("focus lost before key \(i); aborting"); exit(7) }
-        let ch = stream[i % stream.count]
-        let expected = typed + String(ch)
+        // Toggle stream: every key MUST change the match count, or the
+        // "count moves" signal cannot fire. Run 37864247016 evidence: the
+        // accumulating multi-word stream left 187/200 keys with no count
+        // change - same-prefix refinement ("i"->"in"->... all match the
+        // same set) and the 0-match plateau after the first space. This
+        // stream alternates "" <-> "i": filter.rs contains_ci substring
+        // matching over the fixture word inventory (make_fixtures.py:
+        // invoice_* and archive_* contain "i"; backup/photo/render/cache/
+        // export/draft do not) makes every keystroke change the count.
+        let expanding = typed.isEmpty
+        let expected = expanding ? "i" : ""
         var stats = ReadStats()
         let rowsBefore: Int? = baseline // settled after the previous key, never a 30ms-stale read
         let t0 = now()
-        type(ch)
+        if expanding { type("i") } else { key(kDelete) }
         // Field: exact full-string equality on SUCCESSFUL reads only.
         let fWindow = 2.0
         let f = until(t0, fWindow, {
@@ -273,7 +285,7 @@ if mode == "typing" {
         let fieldLow = f > fWindow * 1000
         let rowcountLow = (r ?? .infinity) > rWindow * 1000
         let degraded = fieldLow || rowcountLow || stats.failures > 0
-        var event: [String: Any] = ["event": "key", "i": i, "char": String(ch), "expected_field": expected,
+        var event: [String: Any] = ["event": "key", "i": i, "char": expanding ? "i" : "delete", "expected_field": expected,
             "field_ms": f, "field_low_quality": fieldLow,
             "rowcount_ms": r ?? -1, "rowcount_verdict": r != nil ? "changed" : "inconclusive",
             "rowcount_low_quality": rowcountLow,
@@ -293,35 +305,7 @@ if mode == "typing" {
         }
         baseline = settled
         usleep(30_000) // serial-latency mode: one key measured at a time; no rate claim
-        typed.append(ch)
-        if typed.count >= 24 { // keep the filter short; clear with real delete-key events
-            for _ in 0..<typed.count {
-                guard frontmostAndFocused(field) else { print("focus lost mid-delete; aborting"); exit(7) }
-                key(kDelete); usleep(5_000)
-            }
-            typed = ""
-            // Run 37848565420 evidence: the delete burst is processed by the app
-            // asynchronously (24 deletes at 5ms on a 200k-row fixture, each
-            // re-applying the filter - filterPending in the app is async), so a
-            // single immediate AXValue read raced the app's own event queue;
-            // run 37834771695 passed the identical step on timing luck. The
-            // REQUIREMENT is unchanged: the field must read verifiably empty
-            // before typing resumes, otherwise abort. The verification now
-            // polls with the same bounded-until pattern as the focus and
-            // field-update checks above instead of reading exactly once.
-            let cleared = until(now(), 5.0, {
-                let (vc, _, vcFailed) = readTimed(field, "AXValue")
-                guard !vcFailed, let sc = vc as? String else { return false }
-                return sc.isEmpty
-            })
-            guard cleared != nil else {
-                print("filter field failed to clear verifiably; aborting"); exit(7)
-            }
-            guard let settledCleared = settleRowCount(5.0, &stats) else {
-                print("row count did not settle after clearing; next baseline unverifiable; aborting"); exit(7)
-            }
-            baseline = settledCleared
-        }
+        typed = expected
     }
     fieldMs.sort(); rowcountMs.sort()
     summary(["kind": "m3-typing", "pid": pid, "n": keystrokes, "mode_note": "serial per-key latency; not a burst/typist-rate measurement",
@@ -382,26 +366,24 @@ if mode == "hover" {
 }
 
 if mode == "expansion" {
-    // Bounded preflight: poll the visible-row COUNT only - at 10k/100k rows the
-    // flat AXRows array materialization is the expensive step (AXRowCount
-    // polling is proven at 100001 rows), so the old 256-row cap on AXRows made
-    // the mode refuse exactly the fixtures it exists to measure.
-    // Run 37848565420 evidence corrected the follow-on assumption too: the
-    // expansion fixtures START FULLY EXPANDED, so the table's top-level
-    // AXChildren holds every visible row (observed 10002 and 100002) - one
-    // bulk AXChildren read materializes the entire outline and the 256-row
-    // guard refused both fixtures (exit 6) without measuring anything. The
-    // named target row is now located by CHUNKED top-level reads
-    // (AXUIElementCopyAttributeValues chunked reads, CFIndex index + maxValues, 256 rows per chunk)
-    // over a bounded window of at most maxChunks chunks. Exactly one match
-    // within that window is required: zero matches, multiple matches, a
-    // short chunk (identity churn mid-scan), or a chunk read error all
-    // abort - the bench never rescans blind and never clicks an unverified
-    // row. Uniqueness is verified over the bounded window, not the whole
-    // outline; fixture evidence places the named root row at index 0. The
-    // validated row handle is REUSED for every rep (no per-rep scans). If
-    // the app's identity churn invalidates the handle, its reads fail and
-    // the run aborts.
+    // Run 37864247016 evidence: the named row NEVER existed under a direct
+    // scan - the app's outline (engine visible_rows) lists the scanned
+    // root's CHILDREN at depth 0, the root itself is never a row, so both
+    // fixtures exited 6 with "0 matches in 2048 scanned rows". The workflow
+    // now scans the fixture's WRAPPER directory (m3fix-exp*, which contains
+    // exactly one fixture), so the huge folder IS a top-level row with a
+    // disclosure triangle and starts COLLAPSED: expanding it materializes
+    // its 10k/100k children - the stall this mode exists to measure. The
+    // wrapper adds exactly one scan node. Top-level AXChildren is small by
+    // design again; the bounded chunked lookup below stays as the mechanism
+    // (AXUIElementCopyAttributeValues chunked reads, CFIndex index +
+    // maxValues, 256 rows per chunk over at most maxChunks chunks). Exactly
+    // one match within that window is required: zero matches, multiple
+    // matches, a short chunk (identity churn mid-scan), or a chunk read
+    // error all abort - the bench never rescans blind and never clicks an
+    // unverified row. The validated row handle is REUSED for every rep (no
+    // per-rep scans). If the app's identity churn invalidates the handle,
+    // its reads fail and the run aborts.
     let (initialCount, _, initialFailed) = rowCountTimed(table)
     guard !initialFailed, let initialCount else { print("row count unreadable at preflight"); exit(6) }
     var topChildCount: CFIndex = 0
