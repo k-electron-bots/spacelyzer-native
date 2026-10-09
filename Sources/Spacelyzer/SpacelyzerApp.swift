@@ -2944,7 +2944,32 @@ final class BusyFlag: @unchecked Sendable {
         "retry-new-inputs-replace-pending-action",
         "retry-same-inputs-dedupes-to-one-fire",
         "zero-match-root-count-and-layout-data-contract",
-        "zero-match-selection-removal-policy"
+        "zero-match-selection-removal-policy",
+        // E-series consumer and gate checks recorded through engine(): listed so the exact-once gate can pass.
+        "duplicates-cancel-suppresses-late-publish",
+        "duplicates-cancelled-pass-renders-cancelled-never-partial-numbers",
+        "duplicates-capped-report-keeps-partial-label-data",
+        "duplicates-failed-read-shows-failed-never-empty",
+        "duplicates-load-runs-off-main-and-publishes-on-main",
+        "exclusions-add-trims-rejects-blank-and-exact-duplicate",
+        "exclusions-remove-is-exact-match",
+        "exclusions-unobserved-failed-read-shows-failed-never-empty",
+        "exclusions-unobserved-load-off-main-publishes-on-main",
+        "identity-gate-engine-fault-refuses",
+        "identity-gate-gone-refuses-and-moves-nothing",
+        "identity-gate-replaced-refuses-and-moves-nothing",
+        "identity-gate-runs-off-main-before-trash",
+        "identity-gate-same-proceeds-and-journals",
+        "item-review-propose-opens-for-real-node",
+        "item-review-propose-refuses-non-node-and-empty-tree",
+        "item-review-propose-starts-no-read",
+        "skipped-list-cancel-suppresses-late-publish",
+        "skipped-list-failed-read-shows-failed-never-empty",
+        "skipped-list-load-runs-off-main-and-publishes-on-main",
+        "volume-header-failed-read-shows-failed-never-number",
+        "volume-header-load-off-main-publishes-on-main",
+        "volume-header-repeat-load-same-path-does-not-reread",
+        "volume-info-real-read-satisfies-statvfs-invariants"
     ]
     static func run(tree: Tree) async -> Never {
         // Results go to a unique per-run directory chosen by the runner (SPZ_RESULT_DIR). Nothing shared is deleted or
