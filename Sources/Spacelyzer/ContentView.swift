@@ -112,6 +112,7 @@ struct StatusBar: View {
     /// Measured on CI: NavigationSplitView columns extend to the window bottom (frame bottom = 612 = window height), under this bar.
     static let height: CGFloat = 26
     @Environment(AppModel.self) private var model
+    @State private var showSkipped = false
     private var unreadable: Int { Perf.on ? (model.demoFooterUnreadable ?? model.tree?.skippedCount ?? 0) : (model.tree?.skippedCount ?? 0) }
     private var partial: Bool { Perf.on ? (model.demoFooterPartial ?? model.tree?.wasCancelled ?? false) : (model.tree?.wasCancelled ?? false) }
     var body: some View {
@@ -130,6 +131,11 @@ struct StatusBar: View {
         }
         .font(.caption).lineLimit(1).padding(.horizontal, 10)
         .frame(height: Self.height).background(.bar)
+        .sheet(isPresented: $showSkipped) {
+            // Captured at presentation: the skipped list is fixed when the scan ends, so
+            // this tree's list stays consistent even if a newer scan starts underneath.
+            if let t = model.tree { SkippedListView(tree: t) }
+        }
         .onAppear { if Perf.on { demoDetailsCaptured?(fullDetails) } }
     }
     @ViewBuilder private func summary(compact: Bool) -> some View {
@@ -143,7 +149,9 @@ struct StatusBar: View {
                     Text("Filter: \(formatBytes(f.totalBytes)) · \(fileCount(UInt64(f.totalCount)))").foregroundStyle(.blue)
                 }
                 if unreadable > 0 {
-                    Text("\(locationCount(unreadable)) \(compact ? "unreadable" : "not readable")").foregroundStyle(.orange)
+                    Button("\(locationCount(unreadable)) \(compact ? "unreadable" : "not readable")") { showSkipped = true }
+                        .buttonStyle(.plain).foregroundStyle(.orange)
+                        .help("Show the locations that were not scanned")
                 }
             }
             if !compact {
