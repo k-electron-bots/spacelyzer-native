@@ -532,7 +532,26 @@ if mode == "expansion" {
         }
         return nil
     }
-    guard let (tri0, _) = chevronState(row), frame(tri0) != nil else { print("target row has no usable chevron (Expand/Collapse label): \(rowName)"); exit(6) }
+    // Bounded failure evidence on the chevron-discovery path (runs
+    // 37870201922 and 37875672920 both exited 6 here with no detail): dump
+    // what the target row, its cells, and their children ACTUALLY expose -
+    // role/label/title/description/value, values truncated to 80 chars, at
+    // most 6 cells x 6 children, no AXRows materialization.
+    func axBrief(_ el: AXUIElement) -> String {
+        func short(_ s: String) -> String { s.count > 80 ? String(s.prefix(80)) + "~" : s }
+        return "[" + ["AXRole", "AXLabel", "AXTitle", "AXDescription", "AXValue"].map { "\($0)=\(short(string(el, $0)))" }.joined(separator: " ") + "]"
+    }
+    guard let (tri0, _) = chevronState(row), frame(tri0) != nil else {
+        var diag = "row" + axBrief(row)
+        let cells = read(row, "AXChildren") as? [AXUIElement] ?? []
+        diag += " cells=\(cells.count)"
+        for (ci, c) in cells.prefix(6).enumerated() {
+            diag += " cell\(ci)" + axBrief(c)
+            let kids = read(c, "AXChildren") as? [AXUIElement] ?? []
+            for (ki, k) in kids.prefix(6).enumerated() { diag += " kid\(ki)" + axBrief(k) }
+        }
+        print("target row has no usable chevron (Expand/Collapse label): \(rowName);\(diag)"); exit(6)
+    }
     var latMs = [Double](), jank = 0, inconclusive = 0, degradedEvents = 0
     for rep in 0..<reps {
         // Disclosure STATE must be a valid Bool before any input - a missing or
