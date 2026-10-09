@@ -85,6 +85,15 @@ let out = FileHandle(fileDescriptor: outFd, closeOnDealloc: true)
 
 let app = AXUIElementCreateApplication(pid)
 var axReadFailures = 0
+// Failure-site attribution (run 37883865575: 100k expansion ended
+// inconclusive with ax_read_failures=3 and no stage detail - the log must
+// say WHICH read failed and with which AXError). Bounded at 32 entries;
+// the bench aborts long before that many real failures.
+var axReadFailureSites: [String] = []
+func noteAxFailure(_ site: String, _ err: AXError) {
+    axReadFailures += 1
+    if axReadFailureSites.count < 32 { axReadFailureSites.append("\(site)(err=\(err.rawValue))") }
+}
 func now() -> Double { ProcessInfo.processInfo.systemUptime }
 struct ReadStats {
     var count = 0, failures = 0
@@ -103,7 +112,7 @@ func readTimed(_ element: AXUIElement, _ name: String) -> (CFTypeRef?, Double, B
     let err = AXUIElementCopyAttributeValue(element, name as CFString, &result)
     let ms = (now() - start) * 1000
     let failed = err != .success && err != .attributeUnsupported && err != .noValue
-    if failed { axReadFailures += 1 }
+    if failed { noteAxFailure("attr:\(name)", err) }
     return (err == .success ? result : nil, ms, failed)
 }
 func read(_ element: AXUIElement, _ name: String) -> CFTypeRef? { readTimed(element, name).0 }
@@ -131,7 +140,7 @@ func rowCountTimed(_ table: AXUIElement) -> (Int?, Double, Bool) {
     let err = AXUIElementGetAttributeValueCount(table, "AXRows" as CFString, &count)
     let ms = (now() - start) * 1000
     let failed = err != .success && err != .attributeUnsupported && err != .noValue
-    if failed { axReadFailures += 1 }
+    if failed { noteAxFailure("rowCount", err) }
     return (err == .success ? Int(count) : nil, ms, failed)
 }
 // Elapsed is always measured from the caller's t0, taken BEFORE the input event.
@@ -191,6 +200,7 @@ func frontmostAndFocused(_ field: AXUIElement) -> Bool {
 func summary(_ object: [String: Any], inconclusive: Int) -> Never {
     var withCommon = object
     withCommon["ax_read_failures"] = axReadFailures
+    withCommon["ax_read_failure_sites"] = axReadFailureSites
     withCommon["limitation"] = "event-to-AX-visible latency only; not proof of main-thread block"
     let clean = inconclusive == 0 && axReadFailures == 0
     withCommon["status"] = clean ? "complete" : "inconclusive"
@@ -206,23 +216,35 @@ guard let running = NSRunningApplication(processIdentifier: pid), running.activa
       until(now(), 30, interval: 250_000, { one("AXTable", "Folder outline") != nil && one("AXTextField", "Filter by name") != nil }) != nil,
       let table = one("AXTable", "Folder outline"), let field = one("AXTextField", "Filter by name"),
       let fieldFrame = frame(field) else { exit(4) }
-// Run 37880172301 evidence: on a slow app launch (readiness passed at
-// polls=3) the window was not yet materialized at this preflight and BOTH
-// typing and hover exited 5 instantly with no measurement; run 37882191076
-// showed 15s is still not always enough (exit 5 again, reason printed).
-// Wait bounded for the one window (60s, 250ms polls) and, on timeout, dump
-// the observed AXWindows count and per-window frames so the log says which
-// side failed (zero windows, several windows, or a frameless one).
-guard until(now(), 60, interval: 250_000, {
-    let ws = read(app, "AXWindows") as? [AXUIElement] ?? []
-    guard ws.count == 1, let f = frame(ws[0]), f.width > 0 else { return false }
+// Run 37883865575 evidence: after launch the app exposes TWO AXWindows
+// (w0_frame=(71.0,167.0,222.0,32.0), w1_frame=(32.0,43.0,960.0,652.0)),
+// so the count==1 preflight could never pass - the repeated typing/hover
+// exit 5 was window ambiguity, not launch slowness (the slow-launch
+// theory was disproved by that run's window dump). The app declares
+// exactly one WindowGroup("Spacelyzer") and no other scene; the 222x32
+// window's identity is unproven until a run prints the per-window dump
+// below (title/role/subrole/frame). Selection: the one window qualifying
+// as the standard app window (AXWindow role, AXStandardWindow subrole,
+// real frame). Uniqueness is still asserted among QUALIFYING windows -
+// zero or several both abort with the dump.
+func windowDiag(_ w: AXUIElement) -> String {
+    let f = frame(w).map { "\($0)" } ?? "nil"
+    return "role=\(string(w, "AXRole")) subrole=\(string(w, "AXSubrole")) title=\(string(w, "AXTitle")) frame=\(f)"
+}
+func isAppWindow(_ w: AXUIElement) -> Bool {
+    guard string(w, "AXRole") == "AXWindow", string(w, "AXSubrole") == "AXStandardWindow",
+          let f = frame(w), f.width > 0, f.height > 100 else { return false }
     return true
-}) != nil,
-      let windows = read(app, "AXWindows") as? [AXUIElement], windows.count == 1,
-      let winFrame = frame(windows[0]), winFrame.width > 0 else {
+}
+func qualifyingWindows() -> [AXUIElement] {
     let ws = read(app, "AXWindows") as? [AXUIElement] ?? []
-    var winDiag = "windows=\(ws.count)"
-    for (i, w) in ws.prefix(4).enumerated() { winDiag += " w\(i)_frame=\(frame(w).map { "\($0)" } ?? "nil")" }
+    return ws.filter(isAppWindow)
+}
+guard until(now(), 60, interval: 250_000, { qualifyingWindows().count == 1 }) != nil,
+      let winFrame = { let q = qualifyingWindows(); return q.count == 1 ? frame(q[0]) : nil }() else {
+    let ws = read(app, "AXWindows") as? [AXUIElement] ?? []
+    var winDiag = "windows=\(ws.count) qualifying=\(qualifyingWindows().count)"
+    for (i, w) in ws.prefix(4).enumerated() { winDiag += " w\(i)[\(windowDiag(w))]" }
     print("app window not uniquely discoverable within 60s of bench start (\(winDiag)); aborting"); exit(5)
 }
 emit(["header": "m3-interaction-bench", "mode": mode, "pid": pid,
@@ -471,7 +493,7 @@ if mode == "expansion" {
     func findTargetRow() -> AXUIElement {
         var topChildCount: CFIndex = 0
         let countErr = AXUIElementGetAttributeValueCount(table, kAXChildrenAttribute as CFString, &topChildCount)
-        guard countErr == AXError.success else { axReadFailures += 1; print("top-level children count unreadable"); exit(6) }
+        guard countErr == AXError.success else { noteAxFailure("childrenCount", countErr); print("top-level children count unreadable"); exit(6) }
         let totalChildren = Int(topChildCount)
         let chunkSize = 256, maxChunks = 8 // bounded window: at most 2048 rows scanned
         let windowRows = min(totalChildren, chunkSize * maxChunks)
@@ -497,7 +519,7 @@ if mode == "expansion" {
             let err = AXUIElementCopyAttributeValues(table, kAXChildrenAttribute as CFString,
                                                      scanned, want, &chunkRef)
             guard err == AXError.success, let chunkRows = chunkRef as? [AXUIElement] else {
-                if err != AXError.success && err != AXError.noValue { axReadFailures += 1 }
+                if err != AXError.success && err != AXError.noValue { noteAxFailure("childrenChunk", err) }
                 print("chunked top-level children read failed at offset \(scanned) of \(totalChildren) (AXError \(err.rawValue)); not scanning blind"); exit(6)
             }
             guard chunkRows.count == want else { print("short chunked read at offset \(scanned): got \(chunkRows.count) of \(want) (identity churn mid-scan); aborting"); exit(6) }
