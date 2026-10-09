@@ -65,6 +65,15 @@ struct ContentView: View {
                         }
                     }
             }
+            ToolbarItem {
+                Button { showRemovalHistory = true } label: { Label("Removed", systemImage: "arrow.uturn.backward.circle") }
+                    .disabled(model.lastRemoved.isEmpty)
+                    .help("Items moved to the Trash this session, each with its own Put Back")
+                    .accessibilityLabel("Removal history")
+                    .popover(isPresented: $showRemovalHistory) {
+                        RemovalHistoryPopover(model: model)
+                    }
+            }
             ToolbarItem(placement: .principal) {
                 Picker("View", selection: $model.tab) {
                     Text("Treemap").tag(TrailingTab.treemap)
@@ -129,6 +138,7 @@ struct StatusBar: View {
     @State private var showSkipped = false
     @State private var showExclusions = false
     @State private var showDuplicates = false
+    @State private var showRemovalHistory = false
     private var unreadable: Int { Perf.on ? (model.demoFooterUnreadable ?? model.tree?.skippedCount ?? 0) : (model.tree?.skippedCount ?? 0) }
     private var partial: Bool { Perf.on ? (model.demoFooterPartial ?? model.tree?.wasCancelled ?? false) : (model.tree?.wasCancelled ?? false) }
     var body: some View {

@@ -10,7 +10,8 @@ enum TreemapColoring: String, CaseIterable, Identifiable {
 
 enum TrailingTab: Hashable { case treemap, kinds, largest, folders }
 
-struct RemovedItem { var original: URL; var trashed: URL; var size: UInt64 }
+/// One journaled removal. The id keys per-item restore from the removal history; a restored record is forgotten.
+struct RemovedItem: Identifiable { var id = UUID(); var original: URL; var trashed: URL; var size: UInt64 }
 
 @MainActor @Observable
 final class AppModel {
@@ -349,6 +350,10 @@ final class AppModel {
     /// Seam for the pre-Trash identity revalidation, so checks can force any verdict without touching a file.
     /// The real check is one lstat comparing the item now at the path with the identity the scan recorded.
     var identityCheck: (Tree, UInt32) -> IdentityVerdict = { tree, id in tree.checkIdentity(id) }
+    /// Seam for the restore (undo) move, so checks can force outcomes without touching any file.
+    var restoreItem: (URL, URL) throws -> Void = { from, to in try FileManager.default.moveItem(at: from, to: to) }
+    /// Seam for the pre-restore collision probe, so checks can force a collision without creating a file.
+    var restoreCollisionProbe: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
     var lastRemoved: [RemovedItem] = []
     /// True while a Trash move or undo runs off the main actor; repeat requests are refused meanwhile.
     var removalInFlight = false
@@ -765,6 +770,8 @@ final class AppModel {
     /// (removalInFlight serializes), which is the invariant this wrapper relies on.
     private struct SerialOperation: @unchecked Sendable { let run: (URL) throws -> URL }
     private struct SerialIdentity: @unchecked Sendable { let run: (Tree, UInt32) -> IdentityVerdict }
+    private struct SerialRestore: @unchecked Sendable { let run: (URL, URL) throws -> Void }
+    private struct SerialProbe: @unchecked Sendable { let run: (String) -> Bool }
 
     func confirmRemoval() {
         guard let tree, let id = pendingRemoval else { return }
@@ -819,7 +826,8 @@ final class AppModel {
         case .moved(let trashed):
             // 2. Filesystem outcome journaled first (the real event), then the engine commit on the serial lane.
             fsEpoch += 1
-            lastRemoved = [RemovedItem(original: url, trashed: trashed, size: size)]
+            // Journaled, newest last: the removal history shows every entry and restores any one of them.
+            lastRemoved.append(RemovedItem(original: url, trashed: trashed, size: size))
             guard tree === removedFrom else {
                 // A rescan replaced the tree while the move was running. Its node ids are gone; do not forget on the new one.
                 mutationPending = commitsInFlight > 0
@@ -907,20 +915,35 @@ final class AppModel {
         return ok
     }
 
+    /// Undo from the removal alert restores the LATEST journaled removal. A restore is a filesystem change too: it is
+    /// refused while a removal or commit is mid-flight, and afterwards the view is persistently out of date - the
+    /// engine cannot add a subtree back, only a rescan can.
     func undoRemoval() {
-        // Undo is a filesystem change too. It is refused while a removal or commit is mid-flight, and afterwards the view is
-        // persistently out of date: the engine cannot add a subtree back, only a rescan can.
         if removalInFlight || mutationPending || commitsInFlight > 0 || requiredVersion != nil { removalMessage = "The previous change is still being applied. Try again in a moment."; return }
-        guard !lastRemoved.isEmpty else { return }
-        let items = lastRemoved
+        guard let item = lastRemoved.last else { return }
+        runRestore([item])
+    }
+
+    /// Per-item restore from the removal history: the same gates as undoRemoval, but only the named record moves.
+    /// An unknown id is a no-op (the record may already have been restored or never journaled).
+    func restoreRemoved(id: UUID) {
+        if removalInFlight || mutationPending || commitsInFlight > 0 || requiredVersion != nil { removalMessage = "The previous change is still being applied. Try again in a moment."; return }
+        guard let item = lastRemoved.first(where: { $0.id == id }) else { return }
+        runRestore([item])
+    }
+
+    /// One restore pass over journaled records, off the main actor and through the injected seams, so checks can force
+    /// any outcome without touching a file. The default seams are the previous direct FileManager calls, unchanged.
+    private func runRestore(_ items: [RemovedItem]) {
         mutationPending = true
         removalInFlight = true
+        let restore = SerialRestore(run: restoreItem)
+        let probe = SerialProbe(run: restoreCollisionProbe)
         removalTask = Task { [weak self] in
             let outcomes: [UndoOutcome] = await Task.detached(priority: .userInitiated) {
                 items.map { item in
-                    let fm = FileManager.default
-                    if fm.fileExists(atPath: item.original.path) { return UndoOutcome.collision }
-                    do { try fm.moveItem(at: item.trashed, to: item.original); return .restored }
+                    if probe.run(item.original.path) { return UndoOutcome.collision }
+                    do { try restore.run(item.trashed, item.original); return .restored }
                     catch { return .failed(error.localizedDescription) }
                 }
             }.value
@@ -931,19 +954,22 @@ final class AppModel {
     private func finishUndo(_ items: [RemovedItem], _ outcomes: [UndoOutcome]) {
         removalInFlight = false
         mutationPending = commitsInFlight > 0
-        var remaining: [RemovedItem] = []
+        var restored: Set<UUID> = []
         var message: String?
         for (item, outcome) in zip(items, outcomes) {
             switch outcome {
             case .restored:
+                restored.insert(item.id)
                 fsEpoch += 1
                 markOutOfDate("Restored on disk. Rescan to bring it back.")
                 message = message ?? "Put \(item.original.lastPathComponent) back. Restored on disk. Rescan to bring it back."
-            case .collision: remaining.append(item); message = "Could not put it back: something already exists at \(item.original.path)."
-            case .failed(let reason): remaining.append(item); message = "Could not put it back: \(reason)"
+            case .collision: message = "Could not put it back: something already exists at \(item.original.path)."
+            case .failed(let reason): message = "Could not put it back: \(reason)"
             }
         }
-        lastRemoved = remaining   // only successful restores are forgotten
+        // Only successful restores are forgotten. A per-item pass touches one record; every other
+        // journaled record (and this pass's collided/failed ones) stays in the history.
+        lastRemoved = lastRemoved.filter { !restored.contains($0.id) }
         removalMessage = message
     }
 

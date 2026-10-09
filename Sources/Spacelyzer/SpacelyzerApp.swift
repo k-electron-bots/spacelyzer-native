@@ -2394,6 +2394,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         await DuplicatesChecks.run()
         await ItemReviewChecks.run()
         await IdentityGateChecks.run()
+        await RemovalHistoryChecks.run()
         QuickLookChecks.run()
         copyPathChecks()
         csvChecks()
@@ -2961,6 +2962,12 @@ final class BusyFlag: @unchecked Sendable {
         "identity-gate-replaced-refuses-and-moves-nothing",
         "identity-gate-runs-off-main-before-trash",
         "identity-gate-same-proceeds-and-journals",
+        "removal-history-journals-every-removal-in-order",
+        "removal-history-restore-collision-keeps-record",
+        "removal-history-restore-one-keeps-the-other-journaled",
+        "removal-history-restore-refused-while-commit-parked",
+        "removal-history-restore-unknown-id-is-a-no-op",
+        "removal-history-undo-restores-latest-only",
         "item-review-propose-opens-for-real-node",
         "item-review-propose-refuses-non-node-and-empty-tree",
         "item-review-propose-starts-no-read",
