@@ -38,10 +38,22 @@ let noNode = UInt32.max
 /// CI-only timing log (SPZ_DEMO): appends "label: value" lines to /tmp/spz-timing.txt.
 enum Perf {
     static let on = ProcessInfo.processInfo.environment["SPZ_DEMO"] != nil
+    /// CI-only stage timing (SPZ_TIMING), independent of SPZ_DEMO: the demo flag also
+    /// runs the scripted regression suite, which the bench run must not trigger.
+    /// Used to attribute the expansion stall (toggle -> detached compute -> publish
+    /// -> reloadData) without Instruments; no effect when the flag is absent.
+    static let timing = ProcessInfo.processInfo.environment["SPZ_TIMING"] != nil
     static func now() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
     static func ms(since t: UInt64) -> Double { Double(DispatchTime.now().uptimeNanoseconds - t) / 1e6 }
     static func log(_ line: String) {
         guard on else { return }
+        append(line)
+    }
+    static func timingLog(_ line: String) {
+        guard timing else { return }
+        append(line)
+    }
+    private static func append(_ line: String) {
         let url = URL(fileURLWithPath: "/tmp/spz-timing.txt")
         let data = (line + "\n").data(using: .utf8)!
         if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(data); try? h.close() } else { try? data.write(to: url) }
