@@ -111,6 +111,40 @@ struct UnobservedExclusion: Equatable {
     var reason: UnobservedExclusionReason
 }
 
+/// Raw statvfs capacity of one filesystem. total-free is NOT "used by files": purgeable
+/// space, APFS snapshots and container sharing are not separated by statvfs, so none of
+/// these figures is a reclaimable-space number.
+struct VolumeInfo: Equatable {
+    var totalBytes: UInt64
+    var freeBytes: UInt64
+    /// Free minus what the filesystem reserves. What an unprivileged write can actually use.
+    var availableBytes: UInt64
+    var readOnly: Bool
+    /// A figure saturated at UINT64_MAX: not a real number, never show it as one.
+    var saturated: Bool
+}
+
+/// Why a volume-capacity read failed. The engine reports OS_ERROR with the raw errno so
+/// the app can show it instead of a guessed number.
+enum VolumeReadError: Error, Equatable {
+    case invalid, osError(Int32)
+}
+
+/// Capacity of the filesystem holding `path`, status-checked. Blocks the calling thread
+/// (statvfs can stall on a hung network mount) - never call on the main actor.
+func volumeInfoChecked(path: String) -> Result<VolumeInfo, VolumeReadError> {
+    var out = SpzVolume()
+    var st: Int32 = -1
+    spz_volume_info_status(path, &out, &st)
+    guard st == 0 else {
+        if st == 6 { return .failure(.osError(out.os_errno)) }
+        return .failure(.invalid)
+    }
+    return .success(VolumeInfo(totalBytes: out.total_bytes, freeBytes: out.free_bytes,
+                               availableBytes: out.available_bytes,
+                               readOnly: out.flags & 1 != 0, saturated: out.flags & 2 != 0))
+}
+
 /// CI-only timing log (SPZ_DEMO): appends "label: value" lines to /tmp/spz-timing.txt.
 enum Perf {
     static let on = ProcessInfo.processInfo.environment["SPZ_DEMO"] != nil
