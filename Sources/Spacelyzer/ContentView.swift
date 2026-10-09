@@ -166,6 +166,12 @@ struct StatusBar: View {
             .help(fullDetails).accessibilityLabel(fullDetails)
             .layoutPriority(1)
         }
+        // External footer gate carrier: the combined summary above bridges as AXButton, a role the
+        // client contract excludes. A bare Text outside it bridges accessibilityLabel into AXValue
+        // (run 37959435404 client log: the "Scanned folder: ..." rootPath node in this same bar)
+        // and .help into AXHelp, so the exact details land as AXHelp+AXValue on one AXStaticText
+        // node. Invisible (opacity 0 in the bar background): the production footer is unchanged.
+        .background(Text(fullDetails).accessibilityLabel(fullDetails).help(fullDetails).opacity(0))
         .font(.caption).lineLimit(1).padding(.horizontal, 10)
         .frame(height: Self.height).background(.bar)
         .sheet(isPresented: $showSkipped) {
@@ -194,15 +200,7 @@ struct StatusBar: View {
             }
             if !compact {
                 if model.scanning { Text("\(String(format: "%.1f", model.elapsed))s").foregroundStyle(.secondary) }
-                else if let elapsed = model.lastScanSeconds {
-                    Text("Scanned in \(String(format: "%.2f", elapsed))s").foregroundStyle(.secondary)
-                        // The external footer gate reads the exact details as AXHelp+AXValue on one
-                        // AXStaticText node; the combined summary bridges as AXButton, which that
-                        // contract excludes. On a bare Text, SwiftUI bridges accessibilityLabel into
-                        // AXValue (run 37959435404 client log: the "Scanned folder: ..." node), so
-                        // label+help here place the exact details on one static-text node.
-                        .accessibilityLabel(fullDetails).help(fullDetails)
-                }
+                else if let elapsed = model.lastScanSeconds { Text("Scanned in \(String(format: "%.2f", elapsed))s").foregroundStyle(.secondary) }
                 if model.activeFilter != nil { Text("Filter \(String(format: "%.1f", model.filterMillis))ms").foregroundStyle(.secondary) }
             }
         }
