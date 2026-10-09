@@ -192,7 +192,8 @@ jobs:
           echo 'Critical focus/reset evidence (strict assertions remain below):'
           grep -E '^(before-resign|after-direct-resign|after-fixture-key-window|before-activation|activation-wait-seconds=|reload-after-responder-wait|tab-chain |rest-chain-|native-tab |boundary-sim |boundary-setup |boundary-native |boundary-hidden |interaction-clock |interaction-stage |interaction-sample |footer-constrained |footer-ax |treemap-mounted |treemap-tree-swap |treemap-filter |treemap-unmount |sample launched |sample completed |sample missing:|sample failed/missing report:|same-value-fixture-start |before-same-value-clear |check FAIL|app still running at end|APP NOT RUNNING|DEMO .*TIMEOUT)' /tmp/spz-timing.txt 2>/dev/null || true
           cat /tmp/spz-assertions.txt || true
-          expected=91
+          # Count of ^PASS/^FAIL lines the demo emits at this head; run 37959435404 emitted 126 (121 PASS, 5 FAIL before this fix). Change only with the name-by-name list in the PR that changes it.
+          expected=126
           if grep -q 'APP NOT RUNNING' /tmp/spz-timing.txt 2>/dev/null; then echo "::error title=ui-assertions::app was not running at the end of the demo (crash or exit)"; exit 1; fi
           if grep -q 'DEMO .*TIMEOUT' /tmp/spz-timing.txt 2>/dev/null; then echo "::error title=ui-assertions::$(grep 'DEMO .*TIMEOUT' /tmp/spz-timing.txt)"; exit 1; fi
           for step in $(seq 1 48); do [ -s "dist/screenshot-demo-$step.png" ] || { echo "::error title=ui-assertions::missing screenshot step $step"; exit 1; }; done
