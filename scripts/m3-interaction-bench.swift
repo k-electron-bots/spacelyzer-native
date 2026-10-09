@@ -204,8 +204,17 @@ guard let running = NSRunningApplication(processIdentifier: pid), running.activa
       until(now(), 30, interval: 250_000, { one("AXTable", "Folder outline") != nil && one("AXTextField", "Filter by name") != nil }) != nil,
       let table = one("AXTable", "Folder outline"), let field = one("AXTextField", "Filter by name"),
       let fieldFrame = frame(field) else { exit(4) }
-let windows = read(app, "AXWindows") as? [AXUIElement] ?? []
-guard windows.count == 1, let winFrame = frame(windows[0]), winFrame.width > 0 else { exit(5) }
+// Run 37880172301 evidence: on a slow app launch (readiness passed at
+// polls=3) the window was not yet materialized at this preflight and BOTH
+// typing and hover exited 5 instantly with no measurement. Wait bounded for
+// the one window (15s, 250ms polls) instead of failing on the first read.
+guard until(now(), 15, interval: 250_000, {
+    let ws = read(app, "AXWindows") as? [AXUIElement] ?? []
+    guard ws.count == 1, let f = frame(ws[0]), f.width > 0 else { return false }
+    return true
+}) != nil,
+      let windows = read(app, "AXWindows") as? [AXUIElement], windows.count == 1,
+      let winFrame = frame(windows[0]), winFrame.width > 0 else { print("app window not uniquely discoverable within 15s of bench start; aborting"); exit(5) }
 emit(["header": "m3-interaction-bench", "mode": mode, "pid": pid,
       "limitation": "event-to-AX-visible latency only; not proof of main-thread block",
       "typing_note": "typing measures t0(key) until the app's own footer republishes the filter result; event-to-AX-visible latency, not render completion",
@@ -433,33 +442,30 @@ if mode == "expansion" {
     // one match within that window is required: zero matches, multiple
     // matches, a short chunk (identity churn mid-scan), or a chunk read
     // error all abort - the bench never rescans blind and never clicks an
-    // unverified row. The validated row handle is REUSED for every rep (no
-    // per-rep scans). If the app's identity churn invalidates the handle,
-    // its reads fail and the run aborts.
+    // unverified row. Run 37880172301 evidence: the row handle resolved
+    // before the rep loop went STALE after rep 0's 10k-row expansion mutated
+    // the outline ("chevron state unreadable at rep 1", exit 6), so the row
+    // is RE-RESOLVED through the same bounded scan before every rep and
+    // before the post-click state check. A failed re-resolution aborts the
+    // run; the bench never clicks a stale handle.
     let (initialCount, _, initialFailed) = rowCountTimed(table)
     guard !initialFailed, let initialCount else { print("row count unreadable at preflight"); exit(6) }
-    var topChildCount: CFIndex = 0
-    let countErr = AXUIElementGetAttributeValueCount(table, kAXChildrenAttribute as CFString, &topChildCount)
-    guard countErr == AXError.success else { axReadFailures += 1; print("top-level children count unreadable at preflight"); exit(6) }
-    let totalChildren = Int(topChildCount)
     // Chunked reads use this SDK's 5-argument AXUIElementCopyAttributeValues
     // (CFIndex index, CFIndex maxValues - the compiler in run 37862559550 printed
     // the signature; the CFRange form does not exist here, and run 37861420537's
     // "cannot infer contextual base" was the same call misresolved). AXError
     // bases stay explicit for consistency with the rest of the file.
-    let chunkSize = 256, maxChunks = 8 // bounded window: at most 2048 rows scanned
-    let windowRows = min(totalChildren, chunkSize * maxChunks)
-    var matches = [AXUIElement](), scanned = 0
-    while scanned < windowRows {
-        let want = min(chunkSize, windowRows - scanned)
-        var chunkRef: CFArray?
-        let err = AXUIElementCopyAttributeValues(table, kAXChildrenAttribute as CFString,
-                                                 scanned, want, &chunkRef)
-        guard err == AXError.success, let chunkRows = chunkRef as? [AXUIElement] else {
-            if err != AXError.success && err != AXError.noValue { axReadFailures += 1 }
-            print("chunked top-level children read failed at offset \(scanned) of \(totalChildren) (AXError \(err.rawValue)); not scanning blind"); exit(6)
-        }
-        guard chunkRows.count == want else { print("short chunked read at offset \(scanned): got \(chunkRows.count) of \(want) (identity churn mid-scan); aborting"); exit(6) }
+    // Re-resolves the target row through the bounded chunked scan; aborts the
+    // run (exit 6) on any read failure or a non-unique match. Cheap under the
+    // wrapper scan (2 top-level children).
+    func findTargetRow() -> AXUIElement {
+        var topChildCount: CFIndex = 0
+        let countErr = AXUIElementGetAttributeValueCount(table, kAXChildrenAttribute as CFString, &topChildCount)
+        guard countErr == AXError.success else { axReadFailures += 1; print("top-level children count unreadable"); exit(6) }
+        let totalChildren = Int(topChildCount)
+        let chunkSize = 256, maxChunks = 8 // bounded window: at most 2048 rows scanned
+        let windowRows = min(totalChildren, chunkSize * maxChunks)
+        var matches = [AXUIElement](), scanned = 0
         // Run 37867383313 evidence: under the wrapper scan the target row
         // EXISTS (2 top-level children) but exact == on AXDescription/AXValue
         // found 0 matches - the row's accessible name form is unknown. Match
@@ -475,28 +481,40 @@ if mode == "expansion" {
             let cells = read(el, "AXChildren") as? [AXUIElement] ?? []
             return cells.contains(where: { exposedText($0).contains(where: { $0.contains(rowName) }) })
         }
-        for candidate in chunkRows {
-            if named(candidate) { matches.append(candidate) }
-        }
-        scanned += chunkRows.count
-    }
-    if matches.count != 1 {
-        let dump = min(scanned, 8)
-        var diag = ""
-        var diagRef: CFArray?
-        let diagErr = AXUIElementCopyAttributeValues(table, kAXChildrenAttribute as CFString, 0, dump, &diagRef)
-        if diagErr == AXError.success, let diagRows = diagRef as? [AXUIElement] {
-            for (i, r) in diagRows.enumerated() {
-                let role = string(r, "AXRole")
-                let texts = ["AXDescription", "AXTitle", "AXValue", "AXLabel"].map { "\($0)=\(string(r, $0))" }.joined(separator: " ")
-                let cells = read(r, "AXChildren") as? [AXUIElement] ?? []
-                let cellTexts = cells.prefix(4).map { c in "[" + ["AXDescription", "AXTitle", "AXValue", "AXLabel"].map { "\($0)=\(string(c, $0))" }.joined(separator: " ") + "]" }.joined(separator: " ")
-                diag += " row[\(i)] role=\(role) \(texts) cells=\(cellTexts);"
+        while scanned < windowRows {
+            let want = min(chunkSize, windowRows - scanned)
+            var chunkRef: CFArray?
+            let err = AXUIElementCopyAttributeValues(table, kAXChildrenAttribute as CFString,
+                                                     scanned, want, &chunkRef)
+            guard err == AXError.success, let chunkRows = chunkRef as? [AXUIElement] else {
+                if err != AXError.success && err != AXError.noValue { axReadFailures += 1 }
+                print("chunked top-level children read failed at offset \(scanned) of \(totalChildren) (AXError \(err.rawValue)); not scanning blind"); exit(6)
             }
-        } else { diag = " diagnostic re-read failed (AXError \(diagErr.rawValue))" }
-        print("target row not unique or absent within bounded scan (\(matches.count) matches in \(scanned) scanned rows of \(totalChildren) top-level children, visible count \(initialCount)): \(rowName);\(diag)"); exit(6)
+            guard chunkRows.count == want else { print("short chunked read at offset \(scanned): got \(chunkRows.count) of \(want) (identity churn mid-scan); aborting"); exit(6) }
+            for candidate in chunkRows {
+                if named(candidate) { matches.append(candidate) }
+            }
+            scanned += chunkRows.count
+        }
+        if matches.count != 1 {
+            let dump = min(scanned, 8)
+            var diag = ""
+            var diagRef: CFArray?
+            let diagErr = AXUIElementCopyAttributeValues(table, kAXChildrenAttribute as CFString, 0, dump, &diagRef)
+            if diagErr == AXError.success, let diagRows = diagRef as? [AXUIElement] {
+                for (i, r) in diagRows.enumerated() {
+                    let role = string(r, "AXRole")
+                    let texts = ["AXDescription", "AXTitle", "AXValue", "AXLabel"].map { "\($0)=\(string(r, $0))" }.joined(separator: " ")
+                    let cells = read(r, "AXChildren") as? [AXUIElement] ?? []
+                    let cellTexts = cells.prefix(4).map { c in "[" + ["AXDescription", "AXTitle", "AXValue", "AXLabel"].map { "\($0)=\(string(c, $0))" }.joined(separator: " ") + "]" }.joined(separator: " ")
+                    diag += " row[\(i)] role=\(role) \(texts) cells=\(cellTexts);"
+                }
+            } else { diag = " diagnostic re-read failed (AXError \(diagErr.rawValue))" }
+            print("target row not unique or absent within bounded scan (\(matches.count) matches in \(scanned) scanned rows of \(totalChildren) top-level children, visible count \(initialCount)): \(rowName);\(diag)"); exit(6)
+        }
+        return matches[0]
     }
-    let row = matches[0]
+    var row = findTargetRow()
     // Run 37870201922 evidence: the row matches by name but "has no usable
     // disclosure triangle" - the app renders its own chevron as an NSButton
     // (OutlineView.swift: cell.chevron.setAccessibilityLabel "Expand <name>"/
@@ -562,8 +580,11 @@ if mode == "expansion" {
     for rep in 0..<reps {
         // Disclosure STATE must be a valid Bool before any input - a missing or
         // failed read aborts the run rather than defaulting to false.
+        // Re-resolve the target row every rep: run 37880172301 showed the
+        // pre-loop handle going stale after rep 0's expansion.
+        row = findTargetRow()
         guard let (tri, disclosing) = chevronState(row) else {
-            print("chevron state unreadable at rep \(rep) (unverified capability or stale handle); aborting"); exit(6)
+            print("chevron state unreadable at rep \(rep) on a freshly resolved row; aborting"); exit(6)
         }
         let expectExpand = !disclosing
         guard let triFrame = frame(tri) else { print("chevron frame lost at rep \(rep)"); exit(6) }
@@ -583,8 +604,10 @@ if mode == "expansion" {
         })
         let (rowsAfter, afterMs, afterFailed) = rowCountTimed(table)
         stats.add(afterMs, failed: afterFailed)
-        // Fresh state re-scan: expanded iff the chevron now reads "Collapse ...".
-        let flippedState = chevronState(row).map { $0.1 }
+        // Fresh state re-scan on a freshly resolved row (the pre-click
+        // handle can be stale after the tree mutation): expanded iff the
+        // chevron now reads "Collapse ...".
+        let flippedState = chevronState(findTargetRow()).map { $0.1 }
         let stateFlipped = flippedState.map { $0 == expectExpand } ?? false
         let countMoved = rowsAfter.map { expectExpand ? $0 > rowsBefore : $0 < rowsBefore } ?? false
         let latLow = (lat ?? .infinity) > window * 1000
