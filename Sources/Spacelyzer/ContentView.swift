@@ -167,12 +167,14 @@ struct StatusBar: View {
             .help(fullDetails).accessibilityLabel("Scan summary")
             // External footer gate carrier: the combined summary bridges as AXButton, a role the client
             // contract excludes. A bare Text outside the merged node (this background is applied after
-            // .combine) bridges accessibilityLabel into AXValue (run 37959435404 client log: the
-            // "Scanned folder: ..." rootPath node in this same bar) and .help into AXHelp, so the exact
-            // details land as AXHelp+AXValue on one AXStaticText node. Its frame matches the summary
-            // area, which already shows the fullDetails tooltip; invisible (opacity 0), so the
-            // production footer is unchanged.
-            .background(Text(fullDetails).accessibilityLabel(fullDetails).help(fullDetails).opacity(0))
+            // .combine) bridges accessibilityLabel into AXValue and .help into AXHelp (run 37971834595
+            // client log: the "Scanned folder: ..." rootPath node, index 5, carries both in this same
+            // bar), so the exact details land as AXHelp+AXValue on one AXStaticText node. Its frame
+            // matches the summary area, which already shows the fullDetails tooltip. opacity(0) drops
+            // the carrier from the AX tree entirely (run 37971834595 client log: no carrier node,
+            // visited=6 unchanged), so it uses a clear foreground instead, intended to keep the AX
+            // node while painting nothing.
+            .background(Text(fullDetails).accessibilityLabel(fullDetails).help(fullDetails).foregroundStyle(.clear))
             .layoutPriority(1)
         }
         .font(.caption).lineLimit(1).padding(.horizontal, 10)
