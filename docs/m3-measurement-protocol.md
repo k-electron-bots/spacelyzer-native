@@ -122,8 +122,10 @@ follow-up work and is NOT part of this protocol's harness claims.
   - there is no AXDisclosureTriangle/AXDisclosing. The target row is
   re-resolved through a bounded chunked scan before every rep and before the
   post-click state check (run 37880172301: the pre-loop row handle went stale
-  after rep 0's expansion; exit 6). The expansion measurement remains an
-  UNVERIFIED CAPABILITY until the first successful measured run.
+  after rep 0's expansion; exit 6). First successfully measured in run
+  37882191076 (expansion-10k: 3/3 expands, p50 149.99ms, p95 220.90ms, all
+  three over the 100ms jank bar; expansion-100k: 2/2 expands, p50 114.44ms;
+  BASELINE ONLY, event-to-AX-visible latency).
 
 Before/after protocol: same fixture, same machine, 3 runs each, medians, raw
 harness JSONL logs kept per run. A stall is reported removed only with the
