@@ -164,6 +164,9 @@ struct StatusBar: View {
             }
             .accessibilityElement(children: .combine)
             .help(fullDetails).accessibilityLabel(fullDetails)
+            // SwiftUI bridges the combined element's label into AXDescription, not AXValue; clients that
+            // read Help+Value on the same node need the value set explicitly (run 37959435404 evidence).
+            .accessibilityValue(fullDetails)
             .layoutPriority(1)
         }
         .font(.caption).lineLimit(1).padding(.horizontal, 10)
