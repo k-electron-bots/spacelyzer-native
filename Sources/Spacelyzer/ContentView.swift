@@ -163,15 +163,18 @@ struct StatusBar: View {
                 summary(compact: true).fixedSize(horizontal: true, vertical: false)
             }
             .accessibilityElement(children: .combine)
-            .help(fullDetails).accessibilityLabel(fullDetails)
+            // The details announce once, from the invisible carrier below; this group gets a short label.
+            .help(fullDetails).accessibilityLabel("Scan summary")
+            // External footer gate carrier: the combined summary bridges as AXButton, a role the client
+            // contract excludes. A bare Text outside the merged node (this background is applied after
+            // .combine) bridges accessibilityLabel into AXValue (run 37959435404 client log: the
+            // "Scanned folder: ..." rootPath node in this same bar) and .help into AXHelp, so the exact
+            // details land as AXHelp+AXValue on one AXStaticText node. Its frame matches the summary
+            // area, which already shows the fullDetails tooltip; invisible (opacity 0), so the
+            // production footer is unchanged.
+            .background(Text(fullDetails).accessibilityLabel(fullDetails).help(fullDetails).opacity(0))
             .layoutPriority(1)
         }
-        // External footer gate carrier: the combined summary above bridges as AXButton, a role the
-        // client contract excludes. A bare Text outside it bridges accessibilityLabel into AXValue
-        // (run 37959435404 client log: the "Scanned folder: ..." rootPath node in this same bar)
-        // and .help into AXHelp, so the exact details land as AXHelp+AXValue on one AXStaticText
-        // node. Invisible (opacity 0 in the bar background): the production footer is unchanged.
-        .background(Text(fullDetails).accessibilityLabel(fullDetails).help(fullDetails).opacity(0))
         .font(.caption).lineLimit(1).padding(.horizontal, 10)
         .frame(height: Self.height).background(.bar)
         .sheet(isPresented: $showSkipped) {
