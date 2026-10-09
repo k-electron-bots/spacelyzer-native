@@ -21,14 +21,20 @@ import Darwin
 //
 // KNOWN LIMITATIONS (labeled, not silently claimed away):
 // - The typing "footer" metric is event-to-AX-visible latency: t0(key) until
-//   the app's own footer republishes the filter result. The row-count signal
-//   was dropped after run 37870201922 proved it blind (count never moved
-//   across 200 keys under filter "i"). The app-reported filter ms parsed from
-//   the footer is corroboration only, not independently verified.
-// - Expansion mode's mechanism (matching a named row, its Expand/Collapse
-//   chevron AXDescription as state and click target) is an UNVERIFIED
-//   CAPABILITY until the first successful expansion measurement: run
-//   37864247016 confirmed the profile root is NOT a displayed row under a
+//   the app's own footer summary container republishes the filter result. The
+//   observed element is the combined summary container whose AXLabel/AXHelp is
+//   ContentView's fullDetails string (rootPath, totals, and - while a filter
+//   is active - "Filter: <bytes>, <N files>, <X.X> milliseconds"); the
+//   "Scanned folder:" path Text is a separate element that never changes and
+//   is NOT the signal. The row-count signal was dropped after run 37870201922
+//   proved it blind (count never moved across 200 keys under filter "i"). The
+//   app-reported filter ms parsed from the footer is corroboration only, not
+//   independently verified.
+// - Expansion mode's mechanism (matching a named row, its chevron button's
+//   AXLabel "Expand <name>"/"Collapse <name>" as state and click target, with
+//   the chevron image's AXDescription "Expand"/"Collapse" as fallback) is an
+//   UNVERIFIED CAPABILITY until the first successful expansion measurement:
+//   run 37864247016 confirmed the profile root is NOT a displayed row under a
 //   direct scan, and run 37870201922 confirmed the row has no
 //   AXDisclosureTriangle/AXDisclosing (custom chevron per OutlineView.swift).
 // - The scanned path cannot be verified through AX. External preflight
@@ -214,25 +220,38 @@ if mode == "typing" {
     guard frontmost() else { exit(4) }
     click(CGPoint(x: fieldFrame.midX, y: fieldFrame.midY))
     guard until(now(), 2, { frontmostAndFocused(field) }) != nil else { print("filter field did not take focus"); exit(7) }
-    // Observable: the app's own footer, not the row count. Run 37870201922
-    // evidence: the row count NEVER moved across all 200 toggle keys (6s
-    // window, 0 ax_read_failures, every settle succeeded) - the filtered
-    // outline keeps the same row count under filter "i", so the count signal
-    // is blind to the stall it exists to measure. The app publishes every
-    // filter result in its footer (ContentView: "Filter: <bytes>, <N files>,
-    // <X.X> milliseconds"; proven AX-visible by the footer gate in runs
-    // 37864247016 and 37870201922), so the footer text changes on every
-    // applied filter change - including a clear, which removes the line.
+    // Observable: the app's own footer summary container, not the row count.
+    // Run 37870201922 evidence: the row count NEVER moved across all 200
+    // toggle keys (6s window, 0 ax_read_failures, every settle succeeded) -
+    // the filtered outline keeps the same row count under filter "i", so the
+    // count signal is blind to the stall it exists to measure. The app
+    // publishes every filter result in its footer (ContentView fullDetails:
+    // "Filter: <bytes>, <N files>, <X.X> milliseconds"; proven AX-visible by
+    // the footer gate in runs 37864247016 and 37870201922), so the summary
+    // container's text changes on every applied filter change - including a
+    // clear, which removes the line. The element is the combined summary
+    // container (.accessibilityElement(children: .combine) with AXLabel and
+    // AXHelp both set to fullDetails), NOT the separate "Scanned folder:"
+    // path Text, which never changes.
     // Settle-then-measure: a footer-text baseline is only trusted once it
     // STABILIZES (two consecutive equal successful reads; a failed read
     // resets the streak).
+    // One footer text read: AXLabel (set to fullDetails) first, AXHelp (also
+    // fullDetails) and AXValue as fallbacks; every attempted read is timed
+    // and accounted in stats.
+    func footerRead(_ stats: inout ReadStats) -> String? {
+        for attr in ["AXLabel", "AXHelp", "AXValue"] {
+            let (v, ms, failed) = readTimed(footer, attr)
+            stats.add(ms, failed: failed)
+            if !failed, let s = v as? String, !s.isEmpty { return s }
+        }
+        return nil
+    }
     func settleFooter(_ window: Double, _ stats: inout ReadStats) -> String? {
         let deadline = now() + window
         var last: String? = nil
         while now() < deadline {
-            let (v, ms, failed) = readTimed(footer, "AXValue")
-            stats.add(ms, failed: failed)
-            guard !failed, let s = v as? String else { last = nil; usleep(20_000); continue }
+            guard let s = footerRead(&stats) else { last = nil; usleep(20_000); continue }
             if s == last { return s }
             last = s
             usleep(20_000)
@@ -248,8 +267,16 @@ if mode == "typing" {
         guard let lastSpace = before.lastIndex(of: " ") else { return nil }
         return Double(before[before.index(after: lastSpace)...])
     }
-    let footers = descendants().filter { string($0, "AXValue").contains("Scanned folder:") }
-    guard footers.count == 1, let footer = footers.first else { print("footer not uniquely discoverable (\(footers.count) matches); aborting"); exit(7) }
+    // Discovery: the summary container is the only bounded-walker element
+    // whose AXLabel/AXHelp/AXValue contains " items" (fullDetails: "<rootPath>
+    // <size> in <N> items..."). The "Scanned folder:" path Text is a sibling
+    // that never carries " items"; outline rows (which do) sit under the
+    // AXTable the walker skips. Not unique -> abort, never guess.
+    let footers = descendants().filter { el in
+        for attr in ["AXLabel", "AXHelp", "AXValue"] where string(el, attr).contains(" items") { return true }
+        return false
+    }
+    guard footers.count == 1, let footer = footers.first else { print("footer summary container not uniquely discoverable (\(footers.count) matches); aborting"); exit(7) }
     var preStats = ReadStats()
     guard let settledStart = settleFooter(5.0, &preStats) else { print("footer text did not settle before typing; aborting"); exit(7) }
     var baseline = settledStart
@@ -294,11 +321,11 @@ if mode == "typing" {
         // footer republishes shows this key's filter applied; it is not a
         // render-completion claim.
         let ftrWindow = 6.0
+        var observed = ""
         let r = until(t0, ftrWindow, {
-            let (v, ms, failed) = readTimed(footer, "AXValue")
-            stats.add(ms, failed: failed)
-            guard !failed, let s = v as? String else { return false }
-            return s != footerBefore
+            guard let s = footerRead(&stats) else { return false }
+            if s != footerBefore { observed = s; return true }
+            return false
         })
         // Quality accounting: a late-returning read or any failed AX read makes
         // the event degraded - excluded from percentile samples and counted,
@@ -311,13 +338,13 @@ if mode == "typing" {
             "footer_ms": r ?? -1, "footer_verdict": r != nil ? "republished" : "inconclusive",
             "footer_low_quality": footerLow,
             "footer_baseline": "settled",
-            "app_filter_ms": appFilterMs(string(footer, "AXValue")) ?? -1,
+            "app_filter_ms": appFilterMs(observed) ?? -1,
             "degraded": degraded]
         for (k, v) in stats.dict { event[k] = v }
         emit(event)
         if !degraded {
             fieldMs.append(f)
-            if let r { footerMs.append(r); if let a = appFilterMs(string(footer, "AXValue")) { appMs.append(a) } } else { inconclusive += 1 }
+            if let r { footerMs.append(r); if let a = appFilterMs(observed) { appMs.append(a) } } else { inconclusive += 1 }
         } else { degradedEvents += 1; if r == nil { inconclusive += 1 } }
         // Settle before the next key: without a fresh verified baseline the
         // serial per-key premise is broken, so a settle failure aborts the run
@@ -471,34 +498,41 @@ if mode == "expansion" {
     }
     let row = matches[0]
     // Run 37870201922 evidence: the row matches by name but "has no usable
-    // disclosure triangle" - the app renders its own chevron as an NSImage
-    // whose AXDescription is "Expand"/"Collapse" (OutlineView.swift), never
-    // an AXDisclosureTriangle, and the row exposes no AXDisclosing. The
-    // chevron's AXDescription IS the expansion state; its frame is the click
-    // target. Discovery is bounded: the row's direct cells and their direct
-    // children only.
-    func findChevron(_ row: AXUIElement) -> AXUIElement? {
-        let cells = read(row, "AXChildren") as? [AXUIElement] ?? []
-        for cell in cells {
-            let d = string(cell, "AXDescription")
-            if d == "Expand" || d == "Collapse" { return cell }
-            let kids = read(cell, "AXChildren") as? [AXUIElement] ?? []
-            for kid in kids {
-                let kd = string(kid, "AXDescription")
-                if kd == "Expand" || kd == "Collapse" { return kid }
-            }
+    // disclosure triangle" - the app renders its own chevron as an NSButton
+    // whose AXLabel is "Expand <name>"/"Collapse <name>" (OutlineView.swift:
+    // cell.chevron.setAccessibilityLabel), never an AXDisclosureTriangle, and
+    // the row exposes no AXDisclosing. The chevron button's label IS the
+    // expansion state; its frame is the click target. Fallback: the chevron's
+    // NSImage carries accessibilityDescription "Expand"/"Collapse" (no name),
+    // matched exactly on AXDescription. Discovery is bounded: the row's
+    // direct cells and their direct children only; state is re-scanned every
+    // call so each rep reads fresh state.
+    // nil when the element carries no chevron signal; false = collapsed
+    // ("Expand ..."), true = expanded ("Collapse ...").
+    func chevronStateText(_ el: AXUIElement) -> Bool? {
+        for attr in ["AXLabel", "AXTitle"] {
+            let t = string(el, attr)
+            if t.hasPrefix("Expand ") { return false }
+            if t.hasPrefix("Collapse ") { return true }
         }
+        let d = string(el, "AXDescription")
+        if d == "Expand" { return false }
+        if d == "Collapse" { return true }
         return nil
     }
     // (chevron element, isExpanded) or nil when unreadable.
     func chevronState(_ row: AXUIElement) -> (AXUIElement, Bool)? {
-        guard let c = findChevron(row) else { return nil }
-        let d = string(c, "AXDescription")
-        if d == "Expand" { return (c, false) }
-        if d == "Collapse" { return (c, true) }
+        let cells = read(row, "AXChildren") as? [AXUIElement] ?? []
+        for cell in cells {
+            if let s = chevronStateText(cell) { return (cell, s) }
+            let kids = read(cell, "AXChildren") as? [AXUIElement] ?? []
+            for kid in kids {
+                if let s = chevronStateText(kid) { return (kid, s) }
+            }
+        }
         return nil
     }
-    guard let (tri0, _) = chevronState(row), frame(tri0) != nil else { print("target row has no usable chevron (Expand/Collapse AXDescription): \(rowName)"); exit(6) }
+    guard let (tri0, _) = chevronState(row), frame(tri0) != nil else { print("target row has no usable chevron (Expand/Collapse label): \(rowName)"); exit(6) }
     var latMs = [Double](), jank = 0, inconclusive = 0, degradedEvents = 0
     for rep in 0..<reps {
         // Disclosure STATE must be a valid Bool before any input - a missing or
@@ -524,8 +558,9 @@ if mode == "expansion" {
         })
         let (rowsAfter, afterMs, afterFailed) = rowCountTimed(table)
         stats.add(afterMs, failed: afterFailed)
-        let flipDesc = findChevron(row).map { string($0, "AXDescription") }
-        let stateFlipped = (expectExpand && flipDesc == "Collapse") || (!expectExpand && flipDesc == "Expand")
+        // Fresh state re-scan: expanded iff the chevron now reads "Collapse ...".
+        let flippedState = chevronState(row).map { $0.1 }
+        let stateFlipped = flippedState.map { $0 == expectExpand } ?? false
         let countMoved = rowsAfter.map { expectExpand ? $0 > rowsBefore : $0 < rowsBefore } ?? false
         let latLow = (lat ?? .infinity) > window * 1000
         let degraded = latLow || stats.failures > 0
@@ -544,7 +579,7 @@ if mode == "expansion" {
     }
     latMs.sort()
     summary(["kind": "m3-expansion", "pid": pid, "row": rowName, "reps": reps,
-        "capability_note": "named-row/chevron (Expand/Collapse AXDescription) mechanism unverified until the first successful expansion measurement",
+        "capability_note": "named-row/chevron-button (AXLabel Expand/Collapse <name>) mechanism unverified until the first successful expansion measurement",
         "expand_p50": percentile(latMs, 50), "expand_p95": percentile(latMs, 95),
         "jank_over_100ms": jank, "expansions_measured": latMs.count,
         "inconclusive_or_failed": inconclusive, "degraded_events": degradedEvents], inconclusive: inconclusive)
