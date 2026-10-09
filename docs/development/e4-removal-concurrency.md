@@ -1,6 +1,6 @@
 # E4 removal concurrency audit
 
-Source-review evidence for one release gate on the cleanup workflow: "safe off-main execution with current identity revalidation and no concurrent tree mutation/read." This page covers the concurrency half. Identity revalidation is not in the Trash path yet (no production Swift caller of `spz_tree_check_identity`; the one existing call is the SPZ_CI_TESTS fixture check in `SpacelyzerApp.swift`); that is tracked separately.Node names and paths are appended only while a tree is built (the real scan at `scan.rs` 295, the fixture builder at `tree.rs` 561-578) and are never mutated after `seal`; `forget` touches only the size table. Name/path reads during a mutation are stable.
+Source-review evidence for one release gate on the cleanup workflow: "safe off-main execution with current identity revalidation and no concurrent tree mutation/read." This page covers the concurrency half. Identity revalidation is not in the Trash path yet (no production Swift caller of `spz_tree_check_identity`; the one existing call is the SPZ_CI_TESTS fixture check in `SpacelyzerApp.swift`); that is tracked separately.
 
 Evidence: `engine/src/tree.rs`, `engine/src/ffi.rs` and `Sources/Spacelyzer/AppModel.swift` read at `5239e02b`. The engine tests behind these invariants run on Linux; Mac behavior is unverified until a permitted Mac run. This is a source audit, not runtime race evidence.
 
@@ -12,7 +12,7 @@ Evidence: `engine/src/tree.rs`, `engine/src/ffi.rs` and `Sources/Spacelyzer/AppM
 2. Publication is one `ArcSwap<SizeTable>` pointer swap (`tree.rs` 171-174). Sizes, forgotten roots and the version live in one immutable allocation, so no reader can observe a torn mix of two versions.
 3. A `forget` of an already-forgotten node is a no-op that returns the current version. A caught panic returns `MutationError::Panicked` with the tree unchanged.
 
-Node names and paths are appended only while a scan builds the tree (`tree.rs` 561-578) and are never mutated after `seal`; `forget` touches only the size table. Name/path reads during a mutation are stable.
+Node names and paths are appended only while a tree is built (the real scan at `scan.rs` 295, the fixture builder at `tree.rs` 561-578) and are never mutated after `seal`; `forget` touches only the size table. Name/path reads during a mutation are stable.
 
 ## Reads: old table or new table, never a torn one
 
