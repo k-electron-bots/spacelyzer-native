@@ -36,9 +36,16 @@ Safety and honesty rules (enforced by the script):
 
 ## What the Mac harness scans
 
-The harness scans the PROFILE DIRECTORY directly: ROOT/typing-200k or
-ROOT/expansion-N - never ROOT itself. Scanning ROOT would add a wrapper node
-(and any sibling fixtures) and change every count in this protocol.
+Typing scans the PROFILE DIRECTORY directly (ROOT/typing-200k). Expansion
+scans the profile's WRAPPER directory (a harness-created dir containing
+exactly one fixture): run 37864247016 proved the app's outline lists the
+scanned root's CHILDREN at depth 0 and the root itself is never a row, so
+under a direct scan the huge folder is pre-materialized and has no
+disclosure triangle - the named row never existed and both fixtures exited
+6 without measuring. Scanning the wrapper makes the profile dir a real
+top-level row whose expansion is the stall being measured; it adds exactly
+one scan node (the wrapper). Never scan the fixtures ROOT with sibling
+fixtures: that changes every count in this protocol.
 
 ## Linux engine bench (reproducible from this repo)
 
