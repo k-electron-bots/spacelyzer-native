@@ -34,6 +34,6 @@ Known bound, stated not fixed: legacy readers that call `table()` without admiss
 
 ## Conclusion
 
-The gate's "no concurrent tree mutation/read" holds by construction at the current source: immutable versioned tables, one writer mutex, one-pointer publication, admission-bounded captures, and STALE-on-mutation for every read that must be current. No engine change is needed for E4. The gate's identity-revalidation half is open and belongs to the Trash-path change, not this audit.
+The gate's "no concurrent tree mutation/read" holds by construction at the current source: immutable versioned tables, one writer mutex, one-pointer publication, admission-bounded captures, and STALE-on-mutation for every read that must be current. No engine change is needed for E4. The gate's identity-revalidation half landed in E4b: `AppModel` calls `Tree.checkIdentity` immediately before `trashItem` and refuses on any non-same verdict (Mac run still pending), so no engine change is needed for E4.
 
 Not proven here: runtime behavior under real interleavings on a Mac (no run yet), and anything about the filesystem move itself (one lstat to one Trash call; the window between them is an identity-check question, not a table-concurrency question).
