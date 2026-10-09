@@ -20,14 +20,17 @@ import Darwin
 // marks the event low_quality.
 //
 // KNOWN LIMITATIONS (labeled, not silently claimed away):
-// - The typing "rowcount" metric is an UNCORRELATED AX observation: the outline
-//   row-count change is not tied to the current keystroke's filter application,
-//   so it is not a verified per-keystroke application latency.
-// - Expansion mode's mechanism (matching a named row, its AXDisclosureTriangle,
-//   and AXDisclosing state) is an UNVERIFIED CAPABILITY until the first approved
-//   Mac run: run 37864247016 confirmed the profile root is NOT a displayed
-//   row under a direct scan; whether the app exposes disclosure state through
-//   AX is still unconfirmed (no successful expansion measurement yet).
+// - The typing "footer" metric is event-to-AX-visible latency: t0(key) until
+//   the app's own footer republishes the filter result. The row-count signal
+//   was dropped after run 37870201922 proved it blind (count never moved
+//   across 200 keys under filter "i"). The app-reported filter ms parsed from
+//   the footer is corroboration only, not independently verified.
+// - Expansion mode's mechanism (matching a named row, its Expand/Collapse
+//   chevron AXDescription as state and click target) is an UNVERIFIED
+//   CAPABILITY until the first successful expansion measurement: run
+//   37864247016 confirmed the profile root is NOT a displayed row under a
+//   direct scan, and run 37870201922 confirmed the row has no
+//   AXDisclosureTriangle/AXDisclosing (custom chevron per OutlineView.swift).
 // - The scanned path cannot be verified through AX. External preflight
 //   (documented, not enforced): typing scans the fixture PROFILE directory
 //   directly (ROOT/typing-200k); expansion scans the profile's WRAPPER
@@ -199,7 +202,7 @@ let windows = read(app, "AXWindows") as? [AXUIElement] ?? []
 guard windows.count == 1, let winFrame = frame(windows[0]), winFrame.width > 0 else { exit(5) }
 emit(["header": "m3-interaction-bench", "mode": mode, "pid": pid,
       "limitation": "event-to-AX-visible latency only; not proof of main-thread block",
-      "rowcount_note": "typing rowcount is an uncorrelated AX observation, not verified per-keystroke application latency",
+      "typing_note": "typing measures t0(key) until the app's own footer republishes the filter result; event-to-AX-visible latency, not render completion",
       "expansion_note": "named-row/disclosure mechanism is an unverified capability until the first approved Mac run",
       "preflight": "typing scanned the profile dir directly; expansion scanned its one-fixture wrapper; AX cannot verify the scanned path"])
 
@@ -211,46 +214,64 @@ if mode == "typing" {
     guard frontmost() else { exit(4) }
     click(CGPoint(x: fieldFrame.midX, y: fieldFrame.midY))
     guard until(now(), 2, { frontmostAndFocused(field) }) != nil else { print("filter field did not take focus"); exit(7) }
-    // Settle-then-measure: a row-count baseline is only trusted once the count
-    // STABILIZES (two consecutive equal successful reads; a failed read resets
-    // the streak). Run 37864247016 evidence: with these settled baselines
-    // in place, 187/200 keys STILL had no count change - the stale-baseline
-    // theory was wrong; the accumulating stream itself was the cause (see
-    // the toggle stream below).
-    func settleRowCount(_ window: Double, _ stats: inout ReadStats) -> Int? {
+    // Observable: the app's own footer, not the row count. Run 37870201922
+    // evidence: the row count NEVER moved across all 200 toggle keys (6s
+    // window, 0 ax_read_failures, every settle succeeded) - the filtered
+    // outline keeps the same row count under filter "i", so the count signal
+    // is blind to the stall it exists to measure. The app publishes every
+    // filter result in its footer (ContentView: "Filter: <bytes>, <N files>,
+    // <X.X> milliseconds"; proven AX-visible by the footer gate in runs
+    // 37864247016 and 37870201922), so the footer text changes on every
+    // applied filter change - including a clear, which removes the line.
+    // Settle-then-measure: a footer-text baseline is only trusted once it
+    // STABILIZES (two consecutive equal successful reads; a failed read
+    // resets the streak).
+    func settleFooter(_ window: Double, _ stats: inout ReadStats) -> String? {
         let deadline = now() + window
-        var last: Int? = nil
+        var last: String? = nil
         while now() < deadline {
-            let (c, ms, failed) = rowCountTimed(table)
+            let (v, ms, failed) = readTimed(footer, "AXValue")
             stats.add(ms, failed: failed)
-            guard !failed, let c else { last = nil; usleep(20_000); continue }
-            if c == last { return c }
-            last = c
+            guard !failed, let s = v as? String else { last = nil; usleep(20_000); continue }
+            if s == last { return s }
+            last = s
             usleep(20_000)
         }
         return nil
     }
+    // "Filter: 1.2 MB, 25,000 files, 34.5 milliseconds" -> 34.5; the app's
+    // OWN reported filter time, corroboration only - not independently
+    // verified, never mixed into the measured latencies.
+    func appFilterMs(_ footerText: String) -> Double? {
+        guard let range = footerText.range(of: " milliseconds") else { return nil }
+        let before = footerText[..<range.lowerBound]
+        guard let lastSpace = before.lastIndex(of: " ") else { return nil }
+        return Double(before[before.index(after: lastSpace)...])
+    }
+    let footers = descendants().filter { string($0, "AXValue").contains("Scanned folder:") }
+    guard footers.count == 1, let footer = footers.first else { print("footer not uniquely discoverable (\(footers.count) matches); aborting"); exit(7) }
     var preStats = ReadStats()
-    guard let settledStart = settleRowCount(5.0, &preStats) else { print("row count did not settle before typing; aborting"); exit(7) }
+    guard let settledStart = settleFooter(5.0, &preStats) else { print("footer text did not settle before typing; aborting"); exit(7) }
     var baseline = settledStart
-    var fieldMs = [Double](), rowcountMs = [Double]()
+    var fieldMs = [Double](), footerMs = [Double](), appMs = [Double]()
     var inconclusive = 0, degradedEvents = 0
     var typed = ""
     for i in 0..<keystrokes {
         guard frontmostAndFocused(field) else { print("focus lost before key \(i); aborting"); exit(7) }
-        // Toggle stream: every key MUST change the match count, or the
-        // "count moves" signal cannot fire. Run 37864247016 evidence: the
-        // accumulating multi-word stream left 187/200 keys with no count
+        // Toggle stream: every key MUST change the applied filter, or the
+        // footer-republish signal cannot fire. Run 37864247016 evidence: the
+        // accumulating multi-word stream left 187/200 keys with no filter
         // change - same-prefix refinement ("i"->"in"->... all match the
         // same set) and the 0-match plateau after the first space. This
         // stream alternates "" <-> "i": filter.rs contains_ci substring
         // matching over the fixture word inventory (make_fixtures.py:
         // invoice_* and archive_* contain "i"; backup/photo/render/cache/
-        // export/draft do not) makes every keystroke change the count.
+        // export/draft do not) makes every keystroke change the published
+        // filter result.
         let expanding = typed.isEmpty
         let expected = expanding ? "i" : ""
         var stats = ReadStats()
-        let rowsBefore: Int? = baseline // settled after the previous key, never a 30ms-stale read
+        let footerBefore = baseline // settled after the previous key, never a stale read
         let t0 = now()
         if expanding { type("i") } else { key(kDelete) }
         // Field: exact full-string equality on SUCCESSFUL reads only.
@@ -269,55 +290,54 @@ if mode == "typing" {
             emit(abortEvent)
             print("field update timeout at key \(i); aborting"); exit(7)
         }
-        // Row-count observation against the SETTLED baseline: t0(type) until
-        // the count moves shows this key's filter applied; it is not a
+        // Footer observation against the SETTLED text: t0(type) until the
+        // footer republishes shows this key's filter applied; it is not a
         // render-completion claim.
-        // Run 37867383313 evidence: with the toggle stream every key is a
-        // large count delta (2001 <-> ~50k rows) and the materialization
-        // exceeded the old 2s window on ALL 200 keys (rowcount_inconclusive
-        // 200/200, 0 ax_read_failures, settle-within-5s always succeeded).
-        let rWindow = 6.0
-        let r = until(t0, rWindow, {
-            let (c, ms, failed) = rowCountTimed(table)
+        let ftrWindow = 6.0
+        let r = until(t0, ftrWindow, {
+            let (v, ms, failed) = readTimed(footer, "AXValue")
             stats.add(ms, failed: failed)
-            guard !failed, let c, let rowsBefore else { return false }
-            return c != rowsBefore
+            guard !failed, let s = v as? String else { return false }
+            return s != footerBefore
         })
         // Quality accounting: a late-returning read or any failed AX read makes
         // the event degraded - excluded from percentile samples and counted,
         // so a degraded run can never summarize as clean.
         let fieldLow = f > fWindow * 1000
-        let rowcountLow = (r ?? .infinity) > rWindow * 1000
-        let degraded = fieldLow || rowcountLow || stats.failures > 0
+        let footerLow = (r ?? .infinity) > ftrWindow * 1000
+        let degraded = fieldLow || footerLow || stats.failures > 0
         var event: [String: Any] = ["event": "key", "i": i, "char": expanding ? "i" : "delete", "expected_field": expected,
             "field_ms": f, "field_low_quality": fieldLow,
-            "rowcount_ms": r ?? -1, "rowcount_verdict": r != nil ? "changed" : "inconclusive",
-            "rowcount_low_quality": rowcountLow,
-            "rowcount_baseline": "settled", "rows_before": rowsBefore ?? -1,
+            "footer_ms": r ?? -1, "footer_verdict": r != nil ? "republished" : "inconclusive",
+            "footer_low_quality": footerLow,
+            "footer_baseline": "settled",
+            "app_filter_ms": appFilterMs(string(footer, "AXValue")) ?? -1,
             "degraded": degraded]
         for (k, v) in stats.dict { event[k] = v }
         emit(event)
         if !degraded {
             fieldMs.append(f)
-            if let r { rowcountMs.append(r) } else { inconclusive += 1 }
+            if let r { footerMs.append(r); if let a = appFilterMs(string(footer, "AXValue")) { appMs.append(a) } } else { inconclusive += 1 }
         } else { degradedEvents += 1; if r == nil { inconclusive += 1 } }
         // Settle before the next key: without a fresh verified baseline the
         // serial per-key premise is broken, so a settle failure aborts the run
         // rather than degrading into uncorrelated measurements.
-        guard let settled = settleRowCount(5.0, &stats) else {
-            print("row count did not settle after key \(i); next baseline unverifiable; aborting"); exit(7)
+        guard let settled = settleFooter(5.0, &stats) else {
+            print("footer text did not settle after key \(i); next baseline unverifiable; aborting"); exit(7)
         }
-        if settled != baseline { print("settled baseline \(baseline) -> \(settled) after key \(i)") }
+        if settled != baseline { print("settled footer changed after key \(i)") }
         baseline = settled
         usleep(30_000) // serial-latency mode: one key measured at a time; no rate claim
         typed = expected
     }
-    fieldMs.sort(); rowcountMs.sort()
+    fieldMs.sort(); footerMs.sort(); appMs.sort()
     summary(["kind": "m3-typing", "pid": pid, "n": keystrokes, "mode_note": "serial per-key latency; not a burst/typist-rate measurement",
         "field_p50": percentile(fieldMs, 50), "field_p95": percentile(fieldMs, 95),
-        "rowcount_p50": percentile(rowcountMs, 50), "rowcount_p95": percentile(rowcountMs, 95),
-        "rowcount_note": "t0(type) until the settled row count moves; shows the filter applied, not render completion",
-        "rowcount_inconclusive": inconclusive, "degraded_events": degradedEvents], inconclusive: inconclusive + degradedEvents)
+        "footer_p50": percentile(footerMs, 50), "footer_p95": percentile(footerMs, 95),
+        "footer_note": "t0(type) until the app's footer republishes the filter result; shows the filter applied, not render completion",
+        "app_filter_p50": percentile(appMs, 50), "app_filter_p95": percentile(appMs, 95),
+        "app_filter_note": "the app's OWN footer-reported filter time; corroboration only, not independently verified",
+        "footer_inconclusive": inconclusive, "degraded_events": degradedEvents], inconclusive: inconclusive + degradedEvents)
 }
 
 if mode == "hover" {
@@ -450,19 +470,44 @@ if mode == "expansion" {
         print("target row not unique or absent within bounded scan (\(matches.count) matches in \(scanned) scanned rows of \(totalChildren) top-level children, visible count \(initialCount)): \(rowName);\(diag)"); exit(6)
     }
     let row = matches[0]
-    let cells0 = read(row, "AXChildren") as? [AXUIElement] ?? []
-    guard let tri = (cells0.first { string($0, "AXRole") == "AXDisclosureTriangle" } ?? (string(row, "AXRole") == "AXDisclosureTriangle" ? row : nil)),
-          frame(tri) != nil else { print("target row has no usable disclosure triangle: \(rowName)"); exit(6) }
+    // Run 37870201922 evidence: the row matches by name but "has no usable
+    // disclosure triangle" - the app renders its own chevron as an NSImage
+    // whose AXDescription is "Expand"/"Collapse" (OutlineView.swift), never
+    // an AXDisclosureTriangle, and the row exposes no AXDisclosing. The
+    // chevron's AXDescription IS the expansion state; its frame is the click
+    // target. Discovery is bounded: the row's direct cells and their direct
+    // children only.
+    func findChevron(_ row: AXUIElement) -> AXUIElement? {
+        let cells = read(row, "AXChildren") as? [AXUIElement] ?? []
+        for cell in cells {
+            let d = string(cell, "AXDescription")
+            if d == "Expand" || d == "Collapse" { return cell }
+            let kids = read(cell, "AXChildren") as? [AXUIElement] ?? []
+            for kid in kids {
+                let kd = string(kid, "AXDescription")
+                if kd == "Expand" || kd == "Collapse" { return kid }
+            }
+        }
+        return nil
+    }
+    // (chevron element, isExpanded) or nil when unreadable.
+    func chevronState(_ row: AXUIElement) -> (AXUIElement, Bool)? {
+        guard let c = findChevron(row) else { return nil }
+        let d = string(c, "AXDescription")
+        if d == "Expand" { return (c, false) }
+        if d == "Collapse" { return (c, true) }
+        return nil
+    }
+    guard let (tri0, _) = chevronState(row), frame(tri0) != nil else { print("target row has no usable chevron (Expand/Collapse AXDescription): \(rowName)"); exit(6) }
     var latMs = [Double](), jank = 0, inconclusive = 0, degradedEvents = 0
     for rep in 0..<reps {
         // Disclosure STATE must be a valid Bool before any input - a missing or
         // failed read aborts the run rather than defaulting to false.
-        let (dv, _, dFailed) = readTimed(row, "AXDisclosing")
-        guard !dFailed, let disclosing = dv as? Bool else {
-            print("AXDisclosing unreadable at rep \(rep) (unverified capability or stale handle); aborting"); exit(6)
+        guard let (tri, disclosing) = chevronState(row) else {
+            print("chevron state unreadable at rep \(rep) (unverified capability or stale handle); aborting"); exit(6)
         }
         let expectExpand = !disclosing
-        guard let triFrame = frame(tri) else { print("triangle frame lost at rep \(rep)"); exit(6) }
+        guard let triFrame = frame(tri) else { print("chevron frame lost at rep \(rep)"); exit(6) }
         guard frontmost() else { print("frontmost lost before click at rep \(rep)"); exit(4) }
         var stats = ReadStats()
         let (rowsBefore, beforeMs, beforeFailed) = rowCountTimed(table)
@@ -479,10 +524,8 @@ if mode == "expansion" {
         })
         let (rowsAfter, afterMs, afterFailed) = rowCountTimed(table)
         stats.add(afterMs, failed: afterFailed)
-        let (dva, dma, dfa) = readTimed(row, "AXDisclosing")
-        stats.add(dma, failed: dfa)
-        let flippedState = (dva as? Bool).map { $0 == expectExpand } ?? false
-        let stateFlipped = !dfa && flippedState
+        let flipDesc = findChevron(row).map { string($0, "AXDescription") }
+        let stateFlipped = (expectExpand && flipDesc == "Collapse") || (!expectExpand && flipDesc == "Expand")
         let countMoved = rowsAfter.map { expectExpand ? $0 > rowsBefore : $0 < rowsBefore } ?? false
         let latLow = (lat ?? .infinity) > window * 1000
         let degraded = latLow || stats.failures > 0
@@ -501,7 +544,7 @@ if mode == "expansion" {
     }
     latMs.sort()
     summary(["kind": "m3-expansion", "pid": pid, "row": rowName, "reps": reps,
-        "capability_note": "named-row/disclosure mechanism unverified until the first approved Mac run",
+        "capability_note": "named-row/chevron (Expand/Collapse AXDescription) mechanism unverified until the first successful expansion measurement",
         "expand_p50": percentile(latMs, 50), "expand_p95": percentile(latMs, 95),
         "jank_over_100ms": jank, "expansions_measured": latMs.count,
         "inconclusive_or_failed": inconclusive, "degraded_events": degradedEvents], inconclusive: inconclusive)
