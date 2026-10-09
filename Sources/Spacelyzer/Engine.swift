@@ -68,6 +68,28 @@ enum EngineStatus: Int32, Error {
     init(raw: Int32) { self = EngineStatus(rawValue: raw) ?? .internalError }
 }
 
+/// Why the scan skipped a location. Mirrors SkipReason in engine/src/tree.rs; an unknown
+/// raw value is never relabeled by the app (callers fail the read instead).
+enum SkippedReason: UInt8 {
+    case permissionDenied = 0, unreadable, separateVolume, userExcluded
+    var label: String {
+        switch self {
+        case .permissionDenied: "macOS did not allow access"
+        case .unreadable: "Could not be read"
+        case .separateVolume: "On another volume"
+        case .userExcluded: "Excluded by you"
+        }
+    }
+}
+
+/// One skipped location from one tree. `lossy` means the path text may not be the exact
+/// on-disk name (non-UTF-8 bytes); the app must say so rather than present it as exact.
+struct SkippedItem: Equatable {
+    var path: String
+    var reason: SkippedReason
+    var lossy: Bool
+}
+
 /// CI-only timing log (SPZ_DEMO): appends "label: value" lines to /tmp/spz-timing.txt.
 enum Perf {
     static let on = ProcessInfo.processInfo.environment["SPZ_DEMO"] != nil
@@ -295,6 +317,35 @@ final class Tree: @unchecked Sendable {
 
     var skipped: [(path: String, reason: Int)] {
         (0..<spz_tree_skipped_count(ptr)).map { (take(spz_tree_skipped_path(ptr, $0)), Int(spz_tree_skipped_reason(ptr, $0))) }
+    }
+
+    // UNCOMPILED/UNRUN until a Mac build. Status-checked skipped-list reads; the older
+    // spz_tree_skipped_path/reason pair above is kept for the footer count only.
+    /// Per-reason skipped counts (permissionDenied, unreadable, separateVolume, userExcluded).
+    /// A non-ok engine status is a failure, never four zeros.
+    func skippedCountsChecked() -> Result<(permissionDenied: Int, unreadable: Int, separateVolume: Int, userExcluded: Int), EngineStatus> {
+        var out = [UInt32](repeating: 0, count: 4)
+        var st: Int32 = -1
+        out.withUnsafeMutableBufferPointer { b in spz_tree_skipped_counts_status(ptr, b.baseAddress, &st) }
+        guard st == 0 else { return .failure(EngineStatus(raw: st)) }
+        return .success((Int(out[0]), Int(out[1]), Int(out[2]), Int(out[3])))
+    }
+
+    /// Every skipped location with its reason and lossy flag, each entry status-checked.
+    /// Any non-ok status or an unknown reason code fails the whole read: no partial list
+    /// is ever shown as the complete one.
+    func skippedItemsChecked() -> Result<[SkippedItem], EngineStatus> {
+        let n = spz_tree_skipped_count(ptr)
+        var items: [SkippedItem] = []
+        items.reserveCapacity(Int(n))
+        for i in 0..<n {
+            var reason: UInt8 = 0, lossy: UInt8 = 0, st: Int32 = -1
+            let s = spz_tree_skipped_item_status(ptr, i, &reason, &lossy, &st)
+            guard st == 0 else { return .failure(EngineStatus(raw: st)) }
+            guard let r = SkippedReason(rawValue: reason) else { return .failure(.internalError) }
+            items.append(SkippedItem(path: take(s), reason: r, lossy: lossy != 0))
+        }
+        return .success(items)
     }
 
     func layout(root: UInt32, size: CGSize, filter: FilterResult? = nil) -> TreemapLayout {
