@@ -954,19 +954,22 @@ final class AppModel {
     private func finishUndo(_ items: [RemovedItem], _ outcomes: [UndoOutcome]) {
         removalInFlight = false
         mutationPending = commitsInFlight > 0
-        var remaining: [RemovedItem] = []
+        var restored: Set<UUID> = []
         var message: String?
         for (item, outcome) in zip(items, outcomes) {
             switch outcome {
             case .restored:
+                restored.insert(item.id)
                 fsEpoch += 1
                 markOutOfDate("Restored on disk. Rescan to bring it back.")
                 message = message ?? "Put \(item.original.lastPathComponent) back. Restored on disk. Rescan to bring it back."
-            case .collision: remaining.append(item); message = "Could not put it back: something already exists at \(item.original.path)."
-            case .failed(let reason): remaining.append(item); message = "Could not put it back: \(reason)"
+            case .collision: message = "Could not put it back: something already exists at \(item.original.path)."
+            case .failed(let reason): message = "Could not put it back: \(reason)"
             }
         }
-        lastRemoved = remaining   // only successful restores are forgotten
+        // Only successful restores are forgotten. A per-item pass touches one record; every other
+        // journaled record (and this pass's collided/failed ones) stays in the history.
+        lastRemoved = lastRemoved.filter { !restored.contains($0.id) }
         removalMessage = message
     }
 
