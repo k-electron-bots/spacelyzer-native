@@ -2970,7 +2970,12 @@ final class BusyFlag: @unchecked Sendable {
         "volume-header-failed-read-shows-failed-never-number",
         "volume-header-load-off-main-publishes-on-main",
         "volume-header-repeat-load-same-path-does-not-reread",
-        "volume-info-real-read-satisfies-statvfs-invariants"
+        "volume-info-real-read-satisfies-statvfs-invariants",
+        "quicklook-absolute-path-presented-exactly",
+        "quicklook-relative-path-refused-before-panel",
+        "quicklook-empty-path-refused-before-panel",
+        "quicklook-second-preview-replaces-first",
+        "quicklook-present-synchronous-before-return"
     ]
     static func run(tree: Tree) async -> Never {
         // Results go to a unique per-run directory chosen by the runner (SPZ_RESULT_DIR). Nothing shared is deleted or
