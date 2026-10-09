@@ -222,7 +222,8 @@ jobs:
           [ -f "$ART/m3-BLOCKER.txt" ] && { echo "SKIPPED: blocker recorded earlier"; exit 10; }
           [ -x "$RUNNER_TEMP/m3bench" ] || { echo "SKIPPED: bench binary missing (earlier step failed)"; exit 10; }
           pgrep -x Spacelyzer >/dev/null && { echo "PRECHECK FAILED: Spacelyzer already running"; exit 10; }
-          open -n "$GITHUB_WORKSPACE/dist/Spacelyzer.app" --env SPZ_AUTOSCAN="$RUNNER_TEMP/m3fix-exp"
+          rm -f /tmp/spz-timing.txt
+          open -n "$GITHUB_WORKSPACE/dist/Spacelyzer.app" --env SPZ_AUTOSCAN="$RUNNER_TEMP/m3fix-exp" --env SPZ_TIMING=1
           PID=""
           for i in $(seq 1 30); do
             n=$(pgrep -x Spacelyzer | wc -l | tr -d ' ')
@@ -240,6 +241,7 @@ jobs:
           bs=${PIPESTATUS[0]}
           echo "expansion_exit=$bs" | tee "$ART/m3-expansion-exit.txt"
           if [ "$bs" = "3" ]; then echo "BLOCKER: AX trust unavailable (bench)" | tee "$ART/m3-BLOCKER.txt"; exit 10; fi
+          echo "--- SPZ_TIMING stage log (expansion-10k) ---"; cat /tmp/spz-timing.txt 2>/dev/null || echo "(no timing log)"
           exit 0
 
       - name: Typing (200 keys, typing-200k) then hover (60 sweeps)
@@ -251,7 +253,8 @@ jobs:
           [ -f "$ART/m3-BLOCKER.txt" ] && { echo "SKIPPED: blocker recorded earlier"; exit 10; }
           [ -x "$RUNNER_TEMP/m3bench" ] || { echo "SKIPPED: bench binary missing (earlier step failed)"; exit 10; }
           pgrep -x Spacelyzer >/dev/null && { echo "PRECHECK FAILED: Spacelyzer already running"; exit 10; }
-          open -n "$GITHUB_WORKSPACE/dist/Spacelyzer.app" --env SPZ_AUTOSCAN="$RUNNER_TEMP/m3fix-typing/typing-200k"
+          rm -f /tmp/spz-timing.txt
+          open -n "$GITHUB_WORKSPACE/dist/Spacelyzer.app" --env SPZ_AUTOSCAN="$RUNNER_TEMP/m3fix-typing/typing-200k" --env SPZ_TIMING=1
           PID=""
           for i in $(seq 1 30); do
             n=$(pgrep -x Spacelyzer | wc -l | tr -d ' ')
@@ -273,6 +276,7 @@ jobs:
           hs=${PIPESTATUS[0]}
           echo "hover_exit=$hs" | tee "$ART/m3-hover-exit.txt"
           if [ "$hs" = "3" ]; then echo "BLOCKER: AX trust unavailable (bench hover)" | tee "$ART/m3-BLOCKER.txt"; exit 10; fi
+          echo "--- SPZ_TIMING stage log (typing/hover) ---"; cat /tmp/spz-timing.txt 2>/dev/null || echo "(no timing log)"
           exit 0
 
       - name: Optional expansion-100k (only if 12+ minutes remain)
@@ -294,7 +298,8 @@ jobs:
           vs=${PIPESTATUS[0]}
           if [ "$gs" != "0" ] || [ "$vs" != "0" ]; then echo "FIXTURE GENERATE/VERIFY FAILED (generate=$gs verify=$vs) - optional segment findings-only" | tee -a "$ART/expansion-100k-decision.txt"; exit 0; fi
           pgrep -x Spacelyzer >/dev/null && { echo "PRECHECK FAILED: Spacelyzer already running"; exit 10; }
-          open -n "$GITHUB_WORKSPACE/dist/Spacelyzer.app" --env SPZ_AUTOSCAN="$RUNNER_TEMP/m3fix-exp100"
+          rm -f /tmp/spz-timing.txt
+          open -n "$GITHUB_WORKSPACE/dist/Spacelyzer.app" --env SPZ_AUTOSCAN="$RUNNER_TEMP/m3fix-exp100" --env SPZ_TIMING=1
           PID=""
           for i in $(seq 1 30); do
             n=$(pgrep -x Spacelyzer | wc -l | tr -d ' ')
@@ -310,6 +315,7 @@ jobs:
           bs=${PIPESTATUS[0]}
           echo "expansion100k_exit=$bs" | tee "$ART/m3-expansion-100k-exit.txt"
           [ "$bs" = "3" ] && echo "BLOCKER: AX trust unavailable (bench)" | tee "$ART/m3-BLOCKER.txt"
+          echo "--- SPZ_TIMING stage log (expansion-100k) ---"; cat /tmp/spz-timing.txt 2>/dev/null || echo "(no timing log)"
           exit 0
 
       - name: Footer verdict (recorded finding)
