@@ -30,13 +30,15 @@ import Darwin
 //   proved it blind (count never moved across 200 keys under filter "i"). The
 //   app-reported filter ms parsed from the footer is corroboration only, not
 //   independently verified.
-// - Expansion mode's mechanism (matching a named row, its chevron button's
-//   AXLabel "Expand <name>"/"Collapse <name>" as state and click target, with
-//   the chevron image's AXDescription "Expand"/"Collapse" as fallback) is an
-//   UNVERIFIED CAPABILITY until the first successful expansion measurement:
-//   run 37864247016 confirmed the profile root is NOT a displayed row under a
-//   direct scan, and run 37870201922 confirmed the row has no
-//   AXDisclosureTriangle/AXDisclosing (custom chevron per OutlineView.swift).
+// - Expansion mode's mechanism (matching a named row, its chevron AXButton's
+//   state text "Expand <name>"/"Collapse <name>" on AXDESCRIPTION - AXLabel/
+//   AXTitle are empty, run 37877990327's failure-path dump - as state and
+//   click target) was FIRST MEASURED in run 37882191076 (expansion-10k: 3/3
+//   expands, p50 149.99ms, p95 220.90ms; expansion-100k: 2/2 expands, p50
+//   114.44ms; BASELINE ONLY, event-to-AX-visible latency). Run 37864247016
+//   confirmed the profile root is NOT a displayed row under a direct scan,
+//   and run 37870201922 confirmed the row has no AXDisclosureTriangle/
+//   AXDisclosing (custom chevron per OutlineView.swift).
 // - The scanned path cannot be verified through AX. External preflight
 //   (documented, not enforced): typing scans the fixture PROFILE directory
 //   directly (ROOT/typing-200k); expansion scans the profile's WRAPPER
@@ -206,19 +208,27 @@ guard let running = NSRunningApplication(processIdentifier: pid), running.activa
       let fieldFrame = frame(field) else { exit(4) }
 // Run 37880172301 evidence: on a slow app launch (readiness passed at
 // polls=3) the window was not yet materialized at this preflight and BOTH
-// typing and hover exited 5 instantly with no measurement. Wait bounded for
-// the one window (15s, 250ms polls) instead of failing on the first read.
-guard until(now(), 15, interval: 250_000, {
+// typing and hover exited 5 instantly with no measurement; run 37882191076
+// showed 15s is still not always enough (exit 5 again, reason printed).
+// Wait bounded for the one window (60s, 250ms polls) and, on timeout, dump
+// the observed AXWindows count and per-window frames so the log says which
+// side failed (zero windows, several windows, or a frameless one).
+guard until(now(), 60, interval: 250_000, {
     let ws = read(app, "AXWindows") as? [AXUIElement] ?? []
     guard ws.count == 1, let f = frame(ws[0]), f.width > 0 else { return false }
     return true
 }) != nil,
       let windows = read(app, "AXWindows") as? [AXUIElement], windows.count == 1,
-      let winFrame = frame(windows[0]), winFrame.width > 0 else { print("app window not uniquely discoverable within 15s of bench start; aborting"); exit(5) }
+      let winFrame = frame(windows[0]), winFrame.width > 0 else {
+    let ws = read(app, "AXWindows") as? [AXUIElement] ?? []
+    var winDiag = "windows=\(ws.count)"
+    for (i, w) in ws.prefix(4).enumerated() { winDiag += " w\(i)_frame=\(frame(w).map { "\($0)" } ?? "nil")" }
+    print("app window not uniquely discoverable within 60s of bench start (\(winDiag)); aborting"); exit(5)
+}
 emit(["header": "m3-interaction-bench", "mode": mode, "pid": pid,
       "limitation": "event-to-AX-visible latency only; not proof of main-thread block",
       "typing_note": "typing measures t0(key) until the app's own footer republishes the filter result; event-to-AX-visible latency, not render completion",
-      "expansion_note": "named-row/disclosure mechanism is an unverified capability until the first approved Mac run",
+      "expansion_note": "named-row/chevron-button mechanism first measured in run 37882191076; event-to-AX-visible latency, BASELINE ONLY",
       "preflight": "typing scanned the profile dir directly; expansion scanned its one-fixture wrapper; AX cannot verify the scanned path"])
 
 if mode == "typing" {
@@ -627,7 +637,7 @@ if mode == "expansion" {
     }
     latMs.sort()
     summary(["kind": "m3-expansion", "pid": pid, "row": rowName, "reps": reps,
-        "capability_note": "named-row/chevron-button (AXLabel Expand/Collapse <name>) mechanism unverified until the first successful expansion measurement",
+        "capability_note": "named-row/chevron-button (state text Expand/Collapse <name> on AXDescription) mechanism first measured in run 37882191076; BASELINE ONLY",
         "expand_p50": percentile(latMs, 50), "expand_p95": percentile(latMs, 95),
         "jank_over_100ms": jank, "expansions_measured": latMs.count,
         "inconclusive_or_failed": inconclusive, "degraded_events": degradedEvents], inconclusive: inconclusive)
