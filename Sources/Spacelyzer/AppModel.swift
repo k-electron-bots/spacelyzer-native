@@ -346,6 +346,9 @@ final class AppModel {
         try FileManager.default.trashItem(at: url, resultingItemURL: &out)
         return out! as URL
     }
+    /// Seam for the pre-Trash identity revalidation, so checks can force any verdict without touching a file.
+    /// The real check is one lstat comparing the item now at the path with the identity the scan recorded.
+    var identityCheck: (Tree, UInt32) -> IdentityVerdict = { tree, id in tree.checkIdentity(id) }
     var lastRemoved: [RemovedItem] = []
     /// True while a Trash move or undo runs off the main actor; repeat requests are refused meanwhile.
     var removalInFlight = false
@@ -750,6 +753,8 @@ final class AppModel {
     enum RemovalOutcome: Sendable {
         case moved(URL)
         case failed(String, originalStillExists: Bool)
+        /// Identity revalidation refused the move: the item at the path is not confirmed as the scanned item.
+        case refused(String)
     }
     enum UndoOutcome: Sendable {
         case restored
@@ -759,6 +764,7 @@ final class AppModel {
     /// `trashItem` is a plain closure so tests can mock it; it is only ever called from one background task at a time
     /// (removalInFlight serializes), which is the invariant this wrapper relies on.
     private struct SerialOperation: @unchecked Sendable { let run: (URL) throws -> URL }
+    private struct SerialIdentity: @unchecked Sendable { let run: (Tree, UInt32) -> IdentityVerdict }
 
     func confirmRemoval() {
         guard let tree, let id = pendingRemoval else { return }
@@ -780,10 +786,16 @@ final class AppModel {
         mutationPending = true      // reserved before the write, so no scan or undo can slip in between
         removalInFlight = true
         let op = SerialOperation(run: trashItem)
+        let check = SerialIdentity(run: identityCheck)
         // 1. The filesystem move runs OFF the main actor (it can take seconds on a slow volume). The tree is not touched
         // until the outcome is back on the main actor; mutationPending/removalInFlight stay set for the whole window.
         removalTask = Task { [weak self] in
             let outcome: RemovalOutcome = await Task.detached(priority: .userInitiated) {
+                // Identity revalidation immediately before the move: one lstat against the scanned identity.
+                // This narrows the window between scan and Trash; it cannot close it - the item can still
+                // change between this check and the move. Any verdict but .same refuses and moves nothing.
+                let verdict = check.run(tree, id)
+                guard verdict.allowsProceeding else { return .refused(verdict.message) }
                 do { return .moved(try op.run(url)) }
                 catch { return .failed(error.localizedDescription, originalStillExists: FileManager.default.fileExists(atPath: url.path)) }
             }.value
@@ -794,6 +806,10 @@ final class AppModel {
     private func finishRemoval(_ outcome: RemovalOutcome, id: UInt32, url: URL, size: UInt64, tree removedFrom: Tree) {
         removalInFlight = false
         switch outcome {
+        case .refused(let reason):
+            // Nothing was moved; the verdict's own message says so and asks for a rescan.
+            mutationPending = commitsInFlight > 0
+            removalMessage = reason
         case .failed(let reason, let stillExists):
             mutationPending = commitsInFlight > 0
             removalMessage = stillExists
