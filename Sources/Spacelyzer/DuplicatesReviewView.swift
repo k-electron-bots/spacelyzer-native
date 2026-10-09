@@ -11,6 +11,33 @@ import SwiftUI
 /// the engine's sticky flag and the pass returns early with its cancelled flag. The
 /// publish is on the main actor; a late answer is shown only while its request token is
 /// still current.
+/// Removal wiring for one listed duplicate member (E6, through the E4 one-item flow). Members are
+/// paths from a report captured on ONE tree; the removal gates live on the AppModel's LIVE tree, so
+/// every action resolves the path against the live tree and refuses with a reason when it is not
+/// there (a rescan replaced the results, or the copy is already gone). Only LISTED paths can ever
+/// reach Trash from here: a capped group listing keeps its report-only meaning.
+enum DuplicateRemoval {
+    /// The node id of one listed member path in the live tree, or nil when it is not there.
+    @MainActor
+    static func liveID(_ path: String, in model: AppModel) -> UInt32? {
+        guard let t = model.tree else { return nil }
+        let id = t.find(path: path)
+        return id == 0 ? nil : id
+    }
+
+    /// Why one listed member cannot be removed right now; nil when it can. The same gates as the
+    /// outline and treemap Trash buttons, plus the live-tree resolution above, plus keep-one-copy:
+    /// the last remaining copy of a group is never offered removal (at least one copy always stays).
+    @MainActor
+    static func blockedReason(_ path: String, groupPaths: [String], in model: AppModel) -> String? {
+        guard model.tree != nil else { return "No scan is loaded." }
+        guard let id = liveID(path, in: model) else { return "This copy is not in the current results. Rescan to refresh." }
+        let othersRemain = groupPaths.contains { $0 != path && liveID($0, in: model) != nil }
+        if !othersRemain { return "The last remaining copy of this duplicate group. One copy is always kept." }
+        return model.removalBlockedReason(id)
+    }
+}
+
 @MainActor
 final class DuplicatesModel: ObservableObject {
     typealias Reader = @Sendable (Tree, DupScanControl) async -> Result<DupFindResult, EngineStatus>
@@ -86,6 +113,8 @@ final class DuplicatesModel: ObservableObject {
 /// a capped report is labeled partial - none is ever shown as "all duplicates".
 struct DuplicatesReviewView: View {
     let tree: Tree
+    @Environment(AppModel.self) private var appModel
+    @Environment(\.dismiss) private var dismiss
     @StateObject private var model: DuplicatesModel
 
     init(tree: Tree, model: DuplicatesModel? = nil) {
@@ -159,8 +188,23 @@ struct DuplicatesReviewView: View {
                     if g.linked { Text("hard-linked").font(.caption2).foregroundStyle(.orange) }
                 }
                 ForEach(Array(g.paths.enumerated()), id: \.offset) { _, p in
-                    Text(p).font(.caption2).foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                    HStack(spacing: 8) {
+                        Text(p).font(.caption2).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                        Spacer(minLength: 8)
+                        if let reason = DuplicateRemoval.blockedReason(p, groupPaths: g.paths, in: appModel) {
+                            Image(systemName: "trash").font(.caption2).foregroundStyle(.quaternary)
+                                .help(reason)
+                        } else if let id = DuplicateRemoval.liveID(p, in: appModel) {
+                            Button("Move to Trash…", role: .destructive) {
+                                dismiss()                       // the confirmation alert lives on the main window
+                                appModel.proposeRemoval(of: id) // the E4 flow confirms with full path and size
+                            }
+                            .font(.caption2)
+                            .help("Move this copy to the Trash; you can put it back right after")
+                            .accessibilityLabel("Move \(URL(fileURLWithPath: p).lastPathComponent) to Trash")
+                        }
+                    }
                 }
                 if g.listingCapped {
                     Text("+\(g.memberCount - g.paths.count) more not listed").font(.caption2).foregroundStyle(.secondary)
