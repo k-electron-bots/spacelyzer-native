@@ -101,16 +101,29 @@ time needs separate instrumentation (for example a main-thread watchdog ping or
 os_signpost intervals inside the app); that instrumentation is specified as
 follow-up work and is NOT part of this protocol's harness claims.
 
-- typing: key event -> filter field AX value updated; key event -> result list
-  AX row count updated (or a proven no-change settle); p50/p95 over N=200
-  keystrokes into a scanned typing-200k tree.
+- typing: key event -> filter field AX value updated; key event -> the app's
+  own footer summary container republishes the filter result (ContentView
+  fullDetails, exposed on the combined summary container's AXLabel/AXHelp;
+  first measured 200/200 in run 37877990327); p50/p95 over N=200 keystrokes
+  into a scanned typing-200k tree. The earlier row-count signal was dropped
+  after run 37870201922 proved it blind (the count never moved across 200
+  keys under filter "i"). The app-reported filter ms parsed from the footer
+  is corroboration only, not independently verified.
 - hover: pointer move -> the element under the pointer resolves via
   AXUIElementCopyElementAtPosition; lag distribution over a window grid sweep.
   Whether the app exposes any hover-HIGHLIGHT state through AX is unverified;
   no highlight-visibility measurement is claimed.
-- expansion: disclosure-triangle click -> children AX-visible (AXRows count
-  grows) on expansion-10k/100k/1m fixtures; expansions slower than 100ms are
-  reported as jank candidates (event-to-visible latency, per the caveat above).
+- expansion: click the row's chevron AXButton -> the outline's top-level
+  children count moves and the chevron state flips, on expansion-10k/100k/1m
+  fixtures; expansions slower than 100ms are reported as jank candidates
+  (event-to-visible latency, per the caveat above). The app renders its own
+  chevron NSButton whose state text "Expand <name>"/"Collapse <name>" sits on
+  AXDescription (AXLabel/AXTitle empty; run 37877990327's failure-path dump)
+  - there is no AXDisclosureTriangle/AXDisclosing. The target row is
+  re-resolved through a bounded chunked scan before every rep and before the
+  post-click state check (run 37880172301: the pre-loop row handle went stale
+  after rep 0's expansion; exit 6). The expansion measurement remains an
+  UNVERIFIED CAPABILITY until the first successful measured run.
 
 Before/after protocol: same fixture, same machine, 3 runs each, medians, raw
 harness JSONL logs kept per run. A stall is reported removed only with the
