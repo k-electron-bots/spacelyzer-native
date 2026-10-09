@@ -2390,6 +2390,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         await reviewModelChecks()
         await SkippedListChecks.run()
         await ExclusionsChecks.run()
+        await VolumeChecks.run()
         copyPathChecks()
         csvChecks()
         await foldersChecks()

@@ -158,6 +158,7 @@ struct StatusBar: View {
                         .buttonStyle(.plain).foregroundStyle(.orange)
                         .help("Show the locations that were not scanned")
                 }
+                VolumeHeaderView(rootPath: model.rootPath)
             }
             if !compact {
                 if model.scanning { Text("\(String(format: "%.1f", model.elapsed))s").foregroundStyle(.secondary) }
