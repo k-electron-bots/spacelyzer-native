@@ -96,7 +96,7 @@ struct DuplicatesReviewView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Duplicates").font(.headline)
-            Text("Same content in more than one copy. Allocated bytes are not reclaimable space.")
+            Text("Same content in more than one copy. Allocated bytes are not reclaimable space. Copies stored with different allocation (sparse, compressed, some clones) can be missed - a recall limit, never a false duplicate.")
                 .font(.caption).foregroundStyle(.secondary)
             if model.readFailed {
                 Text("The duplicates could not be read from the engine. The scan itself is unchanged; rescan to try again.")
