@@ -649,6 +649,10 @@ if mode == "expansion" {
         if degraded { degradedEvents += 1 }
         if ok, expectExpand, let lat { latMs.append(lat); if lat > 100 { jank += 1 } }
         var event: [String: Any] = ["event": expectExpand ? "expand" : "collapse", "rep": rep,
+            // Absolute mach-uptime ns (same clock as the app's Perf.now()
+            // stamps) so the SPZ_TIMING app log correlates per rep:
+            // toggle-entry minus t0_ns = event-delivery latency.
+            "t0_ns": UInt64(t0 * 1_000_000_000),
             "rows_before": rowsBefore, "rows_after": rowsAfter ?? -1,
             "latency_ms": lat ?? -1, "latency_low_quality": latLow,
             "ok": ok, "state_flipped": stateFlipped, "degraded": degraded,
