@@ -152,8 +152,9 @@ complete; the footer gate was VERIFIED. The per-rep correlation splits each
 expansion measurement into three parts: event delivery (bench CGEvent post
 to the app's toggle handler entry), app-side publish (toggle entry to the
 @Published outline update), and the AX-observation remainder (bench-visible
-time after NSOutlineView reloadData returned, including AX tree
-invalidation/materialization, IPC, and the bench's 10ms poll quantization).
+time after NSOutlineView reloadData returned, candidates include AX
+tree invalidation/materialization and IPC, plus the bench's verified 10ms poll
+quantization).
 Medians, BASELINE ONLY: expansion-10k delivery 87.26ms, publish 1.53ms,
 reloadData 0.81ms, remainder 62.54ms; expansion-100k delivery 53.20ms,
 publish 5.17ms, reloadData 0.66ms, remainder 71.26ms. Per-rep ranges across
