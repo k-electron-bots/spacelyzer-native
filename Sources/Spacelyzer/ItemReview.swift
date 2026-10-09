@@ -1,7 +1,7 @@
 import CSpacelyzer
 import SwiftUI
 
-// UNCOMPILED and UNRUN until a Mac run. Not mounted anywhere and not connected to Trash. Nothing here makes removal safe:
+// UNCOMPILED and UNRUN until a Mac run. Mounted read-only behind Check on disk; not connected to Trash. Nothing here makes removal safe:
 // it shows what is on disk NOW and refuses to describe an item as "the same" unless the engine says so.
 
 /// What the identity check said about one item. The raw engine code is kept for logs and tests.
@@ -128,7 +128,7 @@ enum ItemReview {
 /// Owns the one review in flight. A new request or `invalidate()` cancels the old one. A result is shown only if its request token,
 /// tree, node and the table version captured at request time ALL still match, and the tree's version has not moved since. A result that
 /// arrives for the current request but is stale ends the in-progress state and sets `outdated`, so the UI never spins forever or shows old data.
-/// Nothing calls `invalidate()` yet: the model is not mounted and no selection is wired to it.
+/// The popover calls `invalidate()` when it disappears, and dismisses itself on selection, tree, filter or mutation changes.
 @MainActor
 final class ItemReviewModel: ObservableObject {
     typealias Reviewer = @Sendable (Tree, UInt32, UInt64) async throws -> ItemReviewResult
