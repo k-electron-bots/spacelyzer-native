@@ -286,6 +286,293 @@ private final class OutlineCell: NSTableCellView {
         let x0 = 8 + CGFloat(min(depth, 8)) * 10
         chevron.frame = NSRect(x: x0, y: (h - 14) / 2, width: 14, height: 14)
         chevron.isHidden = !hasChildren
+import CSpacelyzer
+import SwiftUI
+
+/// The outline is an NSTableView: AppKit virtualizes rows and scrolls to a row in O(1), which a LazyVStack could not do
+/// for 150k rows (profiled: scrollTo and row re-evaluation dominated every arrow press).
+/// CI-only bounded causal envelope. Buffers instrumentation, not a CPU sampler.
+@MainActor enum InteractionTrace {
+    private struct Expected {
+        let label: String
+        let type: NSEvent.EventType
+        let window: Int
+        let timestamp: TimeInterval
+        let code: UInt16?
+        // Prospective diagnostic bins, not proof of AppKit's timestamp conversion mechanism.
+        // A singleton normalized tuple is usable only within this bounded injected-event arm.
+        func matches(_ e: NSEvent) -> Bool {
+            guard let lhs = InteractionTrace.timestampBin(timestamp),
+                  let rhs = InteractionTrace.timestampBin(e.timestamp) else { return false }
+            return e.type == type && e.windowNumber == window && lhs == rhs &&
+                   (code == nil || code == e.keyCode)
+        }
+    }
+    private static var began: UInt64?
+    private static var records: [(String, UInt64)] = []
+    private static var dropped = 0
+    private static var identityDropped = 0
+    private static var collisions = 0
+    private static var ambiguities = 0
+    private static var invalidTimestamps = 0
+    private static var normalizedLookups = 0
+    private static var lastPosted = "none"
+    private static var expected: [Expected] = []
+    private static var label = "none"
+    private static var phase = "none"
+    private static var monitor: Any?
+    private static var observer: CFRunLoopObserver?
+    private static var generation = 0
+    private static var wallBefore: TimeInterval = 0
+    private static var wallAfter: TimeInterval = 0
+    static var active: Bool { began != nil }
+    static func begin(_ name: String = "click") {
+        guard Perf.on else { return }
+        if active { finish() }
+        records = []; records.reserveCapacity(8192); expected = []; expected.reserveCapacity(41)
+        dropped = 0; identityDropped = 0; collisions = 0; ambiguities = 0; invalidTimestamps = 0; normalizedLookups = 0; lastPosted = "none"; label = "none"; phase = name; generation += 1
+        wallBefore = Date().timeIntervalSince1970; began = Perf.now(); wallAfter = Date().timeIntervalSince1970
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .keyDown]) { event in
+            MainActor.assumeIsolated {
+                label = identity(for: event)
+                record("local-monitor-identity type=\(event.type.rawValue) window=\(event.windowNumber) eventTimestamp=\(event.timestamp) timestampBin_us=\(timestampBin(event.timestamp).map(String.init) ?? "invalid")")
+            }
+            return event // Do not consume, mutate or repost the event.
+        }
+        observer = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.allActivities.rawValue, true, 0) { _, activity in
+            MainActor.assumeIsolated { record("runloop-activity=\(activity.rawValue)", attribution: "unattributed") }
+        }
+        if let observer { CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes) }
+        record("trace-begin-before-window-lookup monitorInstalled=\(monitor != nil) observerInstalled=\(observer != nil)")
+    }
+    static func record(_ stage: String, attribution: String? = nil, stamp: UInt64? = nil) {
+        guard began != nil else { return }
+        guard records.count < 8192 else { dropped += 1; return }
+        records.append(("event=\(attribution ?? label) \(stage)", stamp ?? Perf.now()))
+    }
+    nonisolated private static func timestampBin(_ timestamp: TimeInterval) -> Int64? {
+        guard timestamp.isFinite, timestamp >= 0 else { return nil }
+        let microseconds = (timestamp * 1_000_000).rounded()
+        guard microseconds.isFinite, microseconds >= 0, microseconds < Double(Int64.max) else { return nil }
+        return Int64(microseconds)
+    }
+    private static func identity(for event: NSEvent) -> String {
+        guard timestampBin(event.timestamp) != nil else { invalidTimestamps += 1; return "invalid-timestamp" }
+        let matches = expected.filter { $0.matches(event) }
+        if matches.count == 1 {
+            if matches[0].timestamp != event.timestamp { normalizedLookups += 1 }
+            return matches[0].label
+        }
+        if matches.count > 1 { ambiguities += 1; return "ambiguous" }
+        return "unmatched"
+    }
+    static func recordEvent(_ stage: String, _ event: NSEvent) {
+        guard active else { return }
+        record(stage, attribution: identity(for: event))
+    }
+    static func driverResumed(_ elapsed: Double, selectionChanged: Bool) {
+        record("driver-poll-resume elapsed_ms=\(elapsed) selectionChanged=\(selectionChanged) timeout=\(!selectionChanged)", attribution: lastPosted)
+    }
+    static func willPost(_ event: NSEvent) {
+        guard active else { return }
+        guard timestampBin(event.timestamp) != nil else { invalidTimestamps += 1; lastPosted = "invalid-timestamp"; label = "invalid-timestamp"; record("invalid-post-timestamp"); return }
+        guard expected.count < 41 else { identityDropped += 1; lastPosted = "identity-dropped"; label = "identity-dropped"; record("post-identity-cap-exceeded", attribution: "unattributed"); return }
+        if expected.contains(where: { $0.matches(event) }) {
+            collisions += 1
+            record("duplicate-normalized-identity-tuple type=\(event.type.rawValue) window=\(event.windowNumber) eventTimestamp=\(event.timestamp)", attribution: "ambiguous")
+        }
+        label = "\(phase)-\(expected.count)"
+        lastPosted = label
+        expected.append(Expected(label: label, type: event.type, window: event.windowNumber, timestamp: event.timestamp,
+                                 code: event.type == .keyDown ? event.keyCode : nil))
+        record("post-before type=\(event.type.rawValue) window=\(event.windowNumber) eventTimestamp=\(event.timestamp) timestampBin_us=\(timestampBin(event.timestamp).map(String.init) ?? "invalid")")
+        let queued = Perf.now(), token = generation, identity = label
+        record("probe-enqueued-before-post main-queue-opportunity-not-dispatch-latency", attribution: identity, stamp: queued)
+        DispatchQueue.main.async {
+            guard active, generation == token else { return }
+            record("probe-executed enqueue_ns=\(queued)", attribution: identity)
+        }
+    }
+    static func finish() {
+        guard let start = began else { return }
+        record("trace-finish")
+        let complete = monitor != nil && observer != nil && dropped == 0 && identityDropped == 0 && collisions == 0 && ambiguities == 0 && invalidTimestamps == 0
+        if let monitor { NSEvent.removeMonitor(monitor) }; monitor = nil
+        if let observer { CFRunLoopRemoveObserver(CFRunLoopGetMain(), observer, .commonModes); CFRunLoopObserverInvalidate(observer) }; observer = nil
+        began = nil; generation += 1
+        var lines = ["interaction-clock phase=\(phase) pid=\(ProcessInfo.processInfo.processIdentifier) uptime_ns=\(start) wall_before_unix=\(wallBefore) wall_after_unix=\(wallAfter) records=\(records.count) cap=8192 dropped=\(dropped) expectedEvents=\(expected.count) identityDropped=\(identityDropped) collisions=\(collisions) ambiguousLookups=\(ambiguities) invalidTimestamps=\(invalidTimestamps) normalizedLookups=\(normalizedLookups) identityScheme=type/window/rounded-microsecond/keycode instrumentationStatus=\(complete ? "NO-RECORDED-LOSS-WITH-LIMITS" : "INCOMPLETE-INCONCLUSIVE") cleanupMonitor=\(monitor == nil) cleanupObserver=\(observer == nil) arm=chronology-requested-settle-1s altered-idle=true no-cold-comparability sampleCoverage=UNVERIFIED-REQUIRES-PHASE-BRIDGE",
+                     "limits: prospective rounded-microsecond singleton tuple, not raw exact timestamp identity or timestamp-mechanism proof; nearby timestamps can split across bin boundaries and stay unmatched, no nearest-neighbor rescue; different raw timestamps in same bin match by design, unrelated inbound event with same tuple is indistinguishable, no general event identity; all normalized-bin collisions invalidate whole phase including earlier records; monitor excludes nested event-tracking loops; model/view context label is most recent posted-or-monitored event, not causal proof; runloop common-modes only, not all nested loops; stamps unattributed/order0, other observers may run afterward; probe queued before post measures main-queue opportunity, not event dispatch latency; queue delay/runloop stamps are not CPU-busy proof; phase clock bridges separate, raw sampler overlap must be checked separately for click and arrows; flush before MainStall summaries is included, not clean benchmark; status only reports install/counter completeness, not matched delivery or selection causality; missing per-ID post/monitor/handler/model/driver stages require runtime coverage inspection even with zero drops; any cap/drop/collision/ambiguous identity invalidates whole-phase causal attribution, including earlier records; instrumentation/profiler/existing product log perturbation retained"]
+        for (stage, stamp) in records { lines.append("interaction-stage \(stage) uptime_ns=\(stamp) elapsed_ms=\(Double(stamp - start) / 1e6)") }
+        let data = (lines.joined(separator: "\n") + "\n").data(using: .utf8)!
+        let url = URL(fileURLWithPath: "/tmp/spz-interaction-envelope.txt")
+        if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(data); try? h.close() } else { try? data.write(to: url) }
+        // Original timing stream keeps the bounded summary, not thousands of stage lines.
+        Perf.log(lines[0]); records = []; expected = []; label = "none"
+    }
+}
+
+struct OutlineView: View {
+    @Environment(AppModel.self) private var model
+    static let rowHeight: CGFloat = 28
+
+    var body: some View {
+        if let tree = model.tree {
+            #if SPZ_CI_TESTS
+            let _: Void = SelDiag.noteBody(model.selected)
+            #endif
+            let total = max(1, model.outlineRootSize)   // same publication and table version as the rows
+            OutlineTable(model: model, tree: tree, total: total, revision: model.outlineRevision, selected: model.selected, selectionRevision: SelectionRevisionSwitch.value(model.selectionRevision), poisoned: model.enginePoisoned)
+                .overlay {
+                    if model.activeFilter != nil && model.outlineRows.isEmpty {
+                        ContentUnavailableView("No matches", systemImage: "line.3.horizontal.decrease.circle",
+                                               description: Text("Nothing in this folder matches the current filter."))
+                    }
+                }
+                .onAppear { model.refreshOutline() }
+                .onChange(of: model.selected) { _, n in
+                    InteractionTrace.record("swiftui-selection-onChange-enter")
+                    if let n { model.revealInOutline(n) }
+                    InteractionTrace.record("swiftui-selection-onChange-exit")
+                    guard Perf.on else { return }
+                    let idx = n.flatMap { model.outlineIndex[$0] }
+                    if InteractionTrace.active { InteractionTrace.record("selection-observed node=\(n.map(String.init) ?? "nil") rowIndex=\(idx.map(String.init) ?? "none")"); return }
+                    Perf.log("selection changed: node=\(n.map(String.init) ?? "nil") rowIndex=\(idx.map(String.init) ?? "none") of \(model.outlineRows.count)")
+                }
+        } else {
+            ProgressView("Scanning…").frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+}
+
+private final class KeyTable: NSTableView {
+    var onAttachment: (() -> Void)?
+    override func mouseDown(with event: NSEvent) {
+        InteractionTrace.recordEvent("table-mouseDown-enter", event)
+        super.mouseDown(with: event)
+        InteractionTrace.recordEvent("table-mouseDown-exit", event)
+    }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); onAttachment?() }
+    var onTab: ((NSEvent.ModifierFlags) -> Bool)?
+    var onKey: ((UInt16) -> Bool)?
+    var contextRow: ((Int) -> NSMenu?)?
+    private func tabDiagnostic(_ stage: String, _ event: NSEvent? = nil) {
+        guard Perf.on else { return }
+        Perf.log("native-tab \(stage) code=\(event.map { String($0.keyCode) } ?? "none") modifiers=\(event.map { String($0.modifierFlags.rawValue) } ?? "none") nextRaw=\(String(describing: nextKeyView)) responder=\(String(describing: window?.firstResponder))")
+    }
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.keyCode == 48 { tabDiagnostic("keyEquivalent-entry", event) }
+        let handled = super.performKeyEquivalent(with: event)
+        if event.keyCode == 48 { tabDiagnostic("keyEquivalent-exit-handled=\(handled)", event) }
+        return handled
+    }
+    override func insertTab(_ sender: Any?) {
+        tabDiagnostic("insertTab-entry")
+        super.insertTab(sender)
+        tabDiagnostic("insertTab-exit")
+    }
+    override func insertBacktab(_ sender: Any?) {
+        tabDiagnostic("insertBacktab-entry")
+        super.insertBacktab(sender)
+        tabDiagnostic("insertBacktab-exit")
+    }
+    override func keyDown(with event: NSEvent) {
+        InteractionTrace.recordEvent("table-keyDown-enter code=\(event.keyCode)", event)
+        defer { InteractionTrace.recordEvent("table-keyDown-exit code=\(event.keyCode)", event) }
+        if event.keyCode == 48 { tabDiagnostic("keyDown-entry", event) }
+        if event.keyCode == 48 && event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
+            // Only the forward outline-to-filter boundary is explicit. Backward stays native.
+            if !event.modifierFlags.contains(.shift), onTab?(event.modifierFlags) == true {
+                tabDiagnostic("after-explicit-boundary", event)
+                return
+            }
+            tabDiagnostic("native-fallback", event)
+        }
+        if let h = onKey, h(event.keyCode) { return }
+        super.keyDown(with: event)
+    }
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let r = row(at: convert(event.locationInWindow, from: nil))
+        return r >= 0 ? contextRow?(r) : nil
+    }
+}
+
+private final class ShareBarView: NSView {
+    var fraction: Double = 0 { didSet { needsDisplay = true } }
+    override var isFlipped: Bool { true }
+    override func draw(_ dirtyRect: NSRect) {
+        let r = bounds
+        NSColor.quaternaryLabelColor.setFill()
+        NSBezierPath(roundedRect: r, xRadius: r.height / 2, yRadius: r.height / 2).fill()
+        let w = max(2, r.width * min(1, max(0, fraction)))
+        NSColor.controlAccentColor.withAlphaComponent(0.7).setFill()
+        NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: w, height: r.height), xRadius: r.height / 2, yRadius: r.height / 2).fill()
+    }
+}
+
+private final class OutlineCell: NSTableCellView {
+    let chevron = NSButton()
+    let icon = NSImageView()
+    let name = NSTextField(labelWithString: "")
+    let size = NSTextField(labelWithString: "")
+    /// Direct item count for folders; hidden when the sidebar is too narrow to keep names readable.
+    let count = NSTextField(labelWithString: "")
+    fileprivate let bar = ShareBarView()
+    var depth = 0
+    var hasChildren = false
+    var onToggle: (() -> Void)?
+    /// CI-only optional override; nil follows native live accessibility preferences.
+    var contrastOverride: Bool? { didSet { updateTextColors() } }
+    private var increasedContrast: Bool { contrastOverride ?? NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        chevron.isBordered = false
+        chevron.bezelStyle = .inline
+        chevron.imagePosition = .imageOnly
+        chevron.target = self
+        chevron.action = #selector(toggle)
+        chevron.setButtonType(.momentaryChange)
+        name.lineBreakMode = .byTruncatingMiddle
+        name.font = .systemFont(ofSize: NSFont.systemFontSize)
+        size.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        size.textColor = .secondaryLabelColor
+        size.alignment = .right
+        count.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        count.textColor = .secondaryLabelColor
+        count.alignment = .right
+        icon.imageScaling = .scaleProportionallyDown
+        for v in [chevron, icon, name, size, count, bar] as [NSView] { addSubview(v) }
+        textField = name
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(accessibilityOptionsChanged), name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+        updateTextColors()
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    @objc private func toggle() { onToggle?() }
+
+    override var backgroundStyle: NSView.BackgroundStyle {
+        didSet { updateTextColors() }
+    }
+    @objc private func accessibilityOptionsChanged() { updateTextColors() }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateTextColors()
+    }
+    private func updateTextColors() {
+        let selected = backgroundStyle == .emphasized
+        let text: NSColor = selected ? .alternateSelectedControlTextColor : (increasedContrast ? .labelColor : .secondaryLabelColor)
+        size.textColor = text
+        count.textColor = selected ? .alternateSelectedControlTextColor : .labelColor
+        name.textColor = selected ? .alternateSelectedControlTextColor : .labelColor
+    }
+
+    override func layout() {
+        super.layout()
+        let h = bounds.height, w = bounds.width
+        // Indent is capped so deep rows keep a readable name in a narrow sidebar.
+        let x0 = 8 + CGFloat(min(depth, 8)) * 10
+        chevron.frame = NSRect(x: x0, y: (h - 14) / 2, width: 14, height: 14)
+        chevron.isHidden = !hasChildren
         icon.frame = NSRect(x: x0 + 18, y: (h - 16) / 2, width: 16, height: 16)
         bar.frame = NSRect(x: w - 8 - 44, y: (h - 6) / 2, width: 44, height: 6)
         let sizeW: CGFloat = 70
@@ -531,7 +818,8 @@ private struct OutlineTable: NSViewRepresentable {
             let m = NSMenu()
             let a = BlockItem(title: "Show in Finder") { [weak self] in self?.model.reveal(node) }
             let b = BlockItem(title: "Move to Trash…") { [weak self] in self?.model.proposeRemoval(of: node) }
-            m.addItem(a); m.addItem(b)
+            let c = BlockItem(title: "Check on disk") { [weak self] in self?.model.proposeReview(of: node) }
+            m.addItem(a); m.addItem(c); m.addItem(b)
             return m
         }
     }
