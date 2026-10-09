@@ -164,9 +164,6 @@ struct StatusBar: View {
             }
             .accessibilityElement(children: .combine)
             .help(fullDetails).accessibilityLabel(fullDetails)
-            // SwiftUI bridges the combined element's label into AXDescription, not AXValue; clients that
-            // read Help+Value on the same node need the value set explicitly (run 37959435404 evidence).
-            .accessibilityValue(fullDetails)
             .layoutPriority(1)
         }
         .font(.caption).lineLimit(1).padding(.horizontal, 10)
@@ -197,7 +194,15 @@ struct StatusBar: View {
             }
             if !compact {
                 if model.scanning { Text("\(String(format: "%.1f", model.elapsed))s").foregroundStyle(.secondary) }
-                else if let elapsed = model.lastScanSeconds { Text("Scanned in \(String(format: "%.2f", elapsed))s").foregroundStyle(.secondary) }
+                else if let elapsed = model.lastScanSeconds {
+                    Text("Scanned in \(String(format: "%.2f", elapsed))s").foregroundStyle(.secondary)
+                        // The external footer gate reads the exact details as AXHelp+AXValue on one
+                        // AXStaticText node; the combined summary bridges as AXButton, which that
+                        // contract excludes. On a bare Text, SwiftUI bridges accessibilityLabel into
+                        // AXValue (run 37959435404 client log: the "Scanned folder: ..." node), so
+                        // label+help here place the exact details on one static-text node.
+                        .accessibilityLabel(fullDetails).help(fullDetails)
+                }
                 if model.activeFilter != nil { Text("Filter \(String(format: "%.1f", model.filterMillis))ms").foregroundStyle(.secondary) }
             }
         }
