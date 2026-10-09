@@ -236,6 +236,9 @@ struct ItemReviewPopover: View {
         VStack(alignment: .leading, spacing: 8) {
             if let r = review.result {
                 ItemDetailsView(result: r)
+                Button("Preview") { QuickLookController.show(path: r.path) }
+                    .controlSize(.small)
+                    .accessibilityLabel("Preview the item as it is on disk now")
             } else if review.outdated {
                 Text("The results changed while this was being checked. Close this and check again.").font(.caption).foregroundStyle(.orange)
             } else if review.inProgress {
