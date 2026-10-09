@@ -163,10 +163,18 @@ struct StatusBar: View {
                 summary(compact: true).fixedSize(horizontal: true, vertical: false)
             }
             .accessibilityElement(children: .combine)
-            .help(fullDetails).accessibilityLabel(fullDetails)
-            // SwiftUI bridges the combined element's label into AXDescription, not AXValue; clients that
-            // read Help+Value on the same node need the value set explicitly (run 37959435404 evidence).
-            .accessibilityValue(fullDetails)
+            // The details announce once, from the invisible carrier below; this group gets a short label.
+            .help(fullDetails).accessibilityLabel("Scan summary")
+            // External footer gate carrier: the combined summary bridges as AXButton, a role the client
+            // contract excludes. A bare Text outside the merged node (this background is applied after
+            // .combine) bridges accessibilityLabel into AXValue and .help into AXHelp (run 37971834595
+            // client log: the "Scanned folder: ..." rootPath node, index 5, carries both in this same
+            // bar), so the exact details land as AXHelp+AXValue on one AXStaticText node. Its frame
+            // matches the summary area, which already shows the fullDetails tooltip. opacity(0) drops
+            // the carrier from the AX tree entirely (run 37971834595 client log: no carrier node,
+            // visited=6 unchanged), so it uses a clear foreground instead, intended to keep the AX
+            // node while painting nothing.
+            .background(Text(fullDetails).accessibilityLabel(fullDetails).help(fullDetails).foregroundStyle(.clear))
             .layoutPriority(1)
         }
         .font(.caption).lineLimit(1).padding(.horizontal, 10)
