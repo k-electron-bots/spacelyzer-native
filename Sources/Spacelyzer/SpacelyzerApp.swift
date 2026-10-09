@@ -2395,6 +2395,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         await ItemReviewChecks.run()
         await IdentityGateChecks.run()
         await RemovalHistoryChecks.run()
+        await DuplicatesRemovalChecks.run()
         QuickLookChecks.run()
         copyPathChecks()
         csvChecks()
@@ -2968,6 +2969,11 @@ final class BusyFlag: @unchecked Sendable {
         "removal-history-restore-refused-while-commit-parked",
         "removal-history-restore-unknown-id-is-a-no-op",
         "removal-history-undo-restores-latest-only",
+        "duplicates-removal-listed-member-resolves-to-live-node",
+        "duplicates-removal-unknown-path-and-no-tree-refused-with-reason",
+        "duplicates-removal-blocked-reason-passes-removal-gates-through",
+        "duplicates-removal-last-remaining-copy-never-offered",
+        "duplicates-removal-propose-through-live-id-opens-confirmation",
         "item-review-propose-opens-for-real-node",
         "item-review-propose-refuses-non-node-and-empty-tree",
         "item-review-propose-starts-no-read",
