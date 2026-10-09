@@ -2389,6 +2389,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         Check.expect("engine-scanned-identity-matches-lstat-on-fixture", identOK, identOK ? "root and 3 files Same; Foundation lstat agrees with engine lstat" : identDetail)
         await reviewModelChecks()
         await SkippedListChecks.run()
+        await ExclusionsChecks.run()
         copyPathChecks()
         csvChecks()
         await foldersChecks()

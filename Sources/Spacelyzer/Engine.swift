@@ -90,6 +90,27 @@ struct SkippedItem: Equatable {
     var lossy: Bool
 }
 
+/// Why the walk never observed an entry for a requested exclusion. Mirrors
+/// UnobservedReason in engine/src/tree.rs; an unknown raw value is never relabeled
+/// by the app (callers fail the read instead). NOT proof the path is absent.
+enum UnobservedExclusionReason: UInt8 {
+    case notSeen = 0, insideSkippedSubtree, notMatchable
+    var label: String {
+        switch self {
+        case .notSeen: "Not seen - may be misspelled, outside the scan, or gone"
+        case .insideSkippedSubtree: "Inside a location that was not scanned - it may exist"
+        case .notMatchable: "Not a readable spelling - it can never match a scanned entry"
+        }
+    }
+}
+
+/// One requested exclusion the walk never observed, from one tree. The path is the
+/// engine's display text and may be lossy.
+struct UnobservedExclusion: Equatable {
+    var path: String
+    var reason: UnobservedExclusionReason
+}
+
 /// CI-only timing log (SPZ_DEMO): appends "label: value" lines to /tmp/spz-timing.txt.
 enum Perf {
     static let on = ProcessInfo.processInfo.environment["SPZ_DEMO"] != nil
@@ -344,6 +365,26 @@ final class Tree: @unchecked Sendable {
             guard st == 0 else { return .failure(EngineStatus(raw: st)) }
             guard let r = SkippedReason(rawValue: reason) else { return .failure(.internalError) }
             items.append(SkippedItem(path: take(s), reason: r, lossy: lossy != 0))
+        }
+        return .success(items)
+    }
+
+    /// Requested exclusions the walk never observed an entry for, each entry status-checked.
+    /// This is NOT proof a path is absent (see UnobservedExclusionReason). Any non-ok status
+    /// or an unknown reason code fails the whole read: no partial list is shown as complete.
+    func unobservedExclusionsChecked() -> Result<[UnobservedExclusion], EngineStatus> {
+        var st: Int32 = -1
+        let n = spz_tree_unobserved_exclusion_count_status(ptr, &st)
+        guard st == 0 else { return .failure(EngineStatus(raw: st)) }
+        var items: [UnobservedExclusion] = []
+        items.reserveCapacity(Int(n))
+        for i in 0..<n {
+            var reason: UInt8 = 0
+            var ist: Int32 = -1
+            let s = spz_tree_unobserved_exclusion_status(ptr, i, &reason, &ist)
+            guard ist == 0 else { return .failure(EngineStatus(raw: ist)) }
+            guard let r = UnobservedExclusionReason(rawValue: reason) else { return .failure(.internalError) }
+            items.append(UnobservedExclusion(path: take(s), reason: r))
         }
         return .success(items)
     }
