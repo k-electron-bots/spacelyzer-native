@@ -149,7 +149,7 @@ struct StatusBar: View {
                     Text("Filter: \(formatBytes(f.totalBytes)) · \(fileCount(UInt64(f.totalCount)))").foregroundStyle(.blue)
                 }
                 if unreadable > 0 {
-                    Button("\(locationCount(unreadable)) \(compact ? "skipped" : "not scanned")") { showSkipped = true }
+                    Button("\(locationCount(unreadable)) \(compact ? "unreadable" : "not readable")") { showSkipped = true }
                         .buttonStyle(.plain).foregroundStyle(.orange)
                         .help("Show the locations that were not scanned")
                 }
@@ -170,7 +170,7 @@ struct StatusBar: View {
             if partial { parts.append("Stopped early, partial accounting") }
             if let elapsed = model.lastScanSeconds { parts.append("Scanned in \(String(format: "%.2f", elapsed)) seconds") }
             if let f = model.activeFilter { parts.append("Filter: \(formatBytes(f.totalBytes)), \(fileCount(UInt64(f.totalCount))), \(String(format: "%.1f", model.filterMillis)) milliseconds") }
-            if unreadable > 0 { parts.append("\(locationCount(unreadable)) not scanned") }
+            if unreadable > 0 { parts.append("\(locationCount(unreadable)) not readable") }
         }
         return parts.joined(separator: "\n")
     }
