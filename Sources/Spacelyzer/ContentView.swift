@@ -39,6 +39,7 @@ struct ContentView: View {
                     Button("Choose Folder…") { model.chooseFolder() }
                     Button("Startup Disk") { model.scanStartupVolume() }
                     Button("Home Folder") { model.scanHome() }
+                    Button("Exclusions…") { showExclusions = true }
                 } label: { Label("Scan", systemImage: "externaldrive") }
                 if model.scanning {
                     Button { model.cancel() } label: { Label("Stop", systemImage: "stop.circle") }
@@ -113,6 +114,7 @@ struct StatusBar: View {
     static let height: CGFloat = 26
     @Environment(AppModel.self) private var model
     @State private var showSkipped = false
+    @State private var showExclusions = false
     private var unreadable: Int { Perf.on ? (model.demoFooterUnreadable ?? model.tree?.skippedCount ?? 0) : (model.tree?.skippedCount ?? 0) }
     private var partial: Bool { Perf.on ? (model.demoFooterPartial ?? model.tree?.wasCancelled ?? false) : (model.tree?.wasCancelled ?? false) }
     var body: some View {
@@ -135,6 +137,9 @@ struct StatusBar: View {
             // Captured at presentation: the skipped list is fixed when the scan ends, so
             // this tree's list stays consistent even if a newer scan starts underneath.
             if let t = model.tree { SkippedListView(tree: t) }
+        }
+        .sheet(isPresented: $showExclusions) {
+            ExclusionsView(exclusions: $model.exclusions, tree: model.tree)
         }
         .onAppear { if Perf.on { demoDetailsCaptured?(fullDetails) } }
     }

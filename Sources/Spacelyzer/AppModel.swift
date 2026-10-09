@@ -336,7 +336,8 @@ final class AppModel {
     var coloring: TreemapColoring = .folder
     var tab: TrailingTab = .treemap { didSet { surfaceCheck() } }
     var revision = 0 { didSet { invalidateFolders() } }   // bumps when the tree changes, so views refresh; the Folders rows are dropped at once
-    var exclusions: [String] = []
+    /// Persisted in UserDefaults; handed to the engine at scan start, so edits apply when you rescan.
+    var exclusions: [String] = UserDefaults.standard.stringArray(forKey: "exclusions") ?? [] { didSet { UserDefaults.standard.set(exclusions, forKey: "exclusions") } }
 
     var pendingRemoval: UInt32?
     /// Seam for the Trash operation so tests can assert it was or wasn't reached without touching any file.
