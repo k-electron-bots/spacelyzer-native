@@ -499,18 +499,24 @@ if mode == "expansion" {
     let row = matches[0]
     // Run 37870201922 evidence: the row matches by name but "has no usable
     // disclosure triangle" - the app renders its own chevron as an NSButton
-    // whose AXLabel is "Expand <name>"/"Collapse <name>" (OutlineView.swift:
-    // cell.chevron.setAccessibilityLabel), never an AXDisclosureTriangle, and
-    // the row exposes no AXDisclosing. The chevron button's label IS the
-    // expansion state; its frame is the click target. Fallback: the chevron's
-    // NSImage carries accessibilityDescription "Expand"/"Collapse" (no name),
-    // matched exactly on AXDescription. Discovery is bounded: the row's
-    // direct cells and their direct children only; state is re-scanned every
-    // call so each rep reads fresh state.
+    // (OutlineView.swift: cell.chevron.setAccessibilityLabel "Expand <name>"/
+    // "Collapse <name>"), never an AXDisclosureTriangle, and the row exposes
+    // no AXDisclosing. Run 37877990327's failure-path dump proves where that
+    // label text surfaces: on the chevron AXButton's AXDESCRIPTION (AXLabel/
+    // AXTitle empty), one cell per row, the button a direct child of the
+    // cell. The chevron button's state text IS the expansion state; its
+    // frame is the click target. Discovery is bounded: the row's direct
+    // cells and their direct children only; state is re-scanned every call
+    // so each rep reads fresh state.
     // nil when the element carries no chevron signal; false = collapsed
-    // ("Expand ..."), true = expanded ("Collapse ...").
+    // ("Expand ..."), true = expanded ("Collapse ..."). Run 37877990327's
+    // failure-path dump proves the live surface: the chevron AXButton
+    // exposes "Expand <name>"/"Collapse <name>" on AXDESCRIPTION with
+    // AXLabel/AXTitle EMPTY - so AXDescription is prefix-matched alongside
+    // them, and the bare "Expand"/"Collapse" exact match stays as a final
+    // fallback for the image-only case.
     func chevronStateText(_ el: AXUIElement) -> Bool? {
-        for attr in ["AXLabel", "AXTitle"] {
+        for attr in ["AXLabel", "AXTitle", "AXDescription"] {
             let t = string(el, attr)
             if t.hasPrefix("Expand ") { return false }
             if t.hasPrefix("Collapse ") { return true }
