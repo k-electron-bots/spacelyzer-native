@@ -1,6 +1,6 @@
 # E4 removal concurrency audit
 
-Source-review evidence for one release gate on the cleanup workflow: "safe off-main execution with current identity revalidation and no concurrent tree mutation/read." This page covers the concurrency half. Identity revalidation is not in the Trash path yet (no production Swift caller of `spz_tree_check_identity`; the one existing call is the SPZ_CI_TESTS fixture check in `SpacelyzerApp.swift`); that is tracked separately.
+Source-review evidence for one release gate on the cleanup workflow: "safe off-main execution with current identity revalidation and no concurrent tree mutation/read." This page covers the concurrency half. Identity revalidation is now in the Trash path: since the E4b identity gate, `AppModel` calls `Tree.checkIdentity` (wrapping `spz_tree_check_identity`) immediately before `trashItem` and refuses on any non-same verdict. That gate post-dates this audit; the audit evidence below was read at `5239e02b`, before the gate existed. The gate's off-main execution proof (IdentityGateChecks check 1) is weak by design, a semaphore park against a mocked seam, so real scheduling behavior stays unverified until a permitted Mac run.
 
 Evidence: `engine/src/tree.rs`, `engine/src/ffi.rs` and `Sources/Spacelyzer/AppModel.swift` read at `5239e02b`. The engine tests behind these invariants run on Linux; Mac behavior is unverified until a permitted Mac run. This is a source audit, not runtime race evidence.
 
