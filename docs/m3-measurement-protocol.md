@@ -140,6 +140,33 @@ is not a standard window); the bench selects the single qualifying window
 uniqueness among qualifying windows. All numbers BASELINE ONLY,
 event-to-AX-visible latency.
 
+First correlated-timestamp full run: 37890769939 (main 022f566c, the
+SPZ_TIMING at_ns stamps plus per-rep bench t0_ns, same mach-uptime clock).
+Typing 200/200 (footer p50 252.17ms, p95 306.04ms; field p50 31.46ms;
+app-reported filter p50 2.90ms - corroboration only, not independently
+verified); hover 60 sweeps (hit-test p50 2.38ms, p95 6.49ms, no event over
+100ms); expansion-10k 3/5 reps measured (p50 176.07ms, p95 184.69ms, 3 jank
+candidates); expansion-100k 2/3 reps measured (p50 170.01ms, ran with 1517s
+of the cap remaining). Every summary reported ax_read_failures=0 and status
+complete; the footer gate was VERIFIED. The per-rep correlation splits each
+expansion measurement into three parts: event delivery (bench CGEvent post
+to the app's toggle handler entry), app-side publish (toggle entry to the
+@Published outline update), and the AX-observation remainder (bench-visible
+time after NSOutlineView reloadData returned, including AX tree
+invalidation/materialization, IPC, and the bench's 10ms poll quantization).
+Medians, BASELINE ONLY: expansion-10k delivery 87.26ms, publish 1.53ms,
+reloadData 0.81ms, remainder 62.54ms; expansion-100k delivery 53.20ms,
+publish 5.17ms, reloadData 0.66ms, remainder 71.26ms. Per-rep ranges across
+both fixtures: delivery 50.45-101.97ms, publish 1.26-5.33ms, reloadData
+0.56-6.95ms, remainder 30.29-88.73ms.
+
+Relabel: expansion numbers are event-to-AX-visible bench latency dominated
+by synthetic event delivery and the AX observation path. App-internal
+publish+reloadData is 2-12ms per toggle at both fixture sizes; the app code
+is not where the measured time sits. The 100ms jank bar remains the
+bench-visible bar; these runs do not claim a user-perceptible stall of that
+size.
+
 Before/after protocol: same fixture, same machine, 3 runs each, medians, raw
 harness JSONL logs kept per run. A stall is reported removed only with the
 before/after median pair in the PR, after-run clearing the 100ms bar.
