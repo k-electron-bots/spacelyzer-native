@@ -392,7 +392,7 @@ if mode == "expansion" {
     // bulk AXChildren read materializes the entire outline and the 256-row
     // guard refused both fixtures (exit 6) without measuring anything. The
     // named target row is now located by CHUNKED top-level reads
-    // (AXUIElementCopyAttributeValues with a CFRange, 256 rows per chunk)
+    // (AXUIElementCopyAttributeValues chunked reads, CFIndex index + maxValues, 256 rows per chunk)
     // over a bounded window of at most maxChunks chunks. Exactly one match
     // within that window is required: zero matches, multiple matches, a
     // short chunk (identity churn mid-scan), or a chunk read error all
@@ -418,7 +418,7 @@ if mode == "expansion" {
     var matches = [AXUIElement](), scanned = 0
     while scanned < windowRows {
         let want = min(chunkSize, windowRows - scanned)
-        var chunkRef: CFTypeRef?
+        var chunkRef: CFArray?
         let err = AXUIElementCopyAttributeValues(table, kAXChildrenAttribute as CFString,
                                                  scanned, want, &chunkRef)
         guard err == AXError.success, let chunkRows = chunkRef as? [AXUIElement] else {
