@@ -351,6 +351,8 @@ final class AppModel {
     var removalInFlight = false
     var removalTask: Task<Void, Never>?
     var removalMessage: String?
+    /// The node whose read-only identity check popover is open; nil when closed. Opening it moves nothing.
+    var reviewItem: UInt32?
 
     // MARK: coherence state (filesystem vs engine numbers)
     /// Counts every filesystem change this app made (successful Trash move, successful undo). A scan that started
@@ -727,6 +729,13 @@ final class AppModel {
         if let r = filterUntrustedReason { removalMessage = r; return }
         if isOutsideFilter(id) { removalMessage = "That item is outside the current filter. Clear the filter or select it again to move it to the Trash."; return }
         pendingRemoval = id
+    }
+
+    /// Opens the read-only identity check for one item. Refused for the root, a non-node id or no tree;
+    /// the popover itself handles staleness, cancellation and dismissal. It moves nothing.
+    func proposeReview(of id: UInt32) {
+        guard let tree, id != 0, UInt64(id) < tree.nodeCount else { return }
+        reviewItem = id
     }
 
     /// Paths that must never be removed, whatever the user selects.
