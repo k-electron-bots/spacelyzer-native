@@ -2945,6 +2945,77 @@ final class BusyFlag: @unchecked Sendable {
         "retry-same-inputs-dedupes-to-one-fire",
         "zero-match-root-count-and-layout-data-contract",
         "zero-match-selection-removal-policy"
+        // E-series consumer and gate checks recorded through engine(): listed so the exact-once gate can pass.
+        "duplicates-cancel-suppresses-late-publish",
+        "duplicates-cancelled-pass-renders-cancelled-never-partial-numbers",
+        "duplicates-capped-report-keeps-partial-label-data",
+        "duplicates-failed-read-shows-failed-never-empty",
+        "duplicates-load-runs-off-main-and-publishes-on-main",
+        "exclusions-add-trims-rejects-blank-and-exact-duplicate",
+        "exclusions-remove-is-exact-match",
+        "exclusions-unobserved-failed-read-shows-failed-never-empty",
+        "exclusions-unobserved-load-off-main-publishes-on-main",
+        "identity-gate-engine-fault-refuses",
+        "identity-gate-gone-refuses-and-moves-nothing",
+        "identity-gate-replaced-refuses-and-moves-nothing",
+        "identity-gate-runs-off-main-before-trash",
+        "identity-gate-same-proceeds-and-journals",
+        "item-review-propose-opens-for-real-node",
+        "item-review-propose-refuses-non-node-and-empty-tree",
+        "item-review-propose-starts-no-read",
+        "skipped-list-cancel-suppresses-late-publish",
+        "skipped-list-failed-read-shows-failed-never-empty",
+        "skipped-list-load-runs-off-main-and-publishes-on-main",
+        "volume-header-failed-read-shows-failed-never-number",
+        "volume-header-load-off-main-publishes-on-main",
+        "volume-header-repeat-load-same-path-does-not-reread",
+        "volume-info-real-read-satisfies-statvfs-invariants"
+    ]
+    static func run(tree: Tree) async -> Never {
+        // Results go to a unique per-run directory chosen by the runner (SPZ_RESULT_DIR). Nothing shared is deleted or
+        // overwritten: a missing, unwritable or non-empty directory is a failure before any check runs.
+        let fm = FileManager.default
+        guard let dir = ProcessInfo.processInfo.environment["SPZ_RESULT_DIR"], dir.hasPrefix("/"),
+              (try? fm.contentsOfDirectory(atPath: dir))?.isEmpty == true else {
+            FileHandle.standardError.write(Data("FAIL SPZ_RESULT_DIR missing, relative, or not an empty directory\n".utf8)); exit(3)
+        }
+        let resultPath = dir + "/result.txt"
+        Check.path = dir + "/assertions.txt"
+        // Hard timeout: a hang or deadlock is a failure, never a pass.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 300) {
+            try? "FAIL timeout\n".write(toFile: resultPath, atomically: true, encoding: .utf8); exit(2)
+        }
+        Check.results.removeAll()
+        await PublicationRegression.run(tree: tree)
+        await CommitOrderingRegression.run()
+        await ZeroMatchRegression.run()
+        await AsyncRemovalRegression.run()
+        await MountedViewRegression.run()
+        await MountedOutlineRegression.run()
+        await MountedOutlineRegression.runFiltered()
+        await MountedOutlineRegression.runFilteredCounts()
+        var problems: [String] = []
+        if Check.results.isEmpty { problems.append("no results recorded") }
+        let fileOK = (try? String(contentsOfFile: Check.path, encoding: .utf8))?.isEmpty == false
+        if !fileOK { problems.append("assertion file missing or empty") }
+        let counts = Dictionary(grouping: Check.results, by: { $0.name })
+        for r in required {
+            let rs = counts[r] ?? []
+            if rs.isEmpty { problems.append("missing: \(r)") }
+            else if rs.count != 1 { problems.append("duplicate (\(rs.count)): \(r)") }
+            else if !rs[0].ok { problems.append("FAIL: \(r)") }
+        }
+        let allowed = Set(required)
+        for (n, rs) in counts where !allowed.contains(n) { problems.append("unlisted result \(n) ok=\(rs.map { $0.ok })") }
+        for r in Check.results where !r.ok && allowed.contains(r.name) == false { problems.append("FAIL (unlisted): \(r.name)") }
+        let body = problems.isEmpty ? "PASS \(required.count) required checks, each exactly once\n" : "FAIL\n" + problems.joined(separator: "\n") + "\n"
+        try? body.write(toFile: resultPath, atomically: true, encoding: .utf8)
+        exit(problems.isEmpty ? 0 : 1)
+    }
+}
+
+#endif
+
     ]
     static func run(tree: Tree) async -> Never {
         // Results go to a unique per-run directory chosen by the runner (SPZ_RESULT_DIR). Nothing shared is deleted or
