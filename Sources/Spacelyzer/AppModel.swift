@@ -195,6 +195,7 @@ final class AppModel {
         guard let tree else { outlineRows = []; outlineIndex = [:]; outlineRevision += 1; return }
         let root = displayedRoot, ex = expanded, flt = activeFilter, sort = outlineSort
         outlineTask?.cancel()
+        let tStart = Perf.now()
         outlineTask = Task.detached(priority: .userInitiated) { [weak self] in
             let t0 = DispatchTime.now().uptimeNanoseconds
             let rows = tree.outlineRows(root: root, expanded: ex, filter: flt, sort: sort)
@@ -207,6 +208,7 @@ final class AppModel {
             await MainActor.run {
                 guard let self, !Task.isCancelled, self.outlineGeneration == generation, self.tree === tree else { return }
                 self.outlineRows = rows; self.outlineIndex = index; self.outlineRevision += 1; self.outlineMillis = ms
+                Perf.timingLog("outline-published rows=\(rows.count) rust_ms=\(ms) refresh_to_publish_ms=\(Perf.ms(since: tStart))")
             }
             await completed?("outline", generation, publication)
         }
