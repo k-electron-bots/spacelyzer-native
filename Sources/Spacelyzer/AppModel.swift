@@ -208,7 +208,8 @@ final class AppModel {
             await MainActor.run {
                 guard let self, !Task.isCancelled, self.outlineGeneration == generation, self.tree === tree else { return }
                 self.outlineRows = rows; self.outlineIndex = index; self.outlineRevision += 1; self.outlineMillis = ms
-                Perf.timingLog("outline-published rows=\(rows.count) rust_ms=\(ms) refresh_to_publish_ms=\(Perf.ms(since: tStart))")
+                let publishNs = Perf.now()
+                Perf.timingLog("outline-published rows=\(rows.count) rust_ms=\(ms) refresh_to_publish_ms=\(Perf.ms(since: tStart)) at_ns=\(publishNs)")
             }
             await completed?("outline", generation, publication)
         }
@@ -232,6 +233,9 @@ final class AppModel {
     }
 
     func toggle(_ id: UInt32) {
+        // CI-only (SPZ_TIMING): absolute mach-uptime stamp so the bench's per-rep
+        // t0_ns (same clock) splits event-delivery from app-side latency.
+        Perf.timingLog("outline-toggle-enter node=\(id) at_ns=\(Perf.now())")
         if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
         refreshOutline()
     }
