@@ -127,6 +127,19 @@ follow-up work and is NOT part of this protocol's harness claims.
   three over the 100ms jank bar; expansion-100k: 2/2 expands, p50 114.44ms;
   BASELINE ONLY, event-to-AX-visible latency).
 
+First all-segments-complete full run: 37885969873 (main 177435144). Typing
+200/200 (footer p50 236.38ms, p95 256.78ms; field p50 31.60ms; app-reported
+filter p50 4.2ms - corroboration only, not independently verified); hover 60
+sweeps (hit-test p50 2.39ms, p95 6.39ms, no event over 100ms); expansion-10k
+3/3 (p50 131.67ms, p95 148.82ms); expansion-100k 2/2 (p50 169.65ms). Every
+summary reported ax_read_failures=0 and status complete; the footer gate was
+VERIFIED. This run followed the bench's window-picker fix: run 37883865575's
+diagnostic had shown two AXWindows after launch (one a 222x32 surface that
+is not a standard window); the bench selects the single qualifying window
+(AXWindow role, AXStandardWindow subrole, real frame) and still asserts
+uniqueness among qualifying windows. All numbers BASELINE ONLY,
+event-to-AX-visible latency.
+
 Before/after protocol: same fixture, same machine, 3 runs each, medians, raw
 harness JSONL logs kept per run. A stall is reported removed only with the
 before/after median pair in the PR, after-run clearing the 100ms bar.
