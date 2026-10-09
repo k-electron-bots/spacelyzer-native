@@ -6,6 +6,7 @@ import Foundation
 // before the panel is touched; a second preview replaces the first; presentation is
 // synchronous. The panel seam is substituted throughout, so no real panel or file is touched.
 // Real QLPreviewPanel behavior is Mac-unverified.
+@MainActor
 enum QuickLookChecks {
     static func run() {
         var seen: [URL] = []
