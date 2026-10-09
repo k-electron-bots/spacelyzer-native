@@ -2396,6 +2396,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         await IdentityGateChecks.run()
         await RemovalHistoryChecks.run()
         await DuplicatesRemovalChecks.run()
+        await FullDiskAccessChecks.run()
         QuickLookChecks.run()
         copyPathChecks()
         csvChecks()
