@@ -5,6 +5,7 @@ import Quartz
 /// shared Quick Look panel; showing another item replaces the current one. Previewing reads
 /// the file on disk as it is now: it changes nothing and makes no removal safer.
 /// UNCOMPILED/UNRUN until a Mac build.
+@MainActor
 final class QuickLookController: NSObject, QLPreviewPanelDataSource {
     /// The panel seam: production presents through QLPreviewPanel; checks substitute a
     /// recorder. Called synchronously on the calling thread with the exact accepted URL.
