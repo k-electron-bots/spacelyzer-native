@@ -333,6 +333,11 @@ final class Tree: @unchecked Sendable {
                                   kind: NodeKind(rawValue: n.kind) ?? .file, category: FileCategory(rawValue: Int(n.category)) ?? .other), v))
     }
 
+    /// One lstat comparing the live item at this node's path with the identity the scan recorded. Runs on the
+    /// caller's thread; call it off the main actor. Only `.same` allows an action, and even then the item can
+    /// change between the check and the action.
+    func checkIdentity(_ id: UInt32) -> IdentityVerdict { IdentityVerdict(engineCode: spz_tree_check_identity(ptr, id)) }
+
     /// Rows, per-row details, shown sizes, root size and tree total from ONE engine capture and ONE table version.
     /// A commit between the count call and the fill call returns STALE and the read restarts (bounded). Every status is
     /// preserved: BUSY stays BUSY, INVALID stays INVALID, STALE with a filter means the filter result is old.
