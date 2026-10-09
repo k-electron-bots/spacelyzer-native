@@ -236,6 +236,25 @@ if mode == "typing" {
     // Settle-then-measure: a footer-text baseline is only trusted once it
     // STABILIZES (two consecutive equal successful reads; a failed read
     // resets the streak).
+    // "Filter: 1.2 MB, 25,000 files, 34.5 milliseconds" -> 34.5; the app's
+    // OWN reported filter time, corroboration only - not independently
+    // verified, never mixed into the measured latencies.
+    func appFilterMs(_ footerText: String) -> Double? {
+        guard let range = footerText.range(of: " milliseconds") else { return nil }
+        let before = footerText[..<range.lowerBound]
+        guard let lastSpace = before.lastIndex(of: " ") else { return nil }
+        return Double(before[before.index(after: lastSpace)...])
+    }
+    // Discovery: the summary container is the only bounded-walker element
+    // whose AXLabel/AXHelp/AXValue contains " items" (fullDetails: "<rootPath>
+    // <size> in <N> items..."). The "Scanned folder:" path Text is a sibling
+    // that never carries " items"; outline rows (which do) sit under the
+    // AXTable the walker skips. Not unique -> abort, never guess.
+    let footers = descendants().filter { el in
+        for attr in ["AXLabel", "AXHelp", "AXValue"] where string(el, attr).contains(" items") { return true }
+        return false
+    }
+    guard footers.count == 1, let footer = footers.first else { print("footer summary container not uniquely discoverable (\(footers.count) matches); aborting"); exit(7) }
     // One footer text read: AXLabel (set to fullDetails) first, AXHelp (also
     // fullDetails) and AXValue as fallbacks; every attempted read is timed
     // and accounted in stats.
@@ -258,25 +277,6 @@ if mode == "typing" {
         }
         return nil
     }
-    // "Filter: 1.2 MB, 25,000 files, 34.5 milliseconds" -> 34.5; the app's
-    // OWN reported filter time, corroboration only - not independently
-    // verified, never mixed into the measured latencies.
-    func appFilterMs(_ footerText: String) -> Double? {
-        guard let range = footerText.range(of: " milliseconds") else { return nil }
-        let before = footerText[..<range.lowerBound]
-        guard let lastSpace = before.lastIndex(of: " ") else { return nil }
-        return Double(before[before.index(after: lastSpace)...])
-    }
-    // Discovery: the summary container is the only bounded-walker element
-    // whose AXLabel/AXHelp/AXValue contains " items" (fullDetails: "<rootPath>
-    // <size> in <N> items..."). The "Scanned folder:" path Text is a sibling
-    // that never carries " items"; outline rows (which do) sit under the
-    // AXTable the walker skips. Not unique -> abort, never guess.
-    let footers = descendants().filter { el in
-        for attr in ["AXLabel", "AXHelp", "AXValue"] where string(el, attr).contains(" items") { return true }
-        return false
-    }
-    guard footers.count == 1, let footer = footers.first else { print("footer summary container not uniquely discoverable (\(footers.count) matches); aborting"); exit(7) }
     var preStats = ReadStats()
     guard let settledStart = settleFooter(5.0, &preStats) else { print("footer text did not settle before typing; aborting"); exit(7) }
     var baseline = settledStart
