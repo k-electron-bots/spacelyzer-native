@@ -1,3 +1,4 @@
+import ApplicationServices
 import CSpacelyzer
 import SwiftUI
 
@@ -238,14 +239,22 @@ struct SpacelyzerApp: App {
                         try? await Task.sleep(nanoseconds: 1_000_000_000)
                         if let t = model.tree, let id = (0..<UInt32(t.nodeCount)).first(where: { t.path($0).hasSuffix("/" + (victimPath as NSString).lastPathComponent) }) {
                             model.selected = id
+                            // The journal is not empty here: step 11's mocked control move already appended one
+                            // entry (run 37959435404 evidence). Require exactly one NEW entry and read the
+                            // fixture's own record (newest last), not the first.
+                            let journalBefore = model.lastRemoved.count
                             model.proposeRemoval(of: id)
                             model.confirmRemoval(); await model.settleRemoval()
                             let fm = FileManager.default
-                            let trashed = model.lastRemoved.first?.trashed
-                            Check.expect("real-trash-moves-only-the-selected-fixture", !fm.fileExists(atPath: victimPath) && fm.fileExists(atPath: keepPath) && model.lastRemoved.count == 1 && (trashed.map { fm.fileExists(atPath: $0.path) } ?? false), "message=\(model.removalMessage ?? "nil")")
+                            let trashed = model.lastRemoved.last?.trashed
+                            Check.expect("real-trash-moves-only-the-selected-fixture", !fm.fileExists(atPath: victimPath) && fm.fileExists(atPath: keepPath) && model.lastRemoved.count == journalBefore + 1 && (trashed.map { fm.fileExists(atPath: $0.path) } ?? false), "message=\(model.removalMessage ?? "nil") journalBefore=\(journalBefore) journalAfter=\(model.lastRemoved.count)")
                             try? await Task.sleep(nanoseconds: 1_000_000_000); mark(14)
+                            // Undo is refused while a commit or surface publication is pending: settle the
+                            // surfaces first (acting as the layout surface) so a refusal means a real block,
+                            // not a race. The message is captured either way.
+                            _ = await PublicationRegression.settleSurfaces(model)
                             model.undoRemoval(); await model.settleRemoval()
-                            Check.expect("undo-restores-the-fixture", fm.fileExists(atPath: victimPath) && !(trashed.map { fm.fileExists(atPath: $0.path) } ?? true))
+                            Check.expect("undo-restores-the-fixture", fm.fileExists(atPath: victimPath) && !(trashed.map { fm.fileExists(atPath: $0.path) } ?? true), "message=\(model.removalMessage ?? "nil")")
                         } else {
                             Check.expect("real-trash-moves-only-the-selected-fixture", false, "fixture node not found")
                             Check.expect("undo-restores-the-fixture", false, "fixture node not found")
@@ -1108,10 +1117,17 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         _ = FileManager.default.createFile(atPath: bURL.path, contents: Data(repeating: 2, count: 100_000))
         m.viewOutOfDate = false; m.outOfDateReason = nil
 
-        // 3. A rescan that swaps the tree mid-move must not forget on the new tree.
+        // 3. A rescan that swaps the tree mid-move must not forget on the new tree. The 2b fixture deleted
+        // b.bin and recreated it, so its on-disk identity no longer matches the old scan: re-scan root first
+        // (the identity gate must - and in run 37959435404 did - refuse a move whose scanned identity is
+        // stale; that refusal was the correct behavior, not a bug), then swap the tree mid-move.
         m.removalMessage = nil
+        await scan(m, root)
+        guard let b3 = node(m, "b.bin") else {
+            Check.expect("async-removal-tree-swapped-mid-move-skips-forget", false, "b.bin missing after re-scan"); return
+        }
         m.trashItem = { url in Thread.sleep(forTimeInterval: 0.4); return url }
-        m.proposeRemoval(of: b); m.confirmRemoval()
+        m.proposeRemoval(of: b3); m.confirmRemoval()
         await scan(m, other)
         let swapped = m.tree
         let otherSize = swapped?.info(0).size
@@ -2605,6 +2621,40 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         }
         visit(root, depth: 0, edge: "root-window")
         Perf.log("footer-ax complete nodes=\(entries.count) discovered=\(discovered) rejectedBranches=\(rejected) truncated=\(truncated); rejected non-view/nonprotocol branches remain uninspected, no authored substitution")
+        // SwiftUI bridges accessibility through internal node classes that reject every typed cast above
+        // (run 37959435404: three SwiftUI.AccessibilityNode children, all unreadable through the walk).
+        // Read the same hosted content through the in-process AX API on this app's own process: a native
+        // accessor reading what the accessibility server actually exposes, not an authored substitution
+        // and not external-client reachability. AXDescription is accepted as the label carrier: the same
+        // run's external client log shows SwiftUI routing the combined element's label into AXDescription.
+        let appElement = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+        func axString(_ element: AXUIElement, _ attribute: String) -> String {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return "" }
+            return value as? String ?? ""
+        }
+        var windowsRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(appElement, "AXWindows" as CFString, &windowsRef) == .success,
+           let windows = windowsRef as? [AXUIElement] {
+            for windowElement in windows where axString(windowElement, "AXTitle") == root.title {
+                var stack: [AXUIElement] = [windowElement]
+                var axVisited = 0
+                while let element = stack.popLast(), axVisited < 512 {
+                    axVisited += 1
+                    var childrenRef: CFTypeRef?
+                    if AXUIElementCopyAttributeValue(element, "AXChildren" as CFString, &childrenRef) == .success,
+                       let axChildren = childrenRef as? [AXUIElement] {
+                        stack.append(contentsOf: axChildren)
+                    }
+                    let label = ["AXLabel", "AXTitle", "AXDescription", "AXValue"].map { axString(element, $0) }.first { !$0.isEmpty } ?? ""
+                    let help = axString(element, "AXHelp")
+                    if !label.isEmpty || !help.isEmpty {
+                        entries.append(Entry(label: label, help: help))
+                    }
+                }
+                Perf.log("footer-ax ax-pass window=\(root.title) visited=\(axVisited)")
+            }
+        }
         return Result(entries: entries, truncated: truncated)
     }
 
