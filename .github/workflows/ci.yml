@@ -7,6 +7,12 @@ on:
     tags: ['epic-*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      compile_only:
+        description: 'Compile check only: toolchain, universal engine, Swift build; skips tests, signing, packaging and UI steps'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -15,6 +21,7 @@ jobs:
   engine-linux:
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    if: ${{ !inputs.compile_only }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -35,6 +42,7 @@ jobs:
           sw_vers; xcodebuild -version; swift --version; rustc --version || true
           echo "::notice title=toolchain::$(sw_vers -productVersion) | $(xcodebuild -version | tr '\n' ' ') | sdk $(xcrun --show-sdk-version) | $(swift --version 2>&1 | head -1)"
       - name: Rust engine tests (native macOS, includes getattrlistbulk backend)
+        if: ${{ !inputs.compile_only }}
         run: |
           rustup update stable --no-self-update
           set -o pipefail
@@ -65,6 +73,7 @@ jobs:
           fi
           exit "$status"
       - name: Bulk backend vs portable backend on real macOS trees
+        if: ${{ !inputs.compile_only }}
         run: |
           cargo build --release -p spacelyzer-engine
           for d in /Applications /usr/lib "$HOME/Library"; do
@@ -72,6 +81,7 @@ jobs:
           done
           ./target/release/spz verify /Applications
       - name: Scan benchmark (informational, shared runner)
+        if: ${{ !inputs.compile_only }}
         run: ./target/release/spz bench /Applications 3
       - name: Build universal engine
         run: ./scripts/build-engine.sh
@@ -83,9 +93,11 @@ jobs:
             exit 1
           }
       - name: Version
+        if: ${{ !inputs.compile_only }}
         id: ver
         run: echo "version=0.1.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
       - name: Import self-signed identity
+        if: ${{ !inputs.compile_only }}
         id: sign
         env:
           SIGNING_CERT_P12_BASE64: ${{ secrets.SIGNING_CERT_P12_BASE64 }}
@@ -94,10 +106,13 @@ jobs:
           HASH="$(./scripts/sign-setup.sh | tail -1)"
           echo "hash=$HASH" >> "$GITHUB_OUTPUT"
       - name: Package signed DMG
+        if: ${{ !inputs.compile_only }}
         run: ./scripts/package-dmg.sh "${{ steps.ver.outputs.version }}" "${{ steps.sign.outputs.hash }}"
       - name: Build TEST-ONLY app with SPZ_CI_TESTS (never packaged or released; the DMG above is built without the flag)
+        if: ${{ !inputs.compile_only }}
         run: bash ./scripts/build-test-app.sh dist-test "${{ steps.sign.outputs.hash }}"
       - name: Launch app and screenshot (informational)
+        if: ${{ !inputs.compile_only }}
         continue-on-error: true
         run: |
           open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Library
@@ -184,6 +199,7 @@ jobs:
             echo "::notice title=crash::$c"
           done
       - name: UI assertions (fail the build on any failure)
+        if: ${{ !inputs.compile_only }}
         id: asserts
         continue-on-error: true
         run: |
@@ -204,6 +220,7 @@ jobs:
           fi
           echo "::notice title=ui-assertions::all $n UI assertions passed: $(cut -d' ' -f2 /tmp/spz-assertions.txt | tr '\n' ' ')"
       - uses: actions/upload-artifact@v4
+        if: ${{ !inputs.compile_only }}
         with:
           name: Spacelyzer-${{ steps.ver.outputs.version }}
           path: |
@@ -229,5 +246,5 @@ jobs:
           gh release create "$V" dist/*.dmg dist/*.sha256 dist/screenshot*.png dist/ui-assertions.txt dist/main-thread-sample.txt --title "Spacelyzer $V" --prerelease \
             --notes "UI assertions: ${{ steps.asserts.outcome }}. Self-signed development build (not notarized). Not Apple-verified: after the first blocked open, use System Settings > Privacy & Security > Open Anyway. Screenshots attached are from the CI runner, not a real Mac. Built from ${{ github.sha }}."
       - name: Fail the build if UI assertions failed (after artifacts and release are published)
-        if: always() && steps.asserts.outcome != 'success'
+        if: ${{ always() && !inputs.compile_only && steps.asserts.outcome != 'success' }}
         run: exit 1
