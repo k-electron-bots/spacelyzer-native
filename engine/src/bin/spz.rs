@@ -1,5 +1,5 @@
 //! `spz scan <path>`   scan and print totals, timing, top-level breakdown
-//! `spz verify <path>` scan with both backends and compare totals (run this on a Mac)
+//! `spz verify <path>` scan with both backends, compare totals, print per-backend wall times (run this on a Mac)
 //! `spz bench <path> [runs]`  repeated scans, wall times
 use spacelyzer_engine::*;
 use spacelyzer_engine::{category::Category, filter};
@@ -41,13 +41,29 @@ fn main() {
             println!("layout: {} rects in {:.3}ms", rects.len(), t1.elapsed().as_secs_f64() * 1000.0);
         }
         "verify" => {
-            let p = ScanProgress::default();
-            let fast = scan(&path, &ScanOptions::default(), &p).expect("scan failed");
+            // Correctness compare uses the first pair (unchanged semantics). Each backend is then
+            // scanned a second time so the printed times include a warm-cache run for both; the
+            // ratio uses the warm runs because the first default scan is systematically colder.
+            let t_fast = Instant::now();
+            let fast = scan(&path, &ScanOptions::default(), &ScanProgress::default()).expect("scan failed");
+            let dt_fast_cold = t_fast.elapsed();
+            let t_slow = Instant::now();
             let slow = scan(&path, &ScanOptions { force_portable: true, ..Default::default() }, &ScanProgress::default()).expect("scan failed");
-            println!("default : {} items {} bytes", fast.items, fast.size(0));
-            println!("portable: {} items {} bytes", slow.items, slow.size(0));
-            if fast.items == slow.items && fast.size(0) == slow.size(0) {
+            let dt_slow_cold = t_slow.elapsed();
+            let agree = fast.items == slow.items && fast.size(0) == slow.size(0);
+            let t_fast2 = Instant::now();
+            scan(&path, &ScanOptions::default(), &ScanProgress::default()).expect("scan failed");
+            let dt_fast_warm = t_fast2.elapsed();
+            let t_slow2 = Instant::now();
+            scan(&path, &ScanOptions { force_portable: true, ..Default::default() }, &ScanProgress::default()).expect("scan failed");
+            let dt_slow_warm = t_slow2.elapsed();
+            println!("default : {} items {} bytes in {:.3}s (warm: {:.3}s)", fast.items, fast.size(0), dt_fast_cold.as_secs_f64(), dt_fast_warm.as_secs_f64());
+            println!("portable: {} items {} bytes in {:.3}s (warm: {:.3}s)", slow.items, slow.size(0), dt_slow_cold.as_secs_f64(), dt_slow_warm.as_secs_f64());
+            if agree {
                 println!("OK backends agree");
+                if dt_fast_warm.as_secs_f64() > 0.0 {
+                    println!("portable/default warm-time ratio: {:.2}x", dt_slow_warm.as_secs_f64() / dt_fast_warm.as_secs_f64());
+                }
             } else {
                 println!("MISMATCH (live volume may have changed; rerun on a quiet folder)");
                 std::process::exit(1);
