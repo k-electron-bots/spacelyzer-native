@@ -873,6 +873,7 @@ final class AppModel {
         let size = snap.info.size
         mutationPending = true      // reserved before the write, so no scan or undo can slip in between
         removalInFlight = true
+        lastBatchCount = nil        // the journal tail is no longer a batch
         let op = SerialOperation(run: trashItem)
         let check = SerialIdentity(run: identityCheck)
         // 1. The filesystem move runs OFF the main actor (it can take seconds on a slow volume). The tree is not touched
@@ -900,6 +901,10 @@ final class AppModel {
         var refused: [(path: String, reason: String)]
     }
     var pendingBatchRemoval: PendingBatchRemoval?
+    /// How many journal entries the last batch moved (2 or more), so the message alert can offer a
+    /// single batch-undo. Display hint only: the journal is the real state. Cleared when a single
+    /// removal lands and when a batch undo is started.
+    var lastBatchCount: Int?
 
     /// Which selection a preview acts on: the visible set members in row order; an EMPTY set falls
     /// back to the focus alone; a non-empty but fully filter-hidden set previews NOTHING (a hidden
@@ -930,6 +935,25 @@ final class AppModel {
         pendingBatchRemoval = PendingBatchRemoval(items: p.approved, refused: p.refused)
     }
 
+    /// Duplicates-review whole-set action (slice 6): plans the group's listed members through the
+    /// slice-1 planner WITH the group attached, so the batch keep-one rule applies (the copy whose
+    /// path sorts first is always kept). Execution is the same per-item identity-checked Trash path.
+    func proposeGroupRemoval(_ groupPaths: [String]) {
+        guard tree != nil else { return }
+        if destructiveBlocked { removalMessage = coherenceNotice ?? "Please wait for the previous change to finish."; return }
+        if removalInFlight { removalMessage = "Another removal is still in progress."; return }
+        if filterPending { removalMessage = "The filter is still updating, so the list may be out of date. Try again in a moment."; return }
+        if let r = filterUntrustedReason { removalMessage = r; return }
+        guard groupPaths.count >= 2 else { return }
+        let p = BatchRemoval.plan(groupPaths, groups: [groupPaths], in: self)
+        guard !p.approved.isEmpty else {
+            let reasons = p.refused.prefix(3).map { "\($0.path): \($0.reason)" }.joined(separator: "; ")
+            removalMessage = "Nothing in this group can be moved to the Trash. \(reasons)"
+            return
+        }
+        pendingBatchRemoval = PendingBatchRemoval(items: p.approved, refused: p.refused)
+    }
+
     /// Runs the proposed batch: one item at a time, each through the same identity revalidation,
     /// Trash move and journaling as confirmRemoval. A refused or failed item is skipped and
     /// reported; it never stops the rest of the batch. Nothing moves before this is called.
@@ -950,6 +974,7 @@ final class AppModel {
     private func runBatchRemoval(_ items: [(path: String, id: UInt32)], tree: Tree, op: SerialOperation, check: SerialIdentity) async {
         var moved = 0
         var skipped: [String] = []
+        let journalMark = lastRemoved.count
         for item in items {
             if Task.isCancelled { skipped.append("The batch was cancelled before \(item.path)."); break }
             await waitForRemovalQuiescence()
@@ -982,6 +1007,9 @@ final class AppModel {
             finishRemoval(outcome, id: item.id, url: url, size: size, tree: tree)
         }
         await waitForRemovalQuiescence()
+        // Stamp the batch-undo hint only when the journal tail is still exactly this batch: a per-item
+        // undo or a newer removal during the quiescence wait must not leave a stale hint.
+        lastBatchCount = (moved >= 2 && lastRemoved.count - journalMark == moved) ? moved : nil
         // Summary: facts and counts only.
         var summary = "Moved \(moved) of \(items.count) items to the Trash."
         if !skipped.isEmpty {
@@ -1114,6 +1142,16 @@ final class AppModel {
         runRestore([item])
     }
 
+    /// Batch undo (slice 6): restores every item the last batch moved, in one restore pass through
+    /// the same seams as the per-item undo. Offered once per batch: the journal is the real state,
+    /// and any item that stays behind (collision/failure) remains individually restorable.
+    func undoBatchRemoval() {
+        if removalInFlight || mutationPending || commitsInFlight > 0 || requiredVersion != nil { removalMessage = "The previous change is still being applied. Try again in a moment."; return }
+        guard let n = lastBatchCount, n >= 2, lastRemoved.count >= n else { return }
+        lastBatchCount = nil
+        runRestore(Array(lastRemoved.suffix(n)))
+    }
+
     /// Per-item restore from the removal history: the same gates as undoRemoval, but only the named record moves.
     /// An unknown id is a no-op (the record may already have been restored or never journaled).
     func restoreRemoved(id: UUID) {
@@ -1146,6 +1184,7 @@ final class AppModel {
         mutationPending = commitsInFlight > 0
         var restored: Set<UUID> = []
         var message: String?
+        var failureNote: String?
         for (item, outcome) in zip(items, outcomes) {
             switch outcome {
             case .restored:
@@ -1153,9 +1192,13 @@ final class AppModel {
                 fsEpoch += 1
                 markOutOfDate("Restored on disk. Rescan to bring it back.")
                 message = message ?? "Put \(item.original.lastPathComponent) back. Restored on disk. Rescan to bring it back."
-            case .collision: message = "Could not put it back: something already exists at \(item.original.path)."
-            case .failed(let reason): message = "Could not put it back: \(reason)"
+            case .collision: failureNote = "Could not put it back: something already exists at \(item.original.path)."; message = failureNote
+            case .failed(let reason): failureNote = "Could not put it back: \(reason)"; message = failureNote
             }
+        }
+        if restored.count >= 2 {
+            // Batch restore: name the count, not one item's name; a collision/failure still gets said.
+            message = "Put \(restored.count) items back. Restored on disk. Rescan to bring them back." + (failureNote.map { " \($0)" } ?? "")
         }
         // Only successful restores are forgotten. A per-item pass touches one record; every other
         // journaled record (and this pass's collided/failed ones) stays in the history.
