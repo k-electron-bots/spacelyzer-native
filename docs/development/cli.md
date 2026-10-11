@@ -15,7 +15,7 @@ spz filterbench synthetic [nodes]
 | Command | Behavior |
 |---|---|
 | `scan` | Print totals, skipped count, scan time, up to ten root children, and a treemap-layout timing. |
-| `verify` | Compare default and portable scan totals. On macOS this compares backend paths; a changing volume can produce a mismatch. Use a quiet disposable fixture. |
+| `verify` | Compare default and portable scan totals and print cold and warm wall times per backend plus the warm-time ratio (portable/default) when totals agree. On macOS this compares backend paths; a changing volume can produce a mismatch. Use a quiet disposable fixture. |
 | `bench` | Repeated scans and wall times; default 5 runs. Disk/OS caches affect results. |
 | `filterbench` | Run built-in name, kind, extension, size and combined filters, with layout timings. `synthetic` defaults to 1,000,000 nodes. |
 
