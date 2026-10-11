@@ -150,14 +150,15 @@ final class AppModel {
     /// selected (they reappear when the filter clears) but are never handed to a batch operation.
     var batchCandidateIDs: [UInt32] { selectedSet.filter { outlineIndex[$0] != nil } }
 
-    /// Spacebar / batch Quick Look (slice 4): a single selection previews exactly like the per-item
-    /// Preview button (one path); a multi set previews all VISIBLE members in row order, opening on
-    /// the focus item. Filter-hidden members stay out, the same rule as batch operations. Read-only:
-    /// it presents the panel and nothing else. Returns false when there is nothing to preview.
+    /// Spacebar / batch Quick Look (slice 4; target rule fixed in slice 5): a single selection
+    /// previews exactly like the per-item Preview button (one path); a multi set previews all VISIBLE
+    /// members in row order, opening on the focus item. A non-empty but fully filter-hidden set
+    /// previews NOTHING - a hidden item is never handed to the panel. Read-only: it presents the
+    /// panel and nothing else. Returns false when there is nothing to preview.
     @discardableResult
     func previewSelection() -> Bool {
         guard let tree else { return false }
-        let ids = batchCandidateIDs.isEmpty ? selected.map { [$0] } ?? [] : batchCandidateIDs
+        let ids = Self.previewTargets(set: selectedSet, visibleCandidates: batchCandidateIDs, focus: selected)
         let paths = ids.map { tree.path($0) }.filter { !$0.isEmpty }
         let focusPath = selected.map { tree.path($0) }
         guard let p = QuickLookController.payload(memberPaths: paths, focusPath: focusPath) else { return false }
@@ -887,6 +888,115 @@ final class AppModel {
                 catch { return .failed(error.localizedDescription, originalStillExists: FileManager.default.fileExists(atPath: url.path)) }
             }.value
             self?.finishRemoval(outcome, id: id, url: url, size: size, tree: tree)
+        }
+    }
+
+    // MARK: batch removal (guarded batch-removal epic, slice 5)
+
+    /// A proposed batch awaiting confirmation: the approved items in selection row order plus the
+    /// items the planner refused, each with its reason. Presented in the confirmation alert.
+    struct PendingBatchRemoval {
+        var items: [(path: String, id: UInt32)]
+        var refused: [(path: String, reason: String)]
+    }
+    var pendingBatchRemoval: PendingBatchRemoval?
+
+    /// Which selection a preview acts on: the visible set members in row order; an EMPTY set falls
+    /// back to the focus alone; a non-empty but fully filter-hidden set previews NOTHING (a hidden
+    /// item is never handed to the panel). Pure so checks drive it without a tree.
+    static func previewTargets(set: [UInt32], visibleCandidates: [UInt32], focus: UInt32?) -> [UInt32] {
+        if !set.isEmpty { return visibleCandidates }
+        return focus.map { [$0] } ?? []
+    }
+
+    /// Proposes moving the whole visible selection to the Trash. Planning runs through the slice-1
+    /// planner with no duplicate-group context (the outline selection is not the duplicates review),
+    /// so every candidate faces exactly the gates it would face removed one by one. Execution calls
+    /// the SAME per-item identity-checked Trash path once per item: the batch adds no deletion path.
+    func proposeBatchRemoval() {
+        guard let tree else { return }
+        if destructiveBlocked { removalMessage = coherenceNotice ?? "Please wait for the previous change to finish."; return }
+        if removalInFlight { removalMessage = "Another removal is still in progress."; return }
+        if filterPending { removalMessage = "The filter is still updating, so the list may be out of date. Try again in a moment."; return }
+        if let r = filterUntrustedReason { removalMessage = r; return }
+        let ids = batchCandidateIDs
+        guard ids.count >= 2 else { removalMessage = "Select at least two items to move them together."; return }
+        let p = BatchRemoval.plan(ids.map { tree.path($0) }, groups: [], in: self)
+        guard !p.approved.isEmpty else {
+            let reasons = p.refused.prefix(3).map { "\($0.path): \($0.reason)" }.joined(separator: "; ")
+            removalMessage = "Nothing in the selection can be moved to the Trash. \(reasons)"
+            return
+        }
+        pendingBatchRemoval = PendingBatchRemoval(items: p.approved, refused: p.refused)
+    }
+
+    /// Runs the proposed batch: one item at a time, each through the same identity revalidation,
+    /// Trash move and journaling as confirmRemoval. A refused or failed item is skipped and
+    /// reported; it never stops the rest of the batch. Nothing moves before this is called.
+    func confirmBatchRemoval() {
+        guard let tree, let batch = pendingBatchRemoval else { return }
+        pendingBatchRemoval = nil
+        if removalInFlight { removalMessage = "Another removal is still in progress."; return }
+        if filterPending { removalMessage = "The filter is still updating, so nothing was moved. Try again in a moment."; return }
+        if let r = filterUntrustedReason { removalMessage = r; return }
+        if destructiveBlocked { removalMessage = coherenceNotice ?? "Please wait for the previous change to finish."; return }
+        let op = SerialOperation(run: trashItem)
+        let check = SerialIdentity(run: identityCheck)
+        removalTask = Task { [weak self] in
+            await self?.runBatchRemoval(batch.items, tree: tree, op: op, check: check)
+        }
+    }
+
+    private func runBatchRemoval(_ items: [(path: String, id: UInt32)], tree: Tree, op: SerialOperation, check: SerialIdentity) async {
+        var moved = 0
+        var skipped: [String] = []
+        for item in items {
+            if Task.isCancelled { skipped.append("The batch was cancelled before \(item.path)."); break }
+            await waitForRemovalQuiescence()
+            if Task.isCancelled { skipped.append("The batch was cancelled before \(item.path)."); break }
+            // Plan-to-execution drift: the id must still name the planned path in the same tree.
+            let path = tree.path(item.id)
+            if path != item.path { skipped.append("\(item.path): the results changed; skipped."); continue }
+            if isProtected(path) { skipped.append("\(path) is protected and cannot be removed from here."); continue }
+            if isOutsideFilter(item.id) { skipped.append("\(path): outside the current filter; skipped."); continue }
+            // The recorded size comes from one engine capture; if the engine cannot answer now, this item is skipped.
+            guard let snap = nodeSnapshot(item.id) else { skipped.append("\(path): sizes are still updating; skipped."); continue }
+            let url = URL(fileURLWithPath: path)
+            let size = snap.info.size
+            mutationPending = true      // reserved before the write, per item, exactly like the single path
+            removalInFlight = true
+            // 1. The filesystem move runs OFF the main actor, with the same pre-move identity
+            // revalidation as the single path. Any verdict but .same refuses and moves nothing.
+            let outcome: RemovalOutcome = await Task.detached(priority: .userInitiated) {
+                let verdict = check.run(tree, item.id)
+                guard verdict.allowsProceeding else { return .refused(verdict.message) }
+                do { return .moved(try op.run(url)) }
+                catch { return .failed(error.localizedDescription, originalStillExists: FileManager.default.fileExists(atPath: url.path)) }
+            }.value
+            switch outcome {
+            case .moved: moved += 1
+            case .refused(let r): skipped.append("\(path): \(r)")
+            case .failed(let r, _): skipped.append("\(path): \(r)")
+            }
+            // 2. Same bookkeeping as the single path: journal first, then the engine commit.
+            finishRemoval(outcome, id: item.id, url: url, size: size, tree: tree)
+        }
+        await waitForRemovalQuiescence()
+        // Summary: facts and counts only.
+        var summary = "Moved \(moved) of \(items.count) items to the Trash."
+        if !skipped.isEmpty {
+            summary += " Skipped \(skipped.count): " + skipped.prefix(3).joined(separator: "; ")
+            if skipped.count > 3 { summary += "; …" }
+        }
+        removalMessage = summary
+    }
+
+    /// Waits until no removal or engine commit is in flight, so each batch item starts from the
+    /// same quiescent state the single-item path requires. Returns early on cancellation.
+    private func waitForRemovalQuiescence() async {
+        while removalInFlight || commitsInFlight > 0 {
+            if Task.isCancelled { return }
+            try? await Task.sleep(nanoseconds: 20_000_000)
         }
     }
 

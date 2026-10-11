@@ -2418,6 +2418,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         await FullDiskAccessChecks.run()
         QuickLookChecks.run()
         QuickLookBatchChecks.run()
+        await BatchRemovalExecutionChecks.run()
         copyPathChecks()
         csvChecks()
         await foldersChecks()
@@ -3071,6 +3072,11 @@ final class BusyFlag: @unchecked Sendable {
         "quicklook-batch-refuses-empty-and-relative-before-panel",
         "quicklook-batch-show-presents-items-with-clamped-focus-synchronously",
         "shift-click-range-focus-matches-table-path",
+        "batch-execution-moves-each-item-through-per-item-path",
+        "batch-execution-failure-skips-and-reports-rest-complete",
+        "batch-execution-identity-refusal-skips-item",
+        "preview-targets-hidden-set-previews-nothing",
+        "preview-targets-empty-set-falls-back-to-focus",
     ]
     static func run(tree: Tree) async -> Never {
         // Results go to a unique per-run directory chosen by the runner (SPZ_RESULT_DIR). Nothing shared is deleted or
