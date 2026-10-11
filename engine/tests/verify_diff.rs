@@ -83,9 +83,12 @@ fn tree_size_map_tracks_a_fixture_change_between_scans() {
     let second = scan(&dir, &ScanOptions::default(), &ScanProgress::default()).expect("scan 2");
 
     let d = diff_maps(&tree_size_map(&first), &tree_size_map(&second));
-    let root = dir.to_string_lossy().to_string();
-    let new_file = dir.join("sub/new.md").to_string_lossy().to_string();
-    let sub = dir.join("sub").to_string_lossy().to_string();
+    // The scanner records canonicalized paths; temp_dir() may itself be a symlink
+    // (macOS: /var -> /private/var), so expectations must be canonicalized too.
+    let cdir = dir.canonicalize().expect("canonicalize fixture dir");
+    let root = cdir.to_string_lossy().to_string();
+    let new_file = cdir.join("sub/new.md").to_string_lossy().to_string();
+    let sub = cdir.join("sub").to_string_lossy().to_string();
 
     assert!(
         d.entries.iter().any(|e| matches!(e, DiffEntry::OnlyInB { path, .. } if *path == new_file)),
