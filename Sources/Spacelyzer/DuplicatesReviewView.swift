@@ -16,7 +16,9 @@ import SwiftUI
 /// paths from a report captured on ONE tree; the removal gates live on the AppModel's LIVE tree, so
 /// every action resolves the path against the live tree and refuses with a reason when it is not
 /// there (a rescan replaced the results, or the copy is already gone). Only LISTED paths can ever
-/// reach Trash from here: a capped group listing keeps its report-only meaning.
+/// reach Trash from here: a capped group listing keeps its report-only meaning. Slice 6 adds a
+/// whole-set action per group row: it plans the LISTED members through the batch planner (keep-one
+/// included) and confirms through the same main-window batch flow.
 enum DuplicateRemoval {
     /// The node id of one listed member path in the live tree, or nil when it is not there.
     @MainActor
@@ -187,6 +189,15 @@ struct DuplicatesReviewView: View {
                         .frame(width: max(24, 180 * CGFloat(g.size) / CGFloat(maxBytes)), height: 8)
                     Text("\(g.memberCount) copies × \(formatBytes(g.size))").font(.caption)
                     if g.linked { Text("hard-linked").font(.caption2).foregroundStyle(.orange) }
+                    Spacer(minLength: 8)
+                    if g.paths.count >= 2 {
+                        Button("Move all but one to Trash…", role: .destructive) {
+                            dismiss()                                // the confirmation alert lives on the main window
+                            appModel.proposeGroupRemoval(g.paths)    // plans with keep-one; the E4 flow confirms
+                        }
+                        .font(.caption2)
+                        .help("Plans the whole set through the per-item gates; one copy is always kept")
+                    }
                 }
                 ForEach(Array(g.paths.enumerated()), id: \.offset) { _, p in
                     HStack(spacing: 8) {
