@@ -34,6 +34,22 @@ fn peak_rss_mb() -> f64 {
     }
 }
 
+fn print_diff_detail(label: &str, diff: &verify_diff::PathDiff) {
+    let leaf = diff.leaf_most();
+    println!("{label}: {} paths differ ({} leaf-most):", diff.len(), leaf.len());
+    const MAX: usize = 10;
+    for e in leaf.iter().take(MAX) {
+        match e {
+            verify_diff::DiffEntry::OnlyInA { path, bytes } => println!("  only in first : {path} ({bytes} B)"),
+            verify_diff::DiffEntry::OnlyInB { path, bytes } => println!("  only in second: {path} ({bytes} B)"),
+            verify_diff::DiffEntry::SizeDiffers { path, a_bytes, b_bytes } => println!("  size differs  : {path} first={a_bytes} second={b_bytes}"),
+        }
+    }
+    if leaf.len() > MAX {
+        println!("  ... and {} more", leaf.len() - MAX);
+    }
+}
+
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let (cmd, path) = match (a.get(1), a.get(2)) {
@@ -83,6 +99,17 @@ fn main() {
                 }
             } else {
                 println!("MISMATCH (live volume may have changed; rerun on a quiet folder)");
+                // One extra default-backend scan, then path-level diffs of both comparisons.
+                // A path that also differs default-vs-default changed between scans on one
+                // backend; a path that differs only against portable did not. Sizes are
+                // cumulative subtree bytes, so ancestors of a changed path differ too and
+                // the leaf-most view collapses them.
+                let recheck = scan(&path, &ScanOptions::default(), &ScanProgress::default()).expect("scan failed");
+                let d_portable = verify_diff::diff_maps(&verify_diff::tree_size_map(&fast), &verify_diff::tree_size_map(&slow));
+                let d_recheck = verify_diff::diff_maps(&verify_diff::tree_size_map(&fast), &verify_diff::tree_size_map(&recheck));
+                print_diff_detail("default-vs-portable", &d_portable);
+                print_diff_detail("default-vs-default recheck", &d_recheck);
+                println!("paths differing in both comparisons: {}", d_portable.overlap(&d_recheck));
                 std::process::exit(1);
             }
         }

@@ -11,6 +11,7 @@ pub mod ffi;
 pub mod layout;
 pub mod scan;
 pub mod tree;
+pub mod verify_diff;
 pub mod volume;
 
 pub use category::Category;
