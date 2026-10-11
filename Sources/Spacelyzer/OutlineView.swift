@@ -545,6 +545,10 @@ private struct OutlineTable: NSViewRepresentable {
             let b = BlockItem(title: "Move to Trash…") { [weak self] in self?.model.proposeRemoval(of: node) }
             let c = BlockItem(title: "Check on disk") { [weak self] in self?.model.proposeReview(of: node) }
             m.addItem(a); m.addItem(c); m.addItem(b)
+            if model.selectedSet.count >= 2 && model.selectedSet.contains(node) {
+                let d = BlockItem(title: "Move \(model.batchCandidateIDs.count) Selected to Trash…") { [weak self] in self?.model.proposeBatchRemoval() }
+                m.addItem(d)
+            }
             return m
         }
     }
