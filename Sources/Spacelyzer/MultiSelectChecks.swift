@@ -39,13 +39,15 @@ enum MultiSelectChecks {
                      "afterRemove=\(String(describing: afterRemove)) final=\(String(describing: m2.selected)) set=\(m2.selectedSet)")
 
         // 3. Shift-click replaces the set with the outline-row slice between anchor and click, in
-        //    row order, whichever direction the click goes.
+        //    row order, whichever direction the click goes. Focus: slice 4 routes selectRange
+        //    through the same reconcile as the table path, so an upward range now focuses the last
+        //    ADDED row in row order (3) instead of the clicked row (1) as before slice 4.
         let m3 = model(rows: [1, 2, 3, 4, 5])
         m3.selectOnly(2); m3.selectRange(to: 4)
         let forward = m3.selectedSet
         m3.selectOnly(4); m3.selectRange(to: 1)
         Check.expect("multi-select-range-covers-row-order-slice",
-                     forward == [2, 3, 4] && m3.selectedSet == [1, 2, 3, 4] && m3.selected == 1,
+                     forward == [2, 3, 4] && m3.selectedSet == [1, 2, 3, 4] && m3.selected == 3,
                      "forward=\(forward) backward=\(m3.selectedSet) focus=\(String(describing: m3.selected))")
 
         // 4. Shift-click with no current focus anchors on the clicked row itself.
