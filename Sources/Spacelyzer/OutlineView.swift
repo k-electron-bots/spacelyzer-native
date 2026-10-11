@@ -352,7 +352,7 @@ private struct OutlineTable: NSViewRepresentable {
         table.rowHeight = OutlineView.rowHeight
         table.style = .inset
         table.usesAutomaticRowHeights = false
-        table.allowsMultipleSelection = false
+        table.allowsMultipleSelection = true   // batch-removal epic slice 3: cmd toggles, shift ranges; clicks fold into the model via OutlineSelectionSync
         table.allowsEmptySelection = true
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         table.dataSource = context.coordinator
@@ -482,12 +482,17 @@ private struct OutlineTable: NSViewRepresentable {
             delegateCalls += 1; publishDiag()
             #endif
             guard !suppress, let t = table else { return }
-            let r = t.selectedRow
-            let node: UInt32? = r >= 0 && r < model.outlineRows.count ? model.outlineRows[r].node : nil
-            if model.selected != node { InteractionTrace.record("model-selection-assign-begin"); model.selected = node; InteractionTrace.record("model-selection-assign-end") }
+            let rows: [UInt32] = t.selectedRowIndexes.compactMap { $0 >= 0 && $0 < model.outlineRows.count ? model.outlineRows[$0].node : nil }
+            let r = OutlineSelectionSync.reconcile(previous: model.selectedSet, current: rows, previousFocus: model.selected)
+            InteractionTrace.record("model-selection-assign-begin")
+            if model.selectedSet != r.set { model.selectedSet = r.set }
+            if model.selected != r.focus { model.selected = r.focus }
+            InteractionTrace.record("model-selection-assign-end")
         }
 
-        /// Model -> table. O(1): dictionary lookup, then AppKit scrolls straight to the row.
+        /// Model -> table. O(set size): dictionary lookups, then AppKit scrolls straight to the focus row.
+        /// The SelDiag string keeps its exact single-selection format (focus node + focus row) so the
+        /// mounted-outline check's parsing is unchanged.
         func syncSelection(_ node: UInt32?) {
             guard let t = table else { return }
             let idx = node.flatMap { model.outlineIndex[$0] }
@@ -495,12 +500,18 @@ private struct OutlineTable: NSViewRepresentable {
             syncCalls += 1; lastSync = "node=\(String(describing: node)) idx=\(String(describing: idx)) selectedRowBefore=\(t.selectedRow)"
             defer { lastSync += " after=\(t.selectedRow)"; publishDiag() }
             #endif
-            if let idx {
-                if t.selectedRow != idx {
+            var target = IndexSet()
+            for member in model.selectedSet { if let i = model.outlineIndex[member] { target.insert(i) } }
+            if let idx { target.insert(idx) }   // focus may sit outside the set during transitions
+            if !target.isEmpty {
+                let focusRowChanged = idx != nil && t.selectedRow != idx
+                if t.selectedRowIndexes != target {
                     suppress = true
-                    t.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
+                    t.selectRowIndexes(target, byExtendingSelection: false)
                     suppress = false
-                    t.scrollRowToVisible(idx)
+                    if let idx { t.scrollRowToVisible(idx) }
+                } else if focusRowChanged, let idx {
+                    t.scrollRowToVisible(idx)   // same set, focus moved within it (e.g. reconcile after removal)
                 }
             } else if t.selectedRow >= 0 {
                 suppress = true; t.deselectAll(nil); suppress = false

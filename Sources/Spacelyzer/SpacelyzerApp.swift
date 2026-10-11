@@ -2414,6 +2414,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         await DuplicatesRemovalChecks.run()
         await BatchRemovalChecks.run()
         await MultiSelectChecks.run()
+        await OutlineSelectionSyncChecks.run()
         await FullDiskAccessChecks.run()
         QuickLookChecks.run()
         copyPathChecks()
@@ -3059,6 +3060,11 @@ final class BusyFlag: @unchecked Sendable {
         "multi-select-range-without-anchor-anchors-on-click",
         "multi-select-hidden-members-excluded-from-batch-candidates",
         "multi-select-clear-resets-set-and-focus",
+        "outline-sync-added-row-becomes-focus",
+        "outline-sync-removal-of-other-keeps-focus",
+        "outline-sync-removal-moves-focus-to-last-row-order-member",
+        "outline-sync-empty-clears-focus",
+        "multi-select-set-normalizes-to-row-order",
     ]
     static func run(tree: Tree) async -> Never {
         // Results go to a unique per-run directory chosen by the runner (SPZ_RESULT_DIR). Nothing shared is deleted or
