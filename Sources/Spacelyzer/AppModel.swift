@@ -83,6 +83,52 @@ final class AppModel {
     /// coalesced changes end on the value last rendered while the table sits elsewhere. A hypothesis-driven remedy, see the CI selection variant.
     var selectionRevision = 0
     var selected: UInt32? { didSet { if selected != oldValue { selectionRevision &+= 1; retryDone("node") } } }   // a retry for the old selection must not outlive it
+
+    /// Ordered multi-selection for batch operations (batch-removal epic, slice 2). `selected` stays the
+    /// focus item and drives every existing single-selection behavior; `selectedSet` is the batch input.
+    /// Invariant: a non-empty set contains the focus. View wiring (NSTableView multiple selection) is a
+    /// later slice; nothing existing calls these yet.
+    var selectedSet: [UInt32] = [] { didSet { if selectedSet != oldValue { selectionRevision &+= 1 } } }
+
+    /// Plain click: one item, focused; any multi-selection collapses.
+    func selectOnly(_ id: UInt32) {
+        if selected != id { selected = id }
+        if selectedSet != [id] { selectedSet = [id] }
+    }
+
+    /// Cmd-click: toggles membership. Adding focuses the new member; removing the focused member moves
+    /// focus to the newest remaining member, or nil when the set empties.
+    func selectToggle(_ id: UInt32) {
+        if let at = selectedSet.firstIndex(of: id) {
+            selectedSet.remove(at: at)
+            let focus = selectedSet.last
+            if selected != focus { selected = focus }
+        } else {
+            selectedSet.append(id)
+            if selected != id { selected = id }
+        }
+    }
+
+    /// Shift-click: replaces the set with the outline-row slice between the anchor (the current focus,
+    /// else the clicked row itself) and the clicked row, in row order. A click on a row the outline
+    /// index does not know leaves the selection unchanged.
+    func selectRange(to id: UInt32) {
+        guard let to = outlineIndex[id] else { return }
+        let from = selected.flatMap { outlineIndex[$0] } ?? to
+        let slice = outlineRows[min(from, to)...max(from, to)].map { $0.node }
+        if selectedSet != slice { selectedSet = slice }
+        if selected != id { selected = id }
+    }
+
+    /// Escape / new scan: empties the set and the focus.
+    func clearSelectionSet() {
+        if !selectedSet.isEmpty { selectedSet = [] }
+        if selected != nil { selected = nil }
+    }
+
+    /// Batch input: the set members still visible in the current outline. Filter-hidden members stay
+    /// selected (they reappear when the filter clears) but are never handed to a batch operation.
+    var batchCandidateIDs: [UInt32] { selectedSet.filter { outlineIndex[$0] != nil } }
     var expanded: Set<UInt32> = []
     private var editorOrigin = false
     var externalFilterTextRevision: UInt64 = 0
