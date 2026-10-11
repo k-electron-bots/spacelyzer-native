@@ -2417,6 +2417,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         await OutlineSelectionSyncChecks.run()
         await FullDiskAccessChecks.run()
         QuickLookChecks.run()
+        QuickLookBatchChecks.run()
         copyPathChecks()
         csvChecks()
         await foldersChecks()
@@ -3065,6 +3066,11 @@ final class BusyFlag: @unchecked Sendable {
         "outline-sync-removal-moves-focus-to-last-row-order-member",
         "outline-sync-empty-clears-focus",
         "multi-select-set-normalizes-to-row-order",
+        "quicklook-batch-payload-row-order-and-focus",
+        "quicklook-batch-payload-focus-outside-falls-back-to-first",
+        "quicklook-batch-refuses-empty-and-relative-before-panel",
+        "quicklook-batch-show-presents-items-with-clamped-focus-synchronously",
+        "shift-click-range-focus-matches-table-path",
     ]
     static func run(tree: Tree) async -> Never {
         // Results go to a unique per-run directory chosen by the runner (SPZ_RESULT_DIR). Nothing shared is deleted or
