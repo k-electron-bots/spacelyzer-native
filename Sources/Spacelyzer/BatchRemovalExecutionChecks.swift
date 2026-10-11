@@ -1,4 +1,5 @@
 #if SPZ_CI_TESTS   // test-only code: compiled only when the build passes -Xswiftc -DSPZ_CI_TESTS
+import CSpacelyzer   // SpzRow comes from the C target, like the production files
 import Foundation
 
 // UNCOMPILED and UNRUN until a Mac run. Checks for the guarded batch-removal epic's fifth slice:
