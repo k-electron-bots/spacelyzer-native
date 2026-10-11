@@ -102,6 +102,12 @@ struct ContentView: View {
                 }
             }
         }
+        .alert("Move items to Trash?", isPresented: Binding(get: { model.pendingBatchRemoval != nil }, set: { if !$0 { model.pendingBatchRemoval = nil } })) {
+            Button("Move \(model.pendingBatchRemoval?.items.count ?? 0) items to Trash", role: .destructive) { model.confirmBatchRemoval() }
+            Button("Cancel", role: .cancel) { model.pendingBatchRemoval = nil }
+        } message: {
+            if let b = model.pendingBatchRemoval { Text(batchRemovalAlertText(b)) }
+        }
         .alert("Spacelyzer", isPresented: Binding(get: { model.removalMessage != nil }, set: { if !$0 { model.removalMessage = nil } })) {
             if !model.lastRemoved.isEmpty { Button("Undo") { model.undoRemoval() } }
             Button("OK", role: .cancel) {}
@@ -415,4 +421,17 @@ private struct NameFilterField: NSViewRepresentable {
 private final class AttachedNameField: NSTextField {
     var onAttachment: (() -> Void)?
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); onAttachment?() }
+}
+
+/// Confirmation body for a proposed batch: the approved paths (first dozen, then a count), the
+/// refused ones with their reasons, and the undo note. Facts only; nothing moves until confirmed.
+private func batchRemovalAlertText(_ b: AppModel.PendingBatchRemoval) -> String {
+    var paths = b.items.prefix(12).map { $0.path }
+    if b.items.count > 12 { paths.append("… and \(b.items.count - 12) more") }
+    var text = paths.joined(separator: "\n")
+    if !b.refused.isEmpty {
+        text += "\n\nNot included: " + b.refused.prefix(3).map { "\($0.path) (\($0.reason))" }.joined(separator: "; ")
+        if b.refused.count > 3 { text += "; …" }
+    }
+    return text + "\n\nYou can put items back right after."
 }
