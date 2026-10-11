@@ -1,6 +1,6 @@
 //! `spz scan <path>`   scan and print totals, timing, top-level breakdown
 //! `spz verify <path>` scan with both backends, compare totals, print per-backend wall times (run this on a Mac)
-//! `spz bench <path> [runs]`  repeated scans, wall times
+//! `spz bench <path> [runs]`  repeated scans, wall times, peak RSS (process high-water mark)
 use spacelyzer_engine::*;
 use spacelyzer_engine::{category::Category, filter};
 use std::path::PathBuf;
@@ -15,6 +15,23 @@ fn human(b: u64) -> String {
         i += 1;
     }
     format!("{:.2} {}", v, u[i])
+}
+
+
+/// Peak resident set size of this process in MB (getrusage ru_maxrss: bytes on macOS, kilobytes on Linux).
+/// ru_maxrss is a high-water mark for the process, so a later run never prints less than an earlier one.
+#[cfg(unix)]
+fn peak_rss_mb() -> f64 {
+    let mut r: libc::rusage = unsafe { std::mem::zeroed() };
+    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut r) };
+    #[cfg(target_os = "macos")]
+    {
+        r.ru_maxrss as f64 / 1_000_000.0
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        r.ru_maxrss as f64 / 1024.0
+    }
 }
 
 fn main() {
@@ -74,7 +91,7 @@ fn main() {
             for i in 0..runs {
                 let t0 = Instant::now();
                 let tree = scan(&path, &ScanOptions::default(), &ScanProgress::default()).unwrap();
-                println!("run {}: {} items {:.3}s", i + 1, tree.items, t0.elapsed().as_secs_f64());
+                println!("run {}: {} items {:.3}s (peak rss {:.1} MB)", i + 1, tree.items, t0.elapsed().as_secs_f64(), peak_rss_mb());
             }
         }
         "filterbench" => {
