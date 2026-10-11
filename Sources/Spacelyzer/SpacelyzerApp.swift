@@ -2413,6 +2413,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         await RemovalHistoryChecks.run()
         await DuplicatesRemovalChecks.run()
         await BatchRemovalChecks.run()
+        await MultiSelectChecks.run()
         await FullDiskAccessChecks.run()
         QuickLookChecks.run()
         copyPathChecks()
@@ -3052,6 +3053,12 @@ final class BusyFlag: @unchecked Sendable {
         "batch-removal-unknown-path-refused",
         "batch-removal-non-group-item-approved",
         "batch-removal-out-of-date-model-refuses-all",
+        "multi-select-toggle-adds-and-removes-membership",
+        "multi-select-focus-follows-toggle-and-removal",
+        "multi-select-range-covers-row-order-slice",
+        "multi-select-range-without-anchor-anchors-on-click",
+        "multi-select-hidden-members-excluded-from-batch-candidates",
+        "multi-select-clear-resets-set-and-focus",
     ]
     static func run(tree: Tree) async -> Never {
         // Results go to a unique per-run directory chosen by the runner (SPZ_RESULT_DIR). Nothing shared is deleted or
