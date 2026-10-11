@@ -127,15 +127,18 @@ final class AppModel {
     }
 
     /// Shift-click: replaces the set with the outline-row slice between the anchor (the current focus,
-    /// else the clicked row itself) and the clicked row, in row order. A click on a row the outline
-    /// index does not know leaves the selection unchanged.
+    /// else the clicked row itself) and the clicked row, in row order. The focus comes from the SAME
+    /// reconcile the table path uses, so the programmatic and click-driven paths agree (slice-4 fix:
+    /// an upward range used to focus the clicked row here while the table focused the last added row
+    /// in row order). A click on a row the outline index does not know leaves the selection unchanged.
     func selectRange(to id: UInt32) {
         guard let to = outlineIndex[id] else { return }
         let from = selected.flatMap { outlineIndex[$0] } ?? to
         let slice = outlineRows[min(from, to)...max(from, to)].map { $0.node }
-        if selectedSet != slice { selectedSet = slice }
-        if selected != id { selected = id }
-    }   // slice is already in row order; no normalize needed
+        let r = OutlineSelectionSync.reconcile(previous: selectedSet, current: slice, previousFocus: selected)
+        if selectedSet != r.set { selectedSet = r.set }
+        if selected != r.focus { selected = r.focus }
+    }   // slice is already in row order; reconcile keeps it so
 
     /// Escape / new scan: empties the set and the focus.
     func clearSelectionSet() {
@@ -146,6 +149,20 @@ final class AppModel {
     /// Batch input: the set members still visible in the current outline. Filter-hidden members stay
     /// selected (they reappear when the filter clears) but are never handed to a batch operation.
     var batchCandidateIDs: [UInt32] { selectedSet.filter { outlineIndex[$0] != nil } }
+
+    /// Spacebar / batch Quick Look (slice 4): a single selection previews exactly like the per-item
+    /// Preview button (one path); a multi set previews all VISIBLE members in row order, opening on
+    /// the focus item. Filter-hidden members stay out, the same rule as batch operations. Read-only:
+    /// it presents the panel and nothing else. Returns false when there is nothing to preview.
+    @discardableResult
+    func previewSelection() -> Bool {
+        guard let tree else { return false }
+        let ids = batchCandidateIDs.isEmpty ? selected.map { [$0] } ?? [] : batchCandidateIDs
+        let paths = ids.map { tree.path($0) }.filter { !$0.isEmpty }
+        let focusPath = selected.map { tree.path($0) }
+        guard let p = QuickLookController.payload(memberPaths: paths, focusPath: focusPath) else { return false }
+        return QuickLookController.show(paths: p.paths, focus: p.focus)
+    }
     var expanded: Set<UInt32> = []
     private var editorOrigin = false
     var externalFilterTextRevision: UInt64 = 0
