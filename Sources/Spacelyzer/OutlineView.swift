@@ -527,6 +527,7 @@ private struct OutlineTable: NSViewRepresentable {
             case 124: if isDir && !model.expanded.contains(s) { model.toggle(s) }; return isDir      // right
             case 123: if isDir && model.expanded.contains(s) { model.toggle(s) }; return isDir       // left
             case 36, 76: model.drill(into: s); return true                                           // return, enter
+            case 49: return model.previewSelection()                                                 // space: Quick Look
             default: return false
             }
         }
