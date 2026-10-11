@@ -97,7 +97,7 @@ final class AppModel {
     }
 
     /// Cmd-click: toggles membership. Adding focuses the new member; removing the focused member moves
-    /// focus to the newest remaining member, or nil when the set empties.
+    /// focus to the last remaining member in outline row order, or nil when the set empties.
     func selectToggle(_ id: UInt32) {
         if let at = selectedSet.firstIndex(of: id) {
             selectedSet.remove(at: at)
@@ -107,6 +107,23 @@ final class AppModel {
             selectedSet.append(id)
             if selected != id { selected = id }
         }
+        normalizeSelectionOrder()
+    }
+
+    /// Keeps the set in outline row order (members the index does not know keep their relative order at
+    /// the end), so the table-driven sync and the programmatic API agree on order and on which member is
+    /// "last" for focus fallback and Quick Look cycling.
+    private func normalizeSelectionOrder() {
+        // Explicit offset tiebreak: sorted(by:) is not stable, so unknown members order by entry order.
+        let ordered = selectedSet.enumerated().sorted { x, y in
+            switch (outlineIndex[x.element], outlineIndex[y.element]) {
+            case let (ia?, ib?): return ia < ib
+            case (_?, nil): return true
+            case (nil, _?): return false
+            case (nil, nil): return x.offset < y.offset
+            }
+        }.map { $0.element }
+        if ordered != selectedSet { selectedSet = ordered }
     }
 
     /// Shift-click: replaces the set with the outline-row slice between the anchor (the current focus,
@@ -118,7 +135,7 @@ final class AppModel {
         let slice = outlineRows[min(from, to)...max(from, to)].map { $0.node }
         if selectedSet != slice { selectedSet = slice }
         if selected != id { selected = id }
-    }
+    }   // slice is already in row order; no normalize needed
 
     /// Escape / new scan: empties the set and the focus.
     func clearSelectionSet() {
