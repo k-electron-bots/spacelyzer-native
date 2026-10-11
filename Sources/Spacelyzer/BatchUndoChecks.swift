@@ -1,4 +1,5 @@
 #if SPZ_CI_TESTS   // test-only code: compiled only when the build passes -Xswiftc -DSPZ_CI_TESTS
+import CSpacelyzer   // SpzRow comes from the C target, like the production files
 import Foundation
 
 // UNCOMPILED and UNRUN until a Mac run. Checks for the guarded batch-removal epic's sixth slice:
@@ -55,7 +56,7 @@ enum BatchUndoChecks {
         await m1.removalTask?.value
         Check.expect("batch-undo-restores-whole-batch-in-one-pass",
                      journaled == 3 && hintBefore == 3
-                     && restored1 == [("a.bin.trashed", "a.bin"), ("b.bin.trashed", "b.bin"), ("c.bin.trashed", "c.bin")]
+                     && restored1.map { "\($0.0)>\($0.1)" } == ["a.bin.trashed>a.bin", "b.bin.trashed>b.bin", "c.bin.trashed>c.bin"]
                      && m1.lastRemoved.isEmpty && m1.lastBatchCount == nil && m1.removalMessage != nil,
                      "journaled=\(journaled) hint=\(hintBefore) restored=\(restored1) left=\(m1.lastRemoved.count) msg=\(m1.removalMessage ?? "nil")")
 
