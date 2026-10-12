@@ -12,6 +12,19 @@ import Foundation
 // Trash and no panel is shown.
 @MainActor
 enum BatchUndoChecks {
+    /// Bounded: polls cond for about 3 s.
+    private static func settle(_ cond: @MainActor () -> Bool) async { for _ in 0..<300 where !cond() { try? await Task.sleep(nanoseconds: 10_000_000) } }
+    /// Acts as the missing view exactly once per settled removal (the same pattern the removal-history
+    /// suite uses): the layout surface publishes the current version, then the model must go quiet.
+    /// Returns false when the model never goes quiet; the caller's check then fails on its own terms.
+    private static func settleSurfaces(_ m: AppModel) async -> Bool {
+        _ = await m.settleRemoval()
+        await settle { m.outlineVersion == m.tree?.version && m.derivedVersion == m.tree?.version }
+        if let v = m.tree?.version { m.layoutPublished(v) }
+        await settle { !m.rowsPending }
+        return !m.rowsPending && m.requiredVersion == nil
+    }
+
     static func run() async {
         let fm = FileManager.default
 
@@ -51,7 +64,7 @@ enum BatchUndoChecks {
         m1.confirmBatchRemoval()
         await m1.removalTask?.value
         let journaled = m1.lastRemoved.count, hintBefore = m1.lastBatchCount ?? -1
-        _ = await Check.settleSurfaces(m1)   // a settled removal keeps requiredVersion set until a view publishes; the suite acts as that view
+        _ = await settleSurfaces(m1)   // a settled removal keeps requiredVersion set until a view publishes; the suite acts as that view
         m1.undoBatchRemoval()
         await m1.removalTask?.value
         Check.expect("batch-undo-restores-whole-batch-in-one-pass",
@@ -70,7 +83,7 @@ enum BatchUndoChecks {
         m2.proposeBatchRemoval()
         m2.confirmBatchRemoval()
         await m2.removalTask?.value
-        _ = await Check.settleSurfaces(m2)
+        _ = await settleSurfaces(m2)
         m2.undoBatchRemoval()
         await m2.removalTask?.value
         let kept = m2.lastRemoved.map { $0.original.lastPathComponent }
@@ -89,7 +102,7 @@ enum BatchUndoChecks {
         m5.proposeBatchRemoval()
         m5.confirmBatchRemoval()
         await m5.removalTask?.value
-        _ = await Check.settleSurfaces(m5)
+        _ = await settleSurfaces(m5)
         let hintAfterBatch = m5.lastBatchCount ?? -1
         m5.proposeRemoval(of: c)
         let proposed = m5.pendingRemoval != nil
