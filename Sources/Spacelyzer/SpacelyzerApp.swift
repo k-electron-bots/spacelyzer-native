@@ -28,6 +28,12 @@ struct SpacelyzerApp: App {
                         await CommitOrderingRegression.run()
                         await ZeroMatchRegression.run()
                         await AsyncRemovalRegression.run()
+                        await BatchRemovalChecks.run()
+                        await MultiSelectChecks.run()
+                        await OutlineSelectionSyncChecks.run()
+                        QuickLookBatchChecks.run()
+                        await BatchRemovalExecutionChecks.run()
+                        await BatchUndoChecks.run()
                         MainStall.shared.start()
                         func mark(_ n: Int) {
                             // CI-only handshake: the runner owns screen-capture permission.
