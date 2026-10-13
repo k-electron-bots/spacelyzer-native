@@ -43,6 +43,8 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history: the Pin step diffs against base 00aa46a2 (depth 1 broke run 38454259263)
       - name: Pin and context
         run: |
           echo "branch tip: $(git rev-parse HEAD) (differs from product base 00aa46a2: this branch adds the workflow + scripts/measure only)"
