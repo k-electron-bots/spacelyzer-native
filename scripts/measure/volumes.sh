@@ -11,7 +11,7 @@ import os, subprocess, sys
 bin_path, out = sys.argv[1], sys.argv[2]
 def probe(mount, label):
     rec = os.path.join(out, f"nonutf8-{label}.txt")
-    name = os.path.join(mount, b"spz-nonutf8-\xff\xfe")
+    name = os.path.join(os.fsencode(mount), b"spz-nonutf8-\xff\xfe")
     try:
         fd = os.open(name, os.O_CREAT | os.O_WRONLY, 0o644); os.close(fd); os.unlink(name)
         open(rec, "w").write(f"{label}: non-UTF-8 name CREATED (EILSEQ not raised)\n")
