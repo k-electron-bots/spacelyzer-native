@@ -77,6 +77,9 @@ jobs:
           echo "::notice title=engine-tests::raw passed=$raw_passed; NOT EXERCISED=$skipped (manifest uploaded); exercised=$((raw_passed - skipped)); cargo exit=$status"
           exit "$status"
       - name: Build Swift app + sign (existing project self-signed identity only)
+        env:
+          SIGNING_CERT_P12_BASE64: ${{ secrets.SIGNING_CERT_P12_BASE64 }}
+          SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
         run: |
           ./scripts/build-engine.sh
           swift build -c release --arch arm64 --arch x86_64
