@@ -50,6 +50,60 @@ def envf(k, d):
     try: return float(os.environ.get(k, d))
     except Exception: return d
 
+def poison_eval(log, denial):
+    rc_m = re.search(r"poison-scan-exit=(\d+)", log)
+    rc = int(rc_m.group(1)) if rc_m else -1
+    sk_m = re.search(r"\((\d+) skipped\)", log)
+    skipped = int(sk_m.group(1)) if sk_m else None
+    panic = bool(re.search(r"(panic|scan failed|SIGSEGV|SIGABRT)", log))
+    uid_m = re.search(r"runner-uid=(\d+)", denial or "")
+    if denial is None or "PROBE-DENIED" not in denial or (uid_m and int(uid_m.group(1)) == 0):
+        return ("INCONCLUSIVE",
+                f"denial not confirmed (record={'present' if denial else 'missing'}, uid={uid_m.group(1) if uid_m else '?'}); permissions may not have been actually denied - no verdict")
+    if rc != 0 or panic:
+        return ("FAIL", f"exit={rc} panic={panic}; healthy partial scan requires exit 0 and no panic marker")
+    if skipped == 1:
+        return ("PASS", "exit=0 skipped=exactly-1 (sole constructed defect) panic=False; matches engine partial-scan semantics")
+    return ("FAIL", f"exit=0 skipped={skipped}; expected exactly 1 (0 = defect silently dropped, 2+ = collateral skip)")
+
+
+def selftest():
+    # Synthetic regression: malformed/absent/healthy-minimal evidence must never render PASS
+    # where it should not. Exits non-zero on any mismatch so the workflow step fails loudly.
+    global verdicts
+    fails = []
+    def check(name, cond):
+        if not cond: fails.append(name)
+    os.environ["DIST_MIN_SAMPLES"] = "20"
+    verdicts = []; dist("t", [{"ms": 1.0}] * 5, 100, 1000)
+    check("thin-not-pass", verdicts[-1].startswith("INCONCLUSIVE"))
+    verdicts = []; dist("t", [{"ms": 50.0}] * 25, 100, 1000)
+    check("clean-pass", verdicts[-1].startswith("PASS"))
+    verdicts = []; dist("t", [{"ms": 50.0}] * 24 + [{"ms": 1500.0}], 100, 1000)
+    check("one-over-unresolved", verdicts[-1].startswith("OUTLIER") and "UNRESOLVED" in verdicts[-1])
+    verdicts = []; dist("t", [{"ms": 50.0}] * 23 + [{"ms": 1500.0}, {"ms": 2000.0}], 100, 1000)
+    check("two-over-fail", verdicts[-1].startswith("FAIL"))
+    verdicts = []; dist("t", [{"ms": 200.0}] * 25, 100, 1000)
+    check("p95-over-fail", verdicts[-1].startswith("FAIL"))
+    # poison matrix
+    denial_ok = "runner-uid=501\nPROBE-DENIED\n"
+    check("healthy-partial-passes", poison_eval("12 items, 1.0 KB in 0.010s (1 skipped)\npoison-scan-exit=0\n", denial_ok)[0] == "PASS")
+    check("zero-skipped-fails", poison_eval("12 items, 1.0 KB in 0.010s (0 skipped)\npoison-scan-exit=0\n", denial_ok)[0] == "FAIL")
+    check("two-skipped-fails", poison_eval("12 items, 1.0 KB in 0.010s (2 skipped)\npoison-scan-exit=0\n", denial_ok)[0] == "FAIL")
+    check("nonzero-exit-fails", poison_eval("boom\npoison-scan-exit=1\n", denial_ok)[0] == "FAIL")
+    check("panic-fails", poison_eval("thread panicked at scan failed (1 skipped)\npoison-scan-exit=101\n", denial_ok)[0] == "FAIL")
+    check("watchdog-fails", poison_eval("poison-scan-exit=124\n", denial_ok)[0] == "FAIL")
+    check("missing-denial-inconclusive", poison_eval("(1 skipped)\npoison-scan-exit=0\n", None)[0] == "INCONCLUSIVE")
+    check("root-denial-inconclusive", poison_eval("(1 skipped)\npoison-scan-exit=0\n", "runner-uid=0\nPROBE-DENIED\n")[0] == "INCONCLUSIVE")
+    check("readable-probe-inconclusive", poison_eval("(1 skipped)\npoison-scan-exit=0\n", "runner-uid=501\nPROBE-READABLE\n")[0] == "INCONCLUSIVE")
+    if fails:
+        print("SELFTEST FAIL: " + ", ".join(fails)); sys.exit(1)
+    print("SELFTEST PASS: tail policy + poison semantics + denial gate + absent-evidence handling")
+    sys.exit(0)
+
+if len(sys.argv) > 1 and sys.argv[1] == "--selftest":
+    selftest()
+
 for probe, envp, envm in [("type","STALL_TYPING_P95_MS","STALL_TYPING_MAX_MS"),
                           ("menu","STALL_MENU_P95_MS","STALL_MENU_MAX_MS"),
                           ("expand","STALL_EXPAND_P95_MS","STALL_EXPAND_MAX_MS")]:
@@ -62,25 +116,16 @@ if bl:
 else:
     verdict("ax-overhead-baseline", "INCONCLUSIVE", "no baseline samples")
 
-# main-thread sample floor + block-gap heuristic
+# main-thread sample: CONTEXT ONLY. The aggregated `sample` report is one report without
+# per-snapshot frames, so no snapshot floor and no main-thread block duration can be derived
+# from it. It is preserved raw as context for adjudicating AX-side outliers; it closes no
+# gate. The real main-thread stall gate remains UNCLOSED unless valid instrumentation lands.
 try:
-    text = open(os.path.join(out,"main-thread-sample.txt"), errors="replace").read()
-    snapshots = len(re.findall(r"^Analysis of sampling", text, re.M)) or text.count("Call graph")
-    floor = int(envf("SAMPLE_MIN_SNAPSHOTS", 20))
-    verdict("sample-floor", "PASS" if snapshots >= floor else "FAIL", f"snapshots={snapshots} floor={floor}")
-    fail_ms = envf("MAIN_THREAD_BLOCK_FAIL_MS", 500); warn_ms = envf("MAIN_THREAD_BLOCK_WARN_MS", 100)
-    # heuristic: identical consecutive main-thread lead frame outside known idle symbols
-    frames = re.findall(r"Thread_.*?DispatchQueue_.*?main.*?\n\s+\d+\s+(\S+)", text)
-    worst = 1; cur = 1
-    for a, b in zip(frames, frames[1:]):
-        idle = any(s in b for s in ("mach_msg", "semaphore_wait", "__psynch", "kevent", "poll", "read"))
-        cur = cur + 1 if (a == b and not idle) else 1
-        worst = max(worst, cur)
-    gap_ms = worst * 10  # 10 ms sample interval
-    st = "FAIL" if gap_ms >= fail_ms else ("OUTLIER" if gap_ms >= warn_ms else "PASS")
-    verdict("main-thread-block", st, f"longest same-frame non-idle run ~{gap_ms}ms (10ms interval heuristic) fail>={fail_ms} warn>={warn_ms}")
+    raw = open(os.path.join(out,"main-thread-sample.txt"), errors="replace").read()
+    verdict("main-thread-sample", "INFO",
+            f"raw sample captured as context only ({len(raw)} bytes); not instrumentation; no block durations inferred; main-thread stall gate UNCLOSED")
 except FileNotFoundError:
-    verdict("main-thread-sample", "INCONCLUSIVE", "no sample file")
+    verdict("main-thread-sample", "INCONCLUSIVE", "no sample file; nothing inferred either way")
 
 # soak: in-process growth from live-RSS timeline
 try:
@@ -127,22 +172,24 @@ if press and resp:
 else:
     verdict("cancel-responsive", "INCONCLUSIVE", f"press={len(press)} resp={len(resp)}")
 
-# poison named failure
+# poison partial-scan check, driven by the engine's ACTUAL semantics (verified against
+# engine/src/bin/spz.rs): an unreadable subtree is recorded in tree.skipped and the scan
+# continues - healthy partial scan = exit 0, summary prints ONLY the skipped count.
+# The fixture has exactly ONE defect by construction (chmod 000 subtree), so:
+#   exit 0 + exactly 1 skipped + no panic + denial actually in effect  -> PASS
+#   0 skipped (defect silently dropped) or 2+ (collateral skip)        -> FAIL
+#   non-zero exit / watchdog 124 / panic marker                        -> FAIL
+#   denial not confirmed (missing record, root user, readable probe)   -> INCONCLUSIVE
 try:
     log = open(os.path.join(out, "poison-scan.log"), errors="replace").read()
-    rc_m = re.search(r"poison-scan-exit=(\d+)", log)
-    rc = int(rc_m.group(1)) if rc_m else -1
-    # Named-failure conjunction: the poisoned subtree path must be named together with a
-    # genuine error token. Bare "error"/"skipped" anywhere (e.g. "0 skipped") never counts.
-    names_path = bool(re.search(r"spz-poison", log))
-    error_token = bool(re.search(r"(Permission denied|EACCES|Operation not permitted|os error 13|I/O error)", log, re.I))
-    named = names_path and error_token
-    crash = bool(re.search(r"(panic|SIGSEGV|SIGABRT)", log))
-    ok = (rc not in (0, 124)) and named and not crash
-    verdict("poison-failure", "PASS" if ok else "FAIL",
-            f"exit={rc} names-poisoned-path={names_path} error-token={error_token} named-failure={named} crash={crash}; PASS requires non-zero non-watchdog exit AND poisoned-path-specific named failure AND no crash marker; log preserved raw")
+    try:
+        denial = open(os.path.join(out, "poison-denial.txt"), errors="replace").read()
+    except FileNotFoundError:
+        denial = None
+    st, detail = poison_eval(log, denial)
+    verdict("poison-partial-scan", st, detail + "; fixture: /tmp/spz-poison/sub chmod 000, sole constructed defect; log preserved raw")
 except FileNotFoundError:
-    verdict("poison-failure", "INCONCLUSIVE", "no poison log")
+    verdict("poison-partial-scan", "INCONCLUSIVE", "no poison log")
 
 # volume probes: report errno records verbatim; closure wording left to the report
 for f in sorted(glob.glob(os.path.join(out, "nonutf8-*.txt"))):
