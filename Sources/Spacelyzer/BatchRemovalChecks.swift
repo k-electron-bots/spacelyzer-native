@@ -24,11 +24,14 @@ enum BatchRemovalChecks {
         try! Data(repeating: 7, count: 10_000).write(to: d.appendingPathComponent("dupC.bin"))
         try! Data(repeating: 3, count: 10_000).write(to: d.appendingPathComponent("solo.bin"))
         defer { try? fm.removeItem(at: d) }
-        guard let t = await ScanSession(root: d.path, excludes: [])?.run(progress: { _ in }) else {
+        // The engine canonicalizes the scan root (macOS: /var -> /private/var); paths handed to the
+        // tree must use the same resolved form or find/liveID miss on a string mismatch (run 147).
+        let root = (d.path as NSString).resolvingSymlinksInPath
+        guard let t = await ScanSession(root: root, excludes: [])?.run(progress: { _ in }) else {
             for n in names { Check.expect(n, false, "fixture") }; return
         }
-        let pathA = "\(d.path)/dupA.bin", pathB = "\(d.path)/dupB.bin", pathC = "\(d.path)/dupC.bin"
-        let solo = "\(d.path)/solo.bin"
+        let pathA = "\(root)/dupA.bin", pathB = "\(root)/dupB.bin", pathC = "\(root)/dupC.bin"
+        let solo = "\(root)/solo.bin"
         let group = [pathA, pathB, pathC]
 
         // 1. One copy of a group in a batch passes (other live copies remain).
@@ -50,7 +53,7 @@ enum BatchRemovalChecks {
 
         // 3. A path the live tree does not contain is refused with the not-in-results reason.
         let m3 = AppModel(); m3.tree = t
-        let gone = "\(d.path)/gone.bin"
+        let gone = "\(root)/gone.bin"
         let p3 = BatchRemoval.plan([gone], groups: [[gone, pathA]], in: m3)
         Check.expect("batch-removal-unknown-path-refused",
                      p3.approved.isEmpty && p3.refused.count == 1

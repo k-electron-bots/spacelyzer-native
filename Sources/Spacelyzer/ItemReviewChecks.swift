@@ -14,10 +14,13 @@ enum ItemReviewChecks {
         try! FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
         try! Data(repeating: 3, count: 10_000).write(to: d.appendingPathComponent("a.bin"))
         defer { try? FileManager.default.removeItem(at: d) }
-        guard let t = await ScanSession(root: d.path, excludes: [])?.run(progress: { _ in }) else {
+        // The engine canonicalizes the scan root (macOS: /var -> /private/var); paths handed to the
+        // tree must use the same resolved form or find/liveID miss on a string mismatch (run 147).
+        let root = (d.path as NSString).resolvingSymlinksInPath
+        guard let t = await ScanSession(root: root, excludes: [])?.run(progress: { _ in }) else {
             for n in names { Check.expect(n, false, "fixture") }; return
         }
-        guard let victim = t.find(path: "\(d.path)/a.bin") else {
+        guard let victim = t.find(path: "\(root)/a.bin") else {
             for n in names { Check.expect(n, false, "fixture find") }; return
         }
 

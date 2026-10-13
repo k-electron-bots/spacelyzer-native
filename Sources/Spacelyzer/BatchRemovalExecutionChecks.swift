@@ -25,9 +25,12 @@ enum BatchRemovalExecutionChecks {
         try! Data(repeating: 2, count: 2_000).write(to: d.appendingPathComponent("b.bin"))
         try! Data(repeating: 3, count: 3_000).write(to: d.appendingPathComponent("c.bin"))
         defer { try? fm.removeItem(at: d) }
-        guard let t = await ScanSession(root: d.path, excludes: [])?.run(progress: { _ in }),
-              let a = t.find(path: "\(d.path)/a.bin"), let b = t.find(path: "\(d.path)/b.bin"),
-              let c = t.find(path: "\(d.path)/c.bin"), a != 0, b != 0, c != 0 else {
+        // The engine canonicalizes the scan root (macOS: /var -> /private/var); paths handed to the
+        // tree must use the same resolved form or find/liveID miss on a string mismatch (run 147).
+        let root = (d.path as NSString).resolvingSymlinksInPath
+        guard let t = await ScanSession(root: root, excludes: [])?.run(progress: { _ in }),
+              let a = t.find(path: "\(root)/a.bin"), let b = t.find(path: "\(root)/b.bin"),
+              let c = t.find(path: "\(root)/c.bin"), a != 0, b != 0, c != 0 else {
             for n in names { Check.expect(n, false, "fixture") }; return
         }
 
