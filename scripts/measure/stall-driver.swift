@@ -127,25 +127,27 @@ case "cancel":
     emit(out, "{\"probe\":\"cancel-post-responsive\",\"ms\":\(ms(t2,t3))}")
     print("cancel-done")
 
-case "marked":
+case "nonascii":
     let out = args[3]
-    // Bounded IME-composition probe: the AX surface has no setMarkedText equivalent, so this
-    // records exactly what IS possible (non-ASCII insertText-equivalent via value set + selected-
-    // text readback) and what is not (true marked-text session). Real IME E2E is separate.
+    // Non-ASCII value-insert probe ONLY. This is NOT an IME marked-text composition test:
+    // it measures insert/readback of a CJK string through the AX value attribute and nothing
+    // more. The IME composition gate stays OPEN. Protocol-level composition harness
+    // feasibility (NSTextInputClient insertText/setMarkedText/unmarkText) is assessed
+    // separately; this probe makes no claim about whether the app can test composition.
     var field: AXUIElement?
     for _ in 0..<40 {
         field = findRole(root, role: kAXTextFieldRole as String).first
         if field != nil { break }
         Thread.sleep(forTimeInterval: 0.5)
     }
-    guard let f = field else { emit(out, "{\"probe\":\"marked\",\"error\":\"no-filter-field\"}") ; exit(1) }
+    guard let f = field else { emit(out, "{\"probe\":\"nonascii\",\"error\":\"no-filter-field\"}") ; exit(1) }
     let t0 = mach_absolute_time()
     AXUIElementSetAttributeValue(f, kAXValueAttribute as CFString, "\u{304b}\u{306a}keep" as CFTypeRef)
     let readback = ax(f, kAXValueAttribute) as? String ?? ""
     let t1 = mach_absolute_time()
-    emit(out, "{\"probe\":\"marked\",\"ms\":\(ms(t0,t1)),\"nonascii_echoed\":\(readback == "\u{304b}\u{306a}keep"),\"marked_text_api\":\"not-exposed-over-AX\"}")
+    emit(out, "{\"probe\":\"nonascii\",\"ms\":\(ms(t0,t1)),\"nonascii_echoed\":\(readback == "\u{304b}\u{306a}keep")}")
     AXUIElementSetAttributeValue(f, kAXValueAttribute as CFString, "" as CFTypeRef)
-    print("marked-done")
+    print("nonascii-done")
 
 default:
     print("unknown mode"); exit(2)
