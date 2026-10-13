@@ -985,9 +985,18 @@ final class AppModel {
             if isProtected(path) { skipped.append("\(path) is protected and cannot be removed from here."); continue }
             if isOutsideFilter(item.id) { skipped.append("\(path): outside the current filter; skipped."); continue }
             // The recorded size comes from one engine capture; if the engine cannot answer now, this item is skipped.
-            guard let snap = nodeSnapshot(item.id) else { skipped.append("\(path): sizes are still updating; skipped."); continue }
+            // Read it straight from the engine: nodeSnapshot is view-facing and refuses while a previous
+            // batch item's commit is still publishing (requiredVersion stays set until surfaces land), which
+            // skipped every item after the first (run 38410069921). The id->path revalidation above already
+            // pins this item's identity in this tree.
+            let size: UInt64
+            switch nodeCheckedOverride?(tree, item.id) ?? tree.nodeChecked(item.id) {
+            case .success(let r):
+                size = r.info.size
+            case .failure(let status):
+                skipped.append("\(path): sizes could not be verified (\(status)); skipped."); continue
+            }
             let url = URL(fileURLWithPath: path)
-            let size = snap.info.size
             mutationPending = true      // reserved before the write, per item, exactly like the single path
             removalInFlight = true
             // 1. The filesystem move runs OFF the main actor, with the same pre-move identity
