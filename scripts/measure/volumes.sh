@@ -28,10 +28,14 @@ for fmt, label, size in [("APFS", "apfs-dmg", "32m"), ("ExFAT", "exfat-dmg", "32
         if len(parts) >= 3 and parts[-1].strip().startswith("/Volumes/"):
             mount = parts[-1].strip()
     if mount:
-        probe(mount, label)
-        with open(os.path.join(out, f"verify-{label}.log"), "w") as f:
-            subprocess.run([bin_path, "verify", mount], stdout=f, stderr=subprocess.STDOUT)
-        subprocess.run(["hdiutil", "detach", mount], capture_output=True)
+        try:
+            probe(mount, label)
+            with open(os.path.join(out, f"verify-{label}.log"), "w") as f:
+                subprocess.run([bin_path, "verify", mount], stdout=f, stderr=subprocess.STDOUT)
+        finally:
+            # detach trap: the volume is always released, even if probe/verify raises
+            det = subprocess.run(["hdiutil", "detach", mount, "-force"], capture_output=True, text=True)
+            open(os.path.join(out, f"detach-{label}.log"), "w").write(det.stdout + det.stderr)
     else:
         open(os.path.join(out, f"attach-{label}.failed"), "w").write("no mount point parsed")
 probe("/", "boot-volume")
