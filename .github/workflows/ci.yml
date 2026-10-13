@@ -1,250 +1,154 @@
+# Measurement-only replacement of ci.yml on THIS branch only (mac-stall-soak-00aa46a2).
+# Product code pinned at 00aa46a2 (item-inspect-engine-stack tip); only this workflow and
+# scripts/measure/* differ from the reviewed stack. No release, no tag, no DMG packaging here.
+# Everything below is a shared-runner RESPONSIVENESS PROXY (main-thread sample + AX latency);
+# it is not frame-pacing evidence and clears no real-hardware UI gate.
 name: CI
-
 on:
-  # Epic-level CI to conserve the free quota: commits to main do not run CI.
-  # Push a tag named epic-<n>-<name> (or run manually) to verify and release an epic.
-  push:
-    tags: ['epic-*']
-  pull_request:
   workflow_dispatch:
     inputs:
       compile_only:
-        description: 'Compile check only: toolchain, universal engine, Swift build; skips tests, signing, packaging and UI steps'
-        required: false
         type: boolean
         default: false
-
 permissions:
-  contents: write
-
+  contents: read
+  actions: read   # gh run download of the pinned existing artifact for hash/signature validation
+env:
+  # Pre-registered verdict bars (before any result exists). Grounding: 100 ms = the classic
+  # direct-manipulation "feels instantaneous" boundary (Nielsen response-time limits), 1000 ms =
+  # uninterrupted-flow boundary; expand gets a work-allowed p95 because opening a huge folder does
+  # real enumeration work, still under the flow boundary. Values outside PASS but under *_MAX are
+  # reported as OUTLIERS with an honest verdict, never silently passed (the ~140 ms calibration
+  # AX-read outliers land here by design).
+  STALL_TYPING_P95_MS: "100"
+  STALL_TYPING_MAX_MS: "1000"
+  STALL_HOVER_P95_MS: "100"
+  STALL_HOVER_MAX_MS: "1000"
+  STALL_EXPAND_P95_MS: "250"
+  STALL_EXPAND_MAX_MS: "1000"
+  CANCEL_RESPONSIVE_MAX_MS: "1000"
+  MAIN_THREAD_BLOCK_FAIL_MS: "500"   # one busy gap >= this in the interaction-window sample = FAIL
+  MAIN_THREAD_BLOCK_WARN_MS: "100"   # 100-500 ms gaps = reported outliers
+  SAMPLE_MIN_SNAPSHOTS: "20"         # floor: sample snapshots across the interaction window
+  SOAK_GROWTH_MAX: "1.10"            # final-third median live RSS / first-third median
+  SOAK_SEPARATE_BAND: "0.10"         # separate-process peak RSS band +/-10%
 jobs:
-  engine-linux:
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
-    if: ${{ !inputs.compile_only }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --release -p spacelyzer-engine
-      - run: cargo build --release
-      - name: Dependency allowlist
-        run: ./scripts/check-deps.sh
-      - name: Scan benchmark (informational, shared runner)
-        run: ./target/release/spz bench /usr 3
-
-  macos:
+  measure:
     runs-on: macos-latest
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
-      - name: Toolchain versions
+      - name: Pin and context
         run: |
+          test "$(git rev-parse HEAD)" = "00aa46a2d384ec4648ae4571ccb2eaee5a7e6324" || { echo "::error::product tree moved from reviewed 00aa46a2"; exit 1; }
+          git diff --stat 00aa46a2d384ec4648ae4571ccb2eaee5a7e6324 HEAD || true
           sw_vers; xcodebuild -version; swift --version; rustc --version || true
-          echo "::notice title=toolchain::$(sw_vers -productVersion) | $(xcodebuild -version | tr '\n' ' ') | sdk $(xcrun --show-sdk-version) | $(swift --version 2>&1 | head -1)"
-      - name: Rust engine tests (native macOS, includes getattrlistbulk backend)
-        if: ${{ !inputs.compile_only }}
+      - name: Compile harness drivers (fails cheap before any measurement)
+        run: |
+          swiftc -swift-version 5 scripts/measure/stall-driver.swift -o /tmp/spz-stall-driver
+          shasum -a 256 scripts/measure/stall-driver.swift /tmp/spz-stall-driver
+      - name: Rust engine build
         run: |
           rustup update stable --no-self-update
+          cargo build --release -p spacelyzer-engine
+      - name: Rust engine tests with fresh skip manifest (EILSEQ evidence)
+        if: ${{ !inputs.compile_only }}
+        run: |
           set -o pipefail
-          # APFS refuses non-UTF-8 names (EILSEQ). The test helper turns ONLY that error into a recorded skip when this opt-in is set
-          # (any other fixture error still panics). cargo prints such a skipped test as ok, so the manifest below is the record of what did not run.
+          mkdir -p measure-out
           export SPZ_ALLOW_PLATFORM_SKIP=1
           export SPZ_SKIP_MANIFEST="$RUNNER_TEMP/spz-skip-manifest.txt"
           : > "$SPZ_SKIP_MANIFEST"
-          # --no-fail-fast: one failing binary must not hide the results of the binaries after it.
           status=0
           cargo test --release -p spacelyzer-engine --no-fail-fast -- --nocapture 2>&1 | tee /tmp/cargotest.log || status=$?
-          if [ "$status" -ne 0 ]; then
-            grep -E -A3 "panicked|firmlink check" /tmp/cargotest.log | grep -v "^--" | sort -u | head -12 | while IFS= read -r l; do echo "::error::${l//%/%25}"; done || true
-          fi
-          { grep -E "firmlink check" /tmp/cargotest.log || true; } | while IFS= read -r l; do echo "::notice::${l//%/%25}"; done
-          # Accounting: skipped tests are reported ok by cargo, so subtract the manifest names from the raw total.
+          cp "$SPZ_SKIP_MANIFEST" measure-out/skip-manifest.txt
+          grep -E "deep" /tmp/cargotest.log | head -5 > measure-out/deepnest-mac.log || true
           raw_passed=$(awk '/^test result:/ {for (i = 2; i <= NF; i++) if ($i == "passed;") n += $(i-1)} END {print n + 0}' /tmp/cargotest.log)
-          raw_failed=$(awk '/^test result:/ {for (i = 2; i <= NF; i++) if ($i == "failed;") n += $(i-1)} END {print n + 0}' /tmp/cargotest.log)
           skipped=$(grep -c . "$SPZ_SKIP_MANIFEST" || true)
-          exercised=$((raw_passed - skipped))
-          [ "$exercised" -lt 0 ] && exercised=0
-          if [ "$status" -eq 0 ]; then note=""; else note=" (APPROXIMATE and possibly incomplete: the run failed or aborted, so cargo summaries may be missing; the manifest below is the authoritative list of unexercised names)"; fi
-          echo "::notice title=engine-tests::raw passed=$raw_passed failed=$raw_failed; NOT EXERCISED (platform skips, counted as passed by cargo)=$skipped; exercised passes=$exercised$note; cargo exit=$status"
-          if [ "$skipped" -gt 0 ]; then
-            echo "Tests NOT exercised on this runner (from $SPZ_SKIP_MANIFEST):"
-            cat "$SPZ_SKIP_MANIFEST"
-            echo "::warning title=not-exercised::$(tr '\n' ';' < "$SPZ_SKIP_MANIFEST" | sed 's/%/%25/g')"
-          fi
+          echo "::notice title=engine-tests::raw passed=$raw_passed; NOT EXERCISED=$skipped (manifest uploaded); exercised=$((raw_passed - skipped)); cargo exit=$status"
           exit "$status"
-      - name: Bulk backend vs portable backend on real macOS trees
-        if: ${{ !inputs.compile_only }}
+      - name: Build Swift app + sign (existing project self-signed identity only)
         run: |
-          cargo build --release -p spacelyzer-engine
-          for d in /Applications /usr/lib "$HOME/Library"; do
-            [ -d "$d" ] && ./target/release/spz verify "$d" || true
-          done
-          ./target/release/spz verify /Applications
-      - name: Scan benchmark (informational, shared runner)
-        if: ${{ !inputs.compile_only }}
-        run: ./target/release/spz bench /Applications 3
-      - name: Build universal engine
-        run: ./scripts/build-engine.sh
-      - name: Build Swift app
-        run: |
-          set -o pipefail
-          swift build -c release --arch arm64 --arch x86_64 2>&1 | tee /tmp/swiftbuild.log || {
-            grep -E "error:" /tmp/swiftbuild.log | sort -u | head -15 | while IFS= read -r l; do echo "::error::${l//%/%25}"; done
-            exit 1
-          }
-      - name: Version
-        if: ${{ !inputs.compile_only }}
-        id: ver
-        run: echo "version=0.1.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
-      - name: Import self-signed identity
-        if: ${{ !inputs.compile_only }}
-        id: sign
-        env:
-          SIGNING_CERT_P12_BASE64: ${{ secrets.SIGNING_CERT_P12_BASE64 }}
-          SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
-        run: |
+          ./scripts/build-engine.sh
+          swift build -c release --arch arm64 --arch x86_64
           HASH="$(./scripts/sign-setup.sh | tail -1)"
-          echo "hash=$HASH" >> "$GITHUB_OUTPUT"
-      - name: Package signed DMG
+          echo "signhash=$HASH" >> "$GITHUB_ENV"
+          ./scripts/package-dmg.sh "0.0.measure" "$HASH"
+      - name: Stall responsiveness proxies (typing / hover / expand + main-thread sample)
         if: ${{ !inputs.compile_only }}
-        run: ./scripts/package-dmg.sh "${{ steps.ver.outputs.version }}" "${{ steps.sign.outputs.hash }}"
-      - name: Build TEST-ONLY app with SPZ_CI_TESTS (never packaged or released; the DMG above is built without the flag)
-        if: ${{ !inputs.compile_only }}
-        run: bash ./scripts/build-test-app.sh dist-test "${{ steps.sign.outputs.hash }}"
-      - name: Launch app and screenshot (informational)
-        if: ${{ !inputs.compile_only }}
-        continue-on-error: true
         run: |
+          mkdir -p measure-out
           open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Library
-          sleep 8
-          screencapture -x dist/screenshot-scanning.png || true
-          sleep 35
-          screencapture -x dist/screenshot.png || true
-          pgrep -fl Spacelyzer || echo "app not running"
-          pkill Spacelyzer || true
-          sleep 2
-          # Scripted interaction run: the app writes /tmp/spz-demo-step after each state settles.
-          swiftc scripts/ax-client.swift -o /tmp/spz-ax-client
-          rm -rf /tmp/spz-chronology
-          rm -f /tmp/spz-interaction-envelope.txt /tmp/spz-footer-ax-status.txt /tmp/spz-footer-ax-result.txt /tmp/spz-footer-ax-expected.txt /tmp/spz-footer-ax-ready /tmp/spz-footer-ax-ack /tmp/spz-footer-ax-client.txt /tmp/spz-cold-click-subprocess-end.txt /tmp/spz-sample.txt /tmp/spz-cold-click-sample.txt /tmp/spz-cold-click-sample-command.txt /tmp/spz-cold-click-sample-status.txt /tmp/spz-cold-click-ready /tmp/spz-cold-click-ack /tmp/spz-demo-ready-* /tmp/spz-demo-ack-* /tmp/spz-demo-*.png /tmp/spz-demo-step /tmp/spz-demo-finished /tmp/spz-geom.txt /tmp/spz-timing.txt /tmp/spz-assertions.txt
-          open -n dist-test/Spacelyzer.app --env SPZ_AUTOSCAN=/Library --env SPZ_DEMO=1
-          for step in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 23 24 19 25 20 21 22 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48; do
-            for i in $(seq 1 240); do
-              if [ -f /tmp/spz-footer-ax-ready ] && [ ! -f /tmp/spz-footer-ax-ack ]; then
-                target_pid=$(cat /tmp/spz-footer-ax-ready)
-                python3 - "$target_pid" >> /tmp/spz-footer-ax-client.txt 2>&1 <<'PY'
-          import subprocess, sys
-          from pathlib import Path
-          result_path = Path("/tmp/spz-footer-ax-result.txt")
-          status_path = Path("/tmp/spz-footer-ax-status.txt")
-          try:
-              result = subprocess.run(["/tmp/spz-ax-client", sys.argv[1], "/tmp/spz-footer-ax-expected.txt", "/tmp/spz-footer-ax-result.txt"], timeout=12)
-              print(f"ax-client process-exit code={result.returncode}; diagnostic not a pass", flush=True)
-              status_path.write_text(f"EXIT_{result.returncode}")
-              if result.returncode != 0: result_path.unlink(missing_ok=True)
-          except subprocess.TimeoutExpired:
-              result_path.unlink(missing_ok=True)
-              status_path.write_text("TIMEOUT")
-              print("ax-client process-timeout seconds=12 INCONCLUSIVE; partial flushed records retained", flush=True)
-          except OSError as error:
-              result_path.unlink(missing_ok=True)
-              status_path.write_text("START_ERROR")
-              print(f"ax-client process-start-error {error} INCONCLUSIVE", flush=True)
-          PY
-                touch /tmp/spz-footer-ax-ack
-              fi
-              if [ -f /tmp/spz-cold-click-ready ] && [ ! -f /tmp/spz-cold-click-ack ] && [ -z "${chronology_pid:-}" ]; then
-                python3 scripts/capture-interactions.py &
-                chronology_pid=$!
-              fi
-              [ -f "/tmp/spz-demo-ready-$step" ] && break; sleep 1
-            done
-            if [ ! -f "/tmp/spz-demo-ready-$step" ]; then
-              echo "DEMO STEP TIMEOUT: expected $step, last $(cat /tmp/spz-demo-step 2>/dev/null)" >> /tmp/spz-timing.txt
-              break
-            fi
-            # The old step7 sampler is disabled to avoid overlapping cold-input sampling.
-            screencapture -x "dist/screenshot-demo-$step.png"
-            touch "/tmp/spz-demo-ack-$step"
-          done
-          for i in $(seq 1 30); do [ -f /tmp/spz-demo-finished ] && break; sleep 1; done
-          [ -f /tmp/spz-demo-finished ] || echo 'DEMO FINISH TIMEOUT: final assertions not completed' >> /tmp/spz-timing.txt
-          pgrep -x Spacelyzer >/dev/null && echo 'app still running at end' >> /tmp/spz-timing.txt || echo 'APP NOT RUNNING at end (crashed or exited)' >> /tmp/spz-timing.txt
-          if [ -f /tmp/spz-timing.txt ]; then
-            body=$(grep -v -E '^(selection changed|outline rows|derived |filter text)' /tmp/spz-timing.txt | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}' | tail -c 30000)
-            echo "::notice title=timing::$body"
-          fi
-          cp /tmp/spz-footer-ax-client.txt dist/footer-ax-client.txt 2>/dev/null || true
-          cp /tmp/spz-footer-ax-expected.txt dist/footer-ax-expected.txt 2>/dev/null || true
-          cp /tmp/spz-footer-ax-result.txt dist/footer-ax-result.txt 2>/dev/null || true
-          cp /tmp/spz-footer-ax-status.txt dist/footer-ax-status.txt 2>/dev/null || true
-          cp /tmp/spz-timing.txt dist/ui-timing.txt 2>/dev/null || true
-          pkill Spacelyzer || true
-          sleep 3
-          if [ -n "${chronology_pid:-}" ]; then
-            wait "$chronology_pid" || echo 'chronology helper failed; capture inconclusive' >> /tmp/spz-timing.txt
-          fi
-          mkdir -p dist/chronology
-          cp /tmp/spz-chronology/*.txt /tmp/spz-chronology/*.json /tmp/spz-chronology/*.xml /tmp/spz-chronology/*.zip dist/chronology/ 2>/dev/null || true
-          cp /tmp/spz-footer-ax-client.txt dist/footer-ax-client.txt 2>/dev/null || true
-          cp /tmp/spz-footer-ax-expected.txt dist/footer-ax-expected.txt 2>/dev/null || true
-          cp /tmp/spz-footer-ax-result.txt dist/footer-ax-result.txt 2>/dev/null || true
-          cp /tmp/spz-footer-ax-status.txt dist/footer-ax-status.txt 2>/dev/null || true
-          cp /tmp/spz-timing.txt dist/ui-timing.txt
-          cp /tmp/spz-interaction-envelope.txt dist/interaction-envelope.txt 2>/dev/null || true
-          if [ -f /tmp/spz-sample.txt ]; then cp /tmp/spz-sample.txt dist/main-thread-sample.txt; body=$(python3 scripts/sample-summary.py /tmp/spz-sample.txt | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}' | head -c 12000); echo "::notice title=sample::$body"; fi
-          for f in $(ls -t ~/Library/Logs/DiagnosticReports/Spacelyzer*.ips 2>/dev/null | head -1); do
-            cp "$f" dist/crash-report.ips
-            c=$(python3 scripts/crash-summary.py "$f")
-            echo "::notice title=crash::$c"
-          done
-      - name: UI assertions (fail the build on any failure)
+          PID=""
+          for i in $(seq 1 60); do PID=$(pgrep -x Spacelyzer | head -1); [ -n "$PID" ] && break; sleep 0.5; done
+          [ -n "$PID" ] || { echo "::error::app did not launch"; exit 1; }
+          /tmp/spz-stall-driver waitwindow "$PID" || { echo "::error::no AX window"; exit 1; }
+          sample "$PID" 30 10 -file /tmp/spz-main-sample.txt &
+          SAMPLEPID=$!
+          /tmp/spz-stall-driver baseline "$PID" measure-out/ax-baseline.jsonl
+          /tmp/spz-stall-driver type "$PID" measure-out/ax-type.jsonl "keep-tag-0001" || true
+          /tmp/spz-stall-driver expand "$PID" measure-out/ax-expand.jsonl || true
+          /tmp/spz-stall-driver marked "$PID" measure-out/ax-marked.jsonl || true
+          wait "$SAMPLEPID" || true
+          cp /tmp/spz-main-sample.txt measure-out/main-thread-sample.txt
+          pkill -x Spacelyzer || true; sleep 2
+      - name: Cancel/rescan cycles + post-cancel responsiveness
         if: ${{ !inputs.compile_only }}
-        id: asserts
-        continue-on-error: true
         run: |
-          cp /tmp/spz-assertions.txt dist/ui-assertions.txt 2>/dev/null || true
-          # Ordinary log lines survive artifact-service failure and annotation truncation.
-          echo 'Critical focus/reset evidence (strict assertions remain below):'
-          grep -E '^(before-resign|after-direct-resign|after-fixture-key-window|before-activation|activation-wait-seconds=|reload-after-responder-wait|tab-chain |rest-chain-|native-tab |boundary-sim |boundary-setup |boundary-native |boundary-hidden |interaction-clock |interaction-stage |interaction-sample |footer-constrained |footer-ax |treemap-mounted |treemap-tree-swap |treemap-filter |treemap-unmount |sample launched |sample completed |sample missing:|sample failed/missing report:|same-value-fixture-start |before-same-value-clear |check FAIL|app still running at end|APP NOT RUNNING|DEMO .*TIMEOUT)' /tmp/spz-timing.txt 2>/dev/null || true
-          cat /tmp/spz-assertions.txt || true
-          # Count of ^PASS/^FAIL lines the demo emits at this head; run 37959435404 emitted 126 (121 PASS, 5 FAIL before this fix). Change only with the name-by-name list in the PR that changes it. The batch-removal planning slice adds 5: batch-removal-single-copy-of-group-approved, batch-removal-all-copies-keeps-one-deterministically, batch-removal-unknown-path-refused, batch-removal-non-group-item-approved, batch-removal-out-of-date-model-refuses-all. The multi-select slice adds 6: multi-select-toggle-adds-and-removes-membership, multi-select-focus-follows-toggle-and-removal, multi-select-range-covers-row-order-slice, multi-select-range-without-anchor-anchors-on-click, multi-select-hidden-members-excluded-from-batch-candidates, multi-select-clear-resets-set-and-focus. The outline-sync slice adds 5: outline-sync-added-row-becomes-focus, outline-sync-removal-of-other-keeps-focus, outline-sync-removal-moves-focus-to-last-row-order-member, outline-sync-empty-clears-focus, multi-select-set-normalizes-to-row-order. The batch-quicklook slice adds 5: quicklook-batch-payload-row-order-and-focus, quicklook-batch-payload-focus-outside-falls-back-to-first, quicklook-batch-refuses-empty-and-relative-before-panel, quicklook-batch-show-presents-items-with-clamped-focus-synchronously, shift-click-range-focus-matches-table-path. The batch-execution slice adds 5: batch-execution-moves-each-item-through-per-item-path, batch-execution-failure-skips-and-reports-rest-complete, batch-execution-identity-refusal-skips-item, preview-targets-hidden-set-previews-nothing, preview-targets-empty-set-falls-back-to-focus. The batch-undo slice adds 5: batch-undo-restores-whole-batch-in-one-pass, batch-undo-collision-keeps-that-item-in-history, group-removal-plan-keeps-one-copy-deterministically, group-removal-executes-through-same-per-item-path, single-removal-clears-batch-undo-hint. The mid-batch consistency slice adds 2: batch-execution-poison-mid-batch-refuses-remaining-items, batch-execution-out-of-date-mid-batch-refuses-remaining-items.
-          expected=159
-          if grep -q 'APP NOT RUNNING' /tmp/spz-timing.txt 2>/dev/null; then echo "::error title=ui-assertions::app was not running at the end of the demo (crash or exit)"; exit 1; fi
-          if grep -q 'DEMO .*TIMEOUT' /tmp/spz-timing.txt 2>/dev/null; then echo "::error title=ui-assertions::$(grep 'DEMO .*TIMEOUT' /tmp/spz-timing.txt)"; exit 1; fi
-          for step in $(seq 1 48); do [ -s "dist/screenshot-demo-$step.png" ] || { echo "::error title=ui-assertions::missing screenshot step $step"; exit 1; }; done
-          n=$(grep -c '^PASS\|^FAIL' /tmp/spz-assertions.txt 2>/dev/null || echo 0)
-          if grep -q '^FAIL' /tmp/spz-assertions.txt 2>/dev/null || [ "$n" -ne "$expected" ]; then
-            echo "::error title=ui-assertions::expected $expected results, got $n; $(tr '\n' ';' < /tmp/spz-assertions.txt 2>/dev/null)"
-            exit 1
-          fi
-          echo "::notice title=ui-assertions::all $n UI assertions passed: $(cut -d' ' -f2 /tmp/spz-assertions.txt | tr '\n' ' ')"
-      - uses: actions/upload-artifact@v4
+          mkdir -p measure-out
+          for i in 1 2 3; do
+            open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Applications
+            PID=""
+            for j in $(seq 1 60); do PID=$(pgrep -x Spacelyzer | head -1); [ -n "$PID" ] && break; sleep 0.5; done
+            [ -n "$PID" ] || { echo "cycle $i: no process" >> measure-out/cancel-cycles.jsonl; continue; }
+            /tmp/spz-stall-driver waitwindow "$PID" || true
+            sleep 4   # mid-scan window on the 1.1M-item tree
+            /tmp/spz-stall-driver cancel "$PID" "measure-out/cancel-cycle-$i.jsonl" || true
+            pkill -x Spacelyzer || true; sleep 2
+          done
+      - name: Engine soak (in-process + separate-process, live-RSS timeline)
         if: ${{ !inputs.compile_only }}
-        with:
-          name: Spacelyzer-${{ steps.ver.outputs.version }}
-          path: |
-            dist/*.dmg
-            dist/*.sha256
-            dist/screenshot*.png
-            dist/ui-assertions.txt
-            dist/main-thread-sample.txt
-            dist/crash-report.ips
-            dist/ui-timing.txt
-            dist/interaction-envelope.txt
-            dist/chronology/
-            dist/footer-ax-client.txt
-            dist/footer-ax-expected.txt
-            dist/footer-ax-result.txt
-            dist/footer-ax-status.txt
-      - name: Publish release (epic tags only)
-        if: startsWith(github.ref, 'refs/tags/epic-')
+        run: bash scripts/measure/soak.sh ./target/release/spz measure-out /Library
+      - name: Poisoned-subtree failure recovery (engine, named failure)
+        if: ${{ !inputs.compile_only }}
+        run: |
+          mkdir -p measure-out /tmp/spz-poison/sub
+          echo x > /tmp/spz-poison/sub/file.txt
+          chmod 000 /tmp/spz-poison/sub
+          ./target/release/spz scan /tmp/spz-poison > measure-out/poison-scan.log 2>&1 &
+          SCANPID=$!
+          for i in $(seq 1 60); do kill -0 "$SCANPID" 2>/dev/null || break; sleep 1; done
+          if kill -0 "$SCANPID" 2>/dev/null; then kill -9 "$SCANPID"; RC=124; else wait "$SCANPID"; RC=$?; fi
+          echo "poison-scan-exit=$RC" >> measure-out/poison-scan.log
+          chmod 755 /tmp/spz-poison/sub
+      - name: Volume capability probe (APFS + exFAT disk images, non-UTF-8 errno, cross-device verify)
+        if: ${{ !inputs.compile_only }}
+        run: bash scripts/measure/volumes.sh ./target/release/spz measure-out
+      - name: Cold launch x3 (informational ballpark)
+        if: ${{ !inputs.compile_only }}
+        run: bash scripts/measure/cold-launch.sh dist/Spacelyzer.app /tmp/spz-stall-driver measure-out
+      - name: Pinned-artifact validation (same-run hash + signature evidence)
+        if: ${{ !inputs.compile_only }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          V=v${{ steps.ver.outputs.version }}
-          gh release create "$V" dist/*.dmg dist/*.sha256 dist/screenshot*.png dist/ui-assertions.txt dist/main-thread-sample.txt --title "Spacelyzer $V" --prerelease \
-            --notes "UI assertions: ${{ steps.asserts.outcome }}. Self-signed development build (not notarized). Not Apple-verified: after the first blocked open, use System Settings > Privacy & Security > Open Anyway. Screenshots attached are from the CI runner, not a real Mac. Built from ${{ github.sha }}."
-      - name: Fail the build if UI assertions failed (after artifacts and release are published)
-        if: ${{ always() && !inputs.compile_only && steps.asserts.outcome != 'success' }}
-        run: exit 1
+          mkdir -p measure-out/artifact
+          gh run download 38425289474 -n Spacelyzer-0.1.157 -D measure-out/artifact
+          ls -la measure-out/artifact
+          DMG=$(ls measure-out/artifact/*.dmg | head -1)
+          shasum -a 256 "$DMG" | tee measure-out/artifact/dmg-sha256-actual.txt
+          cat measure-out/artifact/*.sha256 | tee measure-out/artifact/dmg-sha256-ci.txt || true
+          hdiutil attach "$DMG" -nobrowse -mountpoint /tmp/spz-dmg-mnt
+          codesign --verify --deep --strict /tmp/spz-dmg-mnt/Spacelyzer.app 2>&1 | tee measure-out/artifact/codesign-verify.txt || true
+          codesign -dv --verbose=4 /tmp/spz-dmg-mnt/Spacelyzer.app 2>&1 | tee measure-out/artifact/codesign-identity.txt || true
+          spctl -a -vv -t install /tmp/spz-dmg-mnt/Spacelyzer.app 2>&1 | tee measure-out/artifact/spctl-verdict.txt || true
+          hdiutil detach /tmp/spz-dmg-mnt || true
+      - name: Evaluate against pre-registered bars
+        if: ${{ !inputs.compile_only }}
+        run: python3 scripts/measure/evaluate.py measure-out | tee measure-out/verdicts.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stall-soak-measurement
+          path: measure-out/
+          if-no-files-found: warn
