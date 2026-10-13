@@ -2,7 +2,11 @@
 // Modes:
 //   baseline <pid> <out.jsonl>        AX overhead baseline: repeated read-only attribute probes.
 //   type <pid> <out.jsonl> <text>     Per-keystroke AX set+readback timing into the filter field.
-//   expand <pid> <out.jsonl>          Hover + expand/collapse top-level rows, round-trip timed.
+//   expand <pid> <out.jsonl>          Two passes: menu proxy (AXShowMenu, NOT pointer hover,
+//                                     menus dismissed via AXCancel between samples) + expand/
+//                                     collapse top-level rows, round-trip timed.
+//   nonascii <pid> <out.jsonl>        Non-ASCII value insert/readback probe only; NOT an IME
+//                                     composition test (that gate stays open).
 //   waitwindow <pid>                  Exit 0 when the app has an AX window (cold-launch marker).
 // Times are wall-clock ms around the AX call (overhead-inclusive; the concurrent external
 // `sample` capture is the overhead-free main-thread evidence).
@@ -84,6 +88,8 @@ case "type":
 
 case "expand":
     let out = args[3]
+    // Two passes over outline rows (24 samples). "menu" probe = AXShowMenu proxy for hover
+    // cost (NOT pointer hover); each menu is dismissed with AXCancel between samples.
     var rows: [AXUIElement] = []
     for _ in 0..<40 {
         rows = findRole(root, role: kAXOutlineRole as String).flatMap { children($0) }
@@ -91,15 +97,21 @@ case "expand":
         Thread.sleep(forTimeInterval: 0.5)
     }
     guard !rows.isEmpty else { emit(out, "{\"probe\":\"expand\",\"error\":\"no-rows\"}"); exit(1) }
-    for (i, row) in rows.prefix(12).enumerated() {
-        let t0 = mach_absolute_time(); AXUIElementPerformAction(row, "AXShowMenu" as CFString); let t1 = mach_absolute_time()
-        emit(out, "{\"probe\":\"hover\",\"i\":\(i),\"ms\":\(ms(t0,t1))}")
-        let t2 = mach_absolute_time()
-        AXUIElementSetAttributeValue(row, kAXExpandedAttribute as CFString, true as CFTypeRef)
-        let expanded = ax(row, kAXExpandedAttribute) as? Bool ?? false
-        let t3 = mach_absolute_time()
-        emit(out, "{\"probe\":\"expand\",\"i\":\(i),\"ms\":\(ms(t2,t3)),\"expanded\":\(expanded)}")
-        AXUIElementSetAttributeValue(row, kAXExpandedAttribute as CFString, false as CFTypeRef)
+    for pass in 0..<2 {
+        for (i, row) in rows.prefix(12).enumerated() {
+            let t0 = mach_absolute_time(); AXUIElementPerformAction(row, "AXShowMenu" as CFString); let t1 = mach_absolute_time()
+            var dismissed = false
+            for el in children(root) where (ax(el, kAXRoleAttribute) as? String) == "AXMenu" {
+                AXUIElementPerformAction(el, "AXCancel" as CFString); dismissed = true
+            }
+            emit(out, "{\"probe\":\"menu\",\"pass\":\(pass),\"i\":\(i),\"ms\":\(ms(t0,t1)),\"dismissed\":\(dismissed)}")
+            let t2 = mach_absolute_time()
+            AXUIElementSetAttributeValue(row, kAXExpandedAttribute as CFString, true as CFTypeRef)
+            let expanded = ax(row, kAXExpandedAttribute) as? Bool ?? false
+            let t3 = mach_absolute_time()
+            emit(out, "{\"probe\":\"expand\",\"pass\":\(pass),\"i\":\(i),\"ms\":\(ms(t2,t3)),\"expanded\":\(expanded)}")
+            AXUIElementSetAttributeValue(row, kAXExpandedAttribute as CFString, false as CFTypeRef)
+        }
     }
     print("expand-done")
 case "cancel":
