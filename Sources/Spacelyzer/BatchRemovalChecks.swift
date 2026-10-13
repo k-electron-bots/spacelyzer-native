@@ -24,11 +24,22 @@ enum BatchRemovalChecks {
         try! Data(repeating: 7, count: 10_000).write(to: d.appendingPathComponent("dupC.bin"))
         try! Data(repeating: 3, count: 10_000).write(to: d.appendingPathComponent("solo.bin"))
         defer { try? fm.removeItem(at: d) }
-        // The engine canonicalizes the scan root (macOS: /var -> /private/var); paths handed to the
-        // tree must use the same resolved form or find/liveID miss on a string mismatch (run 147).
-        let root = (d.path as NSString).resolvingSymlinksInPath
+        // The engine canonicalizes the scan root (engine/src/scan.rs: root.canonicalize(), realpath(3)
+        // semantics); NSString's resolvingSymlinksInPath does NOT resolve /var -> /private/var (run
+        // 38404596442). Canonicalize with the same syscall, fail loudly if it fails, then PROVE the form
+        // matches the engine-stored root (t.path(0)) instead of assuming it.
+        var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
+        guard realpath(d.path, &buf) != nil else {
+            let err = String(cString: strerror(errno))
+            for n in names { Check.expect(n, false, "realpath failed for \(d.path): \(err)") }; return
+        }
+        let root = String(cString: buf)
         guard let t = await ScanSession(root: root, excludes: [])?.run(progress: { _ in }) else {
-            for n in names { Check.expect(n, false, "fixture") }; return
+            for n in names { Check.expect(n, false, "fixture scan") }; return
+        }
+        let engineRoot = t.path(0)
+        guard engineRoot == root else {
+            for n in names { Check.expect(n, false, "path-form mismatch engine=\(engineRoot) fixture=\(root)") }; return
         }
         let pathA = "\(root)/dupA.bin", pathB = "\(root)/dupB.bin", pathC = "\(root)/dupC.bin"
         let solo = "\(root)/solo.bin"

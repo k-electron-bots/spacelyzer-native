@@ -36,12 +36,25 @@ enum IdentityGateChecks {
         try! FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
         try! Data(repeating: 5, count: 20_000).write(to: d.appendingPathComponent("victim.bin"))
         defer { try? FileManager.default.removeItem(at: d) }
-        // The engine canonicalizes the scan root (macOS: /var -> /private/var); paths handed to the
-        // tree must use the same resolved form or find/liveID miss on a string mismatch (run 147).
-        let root = (d.path as NSString).resolvingSymlinksInPath
-        guard let t = await ScanSession(root: root, excludes: [])?.run(progress: { _ in }),
-              let victim = t.find(path: "\(root)/victim.bin"), victim != 0 else {
-            for n in names { Check.expect(n, false, "fixture") }; return
+        // The engine canonicalizes the scan root (engine/src/scan.rs: root.canonicalize(), realpath(3)
+        // semantics); NSString's resolvingSymlinksInPath does NOT resolve /var -> /private/var (run
+        // 38404596442). Canonicalize with the same syscall, fail loudly if it fails, then PROVE the form
+        // matches the engine-stored root (t.path(0)) instead of assuming it.
+        var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
+        guard realpath(d.path, &buf) != nil else {
+            let err = String(cString: strerror(errno))
+            for n in names { Check.expect(n, false, "realpath failed for \(d.path): \(err)") }; return
+        }
+        let root = String(cString: buf)
+        guard let t = await ScanSession(root: root, excludes: [])?.run(progress: { _ in }) else {
+            for n in names { Check.expect(n, false, "fixture scan") }; return
+        }
+        let engineRoot = t.path(0)
+        guard engineRoot == root else {
+            for n in names { Check.expect(n, false, "path-form mismatch engine=\(engineRoot) fixture=\(root)") }; return
+        }
+        guard let victim = t.find(path: "\(root)/victim.bin"), victim != 0 else {
+            for n in names { Check.expect(n, false, "fixture find") }; return
         }
 
         // 1. The check runs off the main actor BEFORE the move: with the identity seam parked on a
