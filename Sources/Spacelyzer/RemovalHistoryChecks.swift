@@ -39,12 +39,25 @@ enum RemovalHistoryChecks {
         try! Data(repeating: 7, count: 20_000).write(to: d.appendingPathComponent("a.bin"))
         try! Data(repeating: 8, count: 30_000).write(to: d.appendingPathComponent("b.bin"))
         defer { try? fm.removeItem(at: d) }
-        // The engine canonicalizes the scan root (macOS: /var -> /private/var); paths handed to the
-        // tree must use the same resolved form or find/liveID miss on a string mismatch (run 147).
-        let root = (d.path as NSString).resolvingSymlinksInPath
-        guard let t = await ScanSession(root: root, excludes: [])?.run(progress: { _ in }),
-              let a = t.find(path: "\(root)/a.bin"), let b = t.find(path: "\(root)/b.bin"), a != 0, b != 0 else {
-            for n in names { Check.expect(n, false, "fixture") }; return
+        // The engine canonicalizes the scan root (engine/src/scan.rs: root.canonicalize(), realpath(3)
+        // semantics); NSString's resolvingSymlinksInPath does NOT resolve /var -> /private/var (run
+        // 38404596442). Canonicalize with the same syscall, fail loudly if it fails, then PROVE the form
+        // matches the engine-stored root (t.path(0)) instead of assuming it.
+        var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
+        guard realpath(d.path, &buf) != nil else {
+            let err = String(cString: strerror(errno))
+            for n in names { Check.expect(n, false, "realpath failed for \(d.path): \(err)") }; return
+        }
+        let root = String(cString: buf)
+        guard let t = await ScanSession(root: root, excludes: [])?.run(progress: { _ in }) else {
+            for n in names { Check.expect(n, false, "fixture scan") }; return
+        }
+        let engineRoot = t.path(0)
+        guard engineRoot == root else {
+            for n in names { Check.expect(n, false, "path-form mismatch engine=\(engineRoot) fixture=\(root)") }; return
+        }
+        guard let a = t.find(path: "\(root)/a.bin"), let b = t.find(path: "\(root)/b.bin"), a != 0, b != 0 else {
+            for n in names { Check.expect(n, false, "fixture find") }; return
         }
         let pathA = "\(root)/a.bin", pathB = "\(root)/b.bin"
 
