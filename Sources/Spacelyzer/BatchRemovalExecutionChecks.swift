@@ -21,9 +21,13 @@ enum BatchRemovalExecutionChecks {
         let fm = FileManager.default
         let d = fm.temporaryDirectory.appendingPathComponent("spz-bexec-\(UUID().uuidString)")
         try! fm.createDirectory(at: d, withIntermediateDirectories: true)
+        // Sizes are chosen so ALLOCATED bytes differ per file: the engine records allocated bytes
+        // (st_blocks * 512, engine/src/scan.rs:6), not logical lengths, and 1_000/5_000/9_000 bytes
+        // land in 1/2/3 distinct allocation blocks on the runner's APFS (run 38414987120 emitted
+        // 4096 for all three when the files were 1_000/2_000/3_000).
         try! Data(repeating: 1, count: 1_000).write(to: d.appendingPathComponent("a.bin"))
-        try! Data(repeating: 2, count: 2_000).write(to: d.appendingPathComponent("b.bin"))
-        try! Data(repeating: 3, count: 3_000).write(to: d.appendingPathComponent("c.bin"))
+        try! Data(repeating: 2, count: 5_000).write(to: d.appendingPathComponent("b.bin"))
+        try! Data(repeating: 3, count: 9_000).write(to: d.appendingPathComponent("c.bin"))
         defer { try? fm.removeItem(at: d) }
         // The engine canonicalizes the scan root (engine/src/scan.rs: root.canonicalize(), realpath(3)
         // semantics); NSString's resolvingSymlinksInPath does NOT resolve /var -> /private/var (run
@@ -60,6 +64,19 @@ enum BatchRemovalExecutionChecks {
         // 1. Full batch: every item moves through the per-item path in selection row order; one
         //    identity check and one journal entry per item, each with its own recorded size.
         let m1 = model()
+        // The journaled size must equal the engine's recorded size for that same file, bound per
+        // journal entry by original path - not a sorted multiset. Expectations are read live from
+        // the engine BEFORE the batch (moved nodes are forgotten from the tree after), and a read
+        // that cannot prove its value fails the check instead of passing silently.
+        var expected: [(path: String, size: UInt64)] = []
+        var captureFailure = ""
+        for (id, name) in [(a, "a.bin"), (b, "b.bin"), (c, "c.bin")] {
+            let p = "\(root)/\(name)"
+            switch t.nodeChecked(id) {
+            case .success(let r): expected.append((p, r.info.size))
+            case .failure(let st): captureFailure = "expected-size read failed for \(p): \(st)"
+            }
+        }
         var trashed: [String] = []
         m1.trashItem = { url in trashed.append(url.lastPathComponent); return url }
         var identityCalls: [UInt32] = []
@@ -68,12 +85,16 @@ enum BatchRemovalExecutionChecks {
         let proposed = m1.pendingBatchRemoval?.items.map { $0.id } ?? []
         m1.confirmBatchRemoval()
         await m1.removalTask?.value
-        let sizes = m1.lastRemoved.map { $0.size }
+        let journal = m1.lastRemoved
+        let sizes = journal.map { $0.size }
+        let perEntry = journal.count == expected.count
+            && zip(journal, expected).allSatisfy { $0.original.path == $1.path && $0.size == $1.size }
         Check.expect("batch-execution-moves-each-item-through-per-item-path",
                      proposed == [a, b, c] && trashed == ["a.bin", "b.bin", "c.bin"] && identityCalls == [a, b, c]
-                     && m1.lastRemoved.count == 3 && sizes == [1_000, 2_000, 3_000]
+                     && captureFailure.isEmpty
+                     && journal.count == 3 && perEntry && Set(sizes).count == 3
                      && m1.removalMessage == "Moved 3 of 3 items to the Trash.",
-                     "proposed=\(proposed) trashed=\(trashed) identity=\(identityCalls) journal=\(m1.lastRemoved.count) sizes=\(sizes) msg=\(m1.removalMessage ?? "nil")")
+                     "proposed=\(proposed) trashed=\(trashed) identity=\(identityCalls) journal=\(journal.count) sizes=\(sizes) expected=\(expected.map { "\($0.path):\($0.size)" }) capture=\(captureFailure.isEmpty ? "ok" : captureFailure) msg=\(m1.removalMessage ?? "nil")")
 
         // 2. A failing item is skipped and reported; the rest of the batch still completes.
         let m2 = model()
