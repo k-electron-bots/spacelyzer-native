@@ -21,11 +21,14 @@ enum DuplicatesRemovalChecks {
         try! Data(repeating: 9, count: 10_000).write(to: d.appendingPathComponent("dupA.bin"))
         try! Data(repeating: 9, count: 10_000).write(to: d.appendingPathComponent("dupB.bin"))
         defer { try? fm.removeItem(at: d) }
-        guard let t = await ScanSession(root: d.path, excludes: [])?.run(progress: { _ in }),
-              let a = t.find(path: "\(d.path)/dupA.bin"), let b = t.find(path: "\(d.path)/dupB.bin"), a != 0, b != 0 else {
+        // The engine canonicalizes the scan root (macOS: /var -> /private/var); paths handed to the
+        // tree must use the same resolved form or find/liveID miss on a string mismatch (run 147).
+        let root = (d.path as NSString).resolvingSymlinksInPath
+        guard let t = await ScanSession(root: root, excludes: [])?.run(progress: { _ in }),
+              let a = t.find(path: "\(root)/dupA.bin"), let b = t.find(path: "\(root)/dupB.bin"), a != 0, b != 0 else {
             for n in names { Check.expect(n, false, "fixture") }; return
         }
-        let pathA = "\(d.path)/dupA.bin", pathB = "\(d.path)/dupB.bin"
+        let pathA = "\(root)/dupA.bin", pathB = "\(root)/dupB.bin"
         let group = [pathA, pathB]
 
         // 1. A listed member resolves to its live-tree node id, and a quiet model offers it.
@@ -40,7 +43,7 @@ enum DuplicatesRemovalChecks {
         // no tree at all the reason says no scan is loaded.
         let m2 = AppModel()
         m2.tree = t
-        let gone = "\(d.path)/gone.bin"
+        let gone = "\(root)/gone.bin"
         let r2 = DuplicateRemoval.blockedReason(gone, groupPaths: [gone, pathA], in: m2)
         let m2b = AppModel()
         let r2b = DuplicateRemoval.blockedReason(pathA, groupPaths: group, in: m2b)
