@@ -39,11 +39,14 @@ enum RemovalHistoryChecks {
         try! Data(repeating: 7, count: 20_000).write(to: d.appendingPathComponent("a.bin"))
         try! Data(repeating: 8, count: 30_000).write(to: d.appendingPathComponent("b.bin"))
         defer { try? fm.removeItem(at: d) }
-        guard let t = await ScanSession(root: d.path, excludes: [])?.run(progress: { _ in }),
-              let a = t.find(path: "\(d.path)/a.bin"), let b = t.find(path: "\(d.path)/b.bin"), a != 0, b != 0 else {
+        // The engine canonicalizes the scan root (macOS: /var -> /private/var); paths handed to the
+        // tree must use the same resolved form or find/liveID miss on a string mismatch (run 147).
+        let root = (d.path as NSString).resolvingSymlinksInPath
+        guard let t = await ScanSession(root: root, excludes: [])?.run(progress: { _ in }),
+              let a = t.find(path: "\(root)/a.bin"), let b = t.find(path: "\(root)/b.bin"), a != 0, b != 0 else {
             for n in names { Check.expect(n, false, "fixture") }; return
         }
-        let pathA = "\(d.path)/a.bin", pathB = "\(d.path)/b.bin"
+        let pathA = "\(root)/a.bin", pathB = "\(root)/b.bin"
 
         // 1-2. Two removals journal two records in order; the alert Undo then restores ONLY the latest.
         // The Trash seam returns a fake trashed URL per call and touches nothing; the restore seam only records.

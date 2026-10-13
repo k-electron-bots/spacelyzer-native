@@ -647,7 +647,14 @@ struct SpacelyzerApp: App {
                                 try? await Task.sleep(nanoseconds: 500_000_000)
                                 Check.expect("e2-escape-preserves-tree-and-removal-state", escapeSetup && model.tree === treeBefore && model.lastRemoved.count == removedBefore && pendingBefore == nil && messageBefore == nil && model.pendingRemoval == pendingBefore && model.removalMessage == messageBefore)
                                 window.makeFirstResponder(table)
-                                Check.expect("e2-outline-single-selection-policy", !table.allowsMultipleSelection && table.selectedRowIndexes.count <= 1)
+                                // Multi-selection is the deliberate policy since the batch-removal epic (OutlineView sets
+                                // allowsMultipleSelection = true); the model's selectedSet is the source of truth and must
+                                // mirror the table's selection exactly (reconcile assigns set == table rows, focus in set).
+                                let tableIDs: [UInt32] = table.selectedRowIndexes.compactMap { r in r >= 0 && r < model.outlineRows.count ? model.outlineRows[r].node : nil }
+                                Check.expect("e2-outline-multi-selection-policy",
+                                             table.allowsMultipleSelection && tableIDs.count == table.selectedRowIndexes.count
+                                             && model.selectedSet == tableIDs && model.selected == tableIDs.last,
+                                             "multi=\(table.allowsMultipleSelection) rows=\(table.selectedRowIndexes.count) mapped=\(tableIDs.count) set=\(model.selectedSet) focus=\(String(describing: model.selected)) tableIDs=\(tableIDs)")
                                 // Text editor parity through native editing APIs; IME simulation is not real keyboard IME proof.
                                 if let field = model.nameFilterKeyView, window.makeFirstResponder(field), let editor = field.currentEditor() as? NSTextView {
                                     editor.setSelectedRange(NSRange(location: 0, length: editor.string.utf16.count))
@@ -711,7 +718,7 @@ struct SpacelyzerApp: App {
                                 Check.expect("e2-tab-leaves-outline-without-selection-change", false, "table missing")
                                 Check.expect("e2-shift-tab-returns-to-outline", false, "table missing")
                                 Check.expect("e2-escape-preserves-tree-and-removal-state", false, "table missing")
-                                Check.expect("e2-outline-single-selection-policy", false, "table missing")
+                                Check.expect("e2-outline-multi-selection-policy", false, "table missing")
                                 for name in ["name-editor-ordinary-update-preserves-marked-text", "name-editor-already-empty-reset-with-marked-divergence", "name-editor-external-clear-cancels-marked-text", "name-editor-typing-model-sync", "name-editor-external-sync-preserves-cursor", "name-editor-clear-all-while-editing", "name-editor-marked-text-commit-simulation"] { Check.expect(name, false, "table missing") }
                             }
                             // Actual SwiftUI zero-area and no-match screens on a disposable root.
