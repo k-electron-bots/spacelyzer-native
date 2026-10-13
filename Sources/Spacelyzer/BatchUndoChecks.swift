@@ -36,18 +36,40 @@ enum BatchUndoChecks {
         try! Data(repeating: 2, count: 2_000).write(to: d1.appendingPathComponent("b.bin"))
         try! Data(repeating: 3, count: 3_000).write(to: d1.appendingPathComponent("c.bin"))
         defer { try? fm.removeItem(at: d1) }
-        let root1 = (d1.path as NSString).resolvingSymlinksInPath
-        // The engine canonicalizes the scan root (macOS: /var -> /private/var); paths handed to the
-        // tree must use the same resolved form or find/liveID miss on a string mismatch (run 147).
+        // The engine canonicalizes the scan root (engine/src/scan.rs: root.canonicalize(), realpath(3)
+        // semantics); NSString's resolvingSymlinksInPath does NOT resolve /var -> /private/var (run
+        // 38404596442). Canonicalize with the same syscall, fail loudly if it fails, then PROVE the form
+        // matches the engine-stored root (t.path(0)) instead of assuming it.
         // Wrapped in a local function so a fixture-1 failure cannot skip fixture 2: every listed
         // check name must be emitted on every path through this suite.
         func batchUndoAndHintChecks() async {
-            guard let t1 = await ScanSession(root: root1, excludes: [])?.run(progress: { _ in }),
-                  let a = t1.find(path: "\(root1)/a.bin"), let b = t1.find(path: "\(root1)/b.bin"),
+            var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
+            guard realpath(d1.path, &buf) != nil else {
+                let err = String(cString: strerror(errno))
+                for n in ["batch-undo-restores-whole-batch-in-one-pass",
+                          "batch-undo-collision-keeps-that-item-in-history",
+                          "single-removal-clears-batch-undo-hint"] { Check.expect(n, false, "realpath failed for \(d1.path): \(err)") }
+                return
+            }
+            let root1 = String(cString: buf)
+            guard let t1 = await ScanSession(root: root1, excludes: [])?.run(progress: { _ in }) else {
+                for n in ["batch-undo-restores-whole-batch-in-one-pass",
+                          "batch-undo-collision-keeps-that-item-in-history",
+                          "single-removal-clears-batch-undo-hint"] { Check.expect(n, false, "fixture scan") }
+                return
+            }
+            let engineRoot = t1.path(0)
+            guard engineRoot == root1 else {
+                for n in ["batch-undo-restores-whole-batch-in-one-pass",
+                          "batch-undo-collision-keeps-that-item-in-history",
+                          "single-removal-clears-batch-undo-hint"] { Check.expect(n, false, "path-form mismatch engine=\(engineRoot) fixture=\(root1)") }
+                return
+            }
+            guard let a = t1.find(path: "\(root1)/a.bin"), let b = t1.find(path: "\(root1)/b.bin"),
                   let c = t1.find(path: "\(root1)/c.bin"), a != 0, b != 0, c != 0 else {
                 for n in ["batch-undo-restores-whole-batch-in-one-pass",
                           "batch-undo-collision-keeps-that-item-in-history",
-                          "single-removal-clears-batch-undo-hint"] { Check.expect(n, false, "fixture") }
+                          "single-removal-clears-batch-undo-hint"] { Check.expect(n, false, "fixture find") }
                 return
             }
             func model3() -> AppModel {
@@ -125,11 +147,28 @@ enum BatchUndoChecks {
         try! Data(repeating: 9, count: 1_500).write(to: d2.appendingPathComponent("dupA.bin"))
         try! Data(repeating: 9, count: 1_500).write(to: d2.appendingPathComponent("dupB.bin"))
         defer { try? fm.removeItem(at: d2) }
-        let root2 = (d2.path as NSString).resolvingSymlinksInPath
-        guard let t2 = await ScanSession(root: root2, excludes: [])?.run(progress: { _ in }),
-              t2.find(path: "\(root2)/dupA.bin") != nil, t2.find(path: "\(root2)/dupB.bin") != nil else {
+        var buf2 = [CChar](repeating: 0, count: Int(PATH_MAX))
+        guard realpath(d2.path, &buf2) != nil else {
+            let err = String(cString: strerror(errno))
             for n in ["group-removal-plan-keeps-one-copy-deterministically",
-                      "group-removal-executes-through-same-per-item-path"] { Check.expect(n, false, "fixture") }
+                      "group-removal-executes-through-same-per-item-path"] { Check.expect(n, false, "realpath failed for \(d2.path): \(err)") }
+            return
+        }
+        let root2 = String(cString: buf2)
+        guard let t2 = await ScanSession(root: root2, excludes: [])?.run(progress: { _ in }) else {
+            for n in ["group-removal-plan-keeps-one-copy-deterministically",
+                      "group-removal-executes-through-same-per-item-path"] { Check.expect(n, false, "fixture scan") }
+            return
+        }
+        let engineRoot2 = t2.path(0)
+        guard engineRoot2 == root2 else {
+            for n in ["group-removal-plan-keeps-one-copy-deterministically",
+                      "group-removal-executes-through-same-per-item-path"] { Check.expect(n, false, "path-form mismatch engine=\(engineRoot2) fixture=\(root2)") }
+            return
+        }
+        guard t2.find(path: "\(root2)/dupA.bin") != nil, t2.find(path: "\(root2)/dupB.bin") != nil else {
+            for n in ["group-removal-plan-keeps-one-copy-deterministically",
+                      "group-removal-executes-through-same-per-item-path"] { Check.expect(n, false, "fixture find") }
             return
         }
         let group = ["\(root2)/dupA.bin", "\(root2)/dupB.bin"]
