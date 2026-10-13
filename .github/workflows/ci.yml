@@ -109,12 +109,13 @@ jobs:
         run: |
           mkdir -p measure-out
           for i in 1 2 3; do
-            open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Applications
+            open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Library
             PID=""
             for j in $(seq 1 60); do PID=$(pgrep -x Spacelyzer | head -1); [ -n "$PID" ] && break; sleep 0.5; done
             [ -n "$PID" ] || { echo "cycle $i: no process" >> measure-out/cancel-cycles.jsonl; continue; }
             /tmp/spz-stall-driver waitwindow "$PID" || true
-            sleep 4   # mid-scan window on the 1.1M-item tree
+            # no fixed mid-scan sleep: the driver polls from t=0 for the actual "Stop scan" button,
+            # which exists only while the scan runs; a missed window is an honest error row
             /tmp/spz-stall-driver cancel "$PID" "measure-out/cancel-cycle-$i.jsonl" || true
             pkill -x Spacelyzer || true; sleep 2
           done
