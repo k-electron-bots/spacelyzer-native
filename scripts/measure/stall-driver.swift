@@ -128,6 +128,16 @@ case "expand":
     }
     guard let t = tbl else { emit(out, "{\"probe\":\"expand\",\"error\":\"no-outline-table-or-rows\"}"); exit(1) }
     let rowCount = rowsOf(t).count
+    // Expandable rows = rows with a visible "Expand" chevron (chevron is hidden for childless rows,
+    // OutlineView.swift:288). Pre-registered floor is n>=20 verified samples, so passes adapt to the
+    // expandable-row count instead of assuming 12; a true shortfall stays INCONCLUSIVE by the floor.
+    var expandable: [Int] = []
+    for i in 0..<min(rowCount, 24) {
+        if let row = rowsOf(t).dropFirst(i).first, chevron(row, prefix: "Expand") != nil { expandable.append(i) }
+    }
+    let targets = Array(expandable.prefix(12))
+    let expandPasses = targets.isEmpty ? 0 : max(2, min(6, (24 + targets.count - 1) / targets.count))
+    if targets.isEmpty { emit(out, "{\"probe\":\"expand\",\"error\":\"no-expandable-rows\"}") }
     // menu proxy with runtime support verification
     var menuSupportChecked = false, menuSupported = false, menuOnCell = false
     for pass in 0..<2 {
@@ -153,9 +163,9 @@ case "expand":
             else { emit(out, "{\"probe\":\"menu\",\"pass\":\(pass),\"i\":\(i),\"error\":\"menu-not-shown\"}") }
         }
     }
-    // expand/collapse with verified state flip
-    for pass in 0..<2 {
-        for i in 0..<min(12, rowCount) {
+    // expand/collapse with verified state flip (adaptive passes to reach the n>=20 floor honestly)
+    for pass in 0..<expandPasses {
+        for i in targets {
             guard let row = rowsOf(t).dropFirst(i).first else { continue }
             guard let btn = chevron(row, prefix: "Expand") else { continue }  // no children or already expanded
             let t0 = mach_absolute_time()
