@@ -108,14 +108,18 @@ jobs:
         if: ${{ !inputs.compile_only }}
         run: |
           mkdir -p measure-out
+          # Bounded scan fixture lengthens the REAL scan window so the Stop control is observable
+          # (rationale + numbers in scripts/measure/make-cancel-fixture.sh). One-time generation.
+          bash scripts/measure/make-cancel-fixture.sh "$RUNNER_TEMP/spz-cancel-fixture"
+          FIX="$RUNNER_TEMP/spz-cancel-fixture"
           for i in 1 2 3; do
-            open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Library
+            open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN="$FIX"
             PID=""
-            for j in $(seq 1 60); do PID=$(pgrep -x Spacelyzer | head -1); [ -n "$PID" ] && break; sleep 0.5; done
+            for j in $(seq 1 100); do PID=$(pgrep -x Spacelyzer | head -1); [ -n "$PID" ] && break; sleep 0.1; done
             [ -n "$PID" ] || { echo "cycle $i: no process" >> measure-out/cancel-cycles.jsonl; continue; }
             /tmp/spz-stall-driver waitwindow "$PID" || true
-            # no fixed mid-scan sleep: the driver polls from t=0 for the actual "Stop scan" button,
-            # which exists only while the scan runs; a missed window is an honest error row
+            # driver polls from t=0 for the actual "Stop scan" button; a missed window is an honest
+            # error row, never a fabricated press
             /tmp/spz-stall-driver cancel "$PID" "measure-out/cancel-cycle-$i.jsonl" || true
             pkill -x Spacelyzer || true; sleep 2
           done
