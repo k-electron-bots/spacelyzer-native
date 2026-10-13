@@ -22,15 +22,16 @@ env:
   # AX-read outliers land here by design).
   STALL_TYPING_P95_MS: "100"
   STALL_TYPING_MAX_MS: "1000"
-  STALL_HOVER_P95_MS: "100"
-  STALL_HOVER_MAX_MS: "1000"
+  # menu = AXShowMenu proxy for hover cost (NOT pointer hover); menus dismissed between samples
+  STALL_MENU_P95_MS: "100"
+  STALL_MENU_MAX_MS: "1000"
   STALL_EXPAND_P95_MS: "250"
   STALL_EXPAND_MAX_MS: "1000"
   CANCEL_RESPONSIVE_MAX_MS: "1000"
   MAIN_THREAD_BLOCK_FAIL_MS: "500"   # one busy gap >= this in the interaction-window sample = FAIL
   MAIN_THREAD_BLOCK_WARN_MS: "100"   # 100-500 ms gaps = reported outliers
   SAMPLE_MIN_SNAPSHOTS: "20"         # floor: sample snapshots across the interaction window
-  DIST_MIN_SAMPLES: "10"             # floor: per-interaction latency samples before a verdict is issued
+  DIST_MIN_SAMPLES: "20"             # floor: per-interaction latency samples before a verdict is issued
   SOAK_GROWTH_MAX: "1.10"            # final-third median live RSS / first-third median
   SOAK_SEPARATE_BAND: "0.10"         # separate-process peak RSS band +/-10%
 jobs:
@@ -41,16 +42,18 @@ jobs:
       - uses: actions/checkout@v4
       - name: Pin and context
         run: |
-          test "$(git rev-parse HEAD)" = "00aa46a2d384ec4648ae4571ccb2eaee5a7e6324" || { echo "::error::product tree moved from reviewed 00aa46a2"; exit 1; }
-          git diff --stat 00aa46a2d384ec4648ae4571ccb2eaee5a7e6324 HEAD || true
-          sw_vers; xcodebuild -version; swift --version; rustc --version || true
+          echo "branch tip: $(git rev-parse HEAD) (differs from product base 00aa46a2: this branch adds the workflow + scripts/measure only)"
+          DIFF=$(git diff --name-only 00aa46a2d384ec4648ae4571ccb2eaee5a7e6324 HEAD -- . ':(exclude).github/workflows/ci.yml' ':(exclude)scripts/measure')
+          if [ -n "$DIFF" ]; then echo "::error::product tree differs from reviewed 00aa46a2: $DIFF"; exit 1; fi
+          echo "product tree == 00aa46a2 (verified, excluding workflow + scripts/measure)"
+          sw_vers; xcodebuild -version; swift --version
       - name: Compile harness drivers (fails cheap before any measurement)
         run: |
           swiftc -swift-version 5 scripts/measure/stall-driver.swift -o /tmp/spz-stall-driver
           shasum -a 256 scripts/measure/stall-driver.swift /tmp/spz-stall-driver
       - name: Rust engine build
         run: |
-          rustup update stable --no-self-update
+          rustc --version; cargo --version   # actual toolchain used (no rustup update; runner default pinned by the image)
           cargo build --release -p spacelyzer-engine
       - name: Rust engine tests with fresh skip manifest (EILSEQ evidence)
         if: ${{ !inputs.compile_only }}
@@ -87,7 +90,7 @@ jobs:
           sample "$PID" 30 10 -file /tmp/spz-main-sample.txt &
           SAMPLEPID=$!
           /tmp/spz-stall-driver baseline "$PID" measure-out/ax-baseline.jsonl
-          /tmp/spz-stall-driver type "$PID" measure-out/ax-type.jsonl "keep-tag-0001" || true
+          /tmp/spz-stall-driver type "$PID" measure-out/ax-type.jsonl "keep-tag-0001-measurement-stall-pass" || true
           /tmp/spz-stall-driver expand "$PID" measure-out/ax-expand.jsonl || true
           /tmp/spz-stall-driver nonascii "$PID" measure-out/ax-nonascii.jsonl || true
           wait "$SAMPLEPID" || true
@@ -134,11 +137,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p measure-out/artifact
+          HEADSHA=$(gh run view 38425289474 --json headSha --jq .headSha)
+          echo "artifact run headSha=$HEADSHA" | tee measure-out/artifact/run-headsha.txt
+          [ "$HEADSHA" = "00aa46a2d384ec4648ae4571ccb2eaee5a7e6324" ] || { echo "::error::artifact run head $HEADSHA != pinned 00aa46a2"; exit 1; }
           gh run download 38425289474 -n Spacelyzer-0.1.157 -D measure-out/artifact
           ls -la measure-out/artifact
           DMG=$(ls measure-out/artifact/*.dmg | head -1)
-          shasum -a 256 "$DMG" | tee measure-out/artifact/dmg-sha256-actual.txt
-          cat measure-out/artifact/*.sha256 | tee measure-out/artifact/dmg-sha256-ci.txt || true
+          ACTUAL=$(shasum -a 256 "$DMG" | awk '{print $1}')
+          EXPECTED=$(awk '{print $1}' measure-out/artifact/*.sha256 | head -1)
+          echo "actual=$ACTUAL" | tee measure-out/artifact/dmg-sha256-actual.txt
+          echo "ci=$EXPECTED" | tee measure-out/artifact/dmg-sha256-ci.txt
+          [ -n "$EXPECTED" ] && [ "$ACTUAL" = "$EXPECTED" ] || { echo "::error::DMG hash != CI-recorded sha256"; exit 1; }
           hdiutil attach "$DMG" -nobrowse -mountpoint /tmp/spz-dmg-mnt
           codesign --verify --deep --strict /tmp/spz-dmg-mnt/Spacelyzer.app 2>&1 | tee measure-out/artifact/codesign-verify.txt || true
           codesign -dv --verbose=4 /tmp/spz-dmg-mnt/Spacelyzer.app 2>&1 | tee measure-out/artifact/codesign-identity.txt || true
