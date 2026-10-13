@@ -30,6 +30,7 @@ env:
   MAIN_THREAD_BLOCK_FAIL_MS: "500"   # one busy gap >= this in the interaction-window sample = FAIL
   MAIN_THREAD_BLOCK_WARN_MS: "100"   # 100-500 ms gaps = reported outliers
   SAMPLE_MIN_SNAPSHOTS: "20"         # floor: sample snapshots across the interaction window
+  DIST_MIN_SAMPLES: "10"             # floor: per-interaction latency samples before a verdict is issued
   SOAK_GROWTH_MAX: "1.10"            # final-third median live RSS / first-third median
   SOAK_SEPARATE_BAND: "0.10"         # separate-process peak RSS band +/-10%
 jobs:
@@ -88,7 +89,7 @@ jobs:
           /tmp/spz-stall-driver baseline "$PID" measure-out/ax-baseline.jsonl
           /tmp/spz-stall-driver type "$PID" measure-out/ax-type.jsonl "keep-tag-0001" || true
           /tmp/spz-stall-driver expand "$PID" measure-out/ax-expand.jsonl || true
-          /tmp/spz-stall-driver marked "$PID" measure-out/ax-marked.jsonl || true
+          /tmp/spz-stall-driver nonascii "$PID" measure-out/ax-nonascii.jsonl || true
           wait "$SAMPLEPID" || true
           cp /tmp/spz-main-sample.txt measure-out/main-thread-sample.txt
           pkill -x Spacelyzer || true; sleep 2
