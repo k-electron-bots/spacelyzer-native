@@ -2,9 +2,12 @@
 // Modes:
 //   baseline <pid> <out.jsonl>        AX overhead baseline: repeated read-only attribute probes.
 //   type <pid> <out.jsonl> <text>     Per-keystroke AX set+readback timing into the filter field.
-//   expand <pid> <out.jsonl>          Two passes: menu proxy (AXShowMenu, NOT pointer hover,
-//                                     menus dismissed via AXCancel between samples) + expand/
-//                                     collapse top-level rows, round-trip timed.
+//   expand <pid> <out.jsonl>          Two passes over the "Folder outline" AXTable rows:
+//                                     menu proxy (AXShowMenu only when the row/cell exposes the
+//                                     action AND a menu appears, NOT pointer hover, dismissed via
+//                                     AXCancel) + chevron-press expand/collapse with verified
+//                                     label-flip round trip. Unsupported/unverified -> error rows,
+//                                     never timing samples.
 //   nonascii <pid> <out.jsonl>        Non-ASCII value insert/readback probe only; NOT an IME
 //                                     composition test (that gate stays open).
 //   waitwindow <pid>                  Exit 0 when the app has an AX window (cold-launch marker).
@@ -88,46 +91,109 @@ case "type":
 
 case "expand":
     let out = args[3]
-    // Two passes over outline rows (24 samples). "menu" probe = AXShowMenu proxy for hover
-    // cost (NOT pointer hover); each menu is dismissed with AXCancel between samples.
-    var rows: [AXUIElement] = []
-    for _ in 0..<40 {
-        rows = findRole(root, role: kAXOutlineRole as String).flatMap { children($0) }
-        if !rows.isEmpty { break }
-        Thread.sleep(forTimeInterval: 0.5)
+    // Product-true discovery (source-verified at 00aa46a2, mirrors scripts/ui-calibrate.swift):
+    // the outline is an NSTableView (AXTable, AXDescription "Folder outline"), rows via AXRows.
+    // Expand = AXPress on the per-row chevron NSButton (accessibilityDescription "Expand <name>"/
+    // "Collapse <name>"); success = observed label flip within 2s, else the sample is an error row.
+    // "menu" probe = AXShowMenu ONLY when the row/cell actually offers that action
+    // (AXUIElementCopyActionNames); rows do have a context menu in source
+    // (OutlineView.swift Coordinator.menu(for:) -> "Show in Finder"/"Check on disk"/"Move to Trash..."),
+    // but if the action is not exposed or no menu appears, error rows are emitted - never timing samples.
+    func table() -> AXUIElement? {
+        var queue = children(root), seen = 0
+        while !queue.isEmpty && seen < 256 {
+            let el = queue.removeFirst(); seen += 1
+            if (ax(el, kAXRoleAttribute) as? String) == "AXTable",
+               (ax(el, "AXDescription") as? String) == "Folder outline" { return el }
+            if (ax(el, kAXRoleAttribute) as? String) != "AXTable" { queue.append(contentsOf: children(el)) }
+        }
+        return nil
     }
-    guard !rows.isEmpty else { emit(out, "{\"probe\":\"expand\",\"error\":\"no-rows\"}"); exit(1) }
+    func rowsOf(_ t: AXUIElement) -> [AXUIElement] { (ax(t, "AXRows") as? [AXUIElement]) ?? [] }
+    func actions(_ el: AXUIElement) -> [String] {
+        var names: CFArray?
+        guard AXUIElementCopyActionNames(el, &names) == .success, let n = names as? [String] else { return [] }
+        return n
+    }
+    func chevron(_ row: AXUIElement, prefix: String) -> AXUIElement? {
+        findRole(row, role: kAXButtonRole as String).first(where: {
+            let d = (ax($0, "AXDescription") as? String) ?? (ax($0, kAXTitleAttribute) as? String) ?? ""
+            return d.hasPrefix(prefix)
+        })
+    }
+    var tbl: AXUIElement?
+    for _ in 0..<90 {
+        if let t = table(), !rowsOf(t).isEmpty { tbl = t; break }
+        Thread.sleep(forTimeInterval: 1.0)
+    }
+    guard let t = tbl else { emit(out, "{\"probe\":\"expand\",\"error\":\"no-outline-table-or-rows\"}"); exit(1) }
+    let rowCount = rowsOf(t).count
+    // menu proxy with runtime support verification
+    var menuSupportChecked = false, menuSupported = false, menuOnCell = false
     for pass in 0..<2 {
-        for (i, row) in rows.prefix(12).enumerated() {
-            let t0 = mach_absolute_time(); AXUIElementPerformAction(row, "AXShowMenu" as CFString); let t1 = mach_absolute_time()
-            var dismissed = false
-            for el in children(root) where (ax(el, kAXRoleAttribute) as? String) == "AXMenu" {
-                AXUIElementPerformAction(el, "AXCancel" as CFString); dismissed = true
+        for i in 0..<min(12, rowCount) {
+            guard let row = rowsOf(t).dropFirst(i).first else { continue }
+            if !menuSupportChecked {
+                menuSupportChecked = true
+                if actions(row).contains("AXShowMenu") { menuSupported = true }
+                else if let cell = children(row).first, actions(cell).contains("AXShowMenu") { menuSupported = true; menuOnCell = true }
             }
-            emit(out, "{\"probe\":\"menu\",\"pass\":\(pass),\"i\":\(i),\"ms\":\(ms(t0,t1)),\"dismissed\":\(dismissed)}")
-            let t2 = mach_absolute_time()
-            AXUIElementSetAttributeValue(row, kAXExpandedAttribute as CFString, true as CFTypeRef)
-            let expanded = ax(row, kAXExpandedAttribute) as? Bool ?? false
-            let t3 = mach_absolute_time()
-            emit(out, "{\"probe\":\"expand\",\"pass\":\(pass),\"i\":\(i),\"ms\":\(ms(t2,t3)),\"expanded\":\(expanded)}")
-            AXUIElementSetAttributeValue(row, kAXExpandedAttribute as CFString, false as CFTypeRef)
+            if !menuSupported { if pass == 0 && i == 0 { emit(out, "{\"probe\":\"menu\",\"error\":\"showmenu-action-not-exposed\"}") }; continue }
+            let target = menuOnCell ? (children(row).first ?? row) : row
+            let t0 = mach_absolute_time(); AXUIElementPerformAction(target, "AXShowMenu" as CFString); let t1 = mach_absolute_time()
+            var seen = false, dismissed = false
+            for _ in 0..<8 {
+                for el in children(root) where (ax(el, kAXRoleAttribute) as? String) == "AXMenu" {
+                    seen = true
+                    AXUIElementPerformAction(el, "AXCancel" as CFString); dismissed = true
+                }
+                if seen { break }; Thread.sleep(forTimeInterval: 0.1)
+            }
+            if seen { emit(out, "{\"probe\":\"menu\",\"pass\":\(pass),\"i\":\(i),\"ms\":\(ms(t0,t1)),\"dismissed\":\(dismissed)}") }
+            else { emit(out, "{\"probe\":\"menu\",\"pass\":\(pass),\"i\":\(i),\"error\":\"menu-not-shown\"}") }
+        }
+    }
+    // expand/collapse with verified state flip
+    for pass in 0..<2 {
+        for i in 0..<min(12, rowCount) {
+            guard let row = rowsOf(t).dropFirst(i).first else { continue }
+            guard let btn = chevron(row, prefix: "Expand") else { continue }  // no children or already expanded
+            let t0 = mach_absolute_time()
+            AXUIElementPerformAction(btn, kAXPressAction as CFString)
+            var flipped = false; var t1 = t0
+            for _ in 0..<20 {
+                if chevron(row, prefix: "Collapse") != nil { flipped = true; t1 = mach_absolute_time(); break }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+            if flipped { emit(out, "{\"probe\":\"expand\",\"pass\":\(pass),\"i\":\(i),\"ms\":\(ms(t0,t1)),\"verified\":true}") }
+            else { emit(out, "{\"probe\":\"expand\",\"pass\":\(pass),\"i\":\(i),\"error\":\"expand-unverified-2s\"}") }
+            // collapse back (best-effort, untimed) so the next pass sees the same state
+            if let cb = chevron(row, prefix: "Collapse") {
+                AXUIElementPerformAction(cb, kAXPressAction as CFString)
+                for _ in 0..<20 { if chevron(row, prefix: "Expand") != nil { break }; Thread.sleep(forTimeInterval: 0.1) }
+            }
         }
     }
     print("expand-done")
+
 case "cancel":
     let out = args[3]
-    // Find a cancel-ish button mid-scan, press it, then measure post-cancel responsiveness.
+    // Product-true discovery (ContentView.swift:54): the mid-scan control is titled "Stop" with
+    // accessibilityLabel "Stop scan", present only while model.scanning. "Cancel" exists only on
+    // removal-confirmation dialogs - matching it would be a wrong-control press. Poll from launch:
+    // a fast runner scan is short, and a missed window is an honest error row, never a fake press.
     var btn: AXUIElement?
-    for _ in 0..<60 {
+    for _ in 0..<240 {
         let buttons = findRole(root, role: kAXButtonRole as String)
         btn = buttons.first(where: {
-            let t = ((ax($0, kAXTitleAttribute) as? String) ?? (ax($0, kAXDescriptionAttribute) as? String) ?? "").lowercased()
-            return t.contains("cancel")
+            let t = ((ax($0, "AXDescription") as? String) ?? "").lowercased()
+            let ti = ((ax($0, kAXTitleAttribute) as? String) ?? "").lowercased()
+            return t.contains("stop") || ti.contains("stop")
         })
         if btn != nil { break }
-        Thread.sleep(forTimeInterval: 0.5)
+        Thread.sleep(forTimeInterval: 0.25)
     }
-    guard let b = btn else { emit(out, "{\"probe\":\"cancel\",\"error\":\"no-cancel-button\"}") ; exit(1) }
+    guard let b = btn else { emit(out, "{\"probe\":\"cancel\",\"error\":\"no-stop-button-scan-window-missed\"}") ; exit(1) }
     let t0 = mach_absolute_time()
     AXUIElementPerformAction(b, kAXPressAction as CFString)
     let t1 = mach_absolute_time()
