@@ -8,7 +8,7 @@ mkdir -p "$OUT"
 "$BIN" bench "$TARGET" 15 > "$OUT/bench15.log" 2>&1 &
 BPID=$!
 # live-RSS sampler at ~2 Hz while bench runs (ps rss in KB on macOS).
-( while kill -0 "$BPID" 2>/dev/null; do ps -o pid=,rss=,vsz= -p "$BPID" | awk -v ts="$(date +%s.%N)" '{print ts, $0}'; sleep 0.5; done ) > "$OUT/bench15.liverss.log" 2>/dev/null &
+( while kill -0 "$BPID" 2>/dev/null; do ts=$(perl -MTime::HiRes=time -e 'printf "%.3f", time()'); ps -o pid=,rss=,vsz= -p "$BPID" | awk -v ts="$ts" '{print ts, $0}'; sleep 0.5; done ) > "$OUT/bench15.liverss.log" 2>/dev/null &
 SPID=$!
 wait "$BPID"; RC=$?
 kill "$SPID" 2>/dev/null; wait "$SPID" 2>/dev/null
