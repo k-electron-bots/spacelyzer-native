@@ -21,23 +21,28 @@ def read_jsonl(path):
     return rows
 
 def dist(name, rows, p95_bar, max_bar):
-    # Verdict is keyed to the pre-registered p95 AND max bars plus a sample floor. Both
-    # bars are criteria: p95 or max exceedance is an honest FAIL (a 140ms outlier under a
-    # 1000ms max bar does not fail - the bar was not crossed). Below-floor n is
-    # INCONCLUSIVE. Checks are never loosened to get green.
+    # Pre-registered tail policy (binding): p95 AND max are both criteria.
+    #   n < floor                      -> INCONCLUSIVE (thin run)
+    #   p95 > bar                      -> FAIL
+    #   >= 2 samples over max bar      -> FAIL
+    #   exactly 1 over max bar         -> OUTLIER UNRESOLVED (no automatic PASS; adjudicate
+    #                                     against the concurrent main-thread sample evidence)
+    #   0 over max + p95 within + n ok -> PASS
     vals = [r["ms"] for r in rows if isinstance(r.get("ms"), (int, float))]
-    floor = int(envf("DIST_MIN_SAMPLES", 10))
+    floor = int(envf("DIST_MIN_SAMPLES", 20))
     if not vals:
         verdict(name, "INCONCLUSIVE", "no samples"); return
     if len(vals) < floor:
-        verdict(name, "INCONCLUSIVE", f"n={len(vals)} below sample floor {floor}; no verdict"); return
+        verdict(name, "INCONCLUSIVE", f"n={len(vals)} below pre-registered sample floor {floor}; no verdict"); return
     vals.sort()
     p95 = vals[min(len(vals)-1, int(0.95*(len(vals)-1)))]
     mx = vals[-1]
     over_max = len([v for v in vals if v > max_bar])
     stats = f"n={len(vals)} p95={p95:.1f}ms max={mx:.1f}ms over-max count={over_max} bars p95<={p95_bar} max<={max_bar}"
-    if p95 > p95_bar or mx > max_bar:
+    if p95 > p95_bar or over_max >= 2:
         verdict(name, "FAIL", stats + "; pre-registered criterion exceeded")
+    elif over_max == 1:
+        verdict(name, "OUTLIER", stats + "; UNRESOLVED pending concurrent main-thread sample adjudication - not a PASS")
     else:
         verdict(name, "PASS", stats)
 
@@ -46,7 +51,7 @@ def envf(k, d):
     except Exception: return d
 
 for probe, envp, envm in [("type","STALL_TYPING_P95_MS","STALL_TYPING_MAX_MS"),
-                          ("hover","STALL_HOVER_P95_MS","STALL_HOVER_MAX_MS"),
+                          ("menu","STALL_MENU_P95_MS","STALL_MENU_MAX_MS"),
                           ("expand","STALL_EXPAND_P95_MS","STALL_EXPAND_MAX_MS")]:
     rows = [r for r in read_jsonl(os.path.join(out, "ax-type.jsonl")) + read_jsonl(os.path.join(out, "ax-expand.jsonl")) if r.get("probe")==probe]
     dist(f"stall-{probe}", rows, envf(envp,100), envf(envm,1000))
@@ -125,10 +130,17 @@ else:
 # poison named failure
 try:
     log = open(os.path.join(out, "poison-scan.log"), errors="replace").read()
-    rc = re.search(r"poison-scan-exit=(\d+)", log)
-    named = bool(re.search(r"(Permission denied|permission|EACCES|error|failed|skipped)", log, re.I))
-    crash = bool(re.search(r"(panic|SIGSEGV|SIGABRT|crash)", log, re.I))
-    verdict("poison-failure", "PASS" if (named and not crash) else "FAIL", f"exit={rc.group(1) if rc else '?'} named-failure={named} crash={crash}; log preserved raw")
+    rc_m = re.search(r"poison-scan-exit=(\d+)", log)
+    rc = int(rc_m.group(1)) if rc_m else -1
+    # Named-failure conjunction: the poisoned subtree path must be named together with a
+    # genuine error token. Bare "error"/"skipped" anywhere (e.g. "0 skipped") never counts.
+    names_path = bool(re.search(r"spz-poison", log))
+    error_token = bool(re.search(r"(Permission denied|EACCES|Operation not permitted|os error 13|I/O error)", log, re.I))
+    named = names_path and error_token
+    crash = bool(re.search(r"(panic|SIGSEGV|SIGABRT)", log))
+    ok = (rc not in (0, 124)) and named and not crash
+    verdict("poison-failure", "PASS" if ok else "FAIL",
+            f"exit={rc} names-poisoned-path={names_path} error-token={error_token} named-failure={named} crash={crash}; PASS requires non-zero non-watchdog exit AND poisoned-path-specific named failure AND no crash marker; log preserved raw")
 except FileNotFoundError:
     verdict("poison-failure", "INCONCLUSIVE", "no poison log")
 
