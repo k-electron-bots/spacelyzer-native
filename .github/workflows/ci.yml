@@ -1,8 +1,14 @@
 # Measurement-only replacement of ci.yml on THIS branch only (mac-stall-soak-00aa46a2).
 # Product code pinned at 00aa46a2 (item-inspect-engine-stack tip); only this workflow and
 # scripts/measure/* differ from the reviewed stack. No release, no tag, no DMG packaging here.
-# Everything below is a shared-runner RESPONSIVENESS PROXY (main-thread sample + AX latency);
+# Everything below is a shared-runner RESPONSIVENESS PROXY (AX interaction latency);
 # it is not frame-pacing evidence and clears no real-hardware UI gate.
+# PRE-REGISTERED (before any data): the concurrent `sample` capture is CONTEXT ONLY - the
+# aggregated report has no per-snapshot frames, so no block durations are inferred from it and
+# it closes no gate; it exists to adjudicate AX-side outliers. The real main-thread stall gate
+# remains UNCLOSED unless valid instrumentation lands later. The binding interaction rule is
+# the AX tail policy in evaluate.py (p95 + max binding, 1-over OUTLIER-unresolved, floor n>=20).
+# evaluate.py --selftest runs before evaluation so malformed/absent evidence can never PASS.
 name: CI
 on:
   workflow_dispatch:
@@ -28,9 +34,6 @@ env:
   STALL_EXPAND_P95_MS: "250"
   STALL_EXPAND_MAX_MS: "1000"
   CANCEL_RESPONSIVE_MAX_MS: "1000"
-  MAIN_THREAD_BLOCK_FAIL_MS: "500"   # one busy gap >= this in the interaction-window sample = FAIL
-  MAIN_THREAD_BLOCK_WARN_MS: "100"   # 100-500 ms gaps = reported outliers
-  SAMPLE_MIN_SNAPSHOTS: "20"         # floor: sample snapshots across the interaction window
   DIST_MIN_SAMPLES: "20"             # floor: per-interaction latency samples before a verdict is issued
   SOAK_GROWTH_MAX: "1.10"            # final-third median live RSS / first-third median
   SOAK_SEPARATE_BAND: "0.10"         # separate-process peak RSS band +/-10%
@@ -87,7 +90,7 @@ jobs:
           for i in $(seq 1 60); do PID=$(pgrep -x Spacelyzer | head -1); [ -n "$PID" ] && break; sleep 0.5; done
           [ -n "$PID" ] || { echo "::error::app did not launch"; exit 1; }
           /tmp/spz-stall-driver waitwindow "$PID" || { echo "::error::no AX window"; exit 1; }
-          sample "$PID" 30 10 -file /tmp/spz-main-sample.txt &
+          sample "$PID" 30 10 -file /tmp/spz-main-sample.txt &   # CONTEXT ONLY - not instrumentation (see header)
           SAMPLEPID=$!
           /tmp/spz-stall-driver baseline "$PID" measure-out/ax-baseline.jsonl
           /tmp/spz-stall-driver type "$PID" measure-out/ax-type.jsonl "keep-tag-0001-measurement-stall-pass" || true
@@ -119,6 +122,9 @@ jobs:
           mkdir -p measure-out /tmp/spz-poison/sub
           echo x > /tmp/spz-poison/sub/file.txt
           chmod 000 /tmp/spz-poison/sub
+          echo "fixture: /tmp/spz-poison/sub chmod 000 - sole constructed defect" | tee measure-out/poison-fixture.txt
+          echo "runner-uid=$(id -u)" | tee measure-out/poison-denial.txt
+          ls /tmp/spz-poison/sub >> measure-out/poison-denial.txt 2>&1 && echo "PROBE-READABLE" >> measure-out/poison-denial.txt || echo "PROBE-DENIED" >> measure-out/poison-denial.txt
           ./target/release/spz scan /tmp/spz-poison > measure-out/poison-scan.log 2>&1 &
           SCANPID=$!
           for i in $(seq 1 60); do kill -0 "$SCANPID" 2>/dev/null || break; sleep 1; done
@@ -153,6 +159,9 @@ jobs:
           codesign -dv --verbose=4 /tmp/spz-dmg-mnt/Spacelyzer.app 2>&1 | tee measure-out/artifact/codesign-identity.txt || true
           spctl -a -vv -t install /tmp/spz-dmg-mnt/Spacelyzer.app 2>&1 | tee measure-out/artifact/spctl-verdict.txt || true
           hdiutil detach /tmp/spz-dmg-mnt || true
+      - name: Evaluator self-test (synthetic regression; malformed/absent evidence never PASSes)
+        if: ${{ !inputs.compile_only }}
+        run: python3 scripts/measure/evaluate.py --selftest
       - name: Evaluate against pre-registered bars
         if: ${{ !inputs.compile_only }}
         run: python3 scripts/measure/evaluate.py measure-out | tee measure-out/verdicts.txt
