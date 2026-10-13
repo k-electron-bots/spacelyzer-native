@@ -982,6 +982,14 @@ final class AppModel {
             // Plan-to-execution drift: the id must still name the planned path in the same tree.
             let path = tree.path(item.id)
             if path != item.path { skipped.append("\(item.path): the results changed; skipped."); continue }
+            // Mid-batch consistency with the removal-disabled policy enforced at entry
+            // (destructiveBlocked): a poison latch or an out-of-date marking landing after this
+            // batch started refuses each remaining item loudly; the batch still completes and
+            // reports the skips. Deliberately NOT destructiveBlocked: rowsPending/requiredVersion
+            // are true mid-batch by design, and rechecking them refused every item after the
+            // first (run 38410069921).
+            if enginePoisoned { skipped.append("\(path): the engine reported an internal error; skipped."); continue }
+            if viewOutOfDate { skipped.append("\(path): the results changed; skipped."); continue }
             if isProtected(path) { skipped.append("\(path) is protected and cannot be removed from here."); continue }
             if isOutsideFilter(item.id) { skipped.append("\(path): outside the current filter; skipped."); continue }
             // The recorded size comes from one engine capture; if the engine cannot answer now, this item is skipped.
