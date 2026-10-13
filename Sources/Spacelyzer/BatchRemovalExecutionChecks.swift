@@ -17,7 +17,9 @@ enum BatchRemovalExecutionChecks {
                      "batch-execution-failure-skips-and-reports-rest-complete",
                      "batch-execution-identity-refusal-skips-item",
                      "preview-targets-hidden-set-previews-nothing",
-                     "preview-targets-empty-set-falls-back-to-focus"]
+                     "preview-targets-empty-set-falls-back-to-focus",
+                     "batch-execution-poison-mid-batch-refuses-remaining-items",
+                     "batch-execution-out-of-date-mid-batch-refuses-remaining-items"]
         let fm = FileManager.default
         let d = fm.temporaryDirectory.appendingPathComponent("spz-bexec-\(UUID().uuidString)")
         try! fm.createDirectory(at: d, withIntermediateDirectories: true)
@@ -127,13 +129,51 @@ enum BatchRemovalExecutionChecks {
                      && msg3.hasPrefix("Moved 2 of 3 items to the Trash.") && msg3.contains("Skipped 1:") && msg3.contains("c.bin"),
                      "trashed=\(trashed3) journal=\(m3.lastRemoved.count) msg=\(msg3)")
 
-        // 4. Slice-5 fix: a non-empty but fully filter-hidden set previews NOTHING - a hidden item
+        // 4. A poison latch landing after the first item refuses each remaining item loudly; the
+        //    batch still completes and reports the skips (mid-batch consistency with the removal-
+        //    disabled policy). The latch fires through the test trash seam; production never sets it.
+        let m4 = model()
+        var trashed4: [String] = []
+        m4.trashItem = { url in
+            if url.lastPathComponent == "a.bin" { DispatchQueue.main.sync { MainActor.assumeIsolated { m4.markPoisoned() } } }
+            trashed4.append(url.lastPathComponent); return url
+        }
+        m4.identityCheck = { _, _ in .same }
+        m4.proposeBatchRemoval()
+        m4.confirmBatchRemoval()
+        await m4.removalTask?.value
+        let msg4 = m4.removalMessage ?? ""
+        Check.expect("batch-execution-poison-mid-batch-refuses-remaining-items",
+                     trashed4 == ["a.bin"] && m4.lastRemoved.count == 1
+                     && msg4.hasPrefix("Moved 1 of 3 items to the Trash.") && msg4.contains("Skipped 2:") && msg4.contains("internal error"),
+                     "trashed=\(trashed4) journal=\(m4.lastRemoved.count) msg=\(msg4)")
+
+        // 5. An out-of-date marking landing after the first item refuses the remaining items the
+        //    same way (scan race, tree-replaced commit, filter failure - the same policy branch;
+        //    markOutOfDate is also implied by markPoisoned).
+        let m5 = model()
+        var trashed5: [String] = []
+        m5.trashItem = { url in
+            if url.lastPathComponent == "a.bin" { DispatchQueue.main.sync { MainActor.assumeIsolated { m5.markOutOfDate("test: scan raced the batch") } } }
+            trashed5.append(url.lastPathComponent); return url
+        }
+        m5.identityCheck = { _, _ in .same }
+        m5.proposeBatchRemoval()
+        m5.confirmBatchRemoval()
+        await m5.removalTask?.value
+        let msg5 = m5.removalMessage ?? ""
+        Check.expect("batch-execution-out-of-date-mid-batch-refuses-remaining-items",
+                     trashed5 == ["a.bin"] && m5.lastRemoved.count == 1
+                     && msg5.hasPrefix("Moved 1 of 3 items to the Trash.") && msg5.contains("Skipped 2:") && msg5.contains("the results changed"),
+                     "trashed=\(trashed5) journal=\(m5.lastRemoved.count) msg=\(msg5)")
+
+        // 6. Slice-5 fix: a non-empty but fully filter-hidden set previews NOTHING - a hidden item
         //    is never handed to the panel (before the fix the hidden focus was previewed).
         Check.expect("preview-targets-hidden-set-previews-nothing",
                      AppModel.previewTargets(set: [1, 2], visibleCandidates: [], focus: 1).isEmpty,
                      "targets=\(AppModel.previewTargets(set: [1, 2], visibleCandidates: [], focus: 1))")
 
-        // 5. An EMPTY set falls back to the focus alone (the single-selection behavior), and a
+        // 7. An EMPTY set falls back to the focus alone (the single-selection behavior), and a
         //    visible set returns its candidates in the given order.
         Check.expect("preview-targets-empty-set-falls-back-to-focus",
                      AppModel.previewTargets(set: [], visibleCandidates: [], focus: 7) == [7]
