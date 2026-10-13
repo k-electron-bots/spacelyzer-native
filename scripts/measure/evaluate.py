@@ -21,9 +21,10 @@ def read_jsonl(path):
     return rows
 
 def dist(name, rows, p95_bar, max_bar):
-    # Verdict is keyed to the p95 bar plus a pre-registered sample floor. The max bar and
-    # over-max count are reported as statistics only; a lone max-threshold cross (e.g. a
-    # 140ms outlier under a 1000ms max bar) never flips the verdict by itself.
+    # Verdict is keyed to the pre-registered p95 AND max bars plus a sample floor. Both
+    # bars are criteria: p95 or max exceedance is an honest FAIL (a 140ms outlier under a
+    # 1000ms max bar does not fail - the bar was not crossed). Below-floor n is
+    # INCONCLUSIVE. Checks are never loosened to get green.
     vals = [r["ms"] for r in rows if isinstance(r.get("ms"), (int, float))]
     floor = int(envf("DIST_MIN_SAMPLES", 10))
     if not vals:
@@ -35,8 +36,8 @@ def dist(name, rows, p95_bar, max_bar):
     mx = vals[-1]
     over_max = len([v for v in vals if v > max_bar])
     stats = f"n={len(vals)} p95={p95:.1f}ms max={mx:.1f}ms over-max count={over_max} bars p95<={p95_bar} max<={max_bar}"
-    if p95 > p95_bar:
-        verdict(name, "OUTLIER", stats + "; p95 over bar")
+    if p95 > p95_bar or mx > max_bar:
+        verdict(name, "FAIL", stats + "; pre-registered criterion exceeded")
     else:
         verdict(name, "PASS", stats)
 
