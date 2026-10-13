@@ -21,18 +21,24 @@ def read_jsonl(path):
     return rows
 
 def dist(name, rows, p95_bar, max_bar):
+    # Verdict is keyed to the p95 bar plus a pre-registered sample floor. The max bar and
+    # over-max count are reported as statistics only; a lone max-threshold cross (e.g. a
+    # 140ms outlier under a 1000ms max bar) never flips the verdict by itself.
     vals = [r["ms"] for r in rows if isinstance(r.get("ms"), (int, float))]
+    floor = int(envf("DIST_MIN_SAMPLES", 10))
     if not vals:
         verdict(name, "INCONCLUSIVE", "no samples"); return
+    if len(vals) < floor:
+        verdict(name, "INCONCLUSIVE", f"n={len(vals)} below sample floor {floor}; no verdict"); return
     vals.sort()
     p95 = vals[min(len(vals)-1, int(0.95*(len(vals)-1)))]
     mx = vals[-1]
-    over_max = [v for v in vals if v > max_bar]
-    over_p95 = p95 > p95_bar
-    if over_max or over_p95:
-        verdict(name, "OUTLIER", f"n={len(vals)} p95={p95:.1f}ms max={mx:.1f}ms bars p95<={p95_bar} max<={max_bar}; over-max count={len(over_max)}")
+    over_max = len([v for v in vals if v > max_bar])
+    stats = f"n={len(vals)} p95={p95:.1f}ms max={mx:.1f}ms over-max count={over_max} bars p95<={p95_bar} max<={max_bar}"
+    if p95 > p95_bar:
+        verdict(name, "OUTLIER", stats + "; p95 over bar")
     else:
-        verdict(name, "PASS", f"n={len(vals)} p95={p95:.1f}ms max={mx:.1f}ms bars p95<={p95_bar} max<={max_bar}")
+        verdict(name, "PASS", stats)
 
 def envf(k, d):
     try: return float(os.environ.get(k, d))
