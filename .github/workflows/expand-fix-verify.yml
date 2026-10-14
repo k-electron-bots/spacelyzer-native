@@ -16,9 +16,14 @@ name: expand-fix-verify
 # n>=20; p95 AND max both binding; exactly 1 over max = OUTLIER UNRESOLVED (never auto-PASS);
 # evaluate.py --selftest runs before evaluation (fail closed on malformed evidence).
 # BUDGET: single attempt, no retry, job timeout-minutes 35 hard cap. Feasibility estimate
-# 14-16 min is an ESTIMATE, not a promise: per-step caps plus the pure-bash budgeted_run helper
-# (TERM at limit, KILL after grace, rc 124/125 markers) clip or honestly SKIP work rather than
-# burn the job; a skipped probe yields INCONCLUSIVE, never a silent pass.
+# 14-16 min is an ESTIMATE, not a promise. DISCLOSED: the per-step timeout caps sum to 60 min,
+# which exceeds the 35-min job cap BY DESIGN - the caps are worst-case ceilings, not an additive
+# budget; the job cap plus the budgeted_run reserve clipping is the binding constraint, and it
+# clips or honestly SKIPS work (rc 124/125 markers) rather than burning the job; a skipped probe
+# yields INCONCLUSIVE / not-PASS, never a silent pass. PRIORITY ORDER (explicit): (1) COMPILE-FIX
+# gate, (2) correctness harness (169 assertions), (3) EXPAND-FIX probe (gate quality), (4)
+# EXPAND-BASE control probe (comparative effect), (5) SPZ_TIMING diagnostic (context only).
+# If budget runs short the lower priorities degrade first, in that order.
 
 on:
   workflow_dispatch:
@@ -51,19 +56,48 @@ jobs:
           {
             echo "measurement head: $(git rev-parse HEAD)"
             echo "fix head (base ref): $(git rev-parse origin/perf-outline-batch-updates 2>/dev/null || git rev-parse 7db129cac310399f7ddf9cc6ba8813ce239061c6)"
-            echo "--- diff fix-head..HEAD (must list only workflow/scripts/instrumentation) ---"
-            git diff --name-status 7db129cac310399f7ddf9cc6ba8813ce239061c6 HEAD || true
-            echo "--- engine identity fix-head vs 00aa46a2 (must be EMPTY) ---"
-            git diff --name-status 00aa46a2d384ec4648ae4571ccb2eaee5a7e6324 HEAD -- engine Cargo.toml Cargo.lock scripts/build-engine.sh || true
+            echo "--- diff fix-head..HEAD (allowlist-enforced below) ---"
+            git diff --name-status 7db129cac310399f7ddf9cc6ba8813ce239061c6 HEAD
+            echo "--- engine identity 00aa46a2 vs HEAD (must be EMPTY) ---"
+            git diff --name-status 00aa46a2d384ec4648ae4571ccb2eaee5a7e6324 HEAD -- engine Cargo.toml Cargo.lock scripts/build-engine.sh
             for f in .github/workflows/expand-fix-verify.yml scripts/measure/stall-driver.swift scripts/measure/evaluate.py Sources/Spacelyzer/StageTiming.swift Sources/Spacelyzer/AppModel.swift Sources/Spacelyzer/OutlineView.swift; do
               echo "pin $f blob=$(git rev-parse HEAD:$f) sha256=$(shasum -a 256 "$f" | cut -d' ' -f1)"
             done
           } | tee measure-out/pin-echo.txt
+          # FAIL-CLOSED source allowlist: the ONLY files that may differ from the reviewed fix
+          # head 7db129c are the six named additions/modifications below. Any other changed,
+          # added or deleted file means unreviewed source could run: refuse.
+          changed=$(git diff --name-only 7db129cac310399f7ddf9cc6ba8813ce239061c6 HEAD | sort)
+          expected=$(printf '%s\n' \
+            ".github/workflows/expand-fix-verify.yml" \
+            "Sources/Spacelyzer/AppModel.swift" \
+            "Sources/Spacelyzer/OutlineView.swift" \
+            "Sources/Spacelyzer/StageTiming.swift" \
+            "scripts/measure/evaluate.py" \
+            "scripts/measure/stall-driver.swift" | sort)
+          if [ "$changed" != "$expected" ]; then
+            echo "::error::source allowlist violated; changed files:"; echo "$changed"
+            exit 1
+          fi
+          # Full reviewed-product blob identity: every OTHER path must be byte-identical to the
+          # reviewed fix head (the allowlist diff above already proves this; assert it again as a
+          # quiet tree diff so a tooling surprise fails closed here, not silently later).
+          git diff --quiet 7db129cac310399f7ddf9cc6ba8813ce239061c6 HEAD -- \
+            . ':(exclude).github/workflows/expand-fix-verify.yml' \
+              ':(exclude)Sources/Spacelyzer/AppModel.swift' \
+              ':(exclude)Sources/Spacelyzer/OutlineView.swift' \
+              ':(exclude)Sources/Spacelyzer/StageTiming.swift' \
+              ':(exclude)scripts/measure/evaluate.py' \
+              ':(exclude)scripts/measure/stall-driver.swift' \
+            || { echo "::error::unreviewed product tree change detected"; exit 1; }
           # Fail closed: if the engine differs from 00aa46a2, the base build may NOT reuse the
           # fix build's engine artifacts.
           if [ -n "$(git diff --name-only 00aa46a2d384ec4648ae4571ccb2eaee5a7e6324 HEAD -- engine Cargo.toml Cargo.lock scripts/build-engine.sh)" ]; then
             echo "ENGINE_DIFFERS=1" >> "$GITHUB_ENV"
           fi
+          # Architecture: verify, never assume. The runner must be arm64 for the arm64 base build,
+          # and the built binaries must carry the expected slices.
+          [ "$(uname -m)" = "arm64" ] || { echo "::error::runner arch $(uname -m) != arm64; base build would be wrong-arch"; exit 1; }
 
       - name: Toolchain + fixture identity (comparability record, not a gate)
         run: |
@@ -96,6 +130,9 @@ jobs:
           mkdir -p /tmp/apps
           mv dist/Spacelyzer.app /tmp/apps/fix.app
           rm -f dist/*.dmg dist/*.sha256   # measurement DMG discarded; never uploaded, never released
+          lipo -info /tmp/apps/fix.app/Contents/MacOS/Spacelyzer | tee measure-out/arch-fix.txt
+          lipo -info /tmp/apps/fix.app/Contents/MacOS/Spacelyzer | grep -q 'arm64' || { echo "::error::fix binary missing arm64 slice"; exit 1; }
+          lipo -info /tmp/apps/fix.app/Contents/MacOS/Spacelyzer | grep -q 'x86_64' || { echo "::error::fix binary missing x86_64 slice (universal compile claim void)"; exit 1; }
 
       - name: Build TEST-ONLY app with SPZ_CI_TESTS (distinct binary; correctness evidence only)
         if: ${{ always() }}
@@ -110,18 +147,39 @@ jobs:
         timeout-minutes: 12
         continue-on-error: true
         run: |
-          open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Library
+          # bind_new_pid: exact process binding by before/after snapshot. Never head -1 of a
+          # name match (an old survivor would bind); ambiguous (0 or >1 new pid) = fail closed.
+          bind_new_pid() {
+            local before after newp i
+            before=$(pgrep -x Spacelyzer | sort | tr '\n' ' ')
+            open -n "$1" --env SPZ_AUTOSCAN=/Library "${@:2}"
+            for i in $(seq 1 60); do
+              after=$(pgrep -x Spacelyzer | sort | tr '\n' ' ')
+              newp=$(comm -13 <(echo $before | tr ' ' '\n' | sort) <(echo $after | tr ' ' '\n' | sort) | tr '\n' ' ')
+              [ -n "${newp// /}" ] && break; sleep 0.5
+            done
+            local n; n=$(echo $newp | wc -w | tr -d ' ')
+            if [ "$n" != "1" ]; then echo "::error::PID binding ambiguous (new=$n): $newp"; return 1; fi
+            echo "$newp" | tr -d ' '
+          }
+          kill_owned() {
+            [ -n "$1" ] || return 0
+            kill -TERM "$1" 2>/dev/null || true
+            for k in $(seq 1 10); do kill -0 "$1" 2>/dev/null || break; sleep 0.5; done
+            kill -0 "$1" 2>/dev/null && kill -KILL "$1" 2>/dev/null || true
+          }
+          INFO_PID=$(bind_new_pid dist/Spacelyzer.app) || exit 1
           sleep 8
           screencapture -x dist/screenshot-scanning.png || true
           sleep 35
           screencapture -x dist/screenshot.png || true
           pgrep -fl Spacelyzer || echo "app not running"
-          pkill Spacelyzer || true
+          kill_owned "$INFO_PID"
           sleep 2
           swiftc scripts/ax-client.swift -o /tmp/spz-ax-client
           rm -rf /tmp/spz-chronology
           rm -f /tmp/spz-interaction-envelope.txt /tmp/spz-footer-ax-status.txt /tmp/spz-footer-ax-result.txt /tmp/spz-footer-ax-expected.txt /tmp/spz-footer-ax-ready /tmp/spz-footer-ax-ack /tmp/spz-footer-ax-client.txt /tmp/spz-timing.txt /tmp/spz-assertions.txt /tmp/spz-demo-step /tmp/spz-demo-finished /tmp/spz-demo-ready-* /tmp/spz-demo-ack-*
-          open -n dist-test/Spacelyzer.app --env SPZ_AUTOSCAN=/Library --env SPZ_DEMO=1
+          DEMO_PID=$(bind_new_pid dist-test/Spacelyzer.app --env SPZ_DEMO=1) || exit 1
           for step in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 23 24 19 25 20 21 22 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48; do
             for i in $(seq 1 240); do
               if [ -f /tmp/spz-footer-ax-ready ] && [ ! -f /tmp/spz-footer-ax-ack ]; then
@@ -158,11 +216,11 @@ jobs:
           done
           for i in $(seq 1 30); do [ -f /tmp/spz-demo-finished ] && break; sleep 1; done
           [ -f /tmp/spz-demo-finished ] || echo 'DEMO FINISH TIMEOUT: final assertions not completed' >> /tmp/spz-timing.txt
-          pgrep -x Spacelyzer >/dev/null && echo 'app still running at end' >> /tmp/spz-timing.txt || echo 'APP NOT RUNNING at end (crashed or exited)' >> /tmp/spz-timing.txt
+          kill -0 "$DEMO_PID" 2>/dev/null && echo 'app still running at end' >> /tmp/spz-timing.txt || echo 'APP NOT RUNNING at end (crashed or exited)' >> /tmp/spz-timing.txt
           cp /tmp/spz-timing.txt dist/ui-timing.txt 2>/dev/null || true
           cp /tmp/spz-footer-ax-client.txt dist/footer-ax-client.txt 2>/dev/null || true
           cp /tmp/spz-footer-ax-status.txt dist/footer-ax-status.txt 2>/dev/null || true
-          pkill Spacelyzer || true
+          kill_owned "$DEMO_PID"
           sleep 3
 
       - name: UI assertions (169 results expected at this head; fail-closed)
@@ -206,6 +264,7 @@ jobs:
           [ -f Resources/AppIcon.icns ] && cp Resources/AppIcon.icns "$APP/Contents/Resources/" || true
           codesign --force --deep --options runtime --timestamp=none --sign "${{ env.signhash }}" --entitlements Resources/Spacelyzer.entitlements "$APP"
           codesign --verify --deep --strict "$APP"
+          lipo -info "$APP/Contents/MacOS/Spacelyzer" | grep -q 'arm64' || { echo "::error::base binary missing arm64 slice"; exit 1; }
 
       - name: Compile bounded driver (pure-bash watchdog; no gtimeout dependency)
         if: ${{ always() }}
@@ -263,17 +322,28 @@ jobs:
           }
           probe() {  # probe <label> <app> <outdir> [extra env...]
             local label=$1 app=$2 out=$3; shift 3
+            # Exact process binding: before/after pgrep snapshot; 0 or >1 new pid = ambiguous =
+            # skip honestly (never bind an old survivor via head -1).
+            local before after newp i n
+            before=$(pgrep -x Spacelyzer | sort | tr '\n' ' ')
             open -n "$app" --env SPZ_AUTOSCAN=/Library "$@"
-            local PID=""
-            for i in $(seq 1 60); do PID=$(pgrep -x Spacelyzer | head -1); [ -n "$PID" ] && break; sleep 0.5; done
-            if [ -z "$PID" ]; then echo "::error::$label app did not launch"; return 1; fi
+            for i in $(seq 1 60); do
+              after=$(pgrep -x Spacelyzer | sort | tr '\n' ' ')
+              newp=$(comm -13 <(echo $before | tr ' ' '\n' | sort) <(echo $after | tr ' ' '\n' | sort) | tr '\n' ' ')
+              [ -n "${newp// /}" ] && break; sleep 0.5
+            done
+            n=$(echo $newp | wc -w | tr -d ' ')
+            local PID=$(echo "$newp" | tr -d ' ')
+            if [ "$n" != "1" ]; then echo "::error::$label PID binding ambiguous (new=$n): $newp"; return 1; fi
             echo "marker stage=$label-launch pid=$PID"
             budgeted_run 300 $label-waitwindow /tmp/spz-stall-driver waitwindow "$PID" || { echo "::error::$label no AX window"; kill_owned "$PID"; return 1; }
             budgeted_run 300 $label-expand /tmp/spz-stall-driver expand "$PID" "$out/ax-expand.jsonl" || true
             kill_owned "$PID"
           }
-          probe base /tmp/apps/base.app measure-out-base || true
+          # Priority order (explicit): EXPAND-FIX first (gate quality), EXPAND-BASE second
+          # (comparative control), diagnostic last (context only).
           probe fix /tmp/apps/fix.app measure-out-fix || true
+          probe base /tmp/apps/base.app measure-out-base || true
           # Diagnostic ONLY: separate launch, SPZ_TIMING stage attribution; investigation context,
           # closes no gate, never compared against bars.
           probe diagnostic /tmp/apps/fix.app measure-out-diagnostic --env SPZ_TIMING=1 --env SPZ_TIMING_LOG=$RUNNER_TEMP/spz-timing.jsonl || true
@@ -309,13 +379,36 @@ jobs:
       - name: Final gate (green ONLY on compile PASS + 169 assertions PASS + EXPAND-FIX verdict PASS)
         if: ${{ always() }}
         run: |
+          # Verdict parsing tested locally against evaluator output for PASS / FAIL / OUTLIER /
+          # INCONCLUSIVE / empty / missing-file cases. Verdict lines are
+          # '^(PASS|FAIL|OUTLIER|INCONCLUSIVE) stall-expand: ...' from the pinned evaluate.py.
+          verdict_gate() {
+            local file=$1 label=$2 line status
+            if [ ! -s "$file" ]; then echo "$label: NOT PASS (no verdict file; probe skipped or evaluator produced nothing)"; return 1; fi
+            line=$(grep -E '^(PASS|FAIL|OUTLIER|INCONCLUSIVE) stall-expand:' "$file" | head -1)
+            if [ -z "$line" ]; then echo "$label: NOT PASS (no stall-expand verdict line)"; return 1; fi
+            status=$(echo "$line" | cut -d' ' -f1)
+            echo "$label: $line"
+            [ "$status" = "PASS" ]
+          }
+          # A control counts as a valid measurement only when the evaluator produced a
+          # sample-floored verdict line for it; INCONCLUSIVE/thin/skipped is NOT a measurement.
+          base_measurement_valid() {
+            [ -s "$1" ] || return 1
+            grep -Eq '^(PASS|FAIL|OUTLIER) stall-expand: n=[0-9]+' "$1"
+          }
           rc=0
           [ -f measure-out/compile-fix.txt ] || { echo "::error::compile-fix missing"; rc=1; }
           [ "${{ steps.asserts.outcome }}" = "success" ] || { echo "::error::UI assertions outcome=${{ steps.asserts.outcome }}"; rc=1; }
-          if grep -q '^PASS expand' measure-out-fix/verdicts.txt 2>/dev/null; then
-            echo "::notice::EXPAND-FIX PASS within bars p95<=250 max<=1000 n>=20"
+          # GATE QUALITY (fix vs pre-registered bars, independent of the control):
+          verdict_gate measure-out-fix/verdicts.txt EXPAND-FIX || rc=1
+          # COMPARATIVE EFFECT (fix vs base, same runner): an improvement claim is allowed ONLY
+          # when the base control is itself a valid measurement. Otherwise state NOT ESTABLISHED.
+          echo "EXPAND-BASE (control):"
+          grep -E '^(PASS|FAIL|OUTLIER|INCONCLUSIVE) stall-expand:' measure-out-base/verdicts.txt 2>/dev/null || echo "no stall-expand verdict line (skipped/INCONCLUSIVE)"
+          if base_measurement_valid measure-out-base/verdicts.txt; then
+            echo "comparative-effect: base control is a valid measurement; fix-vs-base delta may be read from the two verdict lines above"
           else
-            echo "::error::EXPAND-FIX not PASS (see measure-out-fix/verdicts.txt; FAIL/OUTLIER/INCONCLUSIVE/skipped are all not-PASS)"; rc=1
+            echo "comparative-effect: NOT ESTABLISHED (base control failed to produce a valid measurement; gate-quality verdict stands alone, no same-runner improvement claim)"
           fi
-          echo "EXPAND-BASE control verdict (informational):"; grep -E 'expand' measure-out-base/verdicts.txt 2>/dev/null || true
           exit $rc
