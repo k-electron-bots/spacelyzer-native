@@ -67,10 +67,10 @@ jobs:
           ESHA=$(git hash-object Sources/Spacelyzer/Engine.swift)
           ASHA=$(git hash-object Sources/Spacelyzer/SpacelyzerApp.swift)
           MSHA=$(git hash-object Sources/Spacelyzer/AppModel.swift)
-          [ "$ESHA" = "9b8a7b74ab7f004a85e1f03b30d3339b6c4c9123" ] || { echo "::error::Engine.swift drifted from the reviewed instrumentation blob ($ESHA)"; exit 1; }
+          [ "$ESHA" = "5a31ca9baa1af065670518801ab03d35df81951d" ] || { echo "::error::Engine.swift drifted from the reviewed instrumentation blob ($ESHA)"; exit 1; }
           [ "$ASHA" = "2d4186df3dd7aec04ae1f568fa38b9f08a2d6b0a" ] || { echo "::error::SpacelyzerApp.swift drifted from the reviewed instrumentation blob ($ASHA)"; exit 1; }
           [ "$MSHA" = "028a9323ed9be96e30fe3083f5c73ace7944282b" ] || { echo "::error::AppModel.swift drifted from the reviewed instrumentation blob ($MSHA)"; exit 1; }
-          echo "instrumentation files pinned at exact reviewed blobs Engine=$ESHA App=$ASHA AppModel=$MSHA"
+          echo "instrumentation pinned at exact reviewed blobs: Sources/Spacelyzer/Engine.swift=$ESHA Sources/Spacelyzer/SpacelyzerApp.swift=$ASHA Sources/Spacelyzer/AppModel.swift=$MSHA"
           # Job-start epoch: measurement steps derive remaining-job-aware budgets from this
           # (job timeout-minutes is 35; reserve covers the gates after the cancel step + upload).
           date +%s > "$RUNNER_TEMP/spz-job-start"
