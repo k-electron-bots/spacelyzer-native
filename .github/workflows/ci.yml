@@ -116,19 +116,29 @@ jobs:
               kill -TERM "$cpid" 2>/dev/null
               i=0; while [ "$i" -lt 15 ]; do sleep 1; kill -0 "$cpid" 2>/dev/null || break; i=$((i+1)); done
               kill -KILL "$cpid" 2>/dev/null ) & local wpid=$!
-            wait "$cpid"; local rc=$?
-            kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
+            local rc=0
+            wait "$cpid" || rc=$?
+            kill "$wpid" 2>/dev/null || true
+            wait "$wpid" 2>/dev/null || true
             if [ -s "$flag" ]; then echo "WATCHDOG-EXTERNAL timeout_s=$limit cmd=$1"; rc=124; fi
             rm -f "$flag"
             return "$rc"
           }
+          # Step wall-clock budget: 15 min. Required calls (waitwindow, baseline) always run;
+          # optional probes are SKIPPED with an honest marker once the budget is exhausted, so a
+          # wedged environment can never burn the whole job producing near-zero evidence.
+          STEP_END=$(( $(date +%s) + 900 ))
+          budget_left() { [ "$(date +%s)" -lt "$STEP_END" ]; }
           run_bounded 300 /tmp/spz-stall-driver waitwindow "$PID" || { echo "::error::no AX window"; kill_owned "$PID"; exit 1; }
           sample "$PID" 30 10 -file /tmp/spz-main-sample.txt &   # CONTEXT ONLY - not instrumentation (see header)
           SAMPLEPID=$!
           run_bounded 300 /tmp/spz-stall-driver baseline "$PID" measure-out/ax-baseline.jsonl
-          run_bounded 300 /tmp/spz-stall-driver type "$PID" measure-out/ax-type.jsonl "keep-tag-0001-measurement-stall-pass" || true
-          run_bounded 300 /tmp/spz-stall-driver expand "$PID" measure-out/ax-expand.jsonl || true
-          run_bounded 300 /tmp/spz-stall-driver nonascii "$PID" measure-out/ax-nonascii.jsonl || true
+          if budget_left; then run_bounded 300 /tmp/spz-stall-driver type "$PID" measure-out/ax-type.jsonl "keep-tag-0001-measurement-stall-pass" || true
+          else echo "marker ts_ms=$(($(date +%s)*1000)) stage=type-skipped-budget-exhausted"; fi
+          if budget_left; then run_bounded 300 /tmp/spz-stall-driver expand "$PID" measure-out/ax-expand.jsonl || true
+          else echo "marker ts_ms=$(($(date +%s)*1000)) stage=expand-skipped-budget-exhausted"; fi
+          if budget_left; then run_bounded 300 /tmp/spz-stall-driver nonascii "$PID" measure-out/ax-nonascii.jsonl || true
+          else echo "marker ts_ms=$(($(date +%s)*1000)) stage=nonascii-skipped-budget-exhausted"; fi
           echo "marker ts_ms=$(($(date +%s)*1000)) stage=initial-measurements-done"
           wait "$SAMPLEPID" || true
           cp /tmp/spz-main-sample.txt measure-out/main-thread-sample.txt
@@ -159,13 +169,22 @@ jobs:
               kill -TERM "$cpid" 2>/dev/null
               i=0; while [ "$i" -lt 15 ]; do sleep 1; kill -0 "$cpid" 2>/dev/null || break; i=$((i+1)); done
               kill -KILL "$cpid" 2>/dev/null ) & local wpid=$!
-            wait "$cpid"; local rc=$?
-            kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
+            local rc=0
+            wait "$cpid" || rc=$?
+            kill "$wpid" 2>/dev/null || true
+            wait "$wpid" 2>/dev/null || true
             if [ -s "$flag" ]; then echo "WATCHDOG-EXTERNAL timeout_s=$limit cmd=$1"; rc=124; fi
             rm -f "$flag"
             return "$rc"
           }
+          # Step wall-clock budget 25 min + fail-fast: a wedged environment (first external
+          # watchdog timeout) aborts remaining cycles instead of repeating a zero-evidence pattern.
+          STEP_END=$(( $(date +%s) + 1500 ))
           for i in 1 2 3; do
+            if [ "$(date +%s)" -ge "$STEP_END" ]; then
+              echo "marker ts_ms=$(($(date +%s)*1000)) stage=cycle-$i-skipped-budget-exhausted"
+              break
+            fi
             echo "marker ts_ms=$(($(date +%s)*1000)) stage=cycle-$i-launch"
             open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN="$FIX"
             PID=""
@@ -175,10 +194,16 @@ jobs:
             run_bounded 300 /tmp/spz-stall-driver waitwindow "$PID" || true
             # driver polls from t=0 for the actual "Stop scan" button; a missed window is an honest
             # error row, never a fabricated press
-            run_bounded 300 /tmp/spz-stall-driver cancel "$PID" "measure-out/cancel-cycle-$i.jsonl" || true
-            echo "marker ts_ms=$(($(date +%s)*1000)) stage=cycle-$i-cancel-done"
+            RC=0
+            run_bounded 300 /tmp/spz-stall-driver cancel "$PID" "measure-out/cancel-cycle-$i.jsonl" || RC=$?
+            echo "marker ts_ms=$(($(date +%s)*1000)) stage=cycle-$i-cancel-done rc=$RC"
             kill_owned "$PID"
             echo "marker ts_ms=$(($(date +%s)*1000)) stage=cycle-$i-cleanup-done"
+            if [ "$RC" -eq 124 ]; then
+              echo "marker ts_ms=$(($(date +%s)*1000)) stage=cycles-aborted-first-timeout"
+              echo "cycle $i: external watchdog timeout - remaining cycles aborted" >> measure-out/cancel-cycles.jsonl
+              break
+            fi
           done
       - name: Engine soak (in-process + separate-process, live-RSS timeline)
         if: ${{ !inputs.compile_only }}
