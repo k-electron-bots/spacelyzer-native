@@ -664,8 +664,9 @@ extension Tree {
 /// - WINDOW BASIS: window records report EPOCH-CUMULATIVE counters (values since the most
 ///   recent reset()), not per-window deltas. The epoch field identifies the epoch; per-window
 ///   deltas are derived by subtraction within one epoch ("basis" field on every window record).
-/// - PHASE CHANNEL: AppModel scan lifecycle points (scan-start / scan-complete / scan-failed /
-///   swap) hand records to the monitor thread through a lock-protected queue bounded at 64
+/// - PHASE CHANNEL: AppModel scan lifecycle points (scan-start / completion-install-begin /
+///   tree-swap-begin / tree-installed / scan-failed, plus the swap record) hand records to the
+///   monitor thread through a lock-protected queue bounded at 64
 ///   (overflow counted in phaseDrops, reported in window records and as phase-drops records).
 ///   notePhase/noteSwap run on the main actor but only record under the lock - never IO.
 ///   They are inert unless the monitor is started. Event timestamps are captured at the event.
@@ -691,7 +692,7 @@ final class MainStall: @unchecked Sendable {
     // silently lost). notePhase/noteSwap are called on the main actor from AppModel scan
     // lifecycle points and only record - never IO; the monitor thread drains and writes.
     // Event timestamps are captured at the event, not at write time. ms is -1 for plain phases.
-    private var pendingEvents: [(name: String, ms: Double, generation: Int, tsMs: Int)] = []
+    private var pendingEvents: [(name: String, ms: Double, generation: UInt64, tsMs: Int)] = []
     private var phaseDrops = 0
     // Monitor-thread-only writer state: assigned and used by the monitor thread alone (start()
     // runs on the main actor; the fopen happens on the monitor thread). Never closed
@@ -790,7 +791,7 @@ final class MainStall: @unchecked Sendable {
     /// App-phase channel: called on the main actor from AppModel scan lifecycle points.
     /// No-op unless the monitor is started (inert in every product launch); recording only,
     /// never IO. Queue is bounded; overflow is counted in phaseDrops, never silently lost.
-    func notePhase(_ name: String, generation: Int) {
+    func notePhase(_ name: String, generation: UInt64) {
         lock.lock()
         if started {
             if pendingEvents.count >= 64 { phaseDrops += 1 }
@@ -801,7 +802,7 @@ final class MainStall: @unchecked Sendable {
     /// The synchronous tree-swap duration at a scan completion (the old-tree drop window),
     /// recorded directly - independent of the >100ms latched-stall filter, and never inferred
     /// from settle timing or from the absence of stall records.
-    func noteSwap(_ ms: Double, generation: Int) {
+    func noteSwap(_ ms: Double, generation: UInt64) {
         lock.lock()
         if started {
             if pendingEvents.count >= 64 { phaseDrops += 1 }
