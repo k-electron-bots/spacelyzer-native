@@ -18,6 +18,26 @@ kill_owned() {
 }
 mkdir -p "$LOGDIR" "$OUT"
 echo "marker ts_ms=$(( $(date +%s)*1000 )) stage=diagnostic-launch mode=$MODE root=$ROOT cap=$CAP"
+if [ "$MODE" = "rescan" ]; then
+  # Fully in-process completed-A -> rescan-B sequence (SPZ_DIAG_RESCAN): the ONLY configuration
+  # that observes the old-tree recursive drop (tree = t at the second scan's completion).
+  # ZERO AX/driver load in the measured window - no waitwindow, no driver calls.
+  open -n "$APP" --env SPZ_AUTOSCAN="$ROOT" --env SPZ_STALL_MONITOR=1 --env SPZ_STALL_LOG_DIR="$LOGDIR" --env SPZ_DIAG_RESCAN=1
+  PID=""
+  for i in $(seq 1 100); do PID=$(pgrep -x Spacelyzer | head -1); [ -n "$PID" ] && break; sleep 0.1; done
+  if [ -z "$PID" ]; then
+    echo "{\"note\":\"diagnostic-no-process\",\"mode\":\"rescan\"}" >> "$OUT/diagnostic-notes.jsonl"
+    echo "marker ts_ms=$(( $(date +%s)*1000 )) stage=diagnostic-no-process"
+    exit 1
+  fi
+  echo "marker ts_ms=$(( $(date +%s)*1000 )) stage=diagnostic-pid pid=$PID"
+  echo "marker ts_ms=$(( $(date +%s)*1000 )) stage=diagnostic-rescan-waiting cap=$CAP"
+  sleep "$CAP"
+  kill_owned "$PID"
+  echo "marker ts_ms=$(( $(date +%s)*1000 )) stage=diagnostic-cleanup-done"
+  cp -np "$LOGDIR"/spz-stall-*.jsonl "$OUT"/ 2>/dev/null || true
+  exit 0
+fi
 open -n "$APP" --env SPZ_AUTOSCAN="$ROOT" --env SPZ_STALL_MONITOR=1 --env SPZ_STALL_LOG_DIR="$LOGDIR"
 PID=""
 for i in $(seq 1 100); do PID=$(pgrep -x Spacelyzer | head -1); [ -n "$PID" ] && break; sleep 0.1; done
