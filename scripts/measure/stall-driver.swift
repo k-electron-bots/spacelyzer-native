@@ -13,6 +13,13 @@
 //   waitwindow <pid>                  Exit 0 when the app has an AX window (cold-launch marker).
 // Times are wall-clock ms around the AX call (overhead-inclusive; the concurrent external
 // `sample` capture is the overhead-free main-thread evidence).
+// BOUNDEDNESS (run 38486848714 evidence: iteration-bounded polls overran wall-clock by 18 min
+// because AX IPC waits on each call; per-call timeout x unbounded recursive call count is not a
+// wall-clock bound): every driver start sets an explicit 3s messaging timeout process-globally,
+// every mode runs under an in-process watchdog (exit 4), the workflow adds an external gtimeout,
+// and stage/marker lines with epoch ms go to stdout so any future gap is localizable from the log.
+// AX default-timeout semantics are NOT asserted (third-party docs describe a 6s system default;
+// Apple's current page was not retrievable for confirmation); this driver never relies on it.
 import Foundation
 import ApplicationServices
 setbuf(stdout, nil)
@@ -48,13 +55,26 @@ let mode = args[1]
 let root = AXUIElementCreateApplication(pid)
 guard AXIsProcessTrusted() else { print("ax-trust-denied"); exit(3) }
 
+// Bound every AX IPC call: explicit 3s messaging timeout, process-global (SystemWide) and on the
+// app ref. Never rely on a system default (semantics unverified - see header).
+AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 3.0)
+AXUIElementSetMessagingTimeout(root, 3.0)
+// In-process wall-clock watchdog: a blocked main thread cannot starve a background thread's exit.
+let watchdog = Thread { Thread.sleep(forTimeInterval: 240); print("WATCHDOG-EXIT mode=\(CommandLine.arguments[1])"); exit(4) }
+watchdog.start()
+func marker(_ stage: String) {
+    print("marker ts_ms=\(Int(Date().timeIntervalSince1970 * 1000)) mode=\(CommandLine.arguments[1]) stage=\(stage)")
+}
+marker("start")
+
 switch mode {
 case "waitwindow":
     for _ in 0..<120 {
         let wins = ax(root, kAXWindowsAttribute) as? [AXUIElement] ?? []
-        if !wins.isEmpty { print("window-ready"); exit(0) }
+        if !wins.isEmpty { marker("waitwindow-found"); print("window-ready"); exit(0) }
         Thread.sleep(forTimeInterval: 0.25)
     }
+    marker("waitwindow-timeout")
     exit(1)
 
 case "baseline":
@@ -128,14 +148,32 @@ case "expand":
     }
     guard let t = tbl else { emit(out, "{\"probe\":\"expand\",\"error\":\"no-outline-table-or-rows\"}"); exit(1) }
     let rowCount = rowsOf(t).count
+    // Row identity (mirrors scripts/ui-calibrate.swift): AXDescription, else the single child
+    // description. Flip polls RE-FIND the row by identity on a fresh AXRows read - held refs can
+    // go stale after virtualization/re-layout (run 38486848714: presses with no observable flip).
+    func identity(_ row: AXUIElement) -> String {
+        if let d = ax(row, "AXDescription") as? String, !d.isEmpty { return d }
+        let kids = children(row).compactMap { ax($0, "AXDescription") as? String }.filter { !$0.isEmpty }
+        return kids.count == 1 ? kids[0] : ""
+    }
+    func rowByIdentity(_ idn: String) -> AXUIElement? {
+        rowsOf(t).first(where: { identity($0) == idn })
+    }
     // Expandable rows = rows with a visible "Expand" chevron (chevron is hidden for childless rows,
     // OutlineView.swift:288). Pre-registered floor is n>=20 verified samples, so passes adapt to the
     // expandable-row count instead of assuming 12; a true shortfall stays INCONCLUSIVE by the floor.
-    var expandable: [Int] = []
+    var expandable: [(Int, String)] = []
     for i in 0..<min(rowCount, 24) {
-        if let row = rowsOf(t).dropFirst(i).first, chevron(row, prefix: "Expand") != nil { expandable.append(i) }
+        if let row = rowsOf(t).dropFirst(i).first, chevron(row, prefix: "Expand") != nil {
+            let idn = identity(row)
+            if !idn.isEmpty { expandable.append((i, idn)) }
+        }
     }
     let targets = Array(expandable.prefix(12))
+    func jesc(_ v: String) -> String {
+        v.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+    }
+    marker("expand-targets count=\(targets.count) of first-rows=\(min(rowCount, 24))")
     let expandPasses = targets.isEmpty ? 0 : max(2, min(6, (24 + targets.count - 1) / targets.count))
     if targets.isEmpty { emit(out, "{\"probe\":\"expand\",\"error\":\"no-expandable-rows\"}") }
     // menu proxy with runtime support verification
@@ -148,7 +186,7 @@ case "expand":
                 if actions(row).contains("AXShowMenu") { menuSupported = true }
                 else if let cell = children(row).first, actions(cell).contains("AXShowMenu") { menuSupported = true; menuOnCell = true }
             }
-            if !menuSupported { if pass == 0 && i == 0 { emit(out, "{\"probe\":\"menu\",\"error\":\"showmenu-action-not-exposed\"}") }; continue }
+            if !menuSupported { if pass == 0 && i == 0 { marker("menu-showmenu-not-exposed"); emit(out, "{\"probe\":\"menu\",\"error\":\"showmenu-action-not-exposed\"}") }; continue }
             let target = menuOnCell ? (children(row).first ?? row) : row
             let t0 = mach_absolute_time(); AXUIElementPerformAction(target, "AXShowMenu" as CFString); let t1 = mach_absolute_time()
             var seen = false, dismissed = false
@@ -163,27 +201,32 @@ case "expand":
             else { emit(out, "{\"probe\":\"menu\",\"pass\":\(pass),\"i\":\(i),\"error\":\"menu-not-shown\"}") }
         }
     }
-    // expand/collapse with verified state flip (adaptive passes to reach the n>=20 floor honestly)
+    // expand/collapse with verified state flip (adaptive passes; fresh identity-matched refs)
     for pass in 0..<expandPasses {
-        for i in targets {
-            guard let row = rowsOf(t).dropFirst(i).first else { continue }
+        marker("expand-pass-start pass=\(pass)")
+        for (i, idn) in targets {
+            guard let row = rowByIdentity(idn) else {
+                emit(out, "{\"probe\":\"expand\",\"pass\":\(pass),\"i\":\(i),\"error\":\"row-identity-lost\"}")
+                continue
+            }
             guard let btn = chevron(row, prefix: "Expand") else { continue }  // no children or already expanded
             let t0 = mach_absolute_time()
             AXUIElementPerformAction(btn, kAXPressAction as CFString)
             var flipped = false; var t1 = t0
             for _ in 0..<20 {
-                if chevron(row, prefix: "Collapse") != nil { flipped = true; t1 = mach_absolute_time(); break }
+                if let fresh = rowByIdentity(idn), chevron(fresh, prefix: "Collapse") != nil { flipped = true; t1 = mach_absolute_time(); break }
                 Thread.sleep(forTimeInterval: 0.1)
             }
-            if flipped { emit(out, "{\"probe\":\"expand\",\"pass\":\(pass),\"i\":\(i),\"ms\":\(ms(t0,t1)),\"verified\":true}") }
-            else { emit(out, "{\"probe\":\"expand\",\"pass\":\(pass),\"i\":\(i),\"error\":\"expand-unverified-2s\"}") }
-            // collapse back (best-effort, untimed) so the next pass sees the same state
-            if let cb = chevron(row, prefix: "Collapse") {
+            if flipped { emit(out, "{\"probe\":\"expand\",\"pass\":\(pass),\"i\":\(i),\"ms\":\(ms(t0,t1)),\"verified\":true,\"id\":\"\(jesc(idn))\"}") }
+            else { emit(out, "{\"probe\":\"expand\",\"pass\":\(pass),\"i\":\(i),\"error\":\"expand-unverified-2s\",\"id\":\"\(jesc(idn))\"}") }
+            // collapse back (best-effort, untimed, fresh refs) so the next pass sees the same state
+            if let fresh = rowByIdentity(idn), let cb = chevron(fresh, prefix: "Collapse") {
                 AXUIElementPerformAction(cb, kAXPressAction as CFString)
-                for _ in 0..<20 { if chevron(row, prefix: "Expand") != nil { break }; Thread.sleep(forTimeInterval: 0.1) }
+                for _ in 0..<20 { if let f2 = rowByIdentity(idn), chevron(f2, prefix: "Expand") != nil { break }; Thread.sleep(forTimeInterval: 0.1) }
             }
         }
     }
+    marker("expand-done")
     print("expand-done")
 
 case "cancel":
@@ -203,10 +246,12 @@ case "cancel":
         if btn != nil { break }
         Thread.sleep(forTimeInterval: 0.25)
     }
-    guard let b = btn else { emit(out, "{\"probe\":\"cancel\",\"error\":\"no-stop-button-scan-window-missed\"}") ; exit(1) }
+    guard let b = btn else { marker("cancel-window-missed"); emit(out, "{\"probe\":\"cancel\",\"error\":\"no-stop-button-scan-window-missed\"}") ; exit(1) }
+    marker("cancel-stop-found")
     let t0 = mach_absolute_time()
     AXUIElementPerformAction(b, kAXPressAction as CFString)
     let t1 = mach_absolute_time()
+    marker("cancel-pressed")
     emit(out, "{\"probe\":\"cancel-press\",\"ms\":\(ms(t0,t1))}")
     Thread.sleep(forTimeInterval: 1.0)
     let t2 = mach_absolute_time()
