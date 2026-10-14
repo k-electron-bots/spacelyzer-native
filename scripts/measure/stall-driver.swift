@@ -11,6 +11,10 @@
 //   nonascii <pid> <out.jsonl>        Non-ASCII value insert/readback probe only; NOT an IME
 //                                     composition test (that gate stays open).
 //   waitwindow <pid>                  Exit 0 when the app has an AX window (cold-launch marker).
+//   watch <pid> <out.jsonl> [cap-s]   Passive scan-window observation (DIAGNOSTIC launches only):
+//                                     1 Hz Stop-button presence poll (the control exists only
+//                                     mid-scan), no presses, no value sets. Exits at scan-window
+//                                     close + 10s settle, or at the cap (default 60s).
 // Times are wall-clock ms around the AX call (overhead-inclusive; the concurrent external
 // `sample` capture is the overhead-free main-thread evidence).
 // BOUNDEDNESS (run 38486848714 evidence: iteration-bounded polls overran wall-clock by 18 min
@@ -283,6 +287,32 @@ case "cancel":
     let t3 = mach_absolute_time()
     emit(out, "{\"probe\":\"cancel-post-responsive\",\"ms\":\(ms(t2,t3))}")
     print("cancel-done")
+
+case "watch":
+    let out = args[3]
+    let cap = args.count > 4 ? Double(args[4]) ?? 60 : 60
+    // Passive scan-window watch: 1 Hz Stop-presence poll, observation only. A wedged app can
+    // starve poll iterations (each AX call waits up to the 3s messaging timeout); t_s gaps in
+    // the emitted record make that visible, and the in-process watchdog (240s) plus the
+    // workflow's external clip bound the total wall-clock.
+    let w0 = mach_absolute_time()
+    var sawScanning = false
+    var settleAt: Double? = nil
+    while true {
+        let el = ms(w0, mach_absolute_time()) / 1000.0
+        if el >= cap { marker("watch-cap-reached cap=\(cap)s"); break }
+        let stop = findRole(root, role: kAXButtonRole as String).contains(where: {
+            let t = ((ax($0, "AXDescription") as? String) ?? "").lowercased()
+            let ti = ((ax($0, kAXTitleAttribute) as? String) ?? "").lowercased()
+            return t.contains("stop") || ti.contains("stop")
+        })
+        if stop { sawScanning = true; settleAt = nil }
+        else if sawScanning && settleAt == nil { settleAt = el; marker("watch-scan-window-closed") }
+        if let s = settleAt, el - s >= 10 { marker("watch-settle-done"); break }
+        emit(out, "{\"probe\":\"diagnostic-watch\",\"t_s\":\(el),\"scanning\":\(stop)}")
+        Thread.sleep(forTimeInterval: 1.0)
+    }
+    print("watch-done")
 
 case "nonascii":
     let out = args[3]
