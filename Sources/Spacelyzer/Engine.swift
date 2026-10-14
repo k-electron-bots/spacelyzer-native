@@ -664,6 +664,15 @@ extension Tree {
 /// - WINDOW BASIS: window records report EPOCH-CUMULATIVE counters (values since the most
 ///   recent reset()), not per-window deltas. The epoch field identifies the epoch; per-window
 ///   deltas are derived by subtraction within one epoch ("basis" field on every window record).
+/// - PHASE CHANNEL: AppModel scan lifecycle points (scan-start / scan-complete / scan-failed /
+///   swap) hand records to the monitor thread through a lock-protected queue bounded at 64
+///   (overflow counted in phaseDrops, reported in window records and as phase-drops records).
+///   notePhase/noteSwap run on the main actor but only record under the lock - never IO.
+///   They are inert unless the monitor is started. Event timestamps are captured at the event.
+///   The swap record carries the synchronous `tree = t` assignment duration measured directly
+///   at the assignment - independent of the >100ms latched-stall filter; a drop that leaves
+///   no >100ms latched sample still produces its swap record. Event names are compile-time
+///   constants from the app's own hooks (no external data), so records need no escaping.
 final class MainStall: @unchecked Sendable {
     static let shared = MainStall()
     private let lock = NSLock()
@@ -678,6 +687,12 @@ final class MainStall: @unchecked Sendable {
     // Latched-stall handoff to the monitor thread (lock-protected); records carry the enqueue epoch.
     private var pendingLatchedMs: Double?
     private var pendingLatchedEpoch: UInt64 = 0
+    // App-phase handoff (lock-protected, bounded at 64; overflow counted in phaseDrops, never
+    // silently lost). notePhase/noteSwap are called on the main actor from AppModel scan
+    // lifecycle points and only record - never IO; the monitor thread drains and writes.
+    // Event timestamps are captured at the event, not at write time. ms is -1 for plain phases.
+    private var pendingEvents: [(name: String, ms: Double, generation: Int, tsMs: Int)] = []
+    private var phaseDrops = 0
     // Monitor-thread-only writer state: assigned and used by the monitor thread alone (start()
     // runs on the main actor; the fopen happens on the monitor thread). Never closed
     // (process-lifetime), never used on main.
@@ -693,6 +708,7 @@ final class MainStall: @unchecked Sendable {
         let logDir = ProcessInfo.processInfo.environment["SPZ_STALL_LOG_DIR"]
         let t = Thread { [self] in
             var ticks = 0
+            var lastReportedDrops = 0
             if let dir = logDir, !dir.isEmpty {
                 let path = "\(dir)/spz-stall-\(ProcessInfo.processInfo.processIdentifier)-\(Int(Date().timeIntervalSince1970 * 1000)).jsonl"
                 logHandle = fopen(path, "a")
@@ -730,15 +746,29 @@ final class MainStall: @unchecked Sendable {
                 let latched = pendingLatchedMs
                 let latchedEpoch = pendingLatchedEpoch
                 pendingLatchedMs = nil
+                let events = pendingEvents
+                pendingEvents = []
+                let drops = phaseDrops
                 let doWindow = logHandle != nil && ticks >= 1000
                 if doWindow { ticks = 0 }
-                let snap = (n, maxMs, over16, over50, over100, skipped, epoch, telemetryWriteErrors)
+                let snap = (n, maxMs, over16, over50, over100, skipped, epoch, telemetryWriteErrors, phaseDrops)
                 lock.unlock()
+                for ev in events {
+                    if ev.ms >= 0 {
+                        writeRecord("{\"type\":\"swap\",\"ms\":\(String(format: "%.1f", ev.ms)),\"generation\":\(ev.generation),\"ts_epoch_ms\":\(ev.tsMs)}")
+                    } else {
+                        writeRecord("{\"type\":\"phase\",\"event\":\"\(ev.name)\",\"generation\":\(ev.generation),\"ts_epoch_ms\":\(ev.tsMs)}")
+                    }
+                }
+                if drops > lastReportedDrops && logHandle != nil {
+                    writeRecord("{\"type\":\"phase-drops\",\"count\":\(drops),\"ts_epoch_ms\":\(Int(Date().timeIntervalSince1970 * 1000))}")
+                    lastReportedDrops = drops
+                }
                 if let ms = latched {
                     writeRecord("{\"type\":\"stall\",\"ms\":\(String(format: "%.1f", ms)),\"epoch\":\(latchedEpoch),\"ts_epoch_ms\":\(Int(Date().timeIntervalSince1970 * 1000))}")
                 }
                 if doWindow {
-                    writeRecord("{\"type\":\"window\",\"basis\":\"epoch-cumulative\",\"pings\":\(snap.0),\"max_ms\":\(String(format: "%.1f", snap.1)),\"over16\":\(snap.2),\"over50\":\(snap.3),\"over100\":\(snap.4),\"skipped\":\(snap.5),\"epoch\":\(snap.6),\"telemetry_write_errors\":\(snap.7),\"ts_epoch_ms\":\(Int(Date().timeIntervalSince1970 * 1000))}")
+                    writeRecord("{\"type\":\"window\",\"basis\":\"epoch-cumulative\",\"pings\":\(snap.0),\"max_ms\":\(String(format: "%.1f", snap.1)),\"over16\":\(snap.2),\"over50\":\(snap.3),\"over100\":\(snap.4),\"skipped\":\(snap.5),\"epoch\":\(snap.6),\"telemetry_write_errors\":\(snap.7),\"phase_drops\":\(snap.8),\"ts_epoch_ms\":\(Int(Date().timeIntervalSince1970 * 1000))}")
                 }
                 Thread.sleep(forTimeInterval: 0.005)
             }
@@ -755,6 +785,29 @@ final class MainStall: @unchecked Sendable {
                 lock.lock(); telemetryWriteErrors += 1; lock.unlock()
             }
         }
+    }
+
+    /// App-phase channel: called on the main actor from AppModel scan lifecycle points.
+    /// No-op unless the monitor is started (inert in every product launch); recording only,
+    /// never IO. Queue is bounded; overflow is counted in phaseDrops, never silently lost.
+    func notePhase(_ name: String, generation: Int) {
+        lock.lock()
+        if started {
+            if pendingEvents.count >= 64 { phaseDrops += 1 }
+            else { pendingEvents.append((name, -1, generation, Int(Date().timeIntervalSince1970 * 1000))) }
+        }
+        lock.unlock()
+    }
+    /// The synchronous tree-swap duration at a scan completion (the old-tree drop window),
+    /// recorded directly - independent of the >100ms latched-stall filter, and never inferred
+    /// from settle timing or from the absence of stall records.
+    func noteSwap(_ ms: Double, generation: Int) {
+        lock.lock()
+        if started {
+            if pendingEvents.count >= 64 { phaseDrops += 1 }
+            else { pendingEvents.append(("swap", ms, generation, Int(Date().timeIntervalSince1970 * 1000))) }
+        }
+        lock.unlock()
     }
 
     func reset() {
