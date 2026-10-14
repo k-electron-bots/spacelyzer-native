@@ -90,20 +90,49 @@ jobs:
         if: ${{ !inputs.compile_only }}
         run: |
           mkdir -p measure-out
+          # Owned-PID cleanup: TERM the exact process this step launched, grace, then KILL only that
+          # PID (run 38486848714 evidence: name-based pkill + AX calls blocked past poll bounds).
+          kill_owned() {
+            [ -n "$1" ] || return 0
+            kill -TERM "$1" 2>/dev/null || true
+            for k in $(seq 1 10); do kill -0 "$1" 2>/dev/null || break; sleep 0.5; done
+            kill -0 "$1" 2>/dev/null && kill -KILL "$1" 2>/dev/null || true
+          }
+          echo "marker ts_ms=$(($(date +%s)*1000)) stage=initial-launch"
           open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Library
           PID=""
           for i in $(seq 1 60); do PID=$(pgrep -x Spacelyzer | head -1); [ -n "$PID" ] && break; sleep 0.5; done
           [ -n "$PID" ] || { echo "::error::app did not launch"; exit 1; }
-          /tmp/spz-stall-driver waitwindow "$PID" || { echo "::error::no AX window"; exit 1; }
+          echo "marker ts_ms=$(($(date +%s)*1000)) stage=initial-pid pid=$PID"
+          # External wall-clock watchdog (pure bash, no coreutils dependency): runs one command,
+          # TERM at the limit, KILL 15s later, passes the exit code through (124 on timeout).
+          # Survives any in-process block; driver also self-limits (see stall-driver.swift header).
+          run_bounded() {
+            local limit=$1; shift
+            local flag; flag=$(mktemp "${TMPDIR:-/tmp}/spzwatch.XXXXXX")
+            "$@" & local cpid=$!
+            ( i=0; while [ "$i" -lt "$limit" ]; do sleep 1; i=$((i+1)); done
+              echo 1 > "$flag"
+              kill -TERM "$cpid" 2>/dev/null
+              i=0; while [ "$i" -lt 15 ]; do sleep 1; kill -0 "$cpid" 2>/dev/null || break; i=$((i+1)); done
+              kill -KILL "$cpid" 2>/dev/null ) & local wpid=$!
+            wait "$cpid"; local rc=$?
+            kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
+            if [ -s "$flag" ]; then echo "WATCHDOG-EXTERNAL timeout_s=$limit cmd=$1"; rc=124; fi
+            rm -f "$flag"
+            return "$rc"
+          }
+          run_bounded 300 /tmp/spz-stall-driver waitwindow "$PID" || { echo "::error::no AX window"; kill_owned "$PID"; exit 1; }
           sample "$PID" 30 10 -file /tmp/spz-main-sample.txt &   # CONTEXT ONLY - not instrumentation (see header)
           SAMPLEPID=$!
-          /tmp/spz-stall-driver baseline "$PID" measure-out/ax-baseline.jsonl
-          /tmp/spz-stall-driver type "$PID" measure-out/ax-type.jsonl "keep-tag-0001-measurement-stall-pass" || true
-          /tmp/spz-stall-driver expand "$PID" measure-out/ax-expand.jsonl || true
-          /tmp/spz-stall-driver nonascii "$PID" measure-out/ax-nonascii.jsonl || true
+          run_bounded 300 /tmp/spz-stall-driver baseline "$PID" measure-out/ax-baseline.jsonl
+          run_bounded 300 /tmp/spz-stall-driver type "$PID" measure-out/ax-type.jsonl "keep-tag-0001-measurement-stall-pass" || true
+          run_bounded 300 /tmp/spz-stall-driver expand "$PID" measure-out/ax-expand.jsonl || true
+          run_bounded 300 /tmp/spz-stall-driver nonascii "$PID" measure-out/ax-nonascii.jsonl || true
+          echo "marker ts_ms=$(($(date +%s)*1000)) stage=initial-measurements-done"
           wait "$SAMPLEPID" || true
           cp /tmp/spz-main-sample.txt measure-out/main-thread-sample.txt
-          pkill -x Spacelyzer || true; sleep 2
+          kill_owned "$PID"
       - name: Cancel/rescan cycles + post-cancel responsiveness
         if: ${{ !inputs.compile_only }}
         run: |
@@ -112,16 +141,44 @@ jobs:
           # (rationale + numbers in scripts/measure/make-cancel-fixture.sh). One-time generation.
           bash scripts/measure/make-cancel-fixture.sh "$RUNNER_TEMP/spz-cancel-fixture"
           FIX="$RUNNER_TEMP/spz-cancel-fixture"
+          kill_owned() {
+            [ -n "$1" ] || return 0
+            kill -TERM "$1" 2>/dev/null || true
+            for k in $(seq 1 10); do kill -0 "$1" 2>/dev/null || break; sleep 0.5; done
+            kill -0 "$1" 2>/dev/null && kill -KILL "$1" 2>/dev/null || true
+          }
+          # External wall-clock watchdog (pure bash, no coreutils dependency): runs one command,
+          # TERM at the limit, KILL 15s later, passes the exit code through (124 on timeout).
+          # Survives any in-process block; driver also self-limits (see stall-driver.swift header).
+          run_bounded() {
+            local limit=$1; shift
+            local flag; flag=$(mktemp "${TMPDIR:-/tmp}/spzwatch.XXXXXX")
+            "$@" & local cpid=$!
+            ( i=0; while [ "$i" -lt "$limit" ]; do sleep 1; i=$((i+1)); done
+              echo 1 > "$flag"
+              kill -TERM "$cpid" 2>/dev/null
+              i=0; while [ "$i" -lt 15 ]; do sleep 1; kill -0 "$cpid" 2>/dev/null || break; i=$((i+1)); done
+              kill -KILL "$cpid" 2>/dev/null ) & local wpid=$!
+            wait "$cpid"; local rc=$?
+            kill "$wpid" 2>/dev/null; wait "$wpid" 2>/dev/null
+            if [ -s "$flag" ]; then echo "WATCHDOG-EXTERNAL timeout_s=$limit cmd=$1"; rc=124; fi
+            rm -f "$flag"
+            return "$rc"
+          }
           for i in 1 2 3; do
+            echo "marker ts_ms=$(($(date +%s)*1000)) stage=cycle-$i-launch"
             open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN="$FIX"
             PID=""
             for j in $(seq 1 100); do PID=$(pgrep -x Spacelyzer | head -1); [ -n "$PID" ] && break; sleep 0.1; done
             [ -n "$PID" ] || { echo "cycle $i: no process" >> measure-out/cancel-cycles.jsonl; continue; }
-            /tmp/spz-stall-driver waitwindow "$PID" || true
+            echo "marker ts_ms=$(($(date +%s)*1000)) stage=cycle-$i-pid pid=$PID"
+            run_bounded 300 /tmp/spz-stall-driver waitwindow "$PID" || true
             # driver polls from t=0 for the actual "Stop scan" button; a missed window is an honest
             # error row, never a fabricated press
-            /tmp/spz-stall-driver cancel "$PID" "measure-out/cancel-cycle-$i.jsonl" || true
-            pkill -x Spacelyzer || true; sleep 2
+            run_bounded 300 /tmp/spz-stall-driver cancel "$PID" "measure-out/cancel-cycle-$i.jsonl" || true
+            echo "marker ts_ms=$(($(date +%s)*1000)) stage=cycle-$i-cancel-done"
+            kill_owned "$PID"
+            echo "marker ts_ms=$(($(date +%s)*1000)) stage=cycle-$i-cleanup-done"
           done
       - name: Engine soak (in-process + separate-process, live-RSS timeline)
         if: ${{ !inputs.compile_only }}
