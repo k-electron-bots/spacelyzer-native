@@ -48,16 +48,49 @@ def dist(name, rows, p95_bar, max_bar):
 
 def diag_summarize(rows):
     # bounded-ping-v1 telemetry rows -> (record counts by type, latched stall ms values,
-    # max telemetry_write_errors seen). Malformed rows are skipped by read_jsonl already.
-    by_type, stalls, errs = {}, [], 0
+    # max telemetry_write_errors, swap records [(gen, ms)], phase events [(event, gen)],
+    # max phase_drops). Malformed rows are skipped by read_jsonl already.
+    by_type, stalls, errs, swaps, phases, pdrops = {}, [], 0, [], [], 0
     for r in rows:
         t = r.get("type", "?")
         by_type[t] = by_type.get(t, 0) + 1
         if t == "stall" and isinstance(r.get("ms"), (int, float)):
             stalls.append(r["ms"])
+        if t == "swap" and isinstance(r.get("ms"), (int, float)):
+            swaps.append((r.get("generation"), r["ms"]))
+        if t == "phase" and isinstance(r.get("event"), str):
+            phases.append((r["event"], r.get("generation")))
         if isinstance(r.get("telemetry_write_errors"), int):
             errs = max(errs, r["telemetry_write_errors"])
-    return by_type, stalls, errs
+        if isinstance(r.get("phase_drops"), int):
+            pdrops = max(pdrops, r["phase_drops"])
+    return by_type, stalls, errs, swaps, phases, pdrops
+
+def rescan_outcome(swaps, phases):
+    # Distinct reachable states of the completed-A -> rescan-B diagnostic, from phase/swap
+    # records ONLY - never inferred from wall-clock timing or from the absence of stall records.
+    # Only a swap record at generation >= 2 is old-tree drop coverage; every other state is
+    # reported as the reached state it is.
+    starts = sorted(g for e, g in phases if e == "scan-start" and isinstance(g, int))
+    installed = sorted(g for e, g in phases if e == "tree-installed" and isinstance(g, int))
+    failed = sorted(g for e, g in phases if e == "scan-failed" and isinstance(g, int))
+    if not starts:
+        return "no scan-start phase recorded (phase queue overflowed or monitor started late); rescan outcome unknown"
+    g0 = starts[0]
+    if g0 in failed:
+        return f"scan A (gen {g0}) FAILED - no old tree existed; drop not observable in this launch"
+    if g0 not in installed:
+        return f"scan A (gen {g0}) did not complete within coverage - rescan B not reached; drop NOT observed"
+    if len(starts) < 2:
+        return f"scan A (gen {g0}) completed and installed; rescan B NOT reached within coverage; drop NOT observed"
+    gb = starts[1]
+    bswaps = [ms for g, ms in swaps if g == gb]
+    if bswaps:
+        return (f"rescan B (gen {gb}) completed: {len(bswaps)} swap record(s), max {max(bswaps):.1f}ms - "
+                "old-tree drop window measured directly (synchronous tree=t assignment)")
+    if gb in failed:
+        return f"rescan B (gen {gb}) FAILED - no drop installed"
+    return f"rescan B (gen {gb}) started but did not complete within coverage - drop NOT observed"
 
 def envf(k, d):
     try: return float(os.environ.get(k, d))
@@ -109,13 +142,23 @@ def selftest():
     check("missing-denial-inconclusive", poison_eval("(1 skipped)\npoison-scan-exit=0\n", None)[0] == "INCONCLUSIVE")
     check("root-denial-inconclusive", poison_eval("(1 skipped)\npoison-scan-exit=0\n", "runner-uid=0\nPROBE-DENIED\n")[0] == "INCONCLUSIVE")
     check("readable-probe-inconclusive", poison_eval("(1 skipped)\npoison-scan-exit=0\n", "runner-uid=501\nPROBE-READABLE\n")[0] == "INCONCLUSIVE")
-    by_t, st, er = diag_summarize([{"type": "window", "telemetry_write_errors": 0},
+    by_t, st, er, sw, ph, pd = diag_summarize([{"type": "window", "telemetry_write_errors": 0},
                                    {"type": "stall", "ms": 123.4},
                                    {"type": "stall", "ms": "bad"},
-                                   {"type": "window", "telemetry_write_errors": 2}])
-    check("diag-counts", by_t == {"window": 2, "stall": 2} and st == [123.4] and er == 2)
-    by_t, st, er = diag_summarize([])
-    check("diag-empty", by_t == {} and st == [] and er == 0)
+                                   {"type": "swap", "ms": 42.0, "generation": 2},
+                                   {"type": "phase", "event": "scan-start", "generation": 1},
+                                   {"type": "window", "telemetry_write_errors": 2, "phase_drops": 3}])
+    check("diag-counts", by_t == {"window": 2, "stall": 2, "swap": 1, "phase": 1} and st == [123.4] and er == 2
+          and sw == [(2, 42.0)] and ph == [("scan-start", 1)] and pd == 3)
+    by_t, st, er, sw, ph, pd = diag_summarize([])
+    check("diag-empty", by_t == {} and st == [] and er == 0 and sw == [] and ph == [] and pd == 0)
+    P = lambda *ps: [(e, g) for e, g in ps]
+    check("outcome-a-failed", "FAILED" in rescan_outcome([], P(("scan-start", 1), ("scan-failed", 1))))
+    check("outcome-a-running", "did not complete" in rescan_outcome([], P(("scan-start", 1))))
+    check("outcome-b-not-reached", "NOT reached" in rescan_outcome([(1, 0.1)], P(("scan-start", 1), ("tree-installed", 1))))
+    check("outcome-swap", "measured directly" in rescan_outcome([(1, 0.1), (2, 87.5)], P(("scan-start", 1), ("tree-installed", 1), ("scan-start", 2), ("tree-installed", 2))))
+    check("outcome-b-incomplete", "did not complete" in rescan_outcome([(1, 0.1)], P(("scan-start", 1), ("tree-installed", 1), ("scan-start", 2))))
+    check("outcome-no-start", "unknown" in rescan_outcome([], []))
     if fails:
         print("SELFTEST FAIL: " + ", ".join(fails)); sys.exit(1)
     print("SELFTEST PASS: tail policy + poison semantics + denial gate + absent-evidence handling + diagnostic parse")
@@ -198,13 +241,18 @@ else:
 diag_files = sorted(glob.glob(os.path.join(out, "stall-telemetry", "diagnostic", "spz-stall-*.jsonl")))
 if diag_files:
     for f in diag_files:
-        by_t, st, er = diag_summarize(read_jsonl(f))
-        detail = f"records={sum(by_t.values())} by_type={by_t} telemetry_write_errors={er}"
+        by_t, st, er, sw, ph, pd = diag_summarize(read_jsonl(f))
+        detail = f"records={sum(by_t.values())} by_type={by_t} telemetry_write_errors={er} phase_drops={pd}"
         if st:
             detail += f" latched-stalls n={len(st)} max={max(st):.1f}ms"
+        if sw:
+            detail += " swaps=" + ",".join(f"gen{g}:{m:.1f}ms" for g, m in sw)
+        if ph:
+            detail += " phases=" + ">".join(f"{e}(g{g})" for e, g in ph)
+            detail += " | rescan-outcome: " + rescan_outcome(sw, ph)
         verdict(f"diagnostic-{os.path.basename(f)}", "INFO", detail + "; diagnostic instrumentation, closes no gate")
 else:
-    verdict("diagnostic-stall-telemetry", "INCONCLUSIVE", "no diagnostic telemetry captured; scan-window stall investigation stays open")
+    verdict("diagnostic-stall-telemetry", "INCONCLUSIVE", "no diagnostic telemetry captured; scan-window stall and old-tree-drop investigations stay open")
 
 # poison partial-scan check, driven by the engine's ACTUAL semantics (verified against
 # engine/src/bin/spz.rs): an unreadable subtree is recorded in tree.skipped and the scan
