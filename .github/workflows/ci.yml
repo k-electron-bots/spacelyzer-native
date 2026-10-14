@@ -61,6 +61,13 @@ jobs:
           if [ -n "$DIFF" ]; then echo "::error::product tree differs from reviewed 00aa46a2 beyond the named instrumentation files: $DIFF"; exit 1; fi
           echo "product tree == 00aa46a2 EXCEPT Engine.swift + SpacelyzerApp.swift (bounded-ping-v1 instrumentation; rest of tree verified)"
           git diff --stat 00aa46a2d384ec4648ae4571ccb2eaee5a7e6324 HEAD -- Sources/Spacelyzer/Engine.swift Sources/Spacelyzer/SpacelyzerApp.swift
+          # Fail closed if the named instrumentation files drift from the exact reviewed content:
+          # a branch move must stop measurement BEFORE it runs, not after exclude+diffstat alone.
+          ESHA=$(git hash-object Sources/Spacelyzer/Engine.swift)
+          ASHA=$(git hash-object Sources/Spacelyzer/SpacelyzerApp.swift)
+          [ "$ESHA" = "ef76eac5f56747bfad74adf4c394fe4d30cc76ee" ] || { echo "::error::Engine.swift drifted from the reviewed instrumentation blob ($ESHA)"; exit 1; }
+          [ "$ASHA" = "90b6432c485c5d2a67c5983bb70a026be77da973" ] || { echo "::error::SpacelyzerApp.swift drifted from the reviewed instrumentation blob ($ASHA)"; exit 1; }
+          echo "instrumentation files pinned at exact reviewed blobs Engine=$ESHA App=$ASHA"
           # Job-start epoch: measurement steps derive remaining-job-aware budgets from this
           # (job timeout-minutes is 35; reserve covers the gates after the cancel step + upload).
           date +%s > "$RUNNER_TEMP/spz-job-start"
@@ -322,22 +329,40 @@ jobs:
           # --- Instrumented diagnostic launches: LABELED diagnostic, NEVER bar-compared ---
           # (pre-registered separation, see header). The bounded-ping monitor runs here only;
           # telemetry = per-launch append+flush JSONL copied into
-          # measure-out/stall-telemetry/diagnostic/. Investigation context for the unresolved
-          # scan-window stall (a candidate contributor, not a proven root cause); closes no
-          # gate. All calls budget-clipped; a first watchdog timeout skips the optional
-          # second diagnostic honestly. Optional second launch = instrumented cancel
-          # (comparability with the uninstrumented bar cycles pre-declared uncertain).
+          # measure-out/stall-telemetry/diagnostic/. Closes no gate. CHAIN RULE: each
+          # diagnostic runs only when the previous one exited 0 - a failed environment
+          # (ANY non-zero rc, not just a 124 timeout) aborts the rest with an honest note
+          # instead of repeating a zero-evidence pattern.
+          # Coverage declarations: the scan-window watch caps at 120s - it SAMPLES the scan
+          # window and CANNOT cover an 18-minute stall window (run 2's AX gap was 18.1 min);
+          # its 1 Hz AX Stop-presence poll is a DECLARED observer load on the target.
+          # The rescan diagnostic carries ZERO AX load (fully in-process rescan trigger,
+          # SPZ_DIAG_RESCAN; no driver calls) and covers scan A completion + settle +
+          # rescan B through its completion - the ONLY window where `tree = t` drops the
+          # old tree on the main actor (AppModel scan completion). A fresh launch's first
+          # completion drops nothing (tree was nil); a cancel installs nothing - only a
+          # completed-A -> rescan-B sequence observes the old-tree recursive drop.
           mkdir -p "$RUNNER_TEMP/spz-stall-logs" measure-out/stall-telemetry/diagnostic
           DRC=0
-          budgeted_run 300 diagnostic-scan-window-watch bash scripts/measure/diagnostic-watch.sh dist/Spacelyzer.app /tmp/spz-stall-driver "$FIX" "$RUNNER_TEMP/spz-stall-logs" measure-out/stall-telemetry/diagnostic 120 || DRC=$?
-          echo "marker ts_ms=$(($(date +%s)*1000)) stage=diagnostic-watch-1-done rc=$DRC"
-          if [ "$DRC" -eq 124 ]; then
-            echo "{\"note\":\"diagnostic-first-timeout-optional-skipped\"}" >> measure-out/stall-telemetry/diagnostic/diagnostic-notes.jsonl
+          budgeted_run 480 diagnostic-rescan-old-tree-drop bash scripts/measure/diagnostic-watch.sh dist/Spacelyzer.app /tmp/spz-stall-driver "$FIX" "$RUNNER_TEMP/spz-stall-logs" measure-out/stall-telemetry/diagnostic 300 rescan || DRC=$?
+          echo "marker ts_ms=$(($(date +%s)*1000)) stage=diagnostic-rescan-done rc=$DRC"
+          if [ "$DRC" -ne 0 ]; then
+            echo "{\"note\":\"diagnostic-chain-aborted\",\"after\":\"rescan\",\"rc\":$DRC}" >> measure-out/stall-telemetry/diagnostic/diagnostic-notes.jsonl
           else
-            budgeted_run 300 diagnostic-cancel-instrumented bash scripts/measure/diagnostic-watch.sh dist/Spacelyzer.app /tmp/spz-stall-driver "$FIX" "$RUNNER_TEMP/spz-stall-logs" measure-out/stall-telemetry/diagnostic 120 cancel || true
-            echo "marker ts_ms=$(($(date +%s)*1000)) stage=diagnostic-cancel-instrumented-done"
+            budgeted_run 300 diagnostic-scan-window-watch bash scripts/measure/diagnostic-watch.sh dist/Spacelyzer.app /tmp/spz-stall-driver "$FIX" "$RUNNER_TEMP/spz-stall-logs" measure-out/stall-telemetry/diagnostic 120 || DRC=$?
+            echo "marker ts_ms=$(($(date +%s)*1000)) stage=diagnostic-watch-done rc=$DRC"
+            if [ "$DRC" -ne 0 ]; then
+              echo "{\"note\":\"diagnostic-chain-aborted\",\"after\":\"watch\",\"rc\":$DRC}" >> measure-out/stall-telemetry/diagnostic/diagnostic-notes.jsonl
+            else
+              budgeted_run 300 diagnostic-cancel-instrumented bash scripts/measure/diagnostic-watch.sh dist/Spacelyzer.app /tmp/spz-stall-driver "$FIX" "$RUNNER_TEMP/spz-stall-logs" measure-out/stall-telemetry/diagnostic 120 cancel || DRC=$?
+              echo "marker ts_ms=$(($(date +%s)*1000)) stage=diagnostic-cancel-instrumented-done rc=$DRC"
+              if [ "$DRC" -ne 0 ]; then
+                echo "{\"note\":\"diagnostic-cancel-failed\",\"rc\":$DRC}" >> measure-out/stall-telemetry/diagnostic/diagnostic-notes.jsonl
+              fi
+            fi
           fi
           cp -np "$RUNNER_TEMP/spz-stall-logs"/spz-stall-*.jsonl measure-out/stall-telemetry/diagnostic/ 2>/dev/null || true
+
       - name: Engine soak (in-process + separate-process, live-RSS timeline)
         if: ${{ !inputs.compile_only }}
         run: bash scripts/measure/soak.sh ./target/release/spz measure-out /Library
