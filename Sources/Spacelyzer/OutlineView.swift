@@ -332,6 +332,39 @@ private enum SelectionRevisionSwitch {
     }
 }
 
+
+/// Batch plan for applying a new outline row list without a full reloadData.
+/// Pure function of the old and new node sequences so CI can exhaust it without a UI.
+/// Anything that is not a pure insertion or pure deletion at one spot is .reload -
+/// reorders, content changes, tree swaps and mixed edits never take the batch path.
+enum OutlineBatchPlan: Equatable {
+    case none
+    case insert(at: Int, count: Int)
+    case delete(at: Int, count: Int)
+    case reload
+}
+
+func outlineBatchPlan(old: [UInt32], new: [UInt32]) -> OutlineBatchPlan {
+    if old == new { return .none }
+    var p = 0
+    while p < min(old.count, new.count), old[p] == new[p] { p += 1 }
+    var s = 0
+    while s < min(old.count - p, new.count - p), old[old.count - 1 - s] == new[new.count - 1 - s] { s += 1 }
+    let oldMid = old.count - p - s, newMid = new.count - p - s
+    if oldMid == 0 && newMid == 0 { return .none }
+    if oldMid == 0 { return .insert(at: p, count: newMid) }
+    if newMid == 0 { return .delete(at: p, count: oldMid) }
+    return .reload
+}
+
+#if SPZ_CI_TESTS
+/// Test-binary-only counters for the batch-update path. Not compiled into the shipped build.
+enum BatchDiag {
+    static var applied = 0, fallbackReload = 0
+    static var summary: String { "batchApplied=\(applied) batchFallbackReload=\(fallbackReload)" }
+}
+#endif
+
 private struct OutlineTable: NSViewRepresentable {
     let model: AppModel
     let tree: Tree
@@ -392,7 +425,44 @@ private struct OutlineTable: NSViewRepresentable {
         if c.shownRevision != revision || poisonReload {
             c.shownRevision = revision
             c.shownPoisoned = poisoned
-            c.table?.reloadData()
+            let newNodes = model.outlineRows.map { $0.node }
+            if let table = c.table, !poisonReload, !c.shownNodes.isEmpty,
+               case .toggle(let toggled) = model.outlineLastCause {
+                // Structural toggle: pure insert/delete batch plus a one-row reload of the toggled
+                // row so its chevron and AX description flip. Anything else falls back to reloadData.
+                switch outlineBatchPlan(old: c.shownNodes, new: newNodes) {
+                case .none:
+                    break
+                case .insert(let at, let count):
+                    table.beginUpdates()
+                    table.insertRows(at: IndexSet(at..<(at + count)), withAnimation: [])
+                    table.endUpdates()
+                    if let ti = model.outlineIndex[toggled] {
+                        table.reloadData(forRowIndexes: IndexSet(integer: ti), columnIndexes: IndexSet(integer: 0))
+                    }
+                    #if SPZ_CI_TESTS
+                    BatchDiag.applied += 1
+                    #endif
+                case .delete(let at, let count):
+                    table.beginUpdates()
+                    table.removeRows(at: IndexSet(at..<(at + count)), withAnimation: [])
+                    table.endUpdates()
+                    if let ti = model.outlineIndex[toggled] {
+                        table.reloadData(forRowIndexes: IndexSet(integer: ti), columnIndexes: IndexSet(integer: 0))
+                    }
+                    #if SPZ_CI_TESTS
+                    BatchDiag.applied += 1
+                    #endif
+                case .reload:
+                    table.reloadData()
+                    #if SPZ_CI_TESTS
+                    BatchDiag.fallbackReload += 1
+                    #endif
+                }
+            } else {
+                c.table?.reloadData()
+            }
+            c.shownNodes = newNodes
         }
         c.syncSelection(selected)
         if let table = c.table {
@@ -411,6 +481,7 @@ private struct OutlineTable: NSViewRepresentable {
         var tree: Tree?
         var total: UInt64 = 1
         var shownRevision = -1
+        var shownNodes: [UInt32] = []
         var shownPoisoned = false
         private var suppress = false
         #if SPZ_CI_TESTS
