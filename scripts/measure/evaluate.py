@@ -46,6 +46,19 @@ def dist(name, rows, p95_bar, max_bar):
     else:
         verdict(name, "PASS", stats)
 
+def diag_summarize(rows):
+    # bounded-ping-v1 telemetry rows -> (record counts by type, latched stall ms values,
+    # max telemetry_write_errors seen). Malformed rows are skipped by read_jsonl already.
+    by_type, stalls, errs = {}, [], 0
+    for r in rows:
+        t = r.get("type", "?")
+        by_type[t] = by_type.get(t, 0) + 1
+        if t == "stall" and isinstance(r.get("ms"), (int, float)):
+            stalls.append(r["ms"])
+        if isinstance(r.get("telemetry_write_errors"), int):
+            errs = max(errs, r["telemetry_write_errors"])
+    return by_type, stalls, errs
+
 def envf(k, d):
     try: return float(os.environ.get(k, d))
     except Exception: return d
@@ -96,9 +109,16 @@ def selftest():
     check("missing-denial-inconclusive", poison_eval("(1 skipped)\npoison-scan-exit=0\n", None)[0] == "INCONCLUSIVE")
     check("root-denial-inconclusive", poison_eval("(1 skipped)\npoison-scan-exit=0\n", "runner-uid=0\nPROBE-DENIED\n")[0] == "INCONCLUSIVE")
     check("readable-probe-inconclusive", poison_eval("(1 skipped)\npoison-scan-exit=0\n", "runner-uid=501\nPROBE-READABLE\n")[0] == "INCONCLUSIVE")
+    by_t, st, er = diag_summarize([{"type": "window", "telemetry_write_errors": 0},
+                                   {"type": "stall", "ms": 123.4},
+                                   {"type": "stall", "ms": "bad"},
+                                   {"type": "window", "telemetry_write_errors": 2}])
+    check("diag-counts", by_t == {"window": 2, "stall": 2} and st == [123.4] and er == 2)
+    by_t, st, er = diag_summarize([])
+    check("diag-empty", by_t == {} and st == [] and er == 0)
     if fails:
         print("SELFTEST FAIL: " + ", ".join(fails)); sys.exit(1)
-    print("SELFTEST PASS: tail policy + poison semantics + denial gate + absent-evidence handling")
+    print("SELFTEST PASS: tail policy + poison semantics + denial gate + absent-evidence handling + diagnostic parse")
     sys.exit(0)
 
 if len(sys.argv) > 1 and sys.argv[1] == "--selftest":
@@ -171,6 +191,20 @@ if press and resp:
     verdict("cancel-responsive", "PASS" if worst <= bar else "OUTLIER", f"cycles={len(press)} post-cancel AX responsive worst={worst:.1f}ms bar<={bar}")
 else:
     verdict("cancel-responsive", "INCONCLUSIVE", f"press={len(press)} resp={len(resp)}")
+
+# Instrumented diagnostic telemetry (bounded-ping-v1, launches labeled diagnostic):
+# CONTEXT ONLY - never bar-compared, closes no gate. Reports the monitor's own records
+# verbatim (counts by type, latched stalls, the monitor's write-error counter).
+diag_files = sorted(glob.glob(os.path.join(out, "stall-telemetry", "diagnostic", "spz-stall-*.jsonl")))
+if diag_files:
+    for f in diag_files:
+        by_t, st, er = diag_summarize(read_jsonl(f))
+        detail = f"records={sum(by_t.values())} by_type={by_t} telemetry_write_errors={er}"
+        if st:
+            detail += f" latched-stalls n={len(st)} max={max(st):.1f}ms"
+        verdict(f"diagnostic-{os.path.basename(f)}", "INFO", detail + "; diagnostic instrumentation, closes no gate")
+else:
+    verdict("diagnostic-stall-telemetry", "INCONCLUSIVE", "no diagnostic telemetry captured; scan-window stall investigation stays open")
 
 # poison partial-scan check, driven by the engine's ACTUAL semantics (verified against
 # engine/src/bin/spz.rs): an unreadable subtree is recorded in tree.skipped and the scan
