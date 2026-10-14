@@ -413,6 +413,9 @@ private struct OutlineTable: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         InteractionTrace.record("outline-update-enter")
         defer { InteractionTrace.record("outline-update-exit") }
+        let applyT0 = DispatchTime.now().uptimeNanoseconds
+        var applyCtx = "apply:reload"
+        defer { StageTiming.mark("apply", since: applyT0, ctx: applyCtx) }
         let c = context.coordinator
         #if SPZ_CI_TESTS
         SelDiag.update += 1; SelDiag.updateSel = selected
@@ -433,8 +436,10 @@ private struct OutlineTable: NSViewRepresentable {
                 // row so its chevron and AX description flip. Anything else falls back to reloadData.
                 switch outlineBatchPlan(old: c.shownNodes, new: newNodes) {
                 case .none:
+                    applyCtx = "apply:none"
                     break
                 case .insert(let at, let count):
+                    applyCtx = "apply:insert-at=\(at)+\(count)"
                     table.beginUpdates()
                     table.insertRows(at: IndexSet(at..<(at + count)), withAnimation: [])
                     table.endUpdates()
@@ -445,6 +450,7 @@ private struct OutlineTable: NSViewRepresentable {
                     BatchDiag.applied += 1
                     #endif
                 case .delete(let at, let count):
+                    applyCtx = "apply:delete-at=\(at)+\(count)"
                     table.beginUpdates()
                     table.removeRows(at: IndexSet(at..<(at + count)), withAnimation: [])
                     table.endUpdates()
@@ -455,13 +461,15 @@ private struct OutlineTable: NSViewRepresentable {
                     BatchDiag.applied += 1
                     #endif
                 case .reload:
+                    applyCtx = "apply:plan-reload"
                     table.reloadData()
                     #if SPZ_CI_TESTS
                     BatchDiag.fallbackReload += 1
                     #endif
                 }
                 if table.numberOfRows != newNodes.count {
-                    // Safety: the batch left the row count inconsistent; recover with a full reload.
+                    // Safety: postcondition repair only - a wrong batch already applied; reload to recover.
+                    applyCtx += ":repaired"
                     table.reloadData()
                     #if SPZ_CI_TESTS
                     BatchDiag.fallbackReload += 1
