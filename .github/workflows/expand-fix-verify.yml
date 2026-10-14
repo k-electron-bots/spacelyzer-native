@@ -1,0 +1,321 @@
+name: expand-fix-verify
+# ONE bounded manual verification attempt for the outline batch-update fix.
+# workflow_dispatch ONLY: no push trigger, no pull_request trigger, no tag handling, no release,
+# no publish, no DMG upload. Measurement apps are built, probed and discarded on the runner.
+# Source bound: the dispatch ref is the measurement branch whose product source equals the
+# reviewed fix head (7db129cac310399f7ddf9cc6ba8813ce239061c6 = daeb7c92 guard-PASS source plus
+# the ci.yml assertion-count consistency edit) EXCEPT the named additions: this workflow,
+# scripts/measure/{stall-driver.swift,evaluate.py} (byte-copies of the reviewed 6a10 blobs
+# d875d10e57c3580e6e67bf1c7979968eb13e72b4 / 489f0ee0549d51a4cf0d7bf6e2138ad3502b90c3), and the
+# SPZ_TIMING diagnostic instrumentation (Sources/Spacelyzer/StageTiming.swift + marks in
+# AppModel.swift/OutlineView.swift; env-gated, INERT unless SPZ_TIMING=1).
+# PRE-REGISTERED SEPARATION (binding): bar-gated expand probes run UNINSTRUMENTED (SPZ_TIMING
+# unset) on the BASE (00aa46a2) and FIX builds. The SPZ_TIMING diagnostic is a separate launch,
+# investigation context only, and closes no gate.
+# BARS (unchanged, pre-registered): expand p95 <= 250ms (work-allowed), max <= 1000ms; floor
+# n>=20; p95 AND max both binding; exactly 1 over max = OUTLIER UNRESOLVED (never auto-PASS);
+# evaluate.py --selftest runs before evaluation (fail closed on malformed evidence).
+# BUDGET: single attempt, no retry, job timeout-minutes 35 hard cap. Feasibility estimate
+# 14-16 min is an ESTIMATE, not a promise: per-step caps plus the pure-bash budgeted_run helper
+# (TERM at limit, KILL after grace, rc 124/125 markers) clip or honestly SKIP work rather than
+# burn the job; a skipped probe yields INCONCLUSIVE, never a silent pass.
+
+on:
+  workflow_dispatch:
+
+env:
+  STALL_TYPE_P95_MS: "100"
+  STALL_TYPE_MAX_MS: "1000"
+  STALL_EXPAND_P95_MS: "250"
+  STALL_EXPAND_MAX_MS: "1000"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: macos-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Record job start (fail closed if missing later)
+        run: date +%s > "$RUNNER_TEMP/spz-job-start"
+
+      - name: Pin echo (exact source under test)
+        run: |
+          set -e
+          mkdir -p measure-out
+          {
+            echo "measurement head: $(git rev-parse HEAD)"
+            echo "fix head (base ref): $(git rev-parse origin/perf-outline-batch-updates 2>/dev/null || git rev-parse 7db129cac310399f7ddf9cc6ba8813ce239061c6)"
+            echo "--- diff fix-head..HEAD (must list only workflow/scripts/instrumentation) ---"
+            git diff --name-status 7db129cac310399f7ddf9cc6ba8813ce239061c6 HEAD || true
+            echo "--- engine identity fix-head vs 00aa46a2 (must be EMPTY) ---"
+            git diff --name-status 00aa46a2d384ec4648ae4571ccb2eaee5a7e6324 HEAD -- engine Cargo.toml Cargo.lock scripts/build-engine.sh || true
+            for f in .github/workflows/expand-fix-verify.yml scripts/measure/stall-driver.swift scripts/measure/evaluate.py Sources/Spacelyzer/StageTiming.swift Sources/Spacelyzer/AppModel.swift Sources/Spacelyzer/OutlineView.swift; do
+              echo "pin $f blob=$(git rev-parse HEAD:$f) sha256=$(shasum -a 256 "$f" | cut -d' ' -f1)"
+            done
+          } | tee measure-out/pin-echo.txt
+          # Fail closed: if the engine differs from 00aa46a2, the base build may NOT reuse the
+          # fix build's engine artifacts.
+          if [ -n "$(git diff --name-only 00aa46a2d384ec4648ae4571ccb2eaee5a7e6324 HEAD -- engine Cargo.toml Cargo.lock scripts/build-engine.sh)" ]; then
+            echo "ENGINE_DIFFERS=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Toolchain + fixture identity (comparability record, not a gate)
+        run: |
+          { sw_vers; xcodebuild -version; swift --version; rustc --version
+            echo "ImageVersion=${ImageVersion:-unknown}"
+            echo "Library top-level entries: $(ls /Library | wc -l | tr -d ' ')"
+            ls /Library | sort | shasum -a 256
+          } | tee measure-out/fixture-identity.txt
+          # Declared: same /Library pathname does NOT imply same contents across runner images;
+          # pre-data (run 38562442496, macOS 26.6.2: n=24, p95 336.6ms, max 756.1ms) is comparable
+          # only when this record matches. The authoritative fix-effect read is the same-runner
+          # BASE-vs-FIX control below.
+
+      - name: Engine build (universal static lib)
+        timeout-minutes: 8
+        run: ./scripts/build-engine.sh
+
+      - name: COMPILE-FIX gate + package fix measurement app
+        timeout-minutes: 10
+        env:
+          SIGNING_CERT_P12_BASE64: ${{ secrets.SIGNING_CERT_P12_BASE64 }}
+          SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+        run: |
+          set -o pipefail
+          swift build -c release --arch arm64 --arch x86_64 2>&1 | tail -5
+          echo "compile-fix=PASS" | tee measure-out/compile-fix.txt
+          HASH="$(./scripts/sign-setup.sh | tail -1)"
+          echo "signhash=$HASH" >> "$GITHUB_ENV"
+          ./scripts/package-dmg.sh "0.0.measure-fix" "$HASH"
+          mkdir -p /tmp/apps
+          mv dist/Spacelyzer.app /tmp/apps/fix.app
+          rm -f dist/*.dmg dist/*.sha256   # measurement DMG discarded; never uploaded, never released
+
+      - name: Build TEST-ONLY app with SPZ_CI_TESTS (distinct binary; correctness evidence only)
+        if: ${{ always() }}
+        timeout-minutes: 10
+        run: bash ./scripts/build-test-app.sh dist-test "${{ env.signhash }}"
+      - name: Restore dist app for the demo block
+        if: ${{ always() }}
+        run: cp -R /tmp/apps/fix.app dist/Spacelyzer.app
+
+      - name: Demo interaction harness (existing scripted checks incl. 10 outlineBatchPlan expectations)
+        if: ${{ always() }}
+        timeout-minutes: 12
+        continue-on-error: true
+        run: |
+          open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Library
+          sleep 8
+          screencapture -x dist/screenshot-scanning.png || true
+          sleep 35
+          screencapture -x dist/screenshot.png || true
+          pgrep -fl Spacelyzer || echo "app not running"
+          pkill Spacelyzer || true
+          sleep 2
+          swiftc scripts/ax-client.swift -o /tmp/spz-ax-client
+          rm -rf /tmp/spz-chronology
+          rm -f /tmp/spz-interaction-envelope.txt /tmp/spz-footer-ax-status.txt /tmp/spz-footer-ax-result.txt /tmp/spz-footer-ax-expected.txt /tmp/spz-footer-ax-ready /tmp/spz-footer-ax-ack /tmp/spz-footer-ax-client.txt /tmp/spz-timing.txt /tmp/spz-assertions.txt /tmp/spz-demo-step /tmp/spz-demo-finished /tmp/spz-demo-ready-* /tmp/spz-demo-ack-*
+          open -n dist-test/Spacelyzer.app --env SPZ_AUTOSCAN=/Library --env SPZ_DEMO=1
+          for step in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 23 24 19 25 20 21 22 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48; do
+            for i in $(seq 1 240); do
+              if [ -f /tmp/spz-footer-ax-ready ] && [ ! -f /tmp/spz-footer-ax-ack ]; then
+                target_pid=$(cat /tmp/spz-footer-ax-ready)
+                python3 - "$target_pid" >> /tmp/spz-footer-ax-client.txt 2>&1 <<'PY'
+          import subprocess, sys
+          from pathlib import Path
+          result_path = Path("/tmp/spz-footer-ax-result.txt")
+          status_path = Path("/tmp/spz-footer-ax-status.txt")
+          try:
+              result = subprocess.run(["/tmp/spz-ax-client", sys.argv[1], "/tmp/spz-footer-ax-expected.txt", "/tmp/spz-footer-ax-result.txt"], timeout=12)
+              print(f"ax-client process-exit code={result.returncode}; diagnostic not a pass", flush=True)
+              status_path.write_text(f"EXIT_{result.returncode}")
+              if result.returncode != 0: result_path.unlink(missing_ok=True)
+          except subprocess.TimeoutExpired:
+              result_path.unlink(missing_ok=True)
+              status_path.write_text("TIMEOUT")
+              print("ax-client process-timeout seconds=12 INCONCLUSIVE; partial flushed records retained", flush=True)
+          except OSError as error:
+              result_path.unlink(missing_ok=True)
+              status_path.write_text("START_ERROR")
+              print(f"ax-client process-start-error {error} INCONCLUSIVE", flush=True)
+          PY
+                touch /tmp/spz-footer-ax-ack
+              fi
+              [ -f "/tmp/spz-demo-ready-$step" ] && break; sleep 1
+            done
+            if [ ! -f "/tmp/spz-demo-ready-$step" ]; then
+              echo "DEMO STEP TIMEOUT: expected $step, last $(cat /tmp/spz-demo-step 2>/dev/null)" >> /tmp/spz-timing.txt
+              break
+            fi
+            screencapture -x "dist/screenshot-demo-$step.png"
+            touch "/tmp/spz-demo-ack-$step"
+          done
+          for i in $(seq 1 30); do [ -f /tmp/spz-demo-finished ] && break; sleep 1; done
+          [ -f /tmp/spz-demo-finished ] || echo 'DEMO FINISH TIMEOUT: final assertions not completed' >> /tmp/spz-timing.txt
+          pgrep -x Spacelyzer >/dev/null && echo 'app still running at end' >> /tmp/spz-timing.txt || echo 'APP NOT RUNNING at end (crashed or exited)' >> /tmp/spz-timing.txt
+          cp /tmp/spz-timing.txt dist/ui-timing.txt 2>/dev/null || true
+          cp /tmp/spz-footer-ax-client.txt dist/footer-ax-client.txt 2>/dev/null || true
+          cp /tmp/spz-footer-ax-status.txt dist/footer-ax-status.txt 2>/dev/null || true
+          pkill Spacelyzer || true
+          sleep 3
+
+      - name: UI assertions (169 results expected at this head; fail-closed)
+        if: ${{ always() }}
+        id: asserts
+        continue-on-error: true
+        run: |
+          cp /tmp/spz-assertions.txt dist/ui-assertions.txt 2>/dev/null || true
+          cat /tmp/spz-assertions.txt || true
+          # Count rule (repo convention): change only with the name-by-name list in the PR that
+          # changes it. This head adds 10 outline-batch-planning checks (list in ci.yml comment):
+          # 159 + 10 = 169.
+          expected=169
+          if grep -q 'APP NOT RUNNING' /tmp/spz-timing.txt 2>/dev/null; then echo "::error title=ui-assertions::app was not running at the end of the demo (crash or exit)"; exit 1; fi
+          if grep -q 'DEMO .*TIMEOUT' /tmp/spz-timing.txt 2>/dev/null; then echo "::error title=ui-assertions::$(grep 'DEMO .*TIMEOUT' /tmp/spz-timing.txt)"; exit 1; fi
+          n=$(grep -c '^PASS\|^FAIL' /tmp/spz-assertions.txt 2>/dev/null || echo 0)
+          if grep -q '^FAIL' /tmp/spz-assertions.txt 2>/dev/null || [ "$n" -ne "$expected" ]; then
+            echo "::error title=ui-assertions::expected $expected results, got $n; $(tr '\n' ';' < /tmp/spz-assertions.txt 2>/dev/null)"
+            exit 1
+          fi
+          echo "::notice title=ui-assertions::all $n UI assertions passed"
+
+      - name: Build BASE measurement app (00aa46a2, arm64, engine reuse only if pin-proven identical)
+        if: ${{ always() }}
+        timeout-minutes: 8
+        run: |
+          git worktree add /tmp/spz-base 00aa46a2d384ec4648ae4571ccb2eaee5a7e6324
+          if [ "${ENGINE_DIFFERS:-0}" != "1" ]; then
+            mkdir -p /tmp/spz-base/build
+            cp -R build/lib /tmp/spz-base/build/
+          else
+            (cd /tmp/spz-base && ./scripts/build-engine.sh)
+          fi
+          cd /tmp/spz-base
+          swift build -c release --arch arm64
+          BIN="$(swift build -c release --arch arm64 --show-bin-path)/Spacelyzer"
+          APP=/tmp/apps/base.app
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp "$BIN" "$APP/Contents/MacOS/Spacelyzer"
+          sed "s/__VERSION__/0.0.measure-base/g" Resources/Info.plist > "$APP/Contents/Info.plist"
+          [ -f Resources/AppIcon.icns ] && cp Resources/AppIcon.icns "$APP/Contents/Resources/" || true
+          codesign --force --deep --options runtime --timestamp=none --sign "${{ env.signhash }}" --entitlements Resources/Spacelyzer.entitlements "$APP"
+          codesign --verify --deep --strict "$APP"
+
+      - name: Compile bounded driver (pure-bash watchdog; no gtimeout dependency)
+        if: ${{ always() }}
+        run: |
+          swiftc -swift-version 5 scripts/measure/stall-driver.swift -o /tmp/spz-stall-driver
+          shasum -a 256 scripts/measure/stall-driver.swift /tmp/spz-stall-driver scripts/measure/evaluate.py | tee measure-out/tool-pins.txt
+
+      - name: Expand probes (UNINSTRUMENTED, base then fix) + SPZ_TIMING diagnostic (separate, context-only)
+        if: ${{ always() }}
+        timeout-minutes: 12
+        run: |
+          mkdir -p measure-out-base measure-out-fix measure-out-diagnostic
+          kill_owned() {
+            [ -n "$1" ] || return 0
+            kill -TERM "$1" 2>/dev/null || true
+            for k in $(seq 1 10); do kill -0 "$1" 2>/dev/null || break; sleep 0.5; done
+            kill -0 "$1" 2>/dev/null && kill -KILL "$1" 2>/dev/null || true
+          }
+          # External wall-clock watchdog (pure bash, copied from the reviewed run workflow):
+          # TERM at the limit, KILL 15s later, rc 124 on timeout. The driver also self-limits.
+          run_bounded() {
+            local limit=$1; shift
+            local flag; flag=$(mktemp "${TMPDIR:-/tmp}/spzwatch.XXXXXX")
+            "$@" & local cpid=$!
+            ( i=0; while [ "$i" -lt "$limit" ]; do sleep 1; i=$((i+1)); done
+              echo 1 > "$flag"
+              kill -TERM "$cpid" 2>/dev/null
+              i=0; while [ "$i" -lt 15 ]; do sleep 1; kill -0 "$cpid" 2>/dev/null || break; i=$((i+1)); done
+              kill -KILL "$cpid" 2>/dev/null ) & local wpid=$!
+            local rc=0
+            wait "$cpid" || rc=$?
+            kill "$wpid" 2>/dev/null || true
+            wait "$wpid" 2>/dev/null || true
+            if [ -s "$flag" ]; then echo "WATCHDOG-EXTERNAL timeout_s=$limit cmd=$1"; rc=124; fi
+            rm -f "$flag"
+            return "$rc"
+          }
+          # Budget pre-check + clipping (reviewed pattern): reserve the last 600s of the 35-min
+          # job for evaluation + upload; SKIP with an honest marker (rc 125) when the remainder
+          # cannot hold a call. Pre-checks alone are not a hard cap; the clipping is.
+          if ! JOB_START=$(cat "$RUNNER_TEMP/spz-job-start" 2>/dev/null); then
+            echo "::error::job-start epoch missing - budgets underivable, refusing to run"; exit 1
+          fi
+          RESERVE_END=$(( JOB_START + 2100 - 600 ))
+          budgeted_run() {
+            local requested=$1 label=$2; shift 2
+            local remain=$(( RESERVE_END - $(date +%s) - 20 ))
+            local limit=$requested
+            if [ "$remain" -lt "$limit" ]; then limit=$remain; fi
+            if [ "$limit" -lt 30 ]; then
+              echo "marker stage=$label-skipped-insufficient-budget"
+              return 125
+            fi
+            run_bounded "$limit" "$@"
+          }
+          probe() {  # probe <label> <app> <outdir> [extra env...]
+            local label=$1 app=$2 out=$3; shift 3
+            open -n "$app" --env SPZ_AUTOSCAN=/Library "$@"
+            local PID=""
+            for i in $(seq 1 60); do PID=$(pgrep -x Spacelyzer | head -1); [ -n "$PID" ] && break; sleep 0.5; done
+            if [ -z "$PID" ]; then echo "::error::$label app did not launch"; return 1; fi
+            echo "marker stage=$label-launch pid=$PID"
+            budgeted_run 300 $label-waitwindow /tmp/spz-stall-driver waitwindow "$PID" || { echo "::error::$label no AX window"; kill_owned "$PID"; return 1; }
+            budgeted_run 300 $label-expand /tmp/spz-stall-driver expand "$PID" "$out/ax-expand.jsonl" || true
+            kill_owned "$PID"
+          }
+          probe base /tmp/apps/base.app measure-out-base || true
+          probe fix /tmp/apps/fix.app measure-out-fix || true
+          # Diagnostic ONLY: separate launch, SPZ_TIMING stage attribution; investigation context,
+          # closes no gate, never compared against bars.
+          probe diagnostic /tmp/apps/fix.app measure-out-diagnostic --env SPZ_TIMING=1 --env SPZ_TIMING_LOG=$RUNNER_TEMP/spz-timing.jsonl || true
+          cp "$RUNNER_TEMP/spz-timing.jsonl" measure-out-diagnostic/spz-timing.jsonl 2>/dev/null || echo "marker stage=diagnostic-no-timing-log"
+
+      - name: Evaluate (selftest fail-closed, then per-build verdicts)
+        if: ${{ always() }}
+        run: |
+          python3 scripts/measure/evaluate.py --selftest
+          python3 scripts/measure/evaluate.py measure-out-base | tee measure-out-base/verdicts.txt || true
+          python3 scripts/measure/evaluate.py measure-out-fix | tee measure-out-fix/verdicts.txt || true
+          echo "EXPAND-BASE (control; expected FAIL vs bar = pre-data regime):"
+          grep -E 'expand' measure-out-base/verdicts.txt || echo "no expand verdict (skipped/INCONCLUSIVE)"
+          echo "EXPAND-FIX (the gate):"
+          grep -E 'expand' measure-out-fix/verdicts.txt || echo "no expand verdict (skipped/INCONCLUSIVE)"
+
+      - name: Upload evidence (no DMG, no release assets)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: expand-fix-verify-${{ github.run_number }}
+          path: |
+            measure-out/
+            measure-out-base/
+            measure-out-fix/
+            measure-out-diagnostic/
+            dist/ui-assertions.txt
+            dist/ui-timing.txt
+            dist/footer-ax-client.txt
+            dist/footer-ax-status.txt
+            dist/screenshot*.png
+
+      - name: Final gate (green ONLY on compile PASS + 169 assertions PASS + EXPAND-FIX verdict PASS)
+        if: ${{ always() }}
+        run: |
+          rc=0
+          [ -f measure-out/compile-fix.txt ] || { echo "::error::compile-fix missing"; rc=1; }
+          [ "${{ steps.asserts.outcome }}" = "success" ] || { echo "::error::UI assertions outcome=${{ steps.asserts.outcome }}"; rc=1; }
+          if grep -q '^PASS expand' measure-out-fix/verdicts.txt 2>/dev/null; then
+            echo "::notice::EXPAND-FIX PASS within bars p95<=250 max<=1000 n>=20"
+          else
+            echo "::error::EXPAND-FIX not PASS (see measure-out-fix/verdicts.txt; FAIL/OUTLIER/INCONCLUSIVE/skipped are all not-PASS)"; rc=1
+          fi
+          echo "EXPAND-BASE control verdict (informational):"; grep -E 'expand' measure-out-base/verdicts.txt 2>/dev/null || true
+          exit $rc
