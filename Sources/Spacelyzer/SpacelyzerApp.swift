@@ -17,7 +17,6 @@ struct SpacelyzerApp: App {
                 .task {
                     // CI uses this to launch with a scan already running and take a screenshot.
                     let env = ProcessInfo.processInfo.environment
-                    if let path = env["SPZ_AUTOSCAN"] { model.scan(path) }
                     // Measurement-only main-stall monitor (bounded-ping-v1; design semantics in the
                     // Engine.swift MainStall doc comment, incl. declared ~200 closures/sec idle cost,
                     // <=1 outstanding ping during blocks, monitor-thread-only JSONL writer). Started
@@ -25,6 +24,7 @@ struct SpacelyzerApp: App {
                     // never on by default in any build. Outside #if SPZ_CI_TESTS so the release
                     // measurement build honors it; the env is set by no other path.
                     if env["SPZ_STALL_MONITOR"] != nil { MainStall.shared.start() }
+                    if let path = env["SPZ_AUTOSCAN"] { model.scan(path) }
                     // Measurement-only rescan diagnostic (SPZ_DIAG_RESCAN): after the SPZ_AUTOSCAN
                     // scan completes AND its tree is installed, rescan the same root once. The old
                     // tree is dropped by `tree = t` at the SECOND scan's completion (AppModel scan
@@ -37,7 +37,8 @@ struct SpacelyzerApp: App {
                         // tree == nil here means the first scan failed (error is set): no old tree
                         // exists to drop, nothing to rescan - leave the app idle.
                         if model.tree != nil {
-                            try? await Task.sleep(nanoseconds: 2_000_000_000)  // settle: A's install published
+                            try? await Task.sleep(nanoseconds: 2_000_000_000)  // spacing only - drop
+                            // evidence comes solely from phase/swap records, never from this wait
                             model.scan(path)
                         }
                     }
