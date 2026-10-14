@@ -655,12 +655,15 @@ extension Tree {
 ///   reset may be counted orphaned; the error direction is always away from polluting fresh
 ///   numbers, never toward hiding a stall.
 /// - LOCKING: every counter (cap/drop/ping/bucket/epoch/telemetry-error) moves under one NSLock.
-/// - IO: the ack closure on the main queue only updates counters - never IO. Optional JSONL
-///   telemetry (env SPZ_STALL_LOG_DIR) is written by the monitor thread with an fflush after
-///   every record; a hard kill can lose at most the current tick's in-flight record. Telemetry
-///   open/write/flush failures are counted in telemetryWriteErrors (fail closed, never silent).
-///   The file is opened append-mode with a per-launch unique name (pid + launch epoch ms) so a
-///   new launch never overwrites a prior launch's timeline.
+/// - IO: the ack closure on the main queue only updates counters - never IO. start() itself
+///   runs on the main actor, so ALL telemetry file IO happens on the monitor thread: the fopen
+///   and every record (lifecycle, window, stall) included. Append-mode per-launch unique name
+///   (pid + launch epoch ms): a new launch never overwrites a prior launch's timeline. fflush
+///   after every record; a hard kill can lose at most the current tick's in-flight record.
+///   Open/write/flush failures are counted in telemetryWriteErrors (fail closed, never silent).
+/// - WINDOW BASIS: window records report EPOCH-CUMULATIVE counters (values since the most
+///   recent reset()), not per-window deltas. The epoch field identifies the epoch; per-window
+///   deltas are derived by subtraction within one epoch ("basis" field on every window record).
 final class MainStall: @unchecked Sendable {
     static let shared = MainStall()
     private let lock = NSLock()
@@ -675,8 +678,9 @@ final class MainStall: @unchecked Sendable {
     // Latched-stall handoff to the monitor thread (lock-protected); records carry the enqueue epoch.
     private var pendingLatchedMs: Double?
     private var pendingLatchedEpoch: UInt64 = 0
-    // Monitor-thread-only writer state: assigned in start() before the thread launches, then
-    // touched by the monitor thread alone. Never closed (process-lifetime), never used on main.
+    // Monitor-thread-only writer state: assigned and used by the monitor thread alone (start()
+    // runs on the main actor; the fopen happens on the monitor thread). Never closed
+    // (process-lifetime), never used on main.
     private var logHandle: UnsafeMutablePointer<FILE>?
 
     func start() {
@@ -684,17 +688,20 @@ final class MainStall: @unchecked Sendable {
         if started { lock.unlock(); return }
         started = true
         lock.unlock()
-        if let dir = ProcessInfo.processInfo.environment["SPZ_STALL_LOG_DIR"], !dir.isEmpty {
-            let path = "\(dir)/spz-stall-\(ProcessInfo.processInfo.processIdentifier)-\(Int(Date().timeIntervalSince1970 * 1000)).jsonl"
-            logHandle = fopen(path, "a")
-            if logHandle == nil {
-                lock.lock(); telemetryWriteErrors += 1; lock.unlock()
-            } else {
-                writeRecord("{\"type\":\"lifecycle\",\"event\":\"stall-monitor-start\",\"design\":\"bounded-ping-v1\",\"tick_ms\":5,\"pid\":\(ProcessInfo.processInfo.processIdentifier),\"ts_epoch_ms\":\(Int(Date().timeIntervalSince1970 * 1000))}")
-            }
-        }
+        // Env reads are not IO. start() runs on the main actor, so the fopen and the lifecycle
+        // record happen inside the monitor thread below - all telemetry file IO stays off main.
+        let logDir = ProcessInfo.processInfo.environment["SPZ_STALL_LOG_DIR"]
         let t = Thread { [self] in
             var ticks = 0
+            if let dir = logDir, !dir.isEmpty {
+                let path = "\(dir)/spz-stall-\(ProcessInfo.processInfo.processIdentifier)-\(Int(Date().timeIntervalSince1970 * 1000)).jsonl"
+                logHandle = fopen(path, "a")
+                if logHandle == nil {
+                    lock.lock(); telemetryWriteErrors += 1; lock.unlock()
+                } else {
+                    writeRecord("{\"type\":\"lifecycle\",\"event\":\"stall-monitor-start\",\"design\":\"bounded-ping-v1\",\"tick_ms\":5,\"pid\":\(ProcessInfo.processInfo.processIdentifier),\"ts_epoch_ms\":\(Int(Date().timeIntervalSince1970 * 1000))}")
+                }
+            }
             while true {
                 lock.lock()
                 var enqueue = false
@@ -731,7 +738,7 @@ final class MainStall: @unchecked Sendable {
                     writeRecord("{\"type\":\"stall\",\"ms\":\(String(format: "%.1f", ms)),\"epoch\":\(latchedEpoch),\"ts_epoch_ms\":\(Int(Date().timeIntervalSince1970 * 1000))}")
                 }
                 if doWindow {
-                    writeRecord("{\"type\":\"window\",\"pings\":\(snap.0),\"max_ms\":\(String(format: "%.1f", snap.1)),\"over16\":\(snap.2),\"over50\":\(snap.3),\"over100\":\(snap.4),\"skipped\":\(snap.5),\"epoch\":\(snap.6),\"telemetry_write_errors\":\(snap.7),\"ts_epoch_ms\":\(Int(Date().timeIntervalSince1970 * 1000))}")
+                    writeRecord("{\"type\":\"window\",\"basis\":\"epoch-cumulative\",\"pings\":\(snap.0),\"max_ms\":\(String(format: "%.1f", snap.1)),\"over16\":\(snap.2),\"over50\":\(snap.3),\"over100\":\(snap.4),\"skipped\":\(snap.5),\"epoch\":\(snap.6),\"telemetry_write_errors\":\(snap.7),\"ts_epoch_ms\":\(Int(Date().timeIntervalSince1970 * 1000))}")
                 }
                 Thread.sleep(forTimeInterval: 0.005)
             }
