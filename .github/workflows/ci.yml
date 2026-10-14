@@ -132,27 +132,46 @@ jobs:
           # (waitwindow, baseline) always run; optional probes are SKIPPED with an honest marker
           # once the budget is exhausted, so a wedged environment can never burn the whole job
           # producing near-zero evidence.
-          JOB_START=$(cat "$RUNNER_TEMP/spz-job-start" 2>/dev/null || date +%s)
+          # Fail closed on missing job-start: without the epoch the reserve math is fiction
+          # (resetting the clock here is how the 10-min reserve evaporates).
+          if ! JOB_START=$(cat "$RUNNER_TEMP/spz-job-start" 2>/dev/null); then
+            echo "::error::job-start epoch missing - budgets underivable, refusing to run"
+            kill_owned "$PID"
+            exit 1
+          fi
           RESERVE_END=$(( JOB_START + 2100 - 600 ))
           STEP_END=$(( $(date +%s) + 900 ))
           if [ "$STEP_END" -gt "$RESERVE_END" ]; then STEP_END=$RESERVE_END; fi
-          budget_left() { [ "$(date +%s)" -lt "$STEP_END" ]; }
-          run_bounded 300 /tmp/spz-stall-driver waitwindow "$PID" || { echo "::error::no AX window"; kill_owned "$PID"; exit 1; }
+          # budgeted_run <limit> <label> <cmd...>: clips the per-call watchdog to the ACTUAL
+          # remaining step budget minus 20s (TERM/KILL grace + cleanup slack), and skips with an
+          # honest marker + rc 125 when the remainder cannot hold the call. Budget pre-checks
+          # alone are NOT a hard cap - this clipping is what preserves the post-gate reserve.
+          budgeted_run() {
+            local requested=$1 label=$2; shift 2
+            local remain=$(( STEP_END - $(date +%s) - 20 ))
+            local limit=$requested
+            if [ "$remain" -lt "$limit" ]; then limit=$remain; fi
+            if [ "$limit" -lt 30 ]; then
+              echo "marker ts_ms=$(($(date +%s)*1000)) stage=$label-skipped-insufficient-budget"
+              return 125
+            fi
+            run_bounded "$limit" "$@"
+          }
+          WRC=0
+          budgeted_run 300 waitwindow /tmp/spz-stall-driver waitwindow "$PID" || WRC=$?
+          if [ "$WRC" -ne 0 ]; then echo "::error::no AX window rc=$WRC"; kill_owned "$PID"; exit 1; fi
           sample "$PID" 30 10 -file /tmp/spz-main-sample.txt &   # CONTEXT ONLY - not instrumentation (see header)
           SAMPLEPID=$!
           # Baseline guarded: on failure the step STILL preserves the partial main-thread sample
           # and always kills the owned PID before exiting non-zero (run 38486848714 review:
           # an unguarded baseline bypassed both).
           RC=0
-          run_bounded 300 /tmp/spz-stall-driver baseline "$PID" measure-out/ax-baseline.jsonl || RC=$?
+          budgeted_run 300 baseline /tmp/spz-stall-driver baseline "$PID" measure-out/ax-baseline.jsonl || RC=$?
           echo "marker ts_ms=$(($(date +%s)*1000)) stage=baseline-done rc=$RC"
           if [ "$RC" -eq 0 ]; then
-            if budget_left; then run_bounded 300 /tmp/spz-stall-driver type "$PID" measure-out/ax-type.jsonl "keep-tag-0001-measurement-stall-pass" || true
-            else echo "marker ts_ms=$(($(date +%s)*1000)) stage=type-skipped-budget-exhausted"; fi
-            if budget_left; then run_bounded 300 /tmp/spz-stall-driver expand "$PID" measure-out/ax-expand.jsonl || true
-            else echo "marker ts_ms=$(($(date +%s)*1000)) stage=expand-skipped-budget-exhausted"; fi
-            if budget_left; then run_bounded 300 /tmp/spz-stall-driver nonascii "$PID" measure-out/ax-nonascii.jsonl || true
-            else echo "marker ts_ms=$(($(date +%s)*1000)) stage=nonascii-skipped-budget-exhausted"; fi
+            budgeted_run 300 type /tmp/spz-stall-driver type "$PID" measure-out/ax-type.jsonl "keep-tag-0001-measurement-stall-pass" || true
+            budgeted_run 300 expand /tmp/spz-stall-driver expand "$PID" measure-out/ax-expand.jsonl || true
+            budgeted_run 300 nonascii /tmp/spz-stall-driver nonascii "$PID" measure-out/ax-nonascii.jsonl || true
           else
             echo "marker ts_ms=$(($(date +%s)*1000)) stage=probes-skipped-baseline-failed"
           fi
@@ -195,15 +214,43 @@ jobs:
           # reserve), + fail-fast: a wedged environment (first external watchdog timeout) aborts
           # remaining cycles instead of repeating a zero-evidence pattern. The budget is set BEFORE
           # fixture generation so generation time counts against it.
-          JOB_START=$(cat "$RUNNER_TEMP/spz-job-start" 2>/dev/null || date +%s)
+          # Fail closed on missing job-start (see stall step).
+          if ! JOB_START=$(cat "$RUNNER_TEMP/spz-job-start" 2>/dev/null); then
+            echo "{\"note\":\"job-start-missing\"}" >> measure-out/cancel-cycles.jsonl
+            echo "::error::job-start epoch missing - budgets underivable, refusing to run"
+            exit 1
+          fi
           RESERVE_END=$(( JOB_START + 2100 - 600 ))
           STEP_END=$(( $(date +%s) + 1500 ))
           if [ "$STEP_END" -gt "$RESERVE_END" ]; then STEP_END=$RESERVE_END; fi
+          # budgeted_run <limit> <label> <cmd...>: clips the per-call watchdog to the ACTUAL
+          # remaining step budget minus 20s (TERM/KILL grace + cleanup slack), and skips with an
+          # honest marker + rc 125 when the remainder cannot hold the call. Budget pre-checks
+          # alone are NOT a hard cap - this clipping is what preserves the post-gate reserve.
+          budgeted_run() {
+            local requested=$1 label=$2; shift 2
+            local remain=$(( STEP_END - $(date +%s) - 20 ))
+            local limit=$requested
+            if [ "$remain" -lt "$limit" ]; then limit=$remain; fi
+            if [ "$limit" -lt 30 ]; then
+              echo "marker ts_ms=$(($(date +%s)*1000)) stage=$label-skipped-insufficient-budget"
+              return 125
+            fi
+            run_bounded "$limit" "$@"
+          }
+
           # Bounded scan fixture lengthens the REAL scan window so the Stop control is observable
           # (rationale + numbers in scripts/measure/make-cancel-fixture.sh). One-time generation,
           # watchdogged (run 38486848714: 4m07s generation ran unbounded, outside any budget).
+          # Pre-guard: do not START generation when the remaining budget cannot hold it
+          # (observed generation 247s; guard floor 300s) - an honest skip, never a clipped attempt.
+          if [ "$(( STEP_END - $(date +%s) ))" -lt 300 ]; then
+            echo "marker ts_ms=$(($(date +%s)*1000)) stage=fixture-skipped-insufficient-budget"
+            echo "{\"note\":\"fixture-skipped-insufficient-budget\"}" >> measure-out/cancel-cycles.jsonl
+            exit 0
+          fi
           RC=0
-          run_bounded 480 bash scripts/measure/make-cancel-fixture.sh "$RUNNER_TEMP/spz-cancel-fixture" || RC=$?
+          budgeted_run 480 fixture-generation bash scripts/measure/make-cancel-fixture.sh "$RUNNER_TEMP/spz-cancel-fixture" || RC=$?
           FIX="$RUNNER_TEMP/spz-cancel-fixture"
           echo "marker ts_ms=$(($(date +%s)*1000)) stage=fixture-generation-done rc=$RC"
           if [ "$RC" -ne 0 ]; then
@@ -226,8 +273,13 @@ jobs:
             # waitwindow result propagated honestly: a failed window wait skips the cancel call
             # (never burns another 300s against a wedged app); a timeout triggers the fail-fast.
             WRC=0
-            run_bounded 300 /tmp/spz-stall-driver waitwindow "$PID" || WRC=$?
+            budgeted_run 300 cycle-$i-waitwindow /tmp/spz-stall-driver waitwindow "$PID" || WRC=$?
             echo "marker ts_ms=$(($(date +%s)*1000)) stage=cycle-$i-waitwindow-done rc=$WRC"
+            if [ "$WRC" -eq 125 ]; then
+              echo "{\"cycle\":$i,\"note\":\"cycles-aborted-insufficient-budget\",\"phase\":\"waitwindow\"}" >> measure-out/cancel-cycles.jsonl
+              kill_owned "$PID"
+              break
+            fi
             if [ "$WRC" -ne 0 ]; then
               echo "{\"cycle\":$i,\"note\":\"waitwindow-failed\",\"rc\":$WRC}" >> measure-out/cancel-cycles.jsonl
               kill_owned "$PID"
@@ -242,10 +294,14 @@ jobs:
             # driver polls from t=0 for the actual "Stop scan" button; a missed window is an honest
             # error row, never a fabricated press
             RC=0
-            run_bounded 300 /tmp/spz-stall-driver cancel "$PID" "measure-out/cancel-cycle-$i.jsonl" || RC=$?
+            budgeted_run 300 cycle-$i-cancel /tmp/spz-stall-driver cancel "$PID" "measure-out/cancel-cycle-$i.jsonl" || RC=$?
             echo "marker ts_ms=$(($(date +%s)*1000)) stage=cycle-$i-cancel-done rc=$RC"
             kill_owned "$PID"
             echo "marker ts_ms=$(($(date +%s)*1000)) stage=cycle-$i-cleanup-done"
+            if [ "$RC" -eq 125 ]; then
+              echo "{\"cycle\":$i,\"note\":\"cycles-aborted-insufficient-budget\",\"phase\":\"cancel\"}" >> measure-out/cancel-cycles.jsonl
+              break
+            fi
             if [ "$RC" -eq 124 ]; then
               echo "marker ts_ms=$(($(date +%s)*1000)) stage=cycles-aborted-first-timeout"
               echo "{\"cycle\":$i,\"note\":\"cycles-aborted-first-timeout\",\"phase\":\"cancel\"}" >> measure-out/cancel-cycles.jsonl
