@@ -25,6 +25,22 @@ struct SpacelyzerApp: App {
                     // never on by default in any build. Outside #if SPZ_CI_TESTS so the release
                     // measurement build honors it; the env is set by no other path.
                     if env["SPZ_STALL_MONITOR"] != nil { MainStall.shared.start() }
+                    // Measurement-only rescan diagnostic (SPZ_DIAG_RESCAN): after the SPZ_AUTOSCAN
+                    // scan completes AND its tree is installed, rescan the same root once. The old
+                    // tree is dropped by `tree = t` at the SECOND scan's completion (AppModel scan
+                    // completion) on the main actor - the exact old-tree recursive-drop window the
+                    // bounded-ping monitor covers. A fresh launch's FIRST completion drops nothing
+                    // (tree was nil); a cancel installs nothing. Fully in-process: no AX/driver
+                    // involvement, zero observer load in the measured window.
+                    if let path = env["SPZ_AUTOSCAN"], env["SPZ_DIAG_RESCAN"] != nil {
+                        while model.scanning { try? await Task.sleep(nanoseconds: 500_000_000) }
+                        // tree == nil here means the first scan failed (error is set): no old tree
+                        // exists to drop, nothing to rescan - leave the app idle.
+                        if model.tree != nil {
+                            try? await Task.sleep(nanoseconds: 2_000_000_000)  // settle: A's install published
+                            model.scan(path)
+                        }
+                    }
                     #if SPZ_CI_TESTS   // scripted demo + regression suites exist only in test builds
                     // CI-only scripted interaction so screenshots can show expand, filter and kind views.
                     if env["SPZ_AUTOSCAN"] != nil, env["SPZ_DEMO"] != nil {
