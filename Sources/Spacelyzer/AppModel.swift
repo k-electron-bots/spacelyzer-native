@@ -606,6 +606,7 @@ final class AppModel {
         cancel()
         scanGeneration &+= 1
         let generation = scanGeneration, barrier = beforePublish, completed = afterPublish
+        MainStall.shared.notePhase("scan-start", generation: generation)   // measurement-only: inert unless the monitor is started
         scanning = true
         error = nil
         rootPath = path
@@ -641,6 +642,7 @@ final class AppModel {
             lastScanSeconds = Date().timeIntervalSince(start)
             session = nil
             if let t {
+                MainStall.shared.notePhase("completion-install-begin", generation: generation)   // measurement-only, records only
                 // Node ids are only valid for one tree: drop every id-keyed cache in the same main-actor turn
                 // so no view can index the new tree with ids from the old one.
                 filterTask?.cancel(); derivedTask?.cancel(); outlineTask?.cancel()
@@ -652,7 +654,15 @@ final class AppModel {
                 if fsEpoch != epochAtStart || mutatingAtStart || mutationPending || commitsInFlight > 0 {
                     markOutOfDate("Files were moved while this scan ran, so it may not match the disk. Rescan.")
                 } else { viewOutOfDate = false; outOfDateReason = nil }
+                // Measurement-only: the synchronous assignment below is where the PREVIOUS tree
+                // is released on the main actor (a fresh launch's first completion releases nil;
+                // only a completed-A -> rescan-B sequence drops a real old tree). Its duration is
+                // recorded directly by noteSwap - never inferred from settle timing or stall records.
+                MainStall.shared.notePhase("tree-swap-begin", generation: generation)
+                let swapT0 = DispatchTime.now().uptimeNanoseconds
                 tree = t
+                MainStall.shared.noteSwap(Double(DispatchTime.now().uptimeNanoseconds - swapT0) / 1e6, generation: generation)
+                MainStall.shared.notePhase("tree-installed", generation: generation)
                 panicBaseline = s.validatedPanicCount   // exactly the value ScanSession validated, not a fresh read
                 poisoned = false
                 startPoisonWatch()
@@ -663,6 +673,7 @@ final class AppModel {
                 scheduleFilter()
                 refreshOutline()
             } else {
+                MainStall.shared.notePhase("scan-failed", generation: generation)   // measurement-only, records only
                 error = "The scan failed. Check that the folder exists and you can read it."
             }
             await completed?("scan-completion", generation, publication)
