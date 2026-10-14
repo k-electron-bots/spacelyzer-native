@@ -626,25 +626,112 @@ extension Tree {
 }
 
 
-/// CI-only (SPZ_DEMO): pings the main queue every 5 ms from a background thread and records how late each ping runs.
-/// A late ping means the main thread was busy, which is exactly what the user sees as a hitch.
+/// Measurement/demo-only main-stall monitor (bounded-ping-v1). Pings the main queue from a
+/// background thread and records how late each ping runs. A late ping means the main thread was
+/// busy, which is exactly what the user sees as a hitch. Compiled into every build; started only
+/// from the scripted demo path (SPZ_CI_TESTS) or an explicit SPZ_STALL_MONITOR launch env.
+///
+/// Design semantics (each point is a design commitment, not an observation):
+/// - RATE: one enqueue attempt every 5 ms. While the main queue drains promptly that is
+///   ~200 closures/sec idle, each serviced immediately. This idle cost is declared, not hidden.
+/// - CAP + DROP POLICY: at most ONE ping is ever outstanding. A tick that finds the previous
+///   ping unacknowledged enqueues NOTHING and counts one `skipped` tick (the drop policy is
+///   collapse-into-counter). During a main-thread block exactly one closure sits queued, never
+///   a backlog, so there is no post-block drain storm; when the block clears that one ack
+///   latches its full enqueue-to-service delay.
+/// - LATENESS MEANING UNCHANGED: ms = service time minus enqueue time (t0 taken before the
+///   enqueue), counted into the same over16/over50/over100 buckets and max as the previous
+///   design. Bucket semantics did not change.
+/// - COVERAGE HONESTY: a block yields ONE latched sample per block, not per-tick coverage.
+///   The latched value is a lower bound on block length (the stuck ping may have been enqueued
+///   up to one tick before the block began). A block shorter than the 5 ms tick that fits
+///   entirely between an ack and the next enqueue can escape measurement. `skipped` makes the
+///   collapsed coverage visible in every summary and window record.
+/// - RESET ACCOUNTING: reset() opens a new epoch. An ack in flight at reset is counted in
+///   `resetsWithPending`; when it lands it is counted in `orphaned` (both lifetime counters)
+///   and never touches the new epoch's max/buckets - reset can neither lose a pending ack
+///   silently nor resurrect it into fresh numbers. resetsWithPending and orphaned need not be
+///   equal: several resets can precede one late ack. A ping enqueued in the same tick as a
+///   reset may be counted orphaned; the error direction is always away from polluting fresh
+///   numbers, never toward hiding a stall.
+/// - LOCKING: every counter (cap/drop/ping/bucket/epoch/telemetry-error) moves under one NSLock.
+/// - IO: the ack closure on the main queue only updates counters - never IO. Optional JSONL
+///   telemetry (env SPZ_STALL_LOG_DIR) is written by the monitor thread with an fflush after
+///   every record; a hard kill can lose at most the current tick's in-flight record. Telemetry
+///   open/write/flush failures are counted in telemetryWriteErrors (fail closed, never silent).
+///   The file is opened append-mode with a per-launch unique name (pid + launch epoch ms) so a
+///   new launch never overwrites a prior launch's timeline.
 final class MainStall: @unchecked Sendable {
     static let shared = MainStall()
     private let lock = NSLock()
     private var maxMs = 0.0, over16 = 0, over50 = 0, over100 = 0, n = 0
+    private var skipped = 0              // current epoch: ticks collapsed because a ping was outstanding
+    private var orphaned = 0             // lifetime: acks that landed after a reset (old epoch)
+    private var resetsWithPending = 0    // lifetime: resets that happened while an ack was in flight
+    private var telemetryWriteErrors = 0 // lifetime: telemetry open/write/flush failures
+    private var outstanding = false
+    private var epoch: UInt64 = 0
     private var started = false
+    // Latched-stall handoff to the monitor thread (lock-protected); records carry the enqueue epoch.
+    private var pendingLatchedMs: Double?
+    private var pendingLatchedEpoch: UInt64 = 0
+    // Monitor-thread-only writer state: assigned in start() before the thread launches, then
+    // touched by the monitor thread alone. Never closed (process-lifetime), never used on main.
+    private var logHandle: UnsafeMutablePointer<FILE>?
 
     func start() {
-        guard !started else { return }
+        lock.lock()
+        if started { lock.unlock(); return }
         started = true
+        lock.unlock()
+        if let dir = ProcessInfo.processInfo.environment["SPZ_STALL_LOG_DIR"], !dir.isEmpty {
+            let path = "\(dir)/spz-stall-\(ProcessInfo.processInfo.processIdentifier)-\(Int(Date().timeIntervalSince1970 * 1000)).jsonl"
+            logHandle = fopen(path, "a")
+            if logHandle == nil {
+                lock.lock(); telemetryWriteErrors += 1; lock.unlock()
+            } else {
+                writeRecord("{\"type\":\"lifecycle\",\"event\":\"stall-monitor-start\",\"design\":\"bounded-ping-v1\",\"tick_ms\":5,\"pid\":\(ProcessInfo.processInfo.processIdentifier),\"ts_epoch_ms\":\(Int(Date().timeIntervalSince1970 * 1000))}")
+            }
+        }
         let t = Thread { [self] in
+            var ticks = 0
             while true {
-                let t0 = DispatchTime.now().uptimeNanoseconds
-                DispatchQueue.main.async { [self] in
-                    let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
-                    lock.lock(); n += 1; maxMs = Swift.max(maxMs, ms)
-                    if ms > 16 { over16 += 1 }; if ms > 50 { over50 += 1 }; if ms > 100 { over100 += 1 }
-                    lock.unlock()
+                lock.lock()
+                var enqueue = false
+                if outstanding { skipped += 1 } else { outstanding = true; enqueue = true }
+                let e = epoch
+                lock.unlock()
+                if enqueue {
+                    let t0 = DispatchTime.now().uptimeNanoseconds
+                    DispatchQueue.main.async { [self] in
+                        let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+                        lock.lock()
+                        outstanding = false
+                        if e == epoch {
+                            n += 1; maxMs = Swift.max(maxMs, ms)
+                            if ms > 16 { over16 += 1 }; if ms > 50 { over50 += 1 }; if ms > 100 { over100 += 1 }
+                        } else {
+                            orphaned += 1
+                        }
+                        if ms > 100 { pendingLatchedMs = ms; pendingLatchedEpoch = e }
+                        lock.unlock()
+                        // No I/O on the main queue - telemetry is written by the monitor thread.
+                    }
+                }
+                ticks += 1
+                lock.lock()
+                let latched = pendingLatchedMs
+                let latchedEpoch = pendingLatchedEpoch
+                pendingLatchedMs = nil
+                let doWindow = logHandle != nil && ticks >= 1000
+                if doWindow { ticks = 0 }
+                let snap = (n, maxMs, over16, over50, over100, skipped, epoch, telemetryWriteErrors)
+                lock.unlock()
+                if let ms = latched {
+                    writeRecord("{\"type\":\"stall\",\"ms\":\(String(format: "%.1f", ms)),\"epoch\":\(latchedEpoch),\"ts_epoch_ms\":\(Int(Date().timeIntervalSince1970 * 1000))}")
+                }
+                if doWindow {
+                    writeRecord("{\"type\":\"window\",\"pings\":\(snap.0),\"max_ms\":\(String(format: "%.1f", snap.1)),\"over16\":\(snap.2),\"over50\":\(snap.3),\"over100\":\(snap.4),\"skipped\":\(snap.5),\"epoch\":\(snap.6),\"telemetry_write_errors\":\(snap.7),\"ts_epoch_ms\":\(Int(Date().timeIntervalSince1970 * 1000))}")
                 }
                 Thread.sleep(forTimeInterval: 0.005)
             }
@@ -652,11 +739,28 @@ final class MainStall: @unchecked Sendable {
         t.qualityOfService = QualityOfService.userInteractive
         t.start()
     }
-    func reset() { lock.lock(); maxMs = 0; over16 = 0; over50 = 0; over100 = 0; n = 0; lock.unlock() }
+
+    /// Monitor thread only. One JSONL record per call, flushed immediately; failures counted.
+    private func writeRecord(_ line: String) {
+        guard let h = logHandle else { return }
+        line.withCString { cp in
+            if fputs(cp, h) == EOF || fputc(10, h) == EOF || fflush(h) != 0 {
+                lock.lock(); telemetryWriteErrors += 1; lock.unlock()
+            }
+        }
+    }
+
+    func reset() {
+        lock.lock()
+        maxMs = 0; over16 = 0; over50 = 0; over100 = 0; n = 0; skipped = 0
+        if outstanding { resetsWithPending += 1 }
+        epoch &+= 1
+        lock.unlock()
+    }
     var peak: Double { lock.lock(); defer { lock.unlock() }; return maxMs }
     func summary(_ label: String) -> String {
         lock.lock(); defer { lock.unlock() }
-        return "stall \(label): max=\(String(format: "%.1f", maxMs))ms pings=\(n) over16=\(over16) over50=\(over50) over100=\(over100)"
+        return "stall \(label): max=\(String(format: "%.1f", maxMs))ms pings=\(n) over16=\(over16) over50=\(over50) over100=\(over100) skipped=\(skipped) orphaned=\(orphaned) resetsWithPending=\(resetsWithPending) telemetryWriteErrors=\(telemetryWriteErrors) | coverage: one latched sample per main-thread block (lower bound on block length); skipped=collapsed ticks; sub-tick blocks between acks can escape"
     }
 }
 
