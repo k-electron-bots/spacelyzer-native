@@ -18,6 +18,13 @@ struct SpacelyzerApp: App {
                     // CI uses this to launch with a scan already running and take a screenshot.
                     let env = ProcessInfo.processInfo.environment
                     if let path = env["SPZ_AUTOSCAN"] { model.scan(path) }
+                    // Measurement-only main-stall monitor (bounded-ping-v1; design semantics in the
+                    // Engine.swift MainStall doc comment, incl. declared ~200 closures/sec idle cost,
+                    // <=1 outstanding ping during blocks, monitor-thread-only JSONL writer). Started
+                    // ONLY when the launcher passes SPZ_STALL_MONITOR (CI diagnostic launches);
+                    // never on by default in any build. Outside #if SPZ_CI_TESTS so the release
+                    // measurement build honors it; the env is set by no other path.
+                    if env["SPZ_STALL_MONITOR"] != nil { MainStall.shared.start() }
                     #if SPZ_CI_TESTS   // scripted demo + regression suites exist only in test builds
                     // CI-only scripted interaction so screenshots can show expand, filter and kind views.
                     if env["SPZ_AUTOSCAN"] != nil, env["SPZ_DEMO"] != nil {
