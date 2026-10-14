@@ -370,11 +370,15 @@ final class AppModel {
         let generation = outlineGeneration, barrier = beforePublish, completed = afterPublish
         guard let tree else { outlineRows = []; outlineInfos = []; outlineShown = []; outlineIndex = [:]; outlineRevision += 1; outlineRootSize = 0; publishedTotalBytes = nil; outlineLastCause = .content; return }
         let root = displayedRoot, ex = expanded, flt = activeFilter, sort = outlineSort
+        let causeCtx: String = {
+            switch cause { case .content: return "content"; case .toggle(let id): return "toggle:\(id)" }
+        }()
         outlineTask?.cancel()
         outlineTask = Task.detached(priority: .userInitiated) { [weak self] in
             let t0 = DispatchTime.now().uptimeNanoseconds
             let result = tree.outlineSnapshot(root: root, expanded: ex, filter: flt, sort: sort)
             let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+            StageTiming.mark("projection", since: t0, ctx: causeCtx + ":rows-pending")
             if Task.isCancelled { return }
             guard case .success(let snap) = result else {
                 await MainActor.run { [weak self] in
@@ -389,6 +393,7 @@ final class AppModel {
             let indexFinal = index   // frozen copy: the main-actor closure must not capture the mutable var
             await barrier?("outline", generation, publication)
             await MainActor.run { [weak self] in
+                let pubT0 = DispatchTime.now().uptimeNanoseconds
                 // Full key: tree identity, generation, table version of the read, and the filter's own version.
                 guard let self, !Task.isCancelled, self.outlineGeneration == generation, self.tree === tree, snap.version == tree.version, flt == nil || flt!.version == snap.version else { return }
                 if self.enginePoisoned { self.markPoisoned(); return }   // a caught panic makes this publication untrustworthy
@@ -399,6 +404,7 @@ final class AppModel {
                 self.publishedTotalBytes = snap.totalBytes; self.outlineVersion = snap.version
                 self.outlineIndex = indexFinal; self.outlineRevision += 1; self.outlineMillis = ms; self.outlineLastCause = cause
                 self.surfaceCheck()
+                StageTiming.mark("publish", since: pubT0, ctx: causeCtx + ":rows=\(snap.rows.count)")
             }
             await completed?("outline", generation, publication)
         }
@@ -422,6 +428,8 @@ final class AppModel {
     }
 
     func toggle(_ id: UInt32) {
+        let t0 = DispatchTime.now().uptimeNanoseconds
+        StageTiming.mark("toggle", since: t0, ctx: "toggle:\(id)")
         if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
         refreshOutline(cause: .toggle(id))
     }
