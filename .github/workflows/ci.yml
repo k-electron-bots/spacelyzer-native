@@ -1,8 +1,17 @@
 # Measurement-only replacement of ci.yml on THIS branch only (mac-stall-soak-00aa46a2).
-# Product code pinned at 00aa46a2 (item-inspect-engine-stack tip); only this workflow and
-# scripts/measure/* differ from the reviewed stack. No release, no tag, no DMG packaging here.
+# Product tree pinned at 00aa46a2 (item-inspect-engine-stack tip) EXCEPT two named
+# instrumentation files carrying the bounded-ping-v1 diff (semantics staged for review):
+#   Sources/Spacelyzer/Engine.swift        (MainStall bounded-ping redesign + monitor-thread writer)
+#   Sources/Spacelyzer/SpacelyzerApp.swift (SPZ_STALL_MONITOR start gate)
+# plus this workflow and scripts/measure/*. No release, no tag, no DMG packaging here.
 # Everything below is a shared-runner RESPONSIVENESS PROXY (AX interaction latency);
 # it is not frame-pacing evidence and clears no real-hardware UI gate.
+# INSTRUMENTATION SEPARATION (pre-registered): bar-gated probes (baseline/type/expand/menu/
+# cancel) run UNINSTRUMENTED. The bounded-ping monitor runs only in launches labeled
+# diagnostic (SPZ_STALL_MONITOR + SPZ_STALL_LOG_DIR); their telemetry is investigation
+# context for the unresolved scan-window stall and closes no gate. Declared monitor cost:
+# ~200 main-queue closures/sec while responsive, at most 1 outstanding during a block (no
+# backlog, no drain storm), JSONL writer on the monitor thread only, never on main.
 # PRE-REGISTERED (before any data): the concurrent `sample` capture is CONTEXT ONLY - the
 # aggregated report has no per-snapshot frames, so no block durations are inferred from it and
 # it closes no gate; it exists to adjudicate AX-side outliers. The real main-thread stall gate
@@ -47,10 +56,11 @@ jobs:
           fetch-depth: 0   # full history: the Pin step diffs against base 00aa46a2 (depth 1 broke run 38454259263)
       - name: Pin and context
         run: |
-          echo "branch tip: $(git rev-parse HEAD) (differs from product base 00aa46a2: this branch adds the workflow + scripts/measure only)"
-          DIFF=$(git diff --name-only 00aa46a2d384ec4648ae4571ccb2eaee5a7e6324 HEAD -- . ':(exclude).github/workflows/ci.yml' ':(exclude)scripts/measure')
-          if [ -n "$DIFF" ]; then echo "::error::product tree differs from reviewed 00aa46a2: $DIFF"; exit 1; fi
-          echo "product tree == 00aa46a2 (verified, excluding workflow + scripts/measure)"
+          echo "branch tip: $(git rev-parse HEAD) (product base 00aa46a2 + workflow + scripts/measure + two named instrumentation files)"
+          DIFF=$(git diff --name-only 00aa46a2d384ec4648ae4571ccb2eaee5a7e6324 HEAD -- . ':(exclude).github/workflows/ci.yml' ':(exclude)scripts/measure' ':(exclude)Sources/Spacelyzer/Engine.swift' ':(exclude)Sources/Spacelyzer/SpacelyzerApp.swift')
+          if [ -n "$DIFF" ]; then echo "::error::product tree differs from reviewed 00aa46a2 beyond the named instrumentation files: $DIFF"; exit 1; fi
+          echo "product tree == 00aa46a2 EXCEPT Engine.swift + SpacelyzerApp.swift (bounded-ping-v1 instrumentation; rest of tree verified)"
+          git diff --stat 00aa46a2d384ec4648ae4571ccb2eaee5a7e6324 HEAD -- Sources/Spacelyzer/Engine.swift Sources/Spacelyzer/SpacelyzerApp.swift
           # Job-start epoch: measurement steps derive remaining-job-aware budgets from this
           # (job timeout-minutes is 35; reserve covers the gates after the cancel step + upload).
           date +%s > "$RUNNER_TEMP/spz-job-start"
@@ -308,6 +318,26 @@ jobs:
               break
             fi
           done
+
+          # --- Instrumented diagnostic launches: LABELED diagnostic, NEVER bar-compared ---
+          # (pre-registered separation, see header). The bounded-ping monitor runs here only;
+          # telemetry = per-launch append+flush JSONL copied into
+          # measure-out/stall-telemetry/diagnostic/. Investigation context for the unresolved
+          # scan-window stall (a candidate contributor, not a proven root cause); closes no
+          # gate. All calls budget-clipped; a first watchdog timeout skips the optional
+          # second diagnostic honestly. Optional second launch = instrumented cancel
+          # (comparability with the uninstrumented bar cycles pre-declared uncertain).
+          mkdir -p "$RUNNER_TEMP/spz-stall-logs" measure-out/stall-telemetry/diagnostic
+          DRC=0
+          budgeted_run 300 diagnostic-scan-window-watch bash scripts/measure/diagnostic-watch.sh dist/Spacelyzer.app /tmp/spz-stall-driver "$FIX" "$RUNNER_TEMP/spz-stall-logs" measure-out/stall-telemetry/diagnostic 120 || DRC=$?
+          echo "marker ts_ms=$(($(date +%s)*1000)) stage=diagnostic-watch-1-done rc=$DRC"
+          if [ "$DRC" -eq 124 ]; then
+            echo "{\"note\":\"diagnostic-first-timeout-optional-skipped\"}" >> measure-out/stall-telemetry/diagnostic/diagnostic-notes.jsonl
+          else
+            budgeted_run 300 diagnostic-cancel-instrumented bash scripts/measure/diagnostic-watch.sh dist/Spacelyzer.app /tmp/spz-stall-driver "$FIX" "$RUNNER_TEMP/spz-stall-logs" measure-out/stall-telemetry/diagnostic 120 cancel || true
+            echo "marker ts_ms=$(($(date +%s)*1000)) stage=diagnostic-cancel-instrumented-done"
+          fi
+          cp -np "$RUNNER_TEMP/spz-stall-logs"/spz-stall-*.jsonl measure-out/stall-telemetry/diagnostic/ 2>/dev/null || true
       - name: Engine soak (in-process + separate-process, live-RSS timeline)
         if: ${{ !inputs.compile_only }}
         run: bash scripts/measure/soak.sh ./target/release/spz measure-out /Library
