@@ -427,6 +427,7 @@ private struct OutlineTable: NSViewRepresentable {
             c.shownPoisoned = poisoned
             let newNodes = model.outlineRows.map { $0.node }
             if let table = c.table, !poisonReload, !c.shownNodes.isEmpty,
+               table.numberOfRows == c.shownNodes.count,
                case .toggle(let toggled) = model.outlineLastCause {
                 // Structural toggle: pure insert/delete batch plus a one-row reload of the toggled
                 // row so its chevron and AX description flip. Anything else falls back to reloadData.
@@ -454,6 +455,13 @@ private struct OutlineTable: NSViewRepresentable {
                     BatchDiag.applied += 1
                     #endif
                 case .reload:
+                    table.reloadData()
+                    #if SPZ_CI_TESTS
+                    BatchDiag.fallbackReload += 1
+                    #endif
+                }
+                if table.numberOfRows != newNodes.count {
+                    // Safety: the batch left the row count inconsistent; recover with a full reload.
                     table.reloadData()
                     #if SPZ_CI_TESTS
                     BatchDiag.fallbackReload += 1
