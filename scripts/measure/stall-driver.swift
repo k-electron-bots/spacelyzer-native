@@ -57,8 +57,12 @@ guard AXIsProcessTrusted() else { print("ax-trust-denied"); exit(3) }
 
 // Bound every AX IPC call: explicit 3s messaging timeout, process-global (SystemWide) and on the
 // app ref. Never rely on a system default (semantics unverified - see header).
-AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 3.0)
-AXUIElementSetMessagingTimeout(root, 3.0)
+guard AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 3.0) == .success else {
+    print("messaging-timeout-set-failed scope=system"); exit(5)
+}
+guard AXUIElementSetMessagingTimeout(root, 3.0) == .success else {
+    print("messaging-timeout-set-failed scope=app"); exit(5)
+}
 // In-process wall-clock watchdog: a blocked main thread cannot starve a background thread's exit.
 let watchdog = Thread { Thread.sleep(forTimeInterval: 240); print("WATCHDOG-EXIT mode=\(CommandLine.arguments[1])"); exit(4) }
 watchdog.start()
@@ -156,23 +160,43 @@ case "expand":
         let kids = children(row).compactMap { ax($0, "AXDescription") as? String }.filter { !$0.isEmpty }
         return kids.count == 1 ? kids[0] : ""
     }
+    // Re-find requires EXACTLY ONE current match: a duplicate AXDescription (two folders with the
+    // same name) must never silently attribute a sample to the wrong row - the n-floor does not
+    // absorb misattribution, so ambiguity becomes an honest error row instead.
+    // JSON string escaping: backslash, quote, and every control char as \u00XX - no silent loss.
+    func jesc(_ v: String) -> String {
+        var out = ""
+        for sc in v.unicodeScalars {
+            if sc == "\\" { out += "\\\\" }
+            else if sc == "\"" { out += "\\\"" }
+            else if sc.value < 0x20 { out += String(format: "\\u%04x", sc.value) }
+            else { out.unicodeScalars.append(sc) }
+        }
+        return out
+    }
     func rowByIdentity(_ idn: String) -> AXUIElement? {
-        rowsOf(t).first(where: { identity($0) == idn })
+        let matches = rowsOf(t).filter { identity($0) == idn }
+        return matches.count == 1 ? matches[0] : nil
     }
     // Expandable rows = rows with a visible "Expand" chevron (chevron is hidden for childless rows,
     // OutlineView.swift:288). Pre-registered floor is n>=20 verified samples, so passes adapt to the
     // expandable-row count instead of assuming 12; a true shortfall stays INCONCLUSIVE by the floor.
     var expandable: [(Int, String)] = []
+    var seen: [String: Int] = [:]
     for i in 0..<min(rowCount, 24) {
-        if let row = rowsOf(t).dropFirst(i).first, chevron(row, prefix: "Expand") != nil {
-            let idn = identity(row)
-            if !idn.isEmpty { expandable.append((i, idn)) }
-        }
+        guard let row = rowsOf(t).dropFirst(i).first, chevron(row, prefix: "Expand") != nil else { continue }
+        let idn = identity(row)
+        if idn.isEmpty { continue }
+        seen[idn, default: 0] += 1
+        expandable.append((i, idn))
     }
-    let targets = Array(expandable.prefix(12))
-    func jesc(_ v: String) -> String {
-        v.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+    // Discovery-time uniqueness filter: duplicate identities are excluded from targets up front
+    // (re-find still enforces exactly-one at every poll; virtualization can create new duplicates).
+    let ambiguous = Set(expandable.filter { seen[$0.1] ?? 0 > 1 }.map { $0.1 })
+    for (i, idn) in expandable where ambiguous.contains(idn) {
+        emit(out, "{\"probe\":\"expand\",\"i\":\(i),\"error\":\"identity-ambiguous\",\"id\":\"\(jesc(idn))\"}")
     }
+    let targets = Array(expandable.filter { !ambiguous.contains($0.1) }.prefix(12))
     marker("expand-targets count=\(targets.count) of first-rows=\(min(rowCount, 24))")
     let expandPasses = targets.isEmpty ? 0 : max(2, min(6, (24 + targets.count - 1) / targets.count))
     if targets.isEmpty { emit(out, "{\"probe\":\"expand\",\"error\":\"no-expandable-rows\"}") }
@@ -206,7 +230,7 @@ case "expand":
         marker("expand-pass-start pass=\(pass)")
         for (i, idn) in targets {
             guard let row = rowByIdentity(idn) else {
-                emit(out, "{\"probe\":\"expand\",\"pass\":\(pass),\"i\":\(i),\"error\":\"row-identity-lost\"}")
+                emit(out, "{\"probe\":\"expand\",\"pass\":\(pass),\"i\":\(i),\"error\":\"row-identity-unresolved\"}")
                 continue
             }
             guard let btn = chevron(row, prefix: "Expand") else { continue }  // no children or already expanded
