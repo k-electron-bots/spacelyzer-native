@@ -352,13 +352,23 @@ final class AppModel {
     var outlineMillis: Double = 0
     private var outlineTask: Task<Void, Never>?
 
+    /// Why the outline was last republished. Only `.toggle` permits the table's batch insert/delete
+    /// path; every other cause keeps the full reloadData, so reorders, filters, sorts, root changes
+    /// and tree swaps never take the structural shortcut. Published in the same main-actor turn as
+    /// the rows it describes, under the same generation and table-version guards.
+    enum OutlineRefreshCause: Equatable {
+        case content
+        case toggle(UInt32)
+    }
+    private(set) var outlineLastCause: OutlineRefreshCause = .content
+
     /// Recompute the flattened outline in Rust off the main thread. Selection and the expanded
     /// set live here, so they survive re-projection.
-    func refreshOutline() {
+    func refreshOutline(cause: OutlineRefreshCause = .content) {
         outlineTask?.cancel()
         outlineGeneration &+= 1
         let generation = outlineGeneration, barrier = beforePublish, completed = afterPublish
-        guard let tree else { outlineRows = []; outlineInfos = []; outlineShown = []; outlineIndex = [:]; outlineRevision += 1; outlineRootSize = 0; publishedTotalBytes = nil; return }
+        guard let tree else { outlineRows = []; outlineInfos = []; outlineShown = []; outlineIndex = [:]; outlineRevision += 1; outlineRootSize = 0; publishedTotalBytes = nil; outlineLastCause = .content; return }
         let root = displayedRoot, ex = expanded, flt = activeFilter, sort = outlineSort
         outlineTask?.cancel()
         outlineTask = Task.detached(priority: .userInitiated) { [weak self] in
@@ -387,7 +397,7 @@ final class AppModel {
                 // so cells never mix rows from one version with sizes from another.
                 self.outlineRows = snap.rows; self.outlineInfos = snap.infos; self.outlineShown = snap.shown; self.outlineRootSize = snap.rootSize
                 self.publishedTotalBytes = snap.totalBytes; self.outlineVersion = snap.version
-                self.outlineIndex = indexFinal; self.outlineRevision += 1; self.outlineMillis = ms
+                self.outlineIndex = indexFinal; self.outlineRevision += 1; self.outlineMillis = ms; self.outlineLastCause = cause
                 self.surfaceCheck()
             }
             await completed?("outline", generation, publication)
@@ -413,7 +423,7 @@ final class AppModel {
 
     func toggle(_ id: UInt32) {
         if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
-        refreshOutline()
+        refreshOutline(cause: .toggle(id))
     }
     var coloring: TreemapColoring = .folder
     var tab: TrailingTab = .treemap { didSet { surfaceCheck() } }
