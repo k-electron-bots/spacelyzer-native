@@ -46,6 +46,22 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Source binding guard (fail closed BEFORE any build work)
+        run: |
+          set -e
+          [ "$(git rev-parse HEAD^)" = "f908915a54c09576b3d8f63a3b2d4bbca6bbad5b" ] || { echo "::error::HEAD parent != reviewed f908915a54c09576b3d8f63a3b2d4bbca6bbad5b; branch moved past the guard commit"; exit 1; }
+          git diff --quiet f908915a54c09576b3d8f63a3b2d4bbca6bbad5b HEAD -- . ':(exclude).github/workflows/expand-fix-verify.yml' || { echo "::error::non-workflow content drifted from reviewed f908915a"; exit 1; }
+          for spec in "Sources/Spacelyzer/AppModel.swift=3b2d2e2df7b2baf567b862a4b8dbbc19d6f362fe" \
+                      "Sources/Spacelyzer/OutlineView.swift=49e635054ff886e1e1cae4d9519ac077a5415a35" \
+                      "Sources/Spacelyzer/StageTiming.swift=31f54c97c17c8b4a0b345c7e78da5ffbdccae7a5" \
+                      "scripts/measure/evaluate.py=489f0ee0549d51a4cf0d7bf6e2138ad3502b90c3" \
+                      "scripts/measure/stall-driver.swift=d875d10e57c3580e6e67bf1c7979968eb13e72b4"; do
+            f="${spec%%=*}"; want="${spec##*=}"; got="$(git rev-parse "HEAD:$f")"
+            [ "$got" = "$want" ] || { echo "::error::pin drift $f blob=$got expected $want"; exit 1; }
+          done
+          git merge-base --is-ancestor 00aa46a2d384ec4648ae4571ccb2eaee5a7e6324 HEAD || { echo "::error::base 00aa46a2 not ancestor of HEAD"; exit 1; }
+          echo "source binding guard PASS: parent==f908, non-workflow tree identical, 5 blob pins exact, base ancestry OK"
+
       - name: Record job start (fail closed if missing later)
         run: date +%s > "$RUNNER_TEMP/spz-job-start"
 
