@@ -440,13 +440,23 @@ final class AppModel {
     var removalInFlight = false
     var removalTask: Task<Void, Never>?
     var removalMessage: String?
-    /// Situation title for the removal alert. Move and put-back summaries start with "Moved "/"Put " by
-    /// construction at their sites; every refusal and error takes the neutral third case. Never the app name.
+    /// What the latest removal alert reports. Set at the same site as the message, never derived from its
+    /// text: a zero-move batch still reads "Moved 0 of N", and a failed move can leave the original gone.
+    enum RemovalReportKind { case moved, putBack, notMoved, uncertain }
+    private(set) var removalReportKind: RemovalReportKind = .notMoved
+    /// Situation title for the removal alert. Never the app name.
     var removalAlertTitle: String {
-        guard let m = removalMessage else { return "Removal" }
-        if m.hasPrefix("Moved ") { return "Moved to Trash" }
-        if m.hasPrefix("Put ") { return "Put Back" }
-        return "Not Moved"
+        switch removalReportKind {
+        case .moved: return "Moved to Trash"
+        case .putBack: return "Put Back"
+        case .uncertain: return "Removal Result"
+        case .notMoved: return "Not Moved"
+        }
+    }
+    /// Every removal message goes through here so the title always matches the outcome the site knows.
+    private func reportRemoval(_ message: String, _ kind: RemovalReportKind) {
+        removalReportKind = kind
+        removalMessage = message
     }
     /// The node whose read-only identity check popover is open; nil when closed. Opening it moves nothing.
     var reviewItem: UInt32?
@@ -819,12 +829,12 @@ final class AppModel {
 
     func proposeRemoval(of id: UInt32) {
         guard id != 0 else { return }
-        if destructiveBlocked { removalMessage = coherenceNotice ?? "Please wait for the previous change to finish."; return }
+        if destructiveBlocked { reportRemoval(coherenceNotice ?? "Please wait for the previous change to finish.", .notMoved); return }
         // A selection the filter has hidden must not be removable from here: clear the filter or reselect first.
-        if removalInFlight { removalMessage = "Another removal is still in progress."; return }
-        if filterPending { removalMessage = "The filter is still updating, so the list may be out of date. Try again in a moment."; return }
-        if let r = filterUntrustedReason { removalMessage = r; return }
-        if isOutsideFilter(id) { removalMessage = "That item is outside the current filter. Clear the filter or select it again to move it to the Trash."; return }
+        if removalInFlight { reportRemoval("Another removal is still in progress.", .notMoved); return }
+        if filterPending { reportRemoval("The filter is still updating, so the list may be out of date. Try again in a moment.", .notMoved); return }
+        if let r = filterUntrustedReason { reportRemoval(r, .notMoved); return }
+        if isOutsideFilter(id) { reportRemoval("That item is outside the current filter. Clear the filter or select it again to move it to the Trash.", .notMoved); return }
         pendingRemoval = id
     }
 
@@ -865,19 +875,19 @@ final class AppModel {
     func confirmRemoval() {
         guard let tree, let id = pendingRemoval else { return }
         pendingRemoval = nil
-        if removalInFlight { removalMessage = "Another removal is still in progress."; return }
-        if filterPending { removalMessage = "The filter is still updating, so nothing was moved. Select the item again in a moment."; return }
-        if let r = filterUntrustedReason { removalMessage = r; return }
-        if isOutsideFilter(id) { removalMessage = "The filter changed and this item is no longer shown, so nothing was moved. Select it again to remove it."; return }
+        if removalInFlight { reportRemoval("Another removal is still in progress.", .notMoved); return }
+        if filterPending { reportRemoval("The filter is still updating, so nothing was moved. Select the item again in a moment.", .notMoved); return }
+        if let r = filterUntrustedReason { reportRemoval(r, .notMoved); return }
+        if isOutsideFilter(id) { reportRemoval("The filter changed and this item is no longer shown, so nothing was moved. Select it again to remove it.", .notMoved); return }
         let path = tree.path(id)
         if isProtected(path) {
-            removalMessage = "\(path) is protected and cannot be removed from here."
+            reportRemoval("\(path) is protected and cannot be removed from here.", .notMoved)
             return
         }
-        if destructiveBlocked { removalMessage = coherenceNotice ?? "Please wait for the previous change to finish."; return }
+        if destructiveBlocked { reportRemoval(coherenceNotice ?? "Please wait for the previous change to finish.", .notMoved); return }
         let url = URL(fileURLWithPath: path)
         // The recorded size comes from one engine capture; if the engine cannot answer now, nothing is moved.
-        guard let snap = nodeSnapshot(id) else { removalMessage = "Sizes are still updating, so nothing was moved. Try again in a moment."; return }
+        guard let snap = nodeSnapshot(id) else { reportRemoval("Sizes are still updating, so nothing was moved. Try again in a moment.", .notMoved); return }
         let size = snap.info.size
         mutationPending = true      // reserved before the write, so no scan or undo can slip in between
         removalInFlight = true
@@ -928,16 +938,16 @@ final class AppModel {
     /// the SAME per-item identity-checked Trash path once per item: the batch adds no deletion path.
     func proposeBatchRemoval() {
         guard let tree else { return }
-        if destructiveBlocked { removalMessage = coherenceNotice ?? "Please wait for the previous change to finish."; return }
-        if removalInFlight { removalMessage = "Another removal is still in progress."; return }
-        if filterPending { removalMessage = "The filter is still updating, so the list may be out of date. Try again in a moment."; return }
-        if let r = filterUntrustedReason { removalMessage = r; return }
+        if destructiveBlocked { reportRemoval(coherenceNotice ?? "Please wait for the previous change to finish.", .notMoved); return }
+        if removalInFlight { reportRemoval("Another removal is still in progress.", .notMoved); return }
+        if filterPending { reportRemoval("The filter is still updating, so the list may be out of date. Try again in a moment.", .notMoved); return }
+        if let r = filterUntrustedReason { reportRemoval(r, .notMoved); return }
         let ids = batchCandidateIDs
-        guard ids.count >= 2 else { removalMessage = "Select at least two items to move them together."; return }
+        guard ids.count >= 2 else { reportRemoval("Select at least two items to move them together.", .notMoved); return }
         let p = BatchRemoval.plan(ids.map { tree.path($0) }, groups: [], in: self)
         guard !p.approved.isEmpty else {
             let reasons = p.refused.prefix(3).map { "\($0.path): \($0.reason)" }.joined(separator: "; ")
-            removalMessage = "Nothing in the selection can be moved to the Trash. \(reasons)"
+            reportRemoval("Nothing in the selection can be moved to the Trash. \(reasons)", .notMoved)
             return
         }
         pendingBatchRemoval = PendingBatchRemoval(items: p.approved, refused: p.refused)
@@ -948,15 +958,15 @@ final class AppModel {
     /// path sorts first is always kept). Execution is the same per-item identity-checked Trash path.
     func proposeGroupRemoval(_ groupPaths: [String]) {
         guard tree != nil else { return }
-        if destructiveBlocked { removalMessage = coherenceNotice ?? "Please wait for the previous change to finish."; return }
-        if removalInFlight { removalMessage = "Another removal is still in progress."; return }
-        if filterPending { removalMessage = "The filter is still updating, so the list may be out of date. Try again in a moment."; return }
-        if let r = filterUntrustedReason { removalMessage = r; return }
+        if destructiveBlocked { reportRemoval(coherenceNotice ?? "Please wait for the previous change to finish.", .notMoved); return }
+        if removalInFlight { reportRemoval("Another removal is still in progress.", .notMoved); return }
+        if filterPending { reportRemoval("The filter is still updating, so the list may be out of date. Try again in a moment.", .notMoved); return }
+        if let r = filterUntrustedReason { reportRemoval(r, .notMoved); return }
         guard groupPaths.count >= 2 else { return }
         let p = BatchRemoval.plan(groupPaths, groups: [groupPaths], in: self)
         guard !p.approved.isEmpty else {
             let reasons = p.refused.prefix(3).map { "\($0.path): \($0.reason)" }.joined(separator: "; ")
-            removalMessage = "Nothing in this group can be moved to the Trash. \(reasons)"
+            reportRemoval("Nothing in this group can be moved to the Trash. \(reasons)", .notMoved)
             return
         }
         pendingBatchRemoval = PendingBatchRemoval(items: p.approved, refused: p.refused)
@@ -968,10 +978,10 @@ final class AppModel {
     func confirmBatchRemoval() {
         guard let tree, let batch = pendingBatchRemoval else { return }
         pendingBatchRemoval = nil
-        if removalInFlight { removalMessage = "Another removal is still in progress."; return }
-        if filterPending { removalMessage = "The filter is still updating, so nothing was moved. Try again in a moment."; return }
-        if let r = filterUntrustedReason { removalMessage = r; return }
-        if destructiveBlocked { removalMessage = coherenceNotice ?? "Please wait for the previous change to finish."; return }
+        if removalInFlight { reportRemoval("Another removal is still in progress.", .notMoved); return }
+        if filterPending { reportRemoval("The filter is still updating, so nothing was moved. Try again in a moment.", .notMoved); return }
+        if let r = filterUntrustedReason { reportRemoval(r, .notMoved); return }
+        if destructiveBlocked { reportRemoval(coherenceNotice ?? "Please wait for the previous change to finish.", .notMoved); return }
         let op = SerialOperation(run: trashItem)
         let check = SerialIdentity(run: identityCheck)
         removalTask = Task { [weak self] in
@@ -1041,7 +1051,7 @@ final class AppModel {
             summary += " Skipped \(skipped.count): " + skipped.prefix(3).joined(separator: "; ")
             if skipped.count > 3 { summary += "; …" }
         }
-        removalMessage = summary
+        reportRemoval(summary, moved > 0 ? .moved : .notMoved)
     }
 
     /// Waits until no removal or engine commit is in flight, so each batch item starts from the
@@ -1059,12 +1069,12 @@ final class AppModel {
         case .refused(let reason):
             // Nothing was moved; the verdict's own message says so and asks for a rescan.
             mutationPending = commitsInFlight > 0
-            removalMessage = reason
+            reportRemoval(reason, .notMoved)
         case .failed(let reason, let stillExists):
             mutationPending = commitsInFlight > 0
-            removalMessage = stillExists
+            reportRemoval(stillExists
                 ? "Could not move it to the Trash: \(reason)"
-                : "The Trash move reported an error (\(reason)) but \(url.lastPathComponent) is no longer at its original location. Rescan to refresh."
+                : "The Trash move reported an error (\(reason)) but \(url.lastPathComponent) is no longer at its original location. Rescan to refresh.", stillExists ? .notMoved : .uncertain)
             if !stillExists { fsEpoch += 1; markOutOfDate("\(url.lastPathComponent) may have been moved even though the Trash reported an error. Rescan.") }
         case .moved(let trashed):
             // 2. Filesystem outcome journaled first (the real event), then the engine commit on the serial lane.
@@ -1075,7 +1085,7 @@ final class AppModel {
                 // A rescan replaced the tree while the move was running. Its node ids are gone; do not forget on the new one.
                 mutationPending = commitsInFlight > 0
                 markOutOfDate("\(url.lastPathComponent) was moved to the Trash while a scan was replacing the results, so they may still include it. Rescan.")
-                removalMessage = "Moved \(url.lastPathComponent) to the Trash. The folder was rescanned meanwhile, so sizes may be out of date. Rescan to refresh."
+                reportRemoval("Moved \(url.lastPathComponent) to the Trash. The folder was rescanned meanwhile, so sizes may be out of date. Rescan to refresh.", .moved)
                 return
             }
             commitsInFlight += 1
@@ -1115,7 +1125,7 @@ final class AppModel {
         // tree (the scan may have read the folder before the move). Mark it explicitly instead of dropping the outcome.
         guard self.tree === tree else {
             markOutOfDate("\(name) was moved to the Trash while a scan was replacing the results, so they may still include it. Rescan.")
-            removalMessage = "Moved \(name) to the Trash. The new results may not reflect it. Rescan to refresh."
+            reportRemoval("Moved \(name) to the Trash. The new results may not reflect it. Rescan to refresh.", .moved)
             return
         }
         switch status {
@@ -1137,11 +1147,11 @@ final class AppModel {
                 refreshOutline()
                 refreshDerived()
             }
-            removalMessage = "Moved \(name) to the Trash."
+            reportRemoval("Moved \(name) to the Trash.", .moved)
         case .mutationFailed, .invalid, .internalError, .stale, .busy:
             // The file is in the Trash, but the numbers on screen could not be updated. Say so; never report success.
             markOutOfDate("\(name) is in the Trash but the numbers on screen could not be updated (\(status)). Rescan to refresh.")
-            removalMessage = "Moved \(name) to the Trash, but the numbers on screen could not be updated (\(status)). Rescan to refresh. You can still put it back."
+            reportRemoval("Moved \(name) to the Trash, but the numbers on screen could not be updated (\(status)). Rescan to refresh. You can still put it back.", .moved)
         }
     }
 
@@ -1162,7 +1172,7 @@ final class AppModel {
     /// refused while a removal or commit is mid-flight, and afterwards the view is persistently out of date - the
     /// engine cannot add a subtree back, only a rescan can.
     func undoRemoval() {
-        if removalInFlight || mutationPending || commitsInFlight > 0 || requiredVersion != nil { removalMessage = "The previous change is still being applied. Try again in a moment."; return }
+        if removalInFlight || mutationPending || commitsInFlight > 0 || requiredVersion != nil { reportRemoval("The previous change is still being applied. Try again in a moment.", .notMoved); return }
         guard let item = lastRemoved.last else { return }
         runRestore([item])
     }
@@ -1171,7 +1181,7 @@ final class AppModel {
     /// the same seams as the per-item undo. Offered once per batch: the journal is the real state,
     /// and any item that stays behind (collision/failure) remains individually restorable.
     func undoBatchRemoval() {
-        if removalInFlight || mutationPending || commitsInFlight > 0 || requiredVersion != nil { removalMessage = "The previous change is still being applied. Try again in a moment."; return }
+        if removalInFlight || mutationPending || commitsInFlight > 0 || requiredVersion != nil { reportRemoval("The previous change is still being applied. Try again in a moment.", .notMoved); return }
         guard let n = lastBatchCount, n >= 2, lastRemoved.count >= n else { return }
         lastBatchCount = nil
         runRestore(Array(lastRemoved.suffix(n)))
@@ -1180,7 +1190,7 @@ final class AppModel {
     /// Per-item restore from the removal history: the same gates as undoRemoval, but only the named record moves.
     /// An unknown id is a no-op (the record may already have been restored or never journaled).
     func restoreRemoved(id: UUID) {
-        if removalInFlight || mutationPending || commitsInFlight > 0 || requiredVersion != nil { removalMessage = "The previous change is still being applied. Try again in a moment."; return }
+        if removalInFlight || mutationPending || commitsInFlight > 0 || requiredVersion != nil { reportRemoval("The previous change is still being applied. Try again in a moment.", .notMoved); return }
         guard let item = lastRemoved.first(where: { $0.id == id }) else { return }
         runRestore([item])
     }
@@ -1228,7 +1238,7 @@ final class AppModel {
         // Only successful restores are forgotten. A per-item pass touches one record; every other
         // journaled record (and this pass's collided/failed ones) stays in the history.
         lastRemoved = lastRemoved.filter { !restored.contains($0.id) }
-        removalMessage = message
+        reportRemoval(message, restored.isEmpty ? .notMoved : .putBack)
     }
 
     func reveal(_ id: UInt32) {
