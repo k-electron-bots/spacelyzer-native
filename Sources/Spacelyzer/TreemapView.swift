@@ -37,12 +37,16 @@ private struct TreemapBase: View, Equatable {
                 ctx.fill(path, with: .color(r.isDirectoryFrame ? color.opacity(0.18) : color))
             }
             // Labels only where they fit.
+            // One label per unique (branch, depth, fitted text): identical sibling names (cache families)
+            // each keep their rect, but only the first carries the label, so a homogeneous folder reads once.
+            var labeled = Set<String>()
             for r in layout.rects where !r.isDirectoryFrame && !r.isRemainder && r.rect.width > 70 && r.rect.height > 22 {
                 let box = r.rect.insetBy(dx: 4, dy: 3)
                 let label = fitLabel(tree.name(r.node), width: box.width, ctx: ctx)
+                guard labeled.insert("\(r.branch)|\(r.depth)|\(label.text)").inserted else { continue }
                 ctx.drawLayer { l in
                     l.clip(to: Path(box))
-                    l.draw(label, at: CGPoint(x: box.minX, y: box.minY), anchor: .topLeading)
+                    l.draw(label.resolved, at: CGPoint(x: box.minX, y: box.minY), anchor: .topLeading)
                 }
             }
         }
@@ -51,22 +55,22 @@ private struct TreemapBase: View, Equatable {
 }
 
 /// One line, middle-truncated with an ellipsis to fit `width`. Never wraps or splits a name.
-func fitLabel(_ name: String, width: CGFloat, ctx: GraphicsContext) -> GraphicsContext.ResolvedText {
+func fitLabel(_ name: String, width: CGFloat, ctx: GraphicsContext) -> (text: String, resolved: GraphicsContext.ResolvedText) {
     func resolved(_ t: String) -> GraphicsContext.ResolvedText {
         ctx.resolve(Text(t).font(.system(size: 11, weight: .medium)).foregroundColor(.white))
     }
     var r = resolved(name)
-    if r.measure(in: CGSize(width: 10_000, height: 20)).width <= width { return r }
+    if r.measure(in: CGSize(width: 10_000, height: 20)).width <= width { return (name, r) }
     var chars = Array(name)
     while chars.count > 3 {
         chars.removeSubrange((chars.count / 2)..<(chars.count / 2 + 1))
         let keep = chars.count / 2
         let candidate = String(chars[..<keep]) + "…" + String(chars[keep...])
         r = resolved(candidate)
-        if r.measure(in: CGSize(width: 10_000, height: 20)).width <= width { return r }
+        if r.measure(in: CGSize(width: 10_000, height: 20)).width <= width { return (candidate, r) }
         chars = Array(candidate.replacingOccurrences(of: "…", with: ""))
     }
-    return resolved("…")
+    return ("…", resolved("…"))
 }
 
 func fill(_ r: TreemapRect, tree: Tree, coloring: TreemapColoring) -> Color {
@@ -138,7 +142,7 @@ struct TreemapView: View {
             .overlay {
                 if !model.filterPending, !model.enginePoisoned, model.activeFilter != nil, let currentLayout, currentLayout.rects.isEmpty {
                     if model.activeFilter?.count(model.displayedRoot) == 0 {
-                        ContentUnavailableView("No matches", systemImage: "line.3.horizontal.decrease.circle")
+                        ContentUnavailableView("No matches", systemImage: "line.3.horizontal.decrease.circle", description: Text("No items match the current filter."))
                     } else {
                         ContentUnavailableView("Matching items use no drawable space", systemImage: "square.dashed",
                                                description: Text("Zero allocated bytes cannot make a treemap region. See these items in the outline or Largest list."))
@@ -489,8 +493,8 @@ struct LargestView: View {
             .overlay {
                 if presentation != .ready { DerivedOverlay(presentation: presentation, retry: { model.retryDerived() }, rescan: model.canRescan ? { model.rescan() } : nil) }
                 else if model.activeFilter != nil && ids.isEmpty {
-                    ContentUnavailableView("No matches", systemImage: "line.3.horizontal.decrease.circle",
-                                           description: Text("No file matches the current filter."))
+                    ContentUnavailableView("No matching files", systemImage: "line.3.horizontal.decrease.circle",
+                                           description: Text("Try a different name, extension, or size filter."))
                 }
             }
             .safeAreaInset(edge: .top, spacing: 0) {
