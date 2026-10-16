@@ -146,6 +146,20 @@ struct TreemapView: View {
                 }
             }
             .contentShape(Rectangle())
+            .contextMenu {
+                // Right-click acts on the rect under the pointer (tracked by the hover pass);
+                // the same three actions the outline's context menu offers.
+                if let h = hovered {
+                    Button("Show in Finder") { model.reveal(h.node) }
+                    Button("Check on disk") { model.proposeReview(of: h.node) }
+                    Button("Move to Trash…", role: .destructive) { model.proposeRemoval(of: h.node) }
+                        .disabled(model.removalBlockedReason(h.node) != nil)
+                }
+            }
+            .help("Click to select, double-click to open. Right-click for actions.")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Treemap of the scanned folder")
+            .accessibilityHint("Shows each item as a region sized by its allocated bytes. Click selects, double-click opens. The outline and the Largest list offer the same items to VoiceOver.")
             .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0; relayout() }
             .onContinuousHover { phase in
                 switch phase {
@@ -405,6 +419,13 @@ struct FoldersView: View {
                     Spacer()
                     Text(sizeOf[id].map(formatBytes) ?? "\u{2014}").monospacedDigit()
                 }.tag(id)
+                .contextMenu {
+                    // Right-click parity with the outline: the same three actions.
+                    Button("Show in Finder") { model.reveal(id) }
+                    Button("Check on disk") { model.proposeReview(of: id) }
+                    Button("Move to Trash…", role: .destructive) { model.proposeRemoval(of: id) }
+                        .disabled(model.removalBlockedReason(id) != nil)
+                }
             }
             .disabled(!ready)
             .overlay {
@@ -455,6 +476,13 @@ struct LargestView: View {
                     Spacer()
                     Text(sizeOf[id].map(formatBytes) ?? "\u{2014}").monospacedDigit()   // a missing size, or a poisoned engine, is a visible placeholder, never 0 B or an old number
                 }.tag(id)
+                .contextMenu {
+                    // Right-click parity with the outline: the same three actions.
+                    Button("Show in Finder") { model.reveal(id) }
+                    Button("Check on disk") { model.proposeReview(of: id) }
+                    Button("Move to Trash…", role: .destructive) { model.proposeRemoval(of: id) }
+                        .disabled(model.removalBlockedReason(id) != nil)
+                }
             }
             .opacity(presentation == .ready ? 1 : 0.5)
             .disabled(presentation != .ready)

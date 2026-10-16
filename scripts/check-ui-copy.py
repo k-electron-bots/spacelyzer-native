@@ -26,10 +26,11 @@ BRITISH = re.compile(
 # String literals only: good enough for copy audit; interpolation contents are still text.
 STRING_LITERAL = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
-SHEET_VIEWS = {  # every view ContentView presents with .sheet must have a Done button
-    "SkippedListView.swift": 'Button("Done")',
-    "DuplicatesReviewView.swift": 'Button("Done")',
-    "ExclusionsView.swift": 'Button("Done")',
+SHEET_VIEWS = {  # every view ContentView presents with .sheet must have a Done button,
+    # and the Done must be the default action (Return closes, Esc already does).
+    "SkippedListView.swift": 'Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)',
+    "DuplicatesReviewView.swift": 'Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)',
+    "ExclusionsView.swift": 'Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)',
 }
 
 LINELIMIT_ALLOWLIST = {  # file: lineLimit values above 1 that are deliberate, with the reason
