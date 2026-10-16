@@ -454,7 +454,8 @@ final class AppModel {
         }
     }
     /// Every removal message goes through here so the title always matches the outcome the site knows.
-    private func reportRemoval(_ message: String, _ kind: RemovalReportKind) {
+    /// A nil message clears the alert, same as a direct nil assignment did before.
+    private func reportRemoval(_ message: String?, _ kind: RemovalReportKind) {
         removalReportKind = kind
         removalMessage = message
     }
