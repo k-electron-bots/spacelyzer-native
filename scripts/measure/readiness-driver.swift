@@ -24,6 +24,10 @@
 //                                     disappearance - a responsive button alone is not evidence;
 //                                     a press with no observed activation is INCONCLUSIVE (AX
 //                                     press delivery vs product behavior is indistinguishable).
+                                     Discovery polls from t~0 (window wait folded in) with
+                                     per-iteration AX-walk latency OBS buckets, so a
+                                     starved-AX run is measured, not silent (run 38773486853:
+                                     three silent 150s external-watchdog burns).
 //                                     (2) CANCELLED STATE: the StatusBar AX carrier (a bare Text
 //                                     bridging fullDetails as AXValue+AXHelp on one AXStaticText;
 //                                     ContentView.swift StatusBar .background carrier, run
@@ -74,12 +78,15 @@
 //                                     wait and a single d150 chevron flip afterwards are
 //                                     OBSERVATIONS ONLY, never gated, and do not re-open the
 //                                     pre-registered expansion target.
+                                     The window wait is folded into the publication wait:
+                                     polling starts at t0 and each second's AX-walk latency is
+                                     printed as an OBS sample (starvation measurement).
 // Times are wall-clock ms around the AX call (overhead-inclusive; the concurrent external
 // `sample` capture is the overhead-free main-thread evidence).
 // BOUNDEDNESS (run 38486848714 evidence: iteration-bounded polls overran wall-clock by 18 min
 // because AX IPC waits on each call; per-call timeout x unbounded recursive call count is not a
 // wall-clock bound): every driver start sets an explicit 3s messaging timeout process-globally,
-// every mode runs under an in-process watchdog (exit 4), the workflow adds an external gtimeout,
+// every mode runs under an in-process watchdog (exit 4), the workflow adds an external pure-bash watchdog,
 // and stage/marker lines with epoch ms go to stdout so any future gap is localizable from the log.
 // AX default-timeout semantics are NOT asserted (third-party docs describe a 6s system default;
 // Apple's current page was not retrievable for confirmation); this driver never relies on it.
@@ -479,23 +486,51 @@ case "cancelrecover":
     let sentinel = args.count > 5 ? args[5] : "spz-readiness-sentinel"
     let sentinelChild = args.count > 6 ? args[6] : "inner"
     // Semantics are declared in the header: ACTIVATION -> CANCELLED STATE -> RECOVERY -> settle.
-    // Phase 0: AX window.
-    var hasWindow = false
-    for _ in 0..<120 {
-        let wins = ax(root, kAXWindowsAttribute) as? [AXUIElement] ?? []
-        if !wins.isEmpty { hasWindow = true; break }
-        Thread.sleep(forTimeInterval: 0.25)
-    }
-    guard hasWindow else {
-        emit(out, "{\"probe\":\"cancelrecover\",\"error\":\"no-ax-window\"}")
-        print("INCONCLUSIVE cancelrecover: no-ax-window"); exit(0)
-    }
-    // Phase 1: Stop discovery (60s; a missed window is honest INCONCLUSIVE, never a fake press).
+    let tLaunch = mach_absolute_time()
+    // Merged Phase 0+1: Stop discovery polls from t~0 (the AX window's existence is implicit in
+    // Stop becoming discoverable, so the separate window wait is folded in). Run 38773486853
+    // burned three silent 150s external watchdogs with only stage=start emitted: the per-phase
+    // entry marker and bounded AX-walk latency OBS buckets below exist so a starved-AX run is
+    // MEASURED, never silent. A "Scanned in" footer before any Stop appears means the scan
+    // finished first: fast honest INCONCLUSIVE (~seconds), never a fake press.
+    marker("cancelrecover-phase=discovery-enter")
     var stop: AXUIElement?
+    var preCompleted = false
+    var axCalls = 0
+    var axMaxMs = 0.0
+    var starvedBuckets = 0
+    var bucketStart = mach_absolute_time()
     for _ in 0..<240 {
+        let c0 = mach_absolute_time()
         stop = stopButton(root)
-        if stop != nil { break }
+        axCalls += 1
+        if stop == nil {
+            if detailsCarrier(root, "scanned in") != nil { preCompleted = true }
+            axCalls += 1
+        }
+        let c1 = mach_absolute_time()
+        let callMs = ms(c0, c1)
+        if callMs > axMaxMs { axMaxMs = callMs }
+        if ms(bucketStart, c1) >= 5_000 {
+            print("OBS cancel-discovery-ax t_s=\(Int(ms(tLaunch, c1) / 1000)) calls=\(axCalls) max-ms=\(axMaxMs)")
+            emit(out, "{\"probe\":\"cancelrecover-ax-bucket\",\"calls\":\(axCalls),\"max_ms\":\(axMaxMs)}")
+            // Sustained AX ceiling (3 consecutive 5s buckets each riding >= 2500ms on a walk
+            // iteration) is measured starvation: bail fast through the INCONCLUSIVE-with-state
+            // discipline instead of burning the full external watchdog. Starvation is a
+            // hypothesis about the app under 1M scan; this records evidence, not a verdict on it.
+            if axMaxMs >= 2_500 { starvedBuckets += 1 } else { starvedBuckets = 0 }
+            axCalls = 0; axMaxMs = 0.0; bucketStart = mach_absolute_time()
+            if starvedBuckets >= 3 {
+                emit(out, "{\"probe\":\"cancelrecover\",\"error\":\"ax-starved\",\"buckets\":\(starvedBuckets)}")
+                print("INCONCLUSIVE cancelrecover: ax-starved (3 consecutive 5s buckets with AX-walk max >= 2500ms)"); exit(0)
+            }
+        }
+        if stop != nil || preCompleted { break }
         Thread.sleep(forTimeInterval: 0.25)
+    }
+    if preCompleted {
+        emit(out, "{\"probe\":\"cancelrecover\",\"error\":\"scan-completed-before-press\"}")
+        print("INCONCLUSIVE cancelrecover: scan-completed-before-press"); exit(0)
     }
     guard let b = stop else {
         emit(out, "{\"probe\":\"cancelrecover\",\"error\":\"stop-window-never-opened\"}")
@@ -503,9 +538,9 @@ case "cancelrecover":
     }
     marker("cancelrecover-stop-found")
     // Locate the footer carrier while the scan is still in flight; if it already finished there
-    // is nothing to cancel.
+    // is nothing to cancel. preCompleted carries from discovery (always false on entry: the
+    // discovery exit fires first) and may still flip here if the scan completes in between.
     var carrier: AXUIElement?
-    var preCompleted = false
     for _ in 0..<100 {
         if let c = detailsCarrier(root, "scanning:") { carrier = c; break }
         if detailsCarrier(root, "scanned in") != nil { preCompleted = true; break }
@@ -725,42 +760,47 @@ case "publish1m":
     let expectChildren = args.count > 9 ? Int(args[9]) ?? 5001 : 5001
     // Semantics are declared in the header: attach->published interval, all-required visible
     // state, 30s must-terminate ceiling (not a performance bar), observational samples only.
+    // Window wait folded into the publication wait: polling starts at t0 (attach), and each
+    // second's AX-walk latency is itself the starvation OBS sample (printed AND jsonl). Run
+    // 38773486853 left the starvation hypothesis unmeasured; these samples measure it.
     let t0 = mach_absolute_time()
     var hasWindow = false
-    for _ in 0..<120 {
-        let wins = ax(root, kAXWindowsAttribute) as? [AXUIElement] ?? []
-        if !wins.isEmpty { hasWindow = true; break }
-        Thread.sleep(forTimeInterval: 0.25)
-    }
-    guard hasWindow else {
-        emit(out, "{\"probe\":\"publish1m\",\"error\":\"no-ax-window\"}")
-        print("INCONCLUSIVE publish1m: no-ax-window"); exit(0)
-    }
-    // Publication wait at 1 Hz; each pass emits an AX-read responsiveness sample (observation).
     var carrier: AXUIElement?
     var published = false
     var pubText = ""
     var lastState = "none"
     var sampleI = 0
+    marker("publish1m-phase=publication-wait-enter")
     while ms(t0, mach_absolute_time()) < 30_000 {
         sampleI += 1
         let s0 = mach_absolute_time()
-        if carrier == nil { carrier = detailsCarrier(root, "scanning:") ?? detailsCarrier(root, "scanned in") }
-        let s1 = mach_absolute_time()
-        emit(out, "{\"probe\":\"publish1m-ax-sample\",\"i\":\(sampleI),\"ms\":\(ms(s0, s1))}")
-        if let c = carrier {
-            let text = detailsText(c)
-            if text.isEmpty {
-                carrier = nil
-            } else {
-                lastState = text.replacingOccurrences(of: "\n", with: " | ")
-                let low = text.lowercased()
-                if low.contains("scanned in") && !low.contains("scanning:") {
-                    published = true; pubText = text; break
+        if !hasWindow {
+            let wins = ax(root, kAXWindowsAttribute) as? [AXUIElement] ?? []
+            if !wins.isEmpty { hasWindow = true; marker("publish1m-window-found") }
+        } else {
+            if carrier == nil { carrier = detailsCarrier(root, "scanning:") ?? detailsCarrier(root, "scanned in") }
+            if let c = carrier {
+                let text = detailsText(c)
+                if text.isEmpty {
+                    carrier = nil
+                } else {
+                    lastState = text.replacingOccurrences(of: "\n", with: " | ")
+                    let low = text.lowercased()
+                    if low.contains("scanned in") && !low.contains("scanning:") {
+                        published = true; pubText = text
+                    }
                 }
             }
         }
+        let s1 = mach_absolute_time()
+        emit(out, "{\"probe\":\"publish1m-ax-sample\",\"i\":\(sampleI),\"ms\":\(ms(s0, s1))}")
+        print("OBS publish-ax-sample-ms i=\(sampleI) ms=\(ms(s0, s1))")
+        if published { break }
         Thread.sleep(forTimeInterval: 1.0)
+    }
+    guard hasWindow else {
+        emit(out, "{\"probe\":\"publish1m\",\"error\":\"no-ax-window-30s\"}")
+        print("INCONCLUSIVE publish1m: no-ax-window-30s"); exit(0)
     }
     // Unmet engineering smoke deadline: a still-"Scanning:" (or unreadable) footer at 30s does
     // not prove a product stall - workload and AX observation are uncontrolled. INCONCLUSIVE
