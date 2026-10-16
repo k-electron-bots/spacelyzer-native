@@ -440,6 +440,14 @@ final class AppModel {
     var removalInFlight = false
     var removalTask: Task<Void, Never>?
     var removalMessage: String?
+    /// Situation title for the removal alert. Move and put-back summaries start with "Moved "/"Put " by
+    /// construction at their sites; every refusal and error takes the neutral third case. Never the app name.
+    var removalAlertTitle: String {
+        guard let m = removalMessage else { return "Removal" }
+        if m.hasPrefix("Moved ") { return "Moved to Trash" }
+        if m.hasPrefix("Put ") { return "Put Back" }
+        return "Not Moved"
+    }
     /// The node whose read-only identity check popover is open; nil when closed. Opening it moves nothing.
     var reviewItem: UInt32?
 
