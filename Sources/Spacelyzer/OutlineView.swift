@@ -532,6 +532,27 @@ private struct OutlineTable: NSViewRepresentable {
             }
         }
 
+        /// Path is only trustworthy while the row's node belongs to the model's current tree. Read only; never touches the disk.
+        func copyPathDecision(_ node: UInt32) -> CopyPathPolicy.Decision {
+            let live: String? = {
+                guard let t = tree, model.tree === t, UInt64(node) < t.nodeCount else { return nil }
+                return t.path(node)
+            }()
+            return CopyPathPolicy.decide(path: live, enginePoisoned: model.enginePoisoned)
+        }
+        /// Decides again at click time; a refusal never touches the clipboard (same policy as the selection bar).
+        func copyScannedPath(_ node: UInt32) {
+            let live: String? = {
+                guard let t = tree, model.tree === t, UInt64(node) < t.nodeCount else { return nil }
+                return t.path(node)
+            }()
+            CopyPathPolicy.perform(path: live, enginePoisoned: model.enginePoisoned) { p in
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                pb.setString(p, forType: .string)
+            }
+        }
+
         @objc func doubleClicked() {
             guard let t = table, t.clickedRow >= 0, t.clickedRow < model.outlineRows.count else { return }
             model.drill(into: model.outlineRows[t.clickedRow].node)
@@ -544,7 +565,9 @@ private struct OutlineTable: NSViewRepresentable {
             let a = BlockItem(title: "Show in Finder") { [weak self] in self?.model.reveal(node) }
             let b = BlockItem(title: "Move to Trash…") { [weak self] in self?.model.proposeRemoval(of: node) }
             let c = BlockItem(title: "Check on disk") { [weak self] in self?.model.proposeReview(of: node) }
-            m.addItem(a); m.addItem(c); m.addItem(b)
+            let cp = BlockItem(title: "Copy Scanned Path") { [weak self] in self?.copyScannedPath(node) }
+            if copyPathDecision(node).isRefused { cp.isEnabled = false }
+            m.addItem(a); m.addItem(cp); m.addItem(c); m.addItem(b)
             if model.selectedSet.count >= 2 && model.selectedSet.contains(node) {
                 let d = BlockItem(title: "Move \(model.batchCandidateIDs.count) Selected to Trash…") { [weak self] in self?.model.proposeBatchRemoval() }
                 m.addItem(d)
