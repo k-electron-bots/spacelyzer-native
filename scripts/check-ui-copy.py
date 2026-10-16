@@ -96,6 +96,18 @@ for f in sorted(SRC.glob("*.swift")):
         if ".truncationMode(.head)" in line:
             fails.append(f"{f.name}:{i}: head truncation (AGENTS.md: truncate middle)")
 
+# Harness drift pin: the demo harness finds the extension field by its placeholder string;
+# every placeholderString literal in the harness must match the product placeholder.
+APP_HARNESS = (SRC / "SpacelyzerApp.swift").read_text()
+ext_ph = re.search(r'TextField\("([^"]+)", text: \$model\.filterExt\)', CONTENT)
+if not ext_ph:
+    fails.append("ContentView.swift: extension filter TextField not found for the harness pin")
+else:
+    ph = ext_ph.group(1)
+    harness_ph = re.findall(r'placeholderString[^\n"]*== "([^"]+)"', APP_HARNESS)
+    if not harness_ph or any(h != ph for h in harness_ph):
+        fails.append(f"SpacelyzerApp.swift: extension-field placeholder lookups {harness_ph} drifted from the product placeholder {ph!r}")
+
 if fails:
     print("UI COPY CHECK FAILED:")
     for x in fails:
