@@ -108,7 +108,7 @@ struct ContentView: View {
         } message: {
             if let b = model.pendingBatchRemoval { Text(batchRemovalAlertText(b)) }
         }
-        .alert("Spacelyzer", isPresented: Binding(get: { model.removalMessage != nil }, set: { if !$0 { model.removalMessage = nil } })) {
+        .alert(model.removalAlertTitle, isPresented: Binding(get: { model.removalMessage != nil }, set: { if !$0 { model.removalMessage = nil } })) {
             if let n = model.lastBatchCount, n >= 2, model.lastRemoved.count >= n { Button("Undo \(n) items") { model.undoBatchRemoval() } } else if !model.lastRemoved.isEmpty { Button("Undo") { model.undoRemoval() } }
             Button("OK", role: .cancel) {}
         } message: { Text(model.removalMessage ?? "") }
@@ -212,7 +212,7 @@ struct StatusBar: View {
             if !compact {
                 if model.scanning { Text("\(String(format: "%.1f", model.elapsed))s").foregroundStyle(.secondary) }
                 else if let elapsed = model.lastScanSeconds { Text("Scanned in \(String(format: "%.2f", elapsed))s").foregroundStyle(.secondary) }
-                if model.activeFilter != nil { Text("Filter \(String(format: "%.1f", model.filterMillis))ms").foregroundStyle(.secondary) }
+                if Perf.on, model.activeFilter != nil { Text("Filter \(String(format: "%.1f", model.filterMillis))ms").foregroundStyle(.secondary) }
             }
         }
     }
@@ -224,7 +224,7 @@ struct StatusBar: View {
             parts.append("\((model.publishedTotalBytes.map(formatBytes) ?? "…")) in \(itemCount(UInt64(t.nodeCount - 1)))")
             if partial { parts.append("Stopped early, partial accounting") }
             if let elapsed = model.lastScanSeconds { parts.append("Scanned in \(String(format: "%.2f", elapsed)) seconds") }
-            if let f = model.activeFilter { parts.append("Filter: \(formatBytes(f.totalBytes)), \(fileCount(UInt64(f.totalCount))), \(String(format: "%.1f", model.filterMillis)) milliseconds") }
+            if let f = model.activeFilter { parts.append("Filter: \(formatBytes(f.totalBytes)), \(fileCount(UInt64(f.totalCount)))" + (Perf.on ? ", \(String(format: "%.1f", model.filterMillis)) milliseconds" : "")) }
             if unreadable > 0 { parts.append("\(locationCount(unreadable)) not readable") }
         }
         return parts.joined(separator: "\n")
@@ -260,7 +260,7 @@ struct FilterBar: View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
             NameFilterField(model: model)
-            TextField("ext", text: $model.filterExt).textFieldStyle(.plain).frame(width: 38)
+            TextField("extension", text: $model.filterExt).textFieldStyle(.plain).frame(width: 70)
                 .help("File extension, for example pdf or mp4")
                 .accessibilityLabel("Extension filter")
             if !model.filterText.isEmpty {
