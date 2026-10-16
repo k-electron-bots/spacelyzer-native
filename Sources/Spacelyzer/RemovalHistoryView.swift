@@ -18,7 +18,7 @@ struct RemovalHistoryPopover: View {
                             Text(item.original.lastPathComponent).lineLimit(1).truncationMode(.middle)
                             Text(item.original.deletingLastPathComponent().path)
                                 .font(.caption).foregroundStyle(.secondary)
-                                .lineLimit(1).truncationMode(.head)
+                                .lineLimit(1).truncationMode(.middle)
                         }
                         Spacer(minLength: 8)
                         Text(formatBytes(item.size)).font(.caption).foregroundStyle(.secondary)
