@@ -134,7 +134,7 @@ struct WelcomeView: View {
     @Environment(AppModel.self) private var model
     var body: some View {
         VStack(spacing: 14) {
-            Image(systemName: "chart.pie").font(.system(size: 54)).foregroundStyle(.secondary)
+            Image(systemName: "square.grid.2x2").font(.system(size: 54)).foregroundStyle(.secondary)
             Text("See what is using your disk").font(.title2.bold())
             Text("Everything stays on this Mac. Spacelyzer has no networking code.")
                 .foregroundStyle(.secondary)
