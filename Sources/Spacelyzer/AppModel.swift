@@ -1249,7 +1249,8 @@ final class AppModel {
 }
 
 func formatBytes(_ b: UInt64) -> String {
-    ByteCountFormatter.string(fromByteCount: Int64(b), countStyle: .file)
+    if b == 0 { return "0 KB" }   // ByteCountFormatter spells zero as "Zero KB"; a numeral scans faster in a size column.
+    return ByteCountFormatter.string(fromByteCount: Int64(b), countStyle: .file)
 }
 
 
