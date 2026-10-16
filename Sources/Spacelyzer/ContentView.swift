@@ -22,7 +22,7 @@ struct ContentView: View {
                 NavigationSplitView {
                     OutlineView()
                         .safeAreaInset(edge: .top, spacing: 0) { FilterBar() }
-                        .navigationSplitViewColumnWidth(min: 280, ideal: 340, max: 700)
+                        .navigationSplitViewColumnWidth(min: 300, ideal: 380, max: 700)
                         .padding(.bottom, StatusBar.height)
                 } detail: {
                     TrailingPane()

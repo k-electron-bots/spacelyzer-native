@@ -282,21 +282,32 @@ private final class OutlineCell: NSTableCellView {
     override func layout() {
         super.layout()
         let h = bounds.height, w = bounds.width
-        // Indent is capped so deep rows keep a readable name in a narrow sidebar.
-        let x0 = 8 + CGFloat(min(depth, 8)) * 10
+        // Narrow sidebars degrade chrome before they degrade the name: counts hide below 400,
+        // the size bar hides below 320, and deep indents flatten below 460, so the name keeps
+        // at least a 48pt budget (below that, middle truncation renders a bare ellipsis) at
+        // every width: with count, bar, and 8-deep indent all shown, 460pt is the smallest
+        // width that still leaves 48pt for the deepest row's name.
+        let indentCap = w >= 460 ? 8 : 4
+        let x0 = 8 + CGFloat(min(depth, indentCap)) * 10
         chevron.frame = NSRect(x: x0, y: (h - 14) / 2, width: 14, height: 14)
         chevron.isHidden = !hasChildren
         icon.frame = NSRect(x: x0 + 18, y: (h - 16) / 2, width: 16, height: 16)
+        let showBar = w >= 320
+        bar.isHidden = !showBar
         bar.frame = NSRect(x: w - 8 - 44, y: (h - 6) / 2, width: 44, height: 6)
         let sizeW: CGFloat = 70
-        size.frame = NSRect(x: bar.frame.minX - 8 - sizeW, y: (h - 16) / 2, width: sizeW, height: 16)
+        let sizeRight = showBar ? bar.frame.minX : w - 8
+        size.frame = NSRect(x: sizeRight - (showBar ? 8 : 0) - sizeW, y: (h - 16) / 2, width: sizeW, height: 16)
         let showCount = w >= 400 && !count.stringValue.isEmpty
         count.isHidden = !showCount
         let countW: CGFloat = 84
         count.frame = NSRect(x: size.frame.minX - 6 - countW, y: (h - 14) / 2, width: countW, height: 14)
         let nx = x0 + 40
         let nameRight = showCount ? count.frame.minX : size.frame.minX
-        name.frame = NSRect(x: nx, y: (h - 16) / 2, width: max(0, nameRight - 8 - nx), height: 16)
+        let nameW = max(0, nameRight - 8 - nx)
+        name.frame = NSRect(x: nx, y: (h - 16) / 2, width: nameW, height: 16)
+        // Middle truncation earns its keep only with room for both ends; below that keep the head.
+        name.lineBreakMode = nameW >= 64 ? .byTruncatingMiddle : .byTruncatingTail
     }
 }
 
@@ -664,6 +675,18 @@ struct ShareBar: View {
         guard let table, let window = table.window, !window.isKeyWindow, table.selectedRow >= 0,
               let cell = table.view(atColumn: 0, row: table.selectedRow, makeIfNecessary: false) as? OutlineCell else { return false }
         return cell.backgroundStyle != .emphasized && cell.count.textColor == .labelColor
+    }
+    /// Every visible named row keeps at least 48pt for its name: below that AppKit middle-truncation renders a bare ellipsis.
+    static var nameWidthsAboveBudget: Bool {
+        guard let table else { return false }
+        let range = table.rows(in: table.visibleRect)
+        guard range.location != NSNotFound else { return false }
+        let cells = (range.location..<min(table.numberOfRows, NSMaxRange(range))).compactMap {
+            table.view(atColumn: 0, row: $0, makeIfNecessary: false) as? OutlineCell
+        }.filter { !$0.name.stringValue.isEmpty }
+        guard !cells.isEmpty else { return false }
+        cells.forEach { $0.layoutSubtreeIfNeeded() }
+        return cells.allSatisfy { $0.name.frame.width >= 48 }
     }
     static var hasVisibleDeepRow: Bool {
         guard let table else { return false }
