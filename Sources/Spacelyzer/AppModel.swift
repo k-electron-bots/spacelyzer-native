@@ -976,9 +976,9 @@ final class AppModel {
         var skipped: [String] = []
         let journalMark = lastRemoved.count
         for item in items {
-            if Task.isCancelled { skipped.append("The batch was cancelled before \(item.path)."); break }
+            if Task.isCancelled { skipped.append("The batch was canceled before \(item.path)."); break }
             await waitForRemovalQuiescence()
-            if Task.isCancelled { skipped.append("The batch was cancelled before \(item.path)."); break }
+            if Task.isCancelled { skipped.append("The batch was canceled before \(item.path)."); break }
             // Plan-to-execution drift: the id must still name the planned path in the same tree.
             let path = tree.path(item.id)
             if path != item.path { skipped.append("\(item.path): the results changed; skipped."); continue }

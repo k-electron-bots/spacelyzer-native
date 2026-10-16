@@ -134,7 +134,7 @@ struct DuplicatesReviewView: View {
                 Text("The duplicates could not be read from the engine. The scan itself is unchanged; rescan to try again.")
                     .font(.caption).foregroundStyle(.red)
             } else if model.cancelled {
-                Text("The read was cancelled before it finished, so there is no answer to show.")
+                Text("The read was canceled before it finished, so there is no answer to show.")
                     .font(.caption).foregroundStyle(.secondary)
             } else if let r = model.result {
                 if r.groups.isEmpty {
@@ -152,6 +152,10 @@ struct DuplicatesReviewView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
+            }
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }
             }
         }
         .padding(12).frame(width: 520, height: 420, alignment: .topLeading)

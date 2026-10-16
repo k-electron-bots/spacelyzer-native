@@ -63,6 +63,7 @@ final class SkippedListModel: ObservableObject {
 /// shown as a failed read, never as an empty or partial list.
 struct SkippedListView: View {
     let tree: Tree
+    @Environment(\.dismiss) private var dismiss
     @StateObject private var list: SkippedListModel
 
     init(tree: Tree, model: SkippedListModel? = nil) {
@@ -88,7 +89,7 @@ struct SkippedListView: View {
                     List(Array(items.enumerated()), id: \.offset) { _, item in
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Text(item.path).font(.caption).textSelection(.enabled)
-                                .lineLimit(2).truncationMode(.middle)
+                                .lineLimit(1).truncationMode(.middle)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             VStack(alignment: .trailing, spacing: 1) {
                                 Text(item.reason.label).font(.caption2).foregroundStyle(.orange)
@@ -101,6 +102,10 @@ struct SkippedListView: View {
                 }
             } else {
                 ProgressView().controlSize(.small)
+            }
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }
             }
         }
         .padding(12).frame(width: 460, height: 340, alignment: .topLeading)

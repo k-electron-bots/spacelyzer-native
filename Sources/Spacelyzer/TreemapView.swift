@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Hues spaced by the golden angle keep neighbouring branches far apart in colour.
+/// Hues spaced by the golden angle keep neighboring branches far apart in color.
 func branchColor(_ branch: Int) -> Color {
     let hue = (Double(branch) * 0.618_033_988_75).truncatingRemainder(dividingBy: 1)
     return Color(hue: hue, saturation: 0.55, brightness: 0.85)
@@ -254,9 +254,9 @@ struct TrailingPane: View {
             switch model.tab {
             case .treemap:
                 HStack {
-                    Picker("Colour", selection: $model.coloring) {
+                    Picker("Color", selection: $model.coloring) {
                         ForEach(TreemapColoring.allCases) { Text($0.rawValue).tag($0) }
-                    }.pickerStyle(.segmented).frame(width: 220)
+                    }.pickerStyle(.segmented).labelsHidden().frame(width: 220)
                     Spacer()
                     if let t = model.tree { Text(t.name(model.displayedRoot).isEmpty ? model.rootPath : t.path(model.displayedRoot)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head) }
                 }.padding(8)
