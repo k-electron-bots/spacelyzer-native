@@ -524,6 +524,7 @@ struct SpacelyzerApp: App {
                             DemoInput.window?.setContentSize(NSSize(width: 960, height: 600))
                             try? await Task.sleep(nanoseconds: 1_000_000_000)
                             Check.expect("e2-minimum-window-fits", abs(DemoRootLayout.size.width - 960) < 1 && abs(DemoRootLayout.size.height - 600) < 1 && DemoInput.window?.contentLayoutRect.width == 960 && DemoInput.window?.contentLayoutRect.height == 600, "root=\(DemoRootLayout.size) layout=\(String(describing: DemoInput.window?.contentLayoutRect.size)) contentView=\(String(describing: DemoInput.window?.contentView?.bounds.size)); all required, pixels decide")
+                            Check.expect("outline-names-keep-readable-width-at-min-window", OutlineDemoEvidence.nameWidthsAboveBudget, "every visible named outline row keeps >=48pt at the 960px window; a smaller frame renders as a bare ellipsis")
                             mark(26)
                             NSApp.appearance = NSAppearance(named: .darkAqua)
                             try? await Task.sleep(nanoseconds: 1_000_000_000); mark(27)
@@ -781,7 +782,7 @@ struct SpacelyzerApp: App {
                             let expectedDetails = try? String(contentsOfFile: "/tmp/spz-footer-ax-expected.txt", encoding: .utf8)
                             let expectedScan = model.lastScanSeconds.map { "Scanned in \(String(format: "%.2f", $0)) seconds" }
                             let expectedFilter = model.activeFilter.map { "Filter: \(formatBytes($0.totalBytes)), 1 file, \(String(format: "%.1f", model.filterMillis)) milliseconds" }
-                            let expectedFixture = expectedDetails?.components(separatedBy: "\n").first == model.rootPath && expectedDetails?.contains("Zero KB in 1 item") == true && expectedDetails?.contains("Stopped early, partial accounting") == true && expectedScan.map { expectedDetails?.contains($0) == true } == true && expectedFilter.map { expectedDetails?.contains($0) == true } == true && model.activeFilter?.totalBytes == 0 && model.activeFilter?.totalCount == 1 && expectedDetails?.contains("1,234,567 locations not readable") == true
+                            let expectedFixture = expectedDetails?.components(separatedBy: "\n").first == model.rootPath && expectedDetails?.contains("0 KB in 1 item") == true && expectedDetails?.contains("Stopped early, partial accounting") == true && expectedScan.map { expectedDetails?.contains($0) == true } == true && expectedFilter.map { expectedDetails?.contains($0) == true } == true && model.activeFilter?.totalBytes == 0 && model.activeFilter?.totalCount == 1 && expectedDetails?.contains("1,234,567 locations not readable") == true
                             let clientStatus = try? String(contentsOfFile: "/tmp/spz-footer-ax-status.txt", encoding: .utf8)
                             let freshAck = FileManager.default.fileExists(atPath: "/tmp/spz-footer-ax-ack")
                             Check.expect("footer-external-same-node-help-value-exact-details", expectedFixture && freshAck && clientStatus == "EXIT_0" && externalResult == "VERIFIED", "external verified window/PID/role same-node exact UTF8 Help+Value; successful process exit required; denied/error/timeout/truncation is not a pass; native failed gate separate")
