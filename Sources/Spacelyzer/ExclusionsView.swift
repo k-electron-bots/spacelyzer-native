@@ -118,7 +118,7 @@ struct ExclusionsView: View {
             unobservedSection
             HStack {
                 Spacer()
-                Button("Done") { dismiss() }
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
             }
         }
         .padding(16)
