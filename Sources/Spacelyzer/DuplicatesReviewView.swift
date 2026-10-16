@@ -155,7 +155,7 @@ struct DuplicatesReviewView: View {
             }
             HStack {
                 Spacer()
-                Button("Done") { dismiss() }
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
             }
         }
         .padding(12).frame(width: 520, height: 420, alignment: .topLeading)
