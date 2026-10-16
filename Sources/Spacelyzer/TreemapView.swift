@@ -272,7 +272,7 @@ struct TrailingPane: View {
                         ForEach(TreemapColoring.allCases) { Text($0.rawValue).tag($0) }
                     }.pickerStyle(.segmented).labelsHidden().frame(width: 220)
                     Spacer()
-                    if let t = model.tree { Text(t.name(model.displayedRoot).isEmpty ? model.rootPath : t.path(model.displayedRoot)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head) }
+                    if let t = model.tree { Text(t.name(model.displayedRoot).isEmpty ? model.rootPath : t.path(model.displayedRoot)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }
                 }.padding(8)
                 TreemapView().padding([.horizontal, .bottom], 8)
             case .kinds: KindsView().frame(maxHeight: .infinity)
@@ -414,7 +414,7 @@ struct FoldersView: View {
                 HStack {
                     VStack(alignment: .leading) {
                         Text(model.enginePoisoned ? "Unavailable" : t.name(id)).lineLimit(1)
-                        Text(model.enginePoisoned ? "" : t.path(id)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+                        Text(model.enginePoisoned ? "" : t.path(id)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     }
                     Spacer()
                     Text(sizeOf[id].map(formatBytes) ?? "\u{2014}").monospacedDigit()
@@ -471,7 +471,7 @@ struct LargestView: View {
                     VStack(alignment: .leading) {
                         // A caught engine panic makes the legacy name/path reads untrustworthy (they fall back to blank).
                         Text(model.enginePoisoned ? "Unavailable" : t.name(id)).lineLimit(1)
-                        Text(model.enginePoisoned ? "" : t.path(id)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+                        Text(model.enginePoisoned ? "" : t.path(id)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     }
                     Spacer()
                     Text(sizeOf[id].map(formatBytes) ?? "\u{2014}").monospacedDigit()   // a missing size, or a poisoned engine, is a visible placeholder, never 0 B or an old number
