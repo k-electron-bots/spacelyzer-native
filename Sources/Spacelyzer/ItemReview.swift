@@ -246,6 +246,10 @@ struct ItemReviewPopover: View {
             }
             Text("Read only. This compares the item on disk with what the scan recorded at this moment. It does not make a later removal safe.")
                 .font(.caption2).foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("Close") { dismiss() }.controlSize(.small)
+            }
         }
         .padding(12).frame(width: 360, alignment: .leading)
         .onAppear { review.request(tree: tree, node: id) }
