@@ -60,6 +60,23 @@ for name, needle in SHEET_VIEWS.items():
     if needle not in body or "dismiss" not in body:
         fails.append(f"{name}: sheet is missing its visible Done/dismiss affordance")
 
+# Batch-4 pins: the fixes below must not regress.
+CONTENT = (SRC / "ContentView.swift").read_text()
+APP_MODEL = (SRC / "AppModel.swift").read_text()
+TREEMAP = (SRC / "TreemapView.swift").read_text()
+
+if '.alert("Spacelyzer"' in CONTENT:
+    fails.append('ContentView.swift: removal alert titled with the app name (must name the situation)')
+if "removalAlertTitle" not in CONTENT or "removalAlertTitle" not in APP_MODEL:
+    fails.append("removal alert: outcome title (Moved to Trash / Put Back / Not Moved) is missing")
+if 'TextField("extension"' not in CONTENT:
+    fails.append('ContentView.swift: extension filter lost its "extension" placeholder')
+if 'TextField("ext"' in CONTENT:
+    fails.append('ContentView.swift: cryptic "ext" placeholder is back')
+for name, body in (("TreemapView.swift", TREEMAP), ("ContentView.swift", CONTENT)):
+    if '"Check on disk…"' in body:
+        fails.append(f"{name}: ellipsis on Check on disk (it opens its popover directly, no further input)")
+
 if fails:
     print("UI COPY CHECK FAILED:")
     for x in fails:
