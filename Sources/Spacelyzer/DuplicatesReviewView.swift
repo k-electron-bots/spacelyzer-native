@@ -155,7 +155,7 @@ struct DuplicatesReviewView: View {
             }
             HStack {
                 Spacer()
-                Button("Done") { dismiss() }
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
             }
         }
         .padding(12).frame(width: 520, height: 420, alignment: .topLeading)
@@ -169,11 +169,11 @@ struct DuplicatesReviewView: View {
     }
 
     @ViewBuilder private func summary(_ r: DupFindResult) -> some View {
-        Text("\(r.summary.groupsListed) groups · \(formatBytes(r.summary.duplicateAllocatedBytes)) allocated in duplicates")
+        Text("\(r.summary.groupsListed) groups Â· \(formatBytes(r.summary.duplicateAllocatedBytes)) allocated in duplicates")
             .font(.caption)
         if r.summary.partial { partialNote }
         if r.summary.unreadable > 0 || r.summary.changed > 0 {
-            Text("\(r.summary.unreadable) unreadable · \(r.summary.changed) changed while reading")
+            Text("\(r.summary.unreadable) unreadable Â· \(r.summary.changed) changed while reading")
                 .font(.caption2).foregroundStyle(.secondary)
         }
         if r.summary.hardlinkAliases > 0 {
@@ -191,11 +191,11 @@ struct DuplicatesReviewView: View {
                     RoundedRectangle(cornerRadius: 2)
                         .fill(Color.accentColor.opacity(0.7))
                         .frame(width: max(24, 180 * CGFloat(g.size) / CGFloat(maxBytes)), height: 8)
-                    Text("\(g.memberCount) copies × \(formatBytes(g.size))").font(.caption)
+                    Text("\(g.memberCount) copies Ã \(formatBytes(g.size))").font(.caption)
                     if g.linked { Text("hard-linked").font(.caption2).foregroundStyle(.orange) }
                     Spacer(minLength: 8)
                     if g.paths.count >= 2 {
-                        Button("Move all but one to Trash…", role: .destructive) {
+                        Button("Move all but one to Trashâ¦", role: .destructive) {
                             dismiss()                                // the confirmation alert lives on the main window
                             appModel.proposeGroupRemoval(g.paths)    // plans with keep-one; the E4 flow confirms
                         }
@@ -212,7 +212,7 @@ struct DuplicatesReviewView: View {
                             Image(systemName: "trash").font(.caption2).foregroundStyle(.quaternary)
                                 .help(reason)
                         } else if let id = DuplicateRemoval.liveID(p, in: appModel) {
-                            Button("Move to Trash…", role: .destructive) {
+                            Button("Move to Trashâ¦", role: .destructive) {
                                 dismiss()                       // the confirmation alert lives on the main window
                                 appModel.proposeRemoval(of: id) // the E4 flow confirms with full path and size
                             }
