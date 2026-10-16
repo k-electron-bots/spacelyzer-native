@@ -9,13 +9,47 @@ name: readiness-verify
 #   .github/workflows/readiness-verify.yml   (this file)
 #   scripts/measure/readiness-driver.swift   (reviewed stall-driver d875d10e byte-preserved modes
 #                                             plus new cancelrecover/publish1m modes; new bytes)
-#   scripts/measure/make-cancel-fixture.sh   (byte-copy of the reviewed 49441465...42a4d generator)
+#   scripts/measure/make-cancel-fixture.sh   (reviewed 49441465...42a4d generator plus optional
+#                                             shard args; 4-way contiguous ranges, totals unchanged)
 # No SPZ_TIMING or other instrumentation is added: all probes run on the UNINSTRUMENTED product.
+#
+# RUN 38773486853 BASIS (v2, same gates, more measurement): the first attempt ended INCONCLUSIVE
+# on both probes - three cancel samples burned the 150s external watchdog with only stage=start
+# emitted, and the publish probe was budget-skipped before running. Dominant hypothesis
+# (UNPROVEN): main-thread saturation under the immediate 1M autoscan starves AX observation.
+# This package adds measurement, not leniency: per-iteration AX-walk latency OBS lines in both
+# probes, per-phase entry markers, early preCompleted detection (a missed cancel window exits
+# fast and honestly instead of burning the watchdog), probe jsonl uploaded as artifacts,
+# fixture generation parallelized (4 contiguous shards, identical totals), reserve tightened
+# 600s -> 300s (post-probe steps measured 3s in run 38773486853), and publish ordered BEFORE
+# cancel so the functional 1M gate is banked first and its per-second AX-latency samples
+# measure the starvation hypothesis before cancel can burn the window. If starvation is real
+# this run may return a MORE-MEASURED INCONCLUSIVE, never a converted PASS: "mid-1M-scan cancel
+# observable on Mac CI" may remain open. The driver Mac-compiled cleanly in run 38773486853;
+# the uncompiled caveat from the first attempt is retired.
 #
 # GATE 1 - COMPILE: universal release build + both arch slices verified. Same as expand-fix-verify.
 # GATE 2 - CORRECTNESS: the candidate's own SPZ_DEMO demo harness with expected=159 assertions
 #   (the count at 00aa46a2 per ci.yml's count rule; 169 belonged to the fix head and is NOT used).
-# GATE 3 - CANCEL (product-true), n=5 samples, one FRESH app instance per sample on the ~1M-entry
+# GATE 3 - 1M PUBLICATION: one FRESH instance auto-scanning the ~1M-entry fixture.
+#   INTERVAL: starts at driver attach (mode start, immediately after launch; open+bind+spawn
+#   ~1-3s INCLUDED, so it is an upper-bound observation of launch->published, not a pure
+#   scan->publish measurement and NOT the pre-registered 250ms expand interaction bar, which
+#   this run does not re-open). ENDS when the terminal footer state AND the known outline rows
+#   are both observed. SUCCESSFUL VISIBLE STATE (all required): footer "Scanned in" with no
+#   "Scanning:" and no "Stopped early"; footer item count == fixture files + dirs (1,000,200
+#   files + 200 dirs = 1,000,400: the footer shows nodeCount-1, excluding only the tree root);
+#   outline row count == 200 with known rows d000 and d199 present. DEADLINE: 30s from attach
+#   is an engineering smoke deadline with >3x margin over the ~4-10s engine scans measured on
+#   this runner class (run 38458610451), NOT a performance bar. Exceeding it is INCONCLUSIVE
+#   "deadline-not-met" with the last observed footer state as evidence - a still-"Scanning:"
+#   or unreadable carrier proves neither stall nor breakage (workload/AX uncontrolled); FAIL
+#   is reserved for contradictory state/count/tree. POSITIVE CLOSURE IS LIMITED: PASS closes
+#   a 1M-entry scan publishing its footer state plus 200 top-level outline rows - it does NOT
+#   close 1M-sibling publication/render. 1 Hz AX read samples during the wait and one d150
+#   chevron expansion afterwards are OBSERVATIONS ONLY, never gated, and do not re-open the
+#   existing expansion target.
+# GATE 4 - CANCEL (product-true), n=5 samples, one FRESH app instance per sample on the ~1M-entry
 #   fixture. Per sample the driver must prove, in order: Stop activation (control pressed AND
 #   observed gone - a merely responsive button is insufficient); the terminal cancelled/partial
 #   state (StatusBar AX carrier shows "Scanned in" WITH "Stopped early, partial accounting" and
@@ -38,26 +72,9 @@ name: readiness-verify
 #   (missed Stop window, scan completed before press, menu/AX mechanics, activation not
 #   observed, missing AX terminal state after Stop disappeared, deadline not met, watchdog
 #   rc 124/125, budget clip) = INCONCLUSIVE, never a silent pass and never green.
-# GATE 4 - 1M PUBLICATION: one FRESH instance auto-scanning the ~1M-entry fixture.
-#   INTERVAL: starts at driver attach (mode start, immediately after launch; open+bind+spawn
-#   ~1-3s INCLUDED, so it is an upper-bound observation of launch->published, not a pure
-#   scan->publish measurement and NOT the pre-registered 250ms expand interaction bar, which
-#   this run does not re-open). ENDS when the terminal footer state AND the known outline rows
-#   are both observed. SUCCESSFUL VISIBLE STATE (all required): footer "Scanned in" with no
-#   "Scanning:" and no "Stopped early"; footer item count == fixture files + dirs (1,000,200
-#   files + 200 dirs = 1,000,400: the footer shows nodeCount-1, excluding only the tree root);
-#   outline row count == 200 with known rows d000 and d199 present. DEADLINE: 30s from attach
-#   is an engineering smoke deadline with >3x margin over the ~4-10s engine scans measured on
-#   this runner class (run 38458610451), NOT a performance bar. Exceeding it is INCONCLUSIVE
-#   "deadline-not-met" with the last observed footer state as evidence - a still-"Scanning:"
-#   or unreadable carrier proves neither stall nor breakage (workload/AX uncontrolled); FAIL
-#   is reserved for contradictory state/count/tree. POSITIVE CLOSURE IS LIMITED: PASS closes
-#   a 1M-entry scan publishing its footer state plus 200 top-level outline rows - it does NOT
-#   close 1M-sibling publication/render. 1 Hz AX read samples during the wait and one d150
-#   chevron expansion afterwards are OBSERVATIONS ONLY, never gated, and do not re-open the
-#   existing expansion target.
 # FIXTURE LIMITS (explicit): make-cancel-fixture.sh builds 200 dirs x (1 seed + 5000 hardlinks) =
-#   1,000,200 entries; per-dir seeds stay under the per-inode hardlink limit (~65k APFS).
+#   1,000,200 entries, generated as 4 parallel contiguous shards (d000-d199, same totals);
+#   per-dir seeds stay under the per-inode hardlink limit (~65k APFS).
 #   Footer item count at publication = files + dirs = 1,000,400 (nodeCount-1). All
 #   files are EMPTY: sizes read 0 by design - the fixture exercises directory-ENTRY volume, so it
 #   does NOT close real allocated-size correctness. Fixture generation failure or a short fixture
@@ -65,8 +82,9 @@ name: readiness-verify
 # BUDGET: single attempt, no retry, job timeout-minutes 35 hard cap. Per-step timeout caps are
 #   worst-case ceilings, not an additive budget; the job cap plus budgeted_run reserve clipping
 #   is the binding constraint and clips or honestly SKIPS work (rc 124/125 markers) rather than
-#   burning the job. PRIORITY ORDER (explicit): (1) COMPILE, (2) 159 assertions, (3) CANCEL n=5,
-#   (4) 1M PUBLICATION. Lower priorities degrade first, in that order. Engine tests are NOT in
+#   burning the job. Reserve tightened 600s -> 300s:
+#   post-probe steps measured 3s in run 38773486853, so 300s is >50x margin, not a cut into need. PRIORITY ORDER (explicit): (1) COMPILE, (2) 159 assertions, (3) 1M PUBLICATION,
+#   (4) CANCEL n=5. Lower priorities degrade first, in that order. Engine tests are NOT in
 #   this run's scope: engine correctness evidence exists from candidate CI and the Linux
 #   investigation; this run's gates are the four above.
 
@@ -266,19 +284,29 @@ jobs:
 
       - name: Cancel/publication fixture + home sentinel (fail = probes INCONCLUSIVE, never faked)
         if: ${{ always() }}
-        timeout-minutes: 6
+        timeout-minutes: 5
         run: |
           set -o pipefail
-          if bash scripts/measure/make-cancel-fixture.sh /tmp/spz-cancel-fixture 2>&1 | tee measure-out/fixture-gen.txt; then
-            entries=$(sed -n 's/^fixture entries=\([0-9]*\) .*/\1/p' measure-out/fixture-gen.txt)
-            dirs=$(sed -n 's/^fixture entries=[0-9]* dirs=\([0-9]*\) .*/\1/p' measure-out/fixture-gen.txt)
+          # Parallel generation: 4 contiguous shards (d000-d049 .. d150-d199), identical totals
+          # to serial (run 38773486853 measured 247s serial link(); ~60-90s at 4 workers).
+          pids=""
+          for s in 0 1 2 3; do
+            bash scripts/measure/make-cancel-fixture.sh /tmp/spz-cancel-fixture "$s" 4 > "$RUNNER_TEMP/fixture-shard-$s.txt" 2>&1 &
+            pids="$pids $!"
+          done
+          grc=0
+          for p in $pids; do wait "$p" || grc=1; done
+          cat "$RUNNER_TEMP"/fixture-shard-?.txt | tee measure-out/fixture-gen.txt
+          entries=$(sed -n 's/^fixture entries=\([0-9]*\) .*/\1/p' measure-out/fixture-gen.txt | awk '{s+=$1} END{print s+0}')
+          dirs=$(sed -n 's/^fixture entries=[0-9]* dirs=\([0-9]*\) .*/\1/p' measure-out/fixture-gen.txt | awk '{s+=$1} END{print s+0}')
+          if [ "$grc" = "0" ] && [ "$entries" = "1000200" ] && [ "$dirs" = "200" ]; then
             # Footer count = nodeCount-1 (excludes only the tree root) = files + dirs.
             echo "fixture_entries=$entries" >> "$GITHUB_ENV"
             echo "fixture_items_expected=$((entries + dirs))" >> "$GITHUB_ENV"
             echo "fixture_ok=1" >> "$GITHUB_ENV"
             du -sh /tmp/spz-cancel-fixture 2>/dev/null | tee -a measure-out/fixture-gen.txt || true
           else
-            echo "::warning title=fixture::cancel fixture generation failed or short; CANCEL and PUBLISH probes will report INCONCLUSIVE"
+            echo "::warning title=fixture::cancel fixture generation failed or short (grc=$grc entries=$entries dirs=$dirs); CANCEL and PUBLISH probes will report INCONCLUSIVE"
             echo "fixture_ok=0" >> "$GITHUB_ENV"
           fi
           # Known-row sentinel for the follow-up Home Folder scan (app is NOT sandboxed:
@@ -286,6 +314,78 @@ jobs:
           mkdir -p "$HOME/spz-readiness-sentinel/inner"
           touch "$HOME/spz-readiness-sentinel/inner/known-file.txt" "$HOME/spz-readiness-sentinel/known-sibling.txt"
           ls -la "$HOME/spz-readiness-sentinel" | tee measure-out/sentinel.txt
+
+      - name: 1M PUBLICATION probe (one fresh instance; budgeted, single attempt)
+        if: ${{ always() }}
+        timeout-minutes: 5
+        run: |
+          mkdir -p measure-out/publish
+          kill_owned() {
+            [ -n "$1" ] || return 0
+            kill -TERM "$1" 2>/dev/null || true
+            for k in $(seq 1 10); do kill -0 "$1" 2>/dev/null || break; sleep 0.5; done
+            kill -0 "$1" 2>/dev/null && kill -KILL "$1" 2>/dev/null || true
+          }
+          run_bounded() {
+            local limit=$1; shift
+            local flag; flag=$(mktemp "${TMPDIR:-/tmp}/spzwatch.XXXXXX")
+            "$@" & local cpid=$!
+            ( i=0; while [ "$i" -lt "$limit" ]; do sleep 1; i=$((i+1)); done
+              echo 1 > "$flag"
+              kill -TERM "$cpid" 2>/dev/null
+              i=0; while [ "$i" -lt 15 ]; do sleep 1; kill -0 "$cpid" 2>/dev/null || break; i=$((i+1)); done
+              kill -KILL "$cpid" 2>/dev/null ) & local wpid=$!
+            local rc=0
+            wait "$cpid" || rc=$?
+            kill "$wpid" 2>/dev/null || true
+            wait "$wpid" 2>/dev/null || true
+            if [ -s "$flag" ]; then echo "WATCHDOG-EXTERNAL timeout_s=$limit cmd=$1"; rc=124; fi
+            rm -f "$flag"
+            return "$rc"
+          }
+          if ! JOB_START=$(cat "$RUNNER_TEMP/spz-job-start" 2>/dev/null); then
+            echo "::error::job-start epoch missing - budgets underivable, refusing to run"; exit 1
+          fi
+          RESERVE_END=$(( JOB_START + 2100 - 300 ))
+          budgeted_run() {
+            local requested=$1 label=$2; shift 2
+            local remain=$(( RESERVE_END - $(date +%s) - 20 ))
+            local limit=$requested
+            if [ "$remain" -lt "$limit" ]; then limit=$remain; fi
+            if [ "$limit" -lt 30 ]; then
+              echo "marker stage=$label-skipped-insufficient-budget"
+              return 125
+            fi
+            run_bounded "$limit" "$@"
+          }
+          LOG="measure-out/publish/publish.log"
+          if [ "${fixture_ok:-0}" != "1" ]; then
+            echo "INCONCLUSIVE publish1m: fixture-unavailable" | tee "$LOG"
+            exit 0
+          fi
+          before=$(pgrep -x Spacelyzer | sort | tr '\n' ' ')
+          open -n /tmp/apps/candidate.app --env SPZ_AUTOSCAN=/tmp/spz-cancel-fixture
+          newp=""
+          for t in $(seq 1 60); do
+            after=$(pgrep -x Spacelyzer | sort | tr '\n' ' ')
+            newp=$(comm -13 <(echo $before | tr ' ' '\n' | sort) <(echo $after | tr ' ' '\n' | sort) | tr '\n' ' ')
+            [ -n "${newp// /}" ] && break; sleep 0.5
+          done
+          n=$(echo $newp | wc -w | tr -d ' ')
+          PID=$(echo "$newp" | tr -d ' ')
+          if [ "$n" != "1" ]; then
+            echo "INCONCLUSIVE publish1m: pid-binding-ambiguous new=$n" | tee "$LOG"
+          else
+            echo "marker stage=publish-launch pid=$PID" | tee "$LOG"
+            budgeted_run 150 publish /tmp/spz-readiness-driver publish1m "$PID" "$RUNNER_TEMP/spz-publish.jsonl" 200 "${fixture_items_expected:-1000400}" d000 d199 d150 5001 2>&1 | tee -a "$LOG"
+            rc=${PIPESTATUS[0]}
+            echo "marker stage=publish-exit rc=$rc" | tee -a "$LOG"
+            if [ "$rc" = "124" ] || [ "$rc" = "125" ]; then
+              grep -q '^PASS publish1m:\|^FAIL publish1m:\|^INCONCLUSIVE publish1m:' "$LOG" || echo "INCONCLUSIVE publish1m: watchdog-or-budget rc=$rc" >> "$LOG"
+            fi
+          fi
+          cp "$RUNNER_TEMP/spz-publish.jsonl" measure-out/publish/ 2>/dev/null || true
+          kill_owned "$PID"
 
       - name: CANCEL probe (n=5 fresh instances; budgeted, single attempt)
         if: ${{ always() }}
@@ -318,7 +418,7 @@ jobs:
           if ! JOB_START=$(cat "$RUNNER_TEMP/spz-job-start" 2>/dev/null); then
             echo "::error::job-start epoch missing - budgets underivable, refusing to run"; exit 1
           fi
-          RESERVE_END=$(( JOB_START + 2100 - 600 ))
+          RESERVE_END=$(( JOB_START + 2100 - 300 ))
           budgeted_run() {
             local requested=$1 label=$2; shift 2
             local remain=$(( RESERVE_END - $(date +%s) - 20 ))
@@ -358,80 +458,10 @@ jobs:
                 grep -q '^PASS cancelrecover:\|^FAIL cancelrecover:\|^INCONCLUSIVE cancelrecover:' "$LOG" || echo "INCONCLUSIVE cancelrecover: watchdog-or-budget rc=$rc" >> "$LOG"
               fi
             fi
+            cp "$RUNNER_TEMP/spz-cancel-$i.jsonl" measure-out/cancel/ 2>/dev/null || true
             kill_owned "$PID"
             sleep 2
           done
-
-      - name: 1M PUBLICATION probe (one fresh instance; budgeted, single attempt)
-        if: ${{ always() }}
-        timeout-minutes: 5
-        run: |
-          mkdir -p measure-out/publish
-          kill_owned() {
-            [ -n "$1" ] || return 0
-            kill -TERM "$1" 2>/dev/null || true
-            for k in $(seq 1 10); do kill -0 "$1" 2>/dev/null || break; sleep 0.5; done
-            kill -0 "$1" 2>/dev/null && kill -KILL "$1" 2>/dev/null || true
-          }
-          run_bounded() {
-            local limit=$1; shift
-            local flag; flag=$(mktemp "${TMPDIR:-/tmp}/spzwatch.XXXXXX")
-            "$@" & local cpid=$!
-            ( i=0; while [ "$i" -lt "$limit" ]; do sleep 1; i=$((i+1)); done
-              echo 1 > "$flag"
-              kill -TERM "$cpid" 2>/dev/null
-              i=0; while [ "$i" -lt 15 ]; do sleep 1; kill -0 "$cpid" 2>/dev/null || break; i=$((i+1)); done
-              kill -KILL "$cpid" 2>/dev/null ) & local wpid=$!
-            local rc=0
-            wait "$cpid" || rc=$?
-            kill "$wpid" 2>/dev/null || true
-            wait "$wpid" 2>/dev/null || true
-            if [ -s "$flag" ]; then echo "WATCHDOG-EXTERNAL timeout_s=$limit cmd=$1"; rc=124; fi
-            rm -f "$flag"
-            return "$rc"
-          }
-          if ! JOB_START=$(cat "$RUNNER_TEMP/spz-job-start" 2>/dev/null); then
-            echo "::error::job-start epoch missing - budgets underivable, refusing to run"; exit 1
-          fi
-          RESERVE_END=$(( JOB_START + 2100 - 600 ))
-          budgeted_run() {
-            local requested=$1 label=$2; shift 2
-            local remain=$(( RESERVE_END - $(date +%s) - 20 ))
-            local limit=$requested
-            if [ "$remain" -lt "$limit" ]; then limit=$remain; fi
-            if [ "$limit" -lt 30 ]; then
-              echo "marker stage=$label-skipped-insufficient-budget"
-              return 125
-            fi
-            run_bounded "$limit" "$@"
-          }
-          LOG="measure-out/publish/publish.log"
-          if [ "${fixture_ok:-0}" != "1" ]; then
-            echo "INCONCLUSIVE publish1m: fixture-unavailable" | tee "$LOG"
-            exit 0
-          fi
-          before=$(pgrep -x Spacelyzer | sort | tr '\n' ' ')
-          open -n /tmp/apps/candidate.app --env SPZ_AUTOSCAN=/tmp/spz-cancel-fixture
-          newp=""
-          for t in $(seq 1 60); do
-            after=$(pgrep -x Spacelyzer | sort | tr '\n' ' ')
-            newp=$(comm -13 <(echo $before | tr ' ' '\n' | sort) <(echo $after | tr ' ' '\n' | sort) | tr '\n' ' ')
-            [ -n "${newp// /}" ] && break; sleep 0.5
-          done
-          n=$(echo $newp | wc -w | tr -d ' ')
-          PID=$(echo "$newp" | tr -d ' ')
-          if [ "$n" != "1" ]; then
-            echo "INCONCLUSIVE publish1m: pid-binding-ambiguous new=$n" | tee "$LOG"
-          else
-            echo "marker stage=publish-launch pid=$PID" | tee "$LOG"
-            budgeted_run 150 publish /tmp/spz-readiness-driver publish1m "$PID" "$RUNNER_TEMP/spz-publish.jsonl" 200 "${fixture_items_expected:-1000400}" d000 d199 d150 5001 2>&1 | tee -a "$LOG"
-            rc=${PIPESTATUS[0]}
-            echo "marker stage=publish-exit rc=$rc" | tee -a "$LOG"
-            if [ "$rc" = "124" ] || [ "$rc" = "125" ]; then
-              grep -q '^PASS publish1m:\|^FAIL publish1m:\|^INCONCLUSIVE publish1m:' "$LOG" || echo "INCONCLUSIVE publish1m: watchdog-or-budget rc=$rc" >> "$LOG"
-            fi
-          fi
-          kill_owned "$PID"
 
       - name: Verdicts (per-sample cancel + publication; INCONCLUSIVE is never green)
         if: ${{ always() }}
