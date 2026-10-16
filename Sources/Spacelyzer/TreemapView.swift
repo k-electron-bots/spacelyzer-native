@@ -318,7 +318,7 @@ struct SelectionBar: View {
             }
             .help(copyHelp)
             .accessibilityLabel("More actions for the selected item")
-            Button("Check on disk…") { showReview = true }
+            Button("Check on disk") { showReview = true }
                 .disabled(model.enginePoisoned || model.mutationPending)
                 .help("Read only: compare this item on disk with the scan")
                 .accessibilityLabel("Check selected item on disk, read only")
