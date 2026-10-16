@@ -87,6 +87,15 @@ if bare != ["removalMessage = message"]:
 if "removalReportKind" not in APP_MODEL:
     fails.append("AppModel.swift: removal outcome is not tracked (removalReportKind missing)")
 
+# AGENTS.md: labels truncate in the middle, never wrap or clip. Head truncation hides the start of a path.
+HEAD_TRUNC_ALLOWLIST = set()  # file names allowed to keep .truncationMode(.head), with a reason noted here
+for f in sorted(SRC.glob("*.swift")):
+    if f.name.endswith("Checks.swift") or f.name in HEAD_TRUNC_ALLOWLIST:
+        continue
+    for i, line in enumerate(f.read_text().splitlines(), 1):
+        if ".truncationMode(.head)" in line:
+            fails.append(f"{f.name}:{i}: head truncation (AGENTS.md: truncate middle)")
+
 if fails:
     print("UI COPY CHECK FAILED:")
     for x in fails:
