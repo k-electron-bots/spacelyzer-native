@@ -24,10 +24,10 @@
 //                                     disappearance - a responsive button alone is not evidence;
 //                                     a press with no observed activation is INCONCLUSIVE (AX
 //                                     press delivery vs product behavior is indistinguishable).
-                                     Discovery polls from t~0 (window wait folded in) with
-                                     per-iteration AX-walk latency OBS buckets, so a
-                                     starved-AX run is measured, not silent (run 38773486853:
-                                     three silent 150s external-watchdog burns).
+//                                     Discovery polls from t~0 (window wait folded in) with
+//                                     per-iteration AX-walk latency OBS buckets, so a
+//                                     starved-AX run is measured, not silent (run 38773486853:
+//                                     three silent 150s external-watchdog burns).
 //                                     (2) CANCELLED STATE: the StatusBar AX carrier (a bare Text
 //                                     bridging fullDetails as AXValue+AXHelp on one AXStaticText;
 //                                     ContentView.swift StatusBar .background carrier, run
@@ -78,9 +78,9 @@
 //                                     wait and a single d150 chevron flip afterwards are
 //                                     OBSERVATIONS ONLY, never gated, and do not re-open the
 //                                     pre-registered expansion target.
-                                     The window wait is folded into the publication wait:
-                                     polling starts at t0 and each second's AX-walk latency is
-                                     printed as an OBS sample (starvation measurement).
+//                                     The window wait is folded into the publication wait:
+//                                     polling starts at t0 and each second's AX-walk latency is
+//                                     printed as an OBS sample (starvation measurement).
 // Times are wall-clock ms around the AX call (overhead-inclusive; the concurrent external
 // `sample` capture is the overhead-free main-thread evidence).
 // BOUNDEDNESS (run 38486848714 evidence: iteration-bounded polls overran wall-clock by 18 min
@@ -417,7 +417,7 @@ case "cancel":
         if btn != nil { break }
         Thread.sleep(forTimeInterval: 0.25)
     }
-    guard let b = btn else { marker("cancel-window-missed"); emit(out, "{\"probe\":\"cancel\",\"error\":\"no-stop-button-scan-window-missed\"}") ; exit(1) }
+    guard let b = btn else { marker("cancel-window-missed"); emit(out, "{\"probe\":\"cancel\",\"error\":\"no-stop-button-scan-window-missed\"}"); exit(1) }
     marker("cancel-stop-found")
     let t0 = mach_absolute_time()
     AXUIElementPerformAction(b, kAXPressAction as CFString)
@@ -470,7 +470,7 @@ case "nonascii":
         if field != nil { break }
         Thread.sleep(forTimeInterval: 0.5)
     }
-    guard let f = field else { emit(out, "{\"probe\":\"nonascii\",\"error\":\"no-filter-field\"}") ; exit(1) }
+    guard let f = field else { emit(out, "{\"probe\":\"nonascii\",\"error\":\"no-filter-field\"}"); exit(1) }
     let t0 = mach_absolute_time()
     AXUIElementSetAttributeValue(f, kAXValueAttribute as CFString, "\u{304b}\u{306a}keep" as CFTypeRef)
     let readback = ax(f, kAXValueAttribute) as? String ?? ""
