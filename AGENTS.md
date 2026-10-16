@@ -33,7 +33,7 @@ scan, filter, sort, aggregate, layout, hit-testing.
   Do not paint custom backgrounds on sidebars, toolbars or bars. Do not hard-code control metrics.
 - Use glass sparingly on custom elements (`glassEffect`, `.buttonStyle(.glass)`), only for the main functional layer,
   and never stack glass on glass. Gate macOS 26 API with `#available`, keep a good fallback for macOS 14.
-- Concentric corner radii, system spacing, system colours (light, dark, increased contrast). Labels truncate in the
+- Concentric corner radii, system spacing, system colors (light, dark, increased contrast). Labels truncate in the
   middle with an ellipsis, never wrap or clip mid-glyph.
 - Respect Reduce Transparency and Reduce Motion. Everything needs an accessibility label.
 - Apple's guidance: https://developer.apple.com/documentation/TechnologyOverviews/adopting-liquid-glass
