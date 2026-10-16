@@ -77,6 +77,16 @@ for name, body in (("TreemapView.swift", TREEMAP), ("ContentView.swift", CONTENT
     if '"Check on disk…"' in body:
         fails.append(f"{name}: ellipsis on Check on disk (it opens its popover directly, no further input)")
 
+# Outcome-to-title mapping: the removal alert title comes from the tracked outcome, not message text.
+if "enum RemovalReportKind" not in APP_MODEL or 'case .uncertain: return "Removal Result"' not in APP_MODEL:
+    fails.append("AppModel.swift: tracked removal outcome (moved/putBack/notMoved/uncertain) is missing")
+bare = [l.strip() for l in APP_MODEL.splitlines()
+        if re.search(r"(?<!\w)removalMessage = ", l) and "reportRemoval(" not in l]
+if bare != ["removalMessage = message"]:
+    fails.append(f"AppModel.swift: removalMessage set outside reportRemoval: {bare}")
+if "removalReportKind" not in APP_MODEL:
+    fails.append("AppModel.swift: removal outcome is not tracked (removalReportKind missing)")
+
 if fails:
     print("UI COPY CHECK FAILED:")
     for x in fails:
