@@ -370,7 +370,7 @@ struct SpacelyzerApp: App {
                             .sorted { $0.convert($0.bounds, to: nil).minX < $1.convert($0.bounds, to: nil).minX }
                         Check.expect("filter-and-sort-menu-buttons-found", pops.count >= 2, "popups=\(pops.count)")
                         // Real control interactions (not model mutation): type in the ext field, pick menu items through NSMenu.
-                        if let field = DemoInput.allViews(of: NSTextField.self).first(where: { ($0.placeholderString ?? "") == "ext" }), let w = field.window {
+                        if let field = DemoInput.allViews(of: NSTextField.self).first(where: { ($0.placeholderString ?? "") == "extension" }), let w = field.window {
                             w.makeFirstResponder(field)
                             field.currentEditor()?.insertText("pdf")
                             try? await Task.sleep(nanoseconds: 1_500_000_000)
@@ -611,7 +611,7 @@ struct SpacelyzerApp: App {
                                 let secondFieldStart = directReverse && (window.firstResponder === intendedControl || (window.firstResponder as? NSTextView)?.delegate === intendedControl)
                                 // The name field is followed by the extension input in the product filter bar.
                                 // Native key-view graph pointers are diagnostic only across SwiftUI hosts.
-                                let extensionFields = DemoInput.allViews(of: NSTextField.self).filter { $0.window === window && $0.placeholderString == "ext" && !$0.isHiddenOrHasHiddenAncestor && $0.isEnabled }
+                                let extensionFields = DemoInput.allViews(of: NSTextField.self).filter { $0.window === window && $0.placeholderString == "extension" && !$0.isHiddenOrHasHiddenAncestor && $0.isEnabled }
                                 let fieldForward = extensionFields.count == 1 ? extensionFields.first : nil
                                 let nativeForward = intendedControl?.nextValidKeyView
                                 let fieldForwardEligible = fieldForward != nil && fieldForward !== table && fieldForward !== intendedControl && fieldForward?.window === window

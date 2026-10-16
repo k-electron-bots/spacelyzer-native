@@ -87,6 +87,27 @@ if bare != ["removalMessage = message"]:
 if "removalReportKind" not in APP_MODEL:
     fails.append("AppModel.swift: removal outcome is not tracked (removalReportKind missing)")
 
+# AGENTS.md: labels truncate in the middle, never wrap or clip. Head truncation hides the start of a path.
+HEAD_TRUNC_ALLOWLIST = set()  # file names allowed to keep .truncationMode(.head), with a reason noted here
+for f in sorted(SRC.glob("*.swift")):
+    if f.name.endswith("Checks.swift") or f.name in HEAD_TRUNC_ALLOWLIST:
+        continue
+    for i, line in enumerate(f.read_text().splitlines(), 1):
+        if ".truncationMode(.head)" in line:
+            fails.append(f"{f.name}:{i}: head truncation (AGENTS.md: truncate middle)")
+
+# Harness drift pin: the demo harness finds the extension field by its placeholder string;
+# every placeholderString literal in the harness must match the product placeholder.
+APP_HARNESS = (SRC / "SpacelyzerApp.swift").read_text()
+ext_ph = re.search(r'TextField\("([^"]+)", text: \$model\.filterExt\)', CONTENT)
+if not ext_ph:
+    fails.append("ContentView.swift: extension filter TextField not found for the harness pin")
+else:
+    ph = ext_ph.group(1)
+    harness_ph = re.findall(r'placeholderString[^\n"]*== "([^"]+)"', APP_HARNESS)
+    if not harness_ph or any(h != ph for h in harness_ph):
+        fails.append(f"SpacelyzerApp.swift: extension-field placeholder lookups {harness_ph} drifted from the product placeholder {ph!r}")
+
 if fails:
     print("UI COPY CHECK FAILED:")
     for x in fails:
