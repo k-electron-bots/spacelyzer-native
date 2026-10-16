@@ -105,7 +105,7 @@ struct SkippedListView: View {
             }
             HStack {
                 Spacer()
-                Button("Done") { dismiss() }
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
             }
         }
         .padding(12).frame(width: 460, height: 340, alignment: .topLeading)
