@@ -18,6 +18,18 @@ struct SpacelyzerApp: App {
                     // CI uses this to launch with a scan already running and take a screenshot.
                     let env = ProcessInfo.processInfo.environment
                     if let path = env["SPZ_AUTOSCAN"] { model.scan(path) }
+                    // CI capture hooks (inert without the envs): a fixed window size and a forced
+                    // appearance let release-app screenshots cover several sizes and both appearances.
+                    if env["SPZ_DEMO_APPEARANCE"] == "dark" { NSApp.appearance = NSAppearance(named: .darkAqua) }
+                    if let spec = env["SPZ_WINDOW_SIZE"] {
+                        let parts = spec.split(separator: "x").compactMap { Double($0) }
+                        if parts.count == 2, parts[0] >= 960, parts[1] >= 600 {
+                            try? await Task.sleep(nanoseconds: 1_500_000_000)
+                            for window in NSApp.windows where window.contentView != nil {
+                                window.setContentSize(NSSize(width: parts[0], height: parts[1]))
+                            }
+                        }
+                    }
                     #if SPZ_CI_TESTS   // scripted demo + regression suites exist only in test builds
                     // CI-only scripted interaction so screenshots can show expand, filter and kind views.
                     if env["SPZ_AUTOSCAN"] != nil, env["SPZ_DEMO"] != nil {
@@ -796,6 +808,292 @@ struct SpacelyzerApp: App {
                             await TreemapMountedTreeSwapRegression.run(capture: mark)
                             await TreemapMountedFilterRegression.run(capture: mark)
                             await TreemapUnmountRegression.run(capture: mark)
+                            // ---- Batch 7: customer-obsessed evidence sweep (multi-size, states, perf feel) ----
+                            // 49: a real rescan with the progress UI and Stop control visible.
+                            model.clearFilters(); model.displayedRoot = 0; model.expanded = []; model.refreshOutline(); model.tab = .treemap
+                            DemoInput.window?.setContentSize(NSSize(width: 1280, height: 800))
+                            try? await Task.sleep(nanoseconds: 1_000_000_000)
+                            let rescanT0 = Perf.now()
+                            model.scan("/Library")
+                            try? await Task.sleep(nanoseconds: 400_000_000)
+                            let progressCaptured = model.scanning
+                            Check.expect("batch7-rescan-progress-captured", progressCaptured, "scan still in flight 0.4s after start; otherwise the Stop control and progress state were not captured")
+                            mark(49)
+                            while model.scanning && Perf.ms(since: rescanT0) < 120_000 { try? await Task.sleep(nanoseconds: 50_000_000) }
+                            Perf.log("batch7 rescan total=\(String(format: "%.1f", Perf.ms(since: rescanT0))) ms rows=\(model.outlineRows.count)")
+                            // 50-61: every tab at 960x600, 1280x800, 1600x1000 (light appearance).
+                            let sizeMatrix: [(String, CGFloat, CGFloat)] = [("960x600", 960, 600), ("1280x800", 1280, 800), ("1600x1000", 1600, 1000)]
+                            let tabMatrix: [TrailingTab] = [.treemap, .kinds, .largest, .folders]
+                            var stepNumber = 50
+                            for (sizeName, w, h) in sizeMatrix {
+                                DemoInput.window?.setContentSize(NSSize(width: w, height: h))
+                                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                                Check.expect("batch7-size-applied-\(sizeName)", abs(DemoRootLayout.size.width - w) < 1 && abs(DemoRootLayout.size.height - h) < 1, "root=\(DemoRootLayout.size)")
+                                Check.expect("batch7-outline-names-readable-\(sizeName)", OutlineDemoEvidence.nameWidthsAboveBudget, "every visible named outline row keeps readable width at \(sizeName)")
+                                for tab in tabMatrix {
+                                    model.tab = tab
+                                    try? await Task.sleep(nanoseconds: 700_000_000)
+                                    mark(stepNumber); stepNumber += 1
+                                }
+                            }
+                            let folderKindRow = model.kindRows.first { $0.category == .folder }
+                            Check.expect("batch7-kinds-folders-row-zero-bytes", folderKindRow != nil && folderKindRow!.bytes == 0, "Kinds keeps the Folders row; it renders a dash + quiet label + VoiceOver explanation, never 0 KB (bytes=\(folderKindRow?.bytes ?? 0))")
+                            // 62-67: dark appearance coverage.
+                            NSApp.appearance = NSAppearance(named: .darkAqua)
+                            let darkMatrix: [(CGFloat, CGFloat, TrailingTab)] = [(960, 600, .treemap), (1280, 800, .treemap), (1600, 1000, .treemap), (1280, 800, .kinds), (1280, 800, .largest), (1280, 800, .folders)]
+                            for (w, h, tab) in darkMatrix {
+                                DemoInput.window?.setContentSize(NSSize(width: w, height: h))
+                                model.tab = tab
+                                try? await Task.sleep(nanoseconds: 700_000_000)
+                                mark(stepNumber); stepNumber += 1
+                            }
+                            NSApp.appearance = NSAppearance(named: .aqua)
+                            // 68-70: worst-case outline (every folder expanded) at three size/appearance combos.
+                            if let t = model.tree {
+                                var all = Set<UInt32>()
+                                for i in 0..<UInt32(t.nodeCount) where t.info(i).childCount > 0 { all.insert(i) }
+                                let expandT0 = Perf.now()
+                                model.expanded = all
+                                model.refreshOutline()
+                                Perf.log("batch7 expand-all set-to-rows=\(String(format: "%.1f", Perf.ms(since: expandT0))) ms rows=\(model.outlineRows.count)")
+                            }
+                            model.tab = .treemap
+                            let nestingMatrix: [(CGFloat, CGFloat, Bool)] = [(960, 600, false), (1280, 800, true), (1600, 1000, false)]
+                            for (w, h, dark) in nestingMatrix {
+                                NSApp.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+                                DemoInput.window?.setContentSize(NSSize(width: w, height: h))
+                                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                                mark(stepNumber); stepNumber += 1
+                            }
+                            NSApp.appearance = NSAppearance(named: .aqua)
+                            model.expanded = []; model.refreshOutline()
+                            // 71-72: the removal alert at the minimum window and at 1280 dark, on disposable fixtures.
+                            let alertMatrix: [(CGFloat, CGFloat, Bool)] = [(960, 600, false), (1280, 800, true)]
+                            for (w, h, dark) in alertMatrix {
+                                NSApp.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+                                DemoInput.window?.setContentSize(NSSize(width: w, height: h))
+                                let fx7 = "/tmp/spz-trash-fixture-b7-\(dark ? "dark" : "light")"
+                                try? FileManager.default.removeItem(atPath: fx7)
+                                try? FileManager.default.createDirectory(atPath: fx7, withIntermediateDirectories: true)
+                                let victim7 = fx7 + "/victim-\(ProcessInfo.processInfo.processIdentifier).bin", keep7 = fx7 + "/keep.bin"
+                                try? Data(repeating: 7, count: 300_000).write(to: URL(fileURLWithPath: victim7))
+                                try? Data(repeating: 8, count: 200_000).write(to: URL(fileURLWithPath: keep7))
+                                model.trashItem = { url in
+                                    guard url.path.hasPrefix(fx7 + "/") || url.path.hasPrefix("/private" + fx7 + "/") else { throw CocoaError(.fileWriteNoPermission) }
+                                    return try realTrash(url)
+                                }
+                                model.clearFilters(); model.displayedRoot = 0; model.expanded = []
+                                model.scan(fx7)
+                                var waited7 = 0
+                                while model.scanning && waited7 < 100 { try? await Task.sleep(nanoseconds: 200_000_000); waited7 += 1 }
+                                try? await Task.sleep(nanoseconds: 500_000_000)
+                                if let t = model.tree, let id = (0..<UInt32(t.nodeCount)).first(where: { t.path($0).hasSuffix("/" + (victim7 as NSString).lastPathComponent) }) {
+                                    model.selected = id
+                                    model.proposeRemoval(of: id)
+                                    model.confirmRemoval(); await model.settleRemoval()
+                                    try? await Task.sleep(nanoseconds: 700_000_000)
+                                    mark(stepNumber); stepNumber += 1
+                                    _ = await PublicationRegression.settleSurfaces(model)
+                                    model.undoRemoval(); await model.settleRemoval()
+                                    Check.expect("batch7-removal-alert-restored-\(dark ? "dark" : "light")", FileManager.default.fileExists(atPath: victim7), "undo restored the fixture after the alert capture")
+                                } else {
+                                    Check.expect("batch7-removal-alert-restored-\(dark ? "dark" : "light")", false, "fixture node not found")
+                                    mark(stepNumber); stepNumber += 1
+                                }
+                                try? FileManager.default.removeItem(atPath: fx7)
+                            }
+                            NSApp.appearance = NSAppearance(named: .aqua)
+                            // 73-74: zero-area and no-match at other sizes and in dark (37-38 covered the default).
+                            let zeroRoot7 = FileManager.default.temporaryDirectory.appendingPathComponent("spz-zero-b7-\(UUID().uuidString)")
+                            try? FileManager.default.createDirectory(at: zeroRoot7, withIntermediateDirectories: true)
+                            FileManager.default.createFile(atPath: zeroRoot7.appendingPathComponent("visible-zero.pdf").path, contents: Data())
+                            model.trashItem = { _ in throw CocoaError(.fileWriteNoPermission) }
+                            model.clearFilters(); model.scan(zeroRoot7.path)
+                            let zeroDeadline7 = Date().addingTimeInterval(30)
+                            while model.scanning && Date() < zeroDeadline7 { try? await Task.sleep(nanoseconds: 20_000_000) }
+                            model.filterExt = "pdf"; model.tab = .treemap
+                            while model.filterPending && Date() < zeroDeadline7 { try? await Task.sleep(nanoseconds: 20_000_000) }
+                            DemoInput.window?.setContentSize(NSSize(width: 960, height: 600))
+                            try? await Task.sleep(nanoseconds: 700_000_000)
+                            Check.expect("batch7-zero-area-fixture-ready-960", !model.scanning && !model.filterPending && model.activeFilter?.count(model.displayedRoot) == 1 && model.activeFilter?.size(model.displayedRoot) == 0, "pixels73 required")
+                            mark(stepNumber); stepNumber += 1
+                            NSApp.appearance = NSAppearance(named: .darkAqua)
+                            DemoInput.window?.setContentSize(NSSize(width: 1280, height: 800))
+                            model.filterExt = "no-extension-match"
+                            let noMatchDeadline7 = Date().addingTimeInterval(30)
+                            while model.filterPending && Date() < noMatchDeadline7 { try? await Task.sleep(nanoseconds: 20_000_000) }
+                            try? await Task.sleep(nanoseconds: 700_000_000)
+                            Check.expect("batch7-no-match-fixture-ready-1280-dark", !model.filterPending && model.activeFilter?.count(model.displayedRoot) == 0, "pixels74 required")
+                            mark(stepNumber); stepNumber += 1
+                            NSApp.appearance = NSAppearance(named: .aqua)
+                            try? FileManager.default.removeItem(at: zeroRoot7)
+                            // 75-76: Reduce Motion and Increase Contrast presentation at customer sizes.
+                            model.clearFilters(); model.scan("/Library")
+                            let reloadDeadline7 = Date().addingTimeInterval(120)
+                            while model.scanning && Date() < reloadDeadline7 { try? await Task.sleep(nanoseconds: 50_000_000) }
+                            DemoInput.window?.setContentSize(NSSize(width: 1280, height: 800))
+                            demoReduceMotion = true
+                            try? await Task.sleep(nanoseconds: 700_000_000)
+                            mark(stepNumber); stepNumber += 1
+                            demoReduceMotion = false
+                            DemoInput.window?.setContentSize(NSSize(width: 1600, height: 1000))
+                            model.demoIncreaseContrast = true
+                            try? await Task.sleep(nanoseconds: 700_000_000)
+                            mark(stepNumber); stepNumber += 1
+                            model.demoIncreaseContrast = nil
+                            // 77-78: unreadable locations: the footer count, then the Not-scanned sheet via its real button.
+                            let unreadRoot7 = FileManager.default.temporaryDirectory.appendingPathComponent("spz-unread-b7-\(UUID().uuidString)")
+                            try? FileManager.default.createDirectory(at: unreadRoot7, withIntermediateDirectories: true)
+                            let lockedDir7 = unreadRoot7.appendingPathComponent("locked")
+                            try? FileManager.default.createDirectory(at: lockedDir7, withIntermediateDirectories: true)
+                            FileManager.default.createFile(atPath: lockedDir7.appendingPathComponent("secret.bin").path, contents: Data(repeating: 9, count: 1000))
+                            FileManager.default.createFile(atPath: unreadRoot7.appendingPathComponent("open.bin").path, contents: Data(repeating: 5, count: 1000))
+                            try? FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: lockedDir7.path)
+                            model.scan(unreadRoot7.path)
+                            let unreadDeadline7 = Date().addingTimeInterval(30)
+                            while model.scanning && Date() < unreadDeadline7 { try? await Task.sleep(nanoseconds: 20_000_000) }
+                            DemoInput.window?.setContentSize(NSSize(width: 1280, height: 800))
+                            try? await Task.sleep(nanoseconds: 700_000_000)
+                            mark(stepNumber); stepNumber += 1
+                            var unreadListed = false
+                            if let unreadTree = model.tree {
+                                let unreadList = SkippedListModel()
+                                unreadList.load(tree: unreadTree)
+                                let listDeadline = Date().addingTimeInterval(15)
+                                while unreadList.items == nil && !unreadList.readFailed && Date() < listDeadline { try? await Task.sleep(nanoseconds: 20_000_000) }
+                                unreadListed = unreadList.items?.contains { $0.path.hasSuffix("/locked") && ($0.reason == .permissionDenied || $0.reason == .unreadable) } == true
+                            }
+                            Check.expect("batch7-unreadable-dir-listed-in-not-scanned", unreadListed, "the chmod-000 fixture directory must appear in the Not-scanned list")
+                            let skipButtons = DemoInput.allViews(of: NSButton.self).filter { $0.window != nil && !$0.isHiddenOrHasHiddenAncestor && $0.title.contains("not readable") }
+                            if let skipButton = skipButtons.first {
+                                skipButton.performClick(nil)
+                                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                                mark(stepNumber); stepNumber += 1
+                                DemoInput.key(53)   // Esc closes the sheet (it also has a default-action Done)
+                                try? await Task.sleep(nanoseconds: 500_000_000)
+                            } else {
+                                Check.expect("batch7-not-scanned-sheet-opened", false, "footer button titled 'not readable' not found")
+                                mark(stepNumber); stepNumber += 1
+                            }
+                            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: lockedDir7.path)
+                            try? FileManager.default.removeItem(at: unreadRoot7)
+                            // 79: a real second volume (RAM disk) inside a fixture: the Not-scanned list must show it as on another volume.
+                            let volRoot7 = FileManager.default.temporaryDirectory.appendingPathComponent("spz-vol-b7-\(UUID().uuidString)")
+                            try? FileManager.default.createDirectory(at: volRoot7, withIntermediateDirectories: true)
+                            FileManager.default.createFile(atPath: volRoot7.appendingPathComponent("local.bin").path, contents: Data(repeating: 3, count: 1000))
+                            let mountPoint7 = volRoot7.appendingPathComponent("subvol")
+                            try? FileManager.default.createDirectory(at: mountPoint7, withIntermediateDirectories: true)
+                            func run7(_ launchPath: String, _ arguments: [String]) -> (Int32, String) {
+                                let process = Process(); process.executableURL = URL(fileURLWithPath: launchPath); process.arguments = arguments
+                                let pipe = Pipe(); process.standardOutput = pipe; process.standardError = pipe
+                                do { try process.run() } catch { return (-1, "\(error)") }
+                                process.waitUntilExit()
+                                let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                                return (process.terminationStatus, output)
+                            }
+                            var volumeNote7 = ""
+                            var mountedDevice7: String? = nil
+                            let (attachStatus, attachOut) = run7("/usr/bin/hdiutil", ["attach", "-nomount", "ram://20480"])
+                            if attachStatus == 0, let dev = attachOut.split(separator: "\n").first.map({ $0.trimmingCharacters(in: .whitespaces) }), dev.hasPrefix("/dev/") {
+                                let (fsStatus, _) = run7("/sbin/newfs_hfs", ["-v", "SpzVolB7", dev])
+                                if fsStatus == 0 {
+                                    let (mountStatus, _) = run7("/usr/bin/hdiutil", ["attach", "-mountpoint", mountPoint7.path, dev])
+                                    if mountStatus == 0 { mountedDevice7 = dev } else { volumeNote7 = "hdiutil attach -mountpoint failed"; _ = run7("/usr/bin/hdiutil", ["detach", dev]) }
+                                } else { volumeNote7 = "newfs_hfs failed" }
+                            } else { volumeNote7 = "hdiutil attach -nomount failed: \(attachOut.prefix(120))" }
+                            var volumeListed = false
+                            if let dev = mountedDevice7 {
+                                FileManager.default.createFile(atPath: mountPoint7.appendingPathComponent("on-other-volume.bin").path, contents: Data(repeating: 4, count: 1000))
+                                model.scan(volRoot7.path)
+                                let volDeadline7 = Date().addingTimeInterval(30)
+                                while model.scanning && Date() < volDeadline7 { try? await Task.sleep(nanoseconds: 20_000_000) }
+                                if let volTree = model.tree {
+                                    let volList = SkippedListModel()
+                                    volList.load(tree: volTree)
+                                    let volListDeadline = Date().addingTimeInterval(15)
+                                    while volList.items == nil && !volList.readFailed && Date() < volListDeadline { try? await Task.sleep(nanoseconds: 20_000_000) }
+                                    volumeListed = volList.items?.contains { $0.reason == .separateVolume && $0.path.contains("subvol") } == true
+                                    let volWindow = NSWindow(contentRect: NSRect(x: 150, y: 150, width: 640, height: 420), styleMask: [.titled], backing: .buffered, defer: false)
+                                    volWindow.isReleasedWhenClosed = false
+                                    volWindow.title = "CI Not-scanned list with a real second volume"
+                                    volWindow.contentView = NSHostingView(rootView: SkippedListView(tree: volTree))
+                                    volWindow.makeKeyAndOrderFront(nil)
+                                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                                    mark(stepNumber); stepNumber += 1
+                                    volWindow.close()
+                                } else {
+                                    mark(stepNumber); stepNumber += 1
+                                }
+                                _ = run7("/usr/bin/hdiutil", ["detach", dev])
+                            } else {
+                                Check.note("batch7-volume-simulation-unavailable: \(volumeNote7); capturing the plain fixture sheet instead")
+                                if let volTree = model.tree {
+                                    let volWindow = NSWindow(contentRect: NSRect(x: 150, y: 150, width: 640, height: 420), styleMask: [.titled], backing: .buffered, defer: false)
+                                    volWindow.isReleasedWhenClosed = false
+                                    volWindow.title = "CI Not-scanned list (volume simulation unavailable)"
+                                    volWindow.contentView = NSHostingView(rootView: SkippedListView(tree: volTree))
+                                    volWindow.makeKeyAndOrderFront(nil)
+                                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                                    mark(stepNumber); stepNumber += 1
+                                    volWindow.close()
+                                } else {
+                                    mark(stepNumber); stepNumber += 1
+                                }
+                            }
+                            Check.expect("batch7-other-volume-listed-in-not-scanned", volumeListed, "a RAM-disk subvolume inside the fixture must appear in the Not-scanned list as on another volume")
+                            try? FileManager.default.removeItem(at: volRoot7)
+                            // 80-81: a 200,000-item tree: treemap and Largest at a customer's real library size, with timings.
+                            let bigRoot7 = FileManager.default.temporaryDirectory.appendingPathComponent("spz-big-b7")
+                            try? FileManager.default.removeItem(at: bigRoot7)
+                            try? FileManager.default.createDirectory(at: bigRoot7, withIntermediateDirectories: true)
+                            let bigBuildT0 = Perf.now()
+                            for d in 0..<200 {
+                                let dir = bigRoot7.appendingPathComponent(String(format: "dir-%03d", d))
+                                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                                for f in 0..<1000 {
+                                    FileManager.default.createFile(atPath: dir.appendingPathComponent(String(format: "file-%04d.bin", f)).path, contents: nil)
+                                }
+                            }
+                            Perf.log("batch7 big-fixture build: 200,000 files in \(String(format: "%.1f", Perf.ms(since: bigBuildT0))) ms")
+                            let bigScanT0 = Perf.now()
+                            model.scan(bigRoot7.path)
+                            let bigDeadline7 = Date().addingTimeInterval(300)
+                            while model.scanning && Date() < bigDeadline7 { try? await Task.sleep(nanoseconds: 50_000_000) }
+                            Perf.log("batch7 big-scan: 200k items in \(String(format: "%.1f", Perf.ms(since: bigScanT0))) ms stillScanning=\(model.scanning)")
+                            DemoInput.window?.setContentSize(NSSize(width: 1280, height: 800))
+                            model.tab = .treemap
+                            try? await Task.sleep(nanoseconds: 1_000_000_000)
+                            mark(stepNumber); stepNumber += 1
+                            let bigFilterT0 = Perf.now()
+                            model.filterText = "file-0007"
+                            let bigFilterDeadline = Date().addingTimeInterval(60)
+                            while model.filterPending && Date() < bigFilterDeadline { try? await Task.sleep(nanoseconds: 20_000_000) }
+                            Perf.log("batch7 big-filter: 'file-0007' on 200k items = \(String(format: "%.1f", Perf.ms(since: bigFilterT0))) ms")
+                            model.filterText = ""
+                            while model.filterPending && Date() < bigFilterDeadline { try? await Task.sleep(nanoseconds: 20_000_000) }
+                            model.tab = .largest
+                            try? await Task.sleep(nanoseconds: 2_000_000_000)
+                            mark(stepNumber); stepNumber += 1
+                            if let bigTree = model.tree {
+                                var allBig = Set<UInt32>()
+                                for i in 0..<UInt32(bigTree.nodeCount) where bigTree.info(i).childCount > 0 { allBig.insert(i) }
+                                let bigExpandT0 = Perf.now()
+                                model.expanded = allBig
+                                model.refreshOutline()
+                                let bigRowsDeadline = Date().addingTimeInterval(60)
+                                while model.outlineRows.count < 199_000 && Date() < bigRowsDeadline { try? await Task.sleep(nanoseconds: 50_000_000) }
+                                Perf.log("batch7 big-expand-all: rows=\(model.outlineRows.count) in \(String(format: "%.1f", Perf.ms(since: bigExpandT0))) ms")
+                                if let table = OutlineDemoEvidence.table {
+                                    MainStall.shared.reset()
+                                    let scrollT0 = Perf.now()
+                                    table.scrollRowToVisible(max(0, model.outlineRows.count - 1))
+                                    try? await Task.sleep(nanoseconds: 500_000_000)
+                                    table.scrollRowToVisible(0)
+                                    try? await Task.sleep(nanoseconds: 500_000_000)
+                                    Perf.log("batch7 big-scroll: bottom+top on \(model.outlineRows.count) rows in \(String(format: "%.1f", Perf.ms(since: scrollT0))) ms; \(MainStall.shared.summary("batch7-big-scroll"))")
+                                }
+                            }
+                            try? FileManager.default.removeItem(at: bigRoot7)
                             try? FileManager.default.removeItem(at: zeroRoot)
                             try? Data().write(to: URL(fileURLWithPath: "/tmp/spz-demo-finished"))
 

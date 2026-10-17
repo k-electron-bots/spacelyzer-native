@@ -77,6 +77,13 @@ for name, body in (("TreemapView.swift", TREEMAP), ("ContentView.swift", CONTENT
     if '"Check on disk…"' in body:
         fails.append(f"{name}: ellipsis on Check on disk (it opens its popover directly, no further input)")
 
+# Batch-7 pins (Karim, Oct 16): the Kinds Folders row keeps its place but shows a dash for
+# size (never "0 KB") and explains itself to VoiceOver.
+if "Folders own no size of their own." not in TREEMAP:
+    fails.append("TreemapView.swift: Kinds Folders row lost its VoiceOver explanation")
+if 'Text("\\u{2014}")' not in TREEMAP:
+    fails.append('TreemapView.swift: Kinds Folders row must show a dash, never "0 KB"')
+
 # Outcome-to-title mapping: the removal alert title comes from the tracked outcome, not message text.
 if "enum RemovalReportKind" not in APP_MODEL or 'case .uncertain: return "Removal Result"' not in APP_MODEL:
     fails.append("AppModel.swift: tracked removal outcome (moved/putBack/notMoved/uncertain) is missing")
