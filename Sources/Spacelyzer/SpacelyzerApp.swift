@@ -1142,7 +1142,10 @@ struct SpacelyzerApp: App {
 @MainActor enum DemoAX {
     /// Presses the footer's Not-scanned opener. Matches both authored copy variants: "N locations not
     /// readable" (full width) and "N locations unreadable" (compact); the ViewThatFits picks one per
-    /// available width (ContentView summary(compact:)).
+    /// available width (ContentView summary(compact:)). Run 38993434887 reproduced the run-167 miss:
+    /// the runner vends the copy only inside a custom ACTION name (a dumped description like
+    /// "Name:1 location not readable\nTarget:0x0...") while AXTitle reads "Scan summary", so the match
+    /// text includes action names - still anchored to the two authored variants, never the title.
     static func pressFooterUnreadable() -> Bool {
         func axString(_ element: AXUIElement, _ attribute: String) -> String {
             var value: CFTypeRef?
@@ -1169,10 +1172,10 @@ struct SpacelyzerApp: App {
                 visited += 1
                 if axString(element, "AXRole") == "AXButton" {
                     buttonsSeen += 1
-                    let text = [axString(element, "AXTitle"), axString(element, "AXDescription"), axString(element, "AXLabel"), axString(element, "AXValue"), axString(element, "AXRoleDescription")].joined(separator: " ")
-                    if buttonsSeen <= 12 { Perf.log("demo-ax button win=\(wTitle) text=\(text.prefix(80)) actions=\(axActions(element))") }
+                    let actions = axActions(element)
+                    let text = ([axString(element, "AXTitle"), axString(element, "AXDescription"), axString(element, "AXLabel"), axString(element, "AXValue"), axString(element, "AXRoleDescription")] + actions).joined(separator: " ")
+                    if buttonsSeen <= 12 { Perf.log("demo-ax button win=\(wTitle) text=\(text.prefix(80)) actions=\(actions)") }
                     if text.contains("not readable") || text.contains("unreadable") {
-                        let actions = axActions(element)
                         let pressName = actions.first { $0.contains("Press") } ?? "AXPress"
                         let result = AXUIElementPerformAction(element, pressName as CFString)
                         Perf.log("demo-ax press attempt name=\(pressName) result=\(result == .success) text=\(text.prefix(80))")
