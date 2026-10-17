@@ -26,6 +26,8 @@ struct SpacelyzerApp: App {
                         if parts.count == 2, parts[0] >= 960, parts[1] >= 600 {
                             try? await Task.sleep(nanoseconds: 1_500_000_000)
                             for window in NSApp.windows where window.contentView != nil {
+                                window.contentMaxSize = NSSize(width: 100_000, height: 100_000)
+                                window.maxSize = NSSize(width: 100_000, height: 100_000)
                                 window.setContentSize(NSSize(width: parts[0], height: parts[1]))
                             }
                         }
@@ -533,7 +535,7 @@ struct SpacelyzerApp: App {
                             // E2 mode matrix changes only the CI view environment, never system preferences.
                             let savedAppearance = NSApp.appearance
                             NSApp.appearance = NSAppearance(named: .aqua)
-                            DemoInput.window?.setContentSize(NSSize(width: 960, height: 600))
+                            DemoInput.setContentSizeExact(DemoInput.window, NSSize(width: 960, height: 600))
                             try? await Task.sleep(nanoseconds: 1_000_000_000)
                             Check.expect("e2-minimum-window-fits", abs(DemoRootLayout.size.width - 960) < 1 && abs(DemoRootLayout.size.height - 600) < 1 && DemoInput.window?.contentLayoutRect.width == 960 && DemoInput.window?.contentLayoutRect.height == 600, "root=\(DemoRootLayout.size) layout=\(String(describing: DemoInput.window?.contentLayoutRect.size)) contentView=\(String(describing: DemoInput.window?.contentView?.bounds.size)); all required, pixels decide")
                             Check.expect("outline-names-keep-readable-width-at-min-window", OutlineDemoEvidence.nameWidthsAboveBudget, "every visible named outline row keeps >=48pt at the 960px window; a smaller frame renders as a bare ellipsis")
@@ -811,7 +813,7 @@ struct SpacelyzerApp: App {
                             // ---- Batch 7: customer-obsessed evidence sweep (multi-size, states, perf feel) ----
                             // 49: a real rescan with the progress UI and Stop control visible.
                             model.clearFilters(); model.displayedRoot = 0; model.expanded = []; model.refreshOutline(); model.tab = .treemap
-                            DemoInput.window?.setContentSize(NSSize(width: 1280, height: 800))
+                            DemoInput.setContentSizeExact(DemoInput.window, NSSize(width: 1280, height: 800))
                             try? await Task.sleep(nanoseconds: 1_000_000_000)
                             let rescanT0 = Perf.now()
                             model.scan("/Library")
@@ -826,7 +828,7 @@ struct SpacelyzerApp: App {
                             let tabMatrix: [TrailingTab] = [.treemap, .kinds, .largest, .folders]
                             var stepNumber = 50
                             for (sizeName, w, h) in sizeMatrix {
-                                DemoInput.window?.setContentSize(NSSize(width: w, height: h))
+                                DemoInput.setContentSizeExact(DemoInput.window, NSSize(width: w, height: h))
                                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                                 Check.expect("batch7-size-applied-\(sizeName)", abs(DemoRootLayout.size.width - w) < 1 && abs(DemoRootLayout.size.height - h) < 1, "root=\(DemoRootLayout.size)")
                                 Check.expect("batch7-outline-names-readable-\(sizeName)", OutlineDemoEvidence.nameWidthsAboveBudget, "every visible named outline row keeps readable width at \(sizeName)")
@@ -842,7 +844,7 @@ struct SpacelyzerApp: App {
                             NSApp.appearance = NSAppearance(named: .darkAqua)
                             let darkMatrix: [(CGFloat, CGFloat, TrailingTab)] = [(960, 600, .treemap), (1280, 800, .treemap), (1600, 1000, .treemap), (1280, 800, .kinds), (1280, 800, .largest), (1280, 800, .folders)]
                             for (w, h, tab) in darkMatrix {
-                                DemoInput.window?.setContentSize(NSSize(width: w, height: h))
+                                DemoInput.setContentSizeExact(DemoInput.window, NSSize(width: w, height: h))
                                 model.tab = tab
                                 try? await Task.sleep(nanoseconds: 700_000_000)
                                 mark(stepNumber); stepNumber += 1
@@ -861,7 +863,7 @@ struct SpacelyzerApp: App {
                             let nestingMatrix: [(CGFloat, CGFloat, Bool)] = [(960, 600, false), (1280, 800, true), (1600, 1000, false)]
                             for (w, h, dark) in nestingMatrix {
                                 NSApp.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
-                                DemoInput.window?.setContentSize(NSSize(width: w, height: h))
+                                DemoInput.setContentSizeExact(DemoInput.window, NSSize(width: w, height: h))
                                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                                 mark(stepNumber); stepNumber += 1
                             }
@@ -871,7 +873,7 @@ struct SpacelyzerApp: App {
                             let alertMatrix: [(CGFloat, CGFloat, Bool)] = [(960, 600, false), (1280, 800, true)]
                             for (w, h, dark) in alertMatrix {
                                 NSApp.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
-                                DemoInput.window?.setContentSize(NSSize(width: w, height: h))
+                                DemoInput.setContentSizeExact(DemoInput.window, NSSize(width: w, height: h))
                                 let fx7 = "/tmp/spz-trash-fixture-b7-\(dark ? "dark" : "light")"
                                 try? FileManager.default.removeItem(atPath: fx7)
                                 try? FileManager.default.createDirectory(atPath: fx7, withIntermediateDirectories: true)
@@ -913,12 +915,12 @@ struct SpacelyzerApp: App {
                             while model.scanning && Date() < zeroDeadline7 { try? await Task.sleep(nanoseconds: 20_000_000) }
                             model.filterExt = "pdf"; model.tab = .treemap
                             while model.filterPending && Date() < zeroDeadline7 { try? await Task.sleep(nanoseconds: 20_000_000) }
-                            DemoInput.window?.setContentSize(NSSize(width: 960, height: 600))
+                            DemoInput.setContentSizeExact(DemoInput.window, NSSize(width: 960, height: 600))
                             try? await Task.sleep(nanoseconds: 700_000_000)
                             Check.expect("batch7-zero-area-fixture-ready-960", !model.scanning && !model.filterPending && model.activeFilter?.count(model.displayedRoot) == 1 && model.activeFilter?.size(model.displayedRoot) == 0, "pixels73 required")
                             mark(stepNumber); stepNumber += 1
                             NSApp.appearance = NSAppearance(named: .darkAqua)
-                            DemoInput.window?.setContentSize(NSSize(width: 1280, height: 800))
+                            DemoInput.setContentSizeExact(DemoInput.window, NSSize(width: 1280, height: 800))
                             model.filterExt = "no-extension-match"
                             let noMatchDeadline7 = Date().addingTimeInterval(30)
                             while model.filterPending && Date() < noMatchDeadline7 { try? await Task.sleep(nanoseconds: 20_000_000) }
@@ -931,12 +933,12 @@ struct SpacelyzerApp: App {
                             model.clearFilters(); model.scan("/Library")
                             let reloadDeadline7 = Date().addingTimeInterval(120)
                             while model.scanning && Date() < reloadDeadline7 { try? await Task.sleep(nanoseconds: 50_000_000) }
-                            DemoInput.window?.setContentSize(NSSize(width: 1280, height: 800))
+                            DemoInput.setContentSizeExact(DemoInput.window, NSSize(width: 1280, height: 800))
                             demoReduceMotion = true
                             try? await Task.sleep(nanoseconds: 700_000_000)
                             mark(stepNumber); stepNumber += 1
                             demoReduceMotion = false
-                            DemoInput.window?.setContentSize(NSSize(width: 1600, height: 1000))
+                            DemoInput.setContentSizeExact(DemoInput.window, NSSize(width: 1600, height: 1000))
                             model.demoIncreaseContrast = true
                             try? await Task.sleep(nanoseconds: 700_000_000)
                             mark(stepNumber); stepNumber += 1
@@ -952,7 +954,7 @@ struct SpacelyzerApp: App {
                             model.scan(unreadRoot7.path)
                             let unreadDeadline7 = Date().addingTimeInterval(30)
                             while model.scanning && Date() < unreadDeadline7 { try? await Task.sleep(nanoseconds: 20_000_000) }
-                            DemoInput.window?.setContentSize(NSSize(width: 1280, height: 800))
+                            DemoInput.setContentSizeExact(DemoInput.window, NSSize(width: 1280, height: 800))
                             try? await Task.sleep(nanoseconds: 700_000_000)
                             mark(stepNumber); stepNumber += 1
                             var unreadListed = false
@@ -964,17 +966,21 @@ struct SpacelyzerApp: App {
                                 unreadListed = unreadList.items?.contains { $0.path.hasSuffix("/locked") && ($0.reason == .permissionDenied || $0.reason == .unreadable) } == true
                             }
                             Check.expect("batch7-unreadable-dir-listed-in-not-scanned", unreadListed, "the chmod-000 fixture directory must appear in the Not-scanned list")
-                            let skipButtons = DemoInput.allViews(of: NSButton.self).filter { $0.window != nil && !$0.isHiddenOrHasHiddenAncestor && $0.title.contains("not readable") }
-                            if let skipButton = skipButtons.first {
-                                skipButton.performClick(nil)
-                                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                            let pressedSkip7 = DemoAX.pressFooterUnreadable()
+                            var sheetShown7 = false
+                            if pressedSkip7 {
+                                let sheetDeadline7 = Date().addingTimeInterval(10)
+                                while !sheetShown7 && Date() < sheetDeadline7 {
+                                    sheetShown7 = NSApp.windows.contains { $0.isSheet }
+                                    if !sheetShown7 { try? await Task.sleep(nanoseconds: 20_000_000) }
+                                }
                                 mark(stepNumber); stepNumber += 1
                                 DemoInput.key(53)   // Esc closes the sheet (it also has a default-action Done)
                                 try? await Task.sleep(nanoseconds: 500_000_000)
                             } else {
-                                Check.expect("batch7-not-scanned-sheet-opened", false, "footer button titled 'not readable' not found")
                                 mark(stepNumber); stepNumber += 1
                             }
+                            Check.expect("batch7-not-scanned-sheet-opened", pressedSkip7 && sheetShown7, "footer Not-scanned opener pressed via AX (matches both authored copy variants); the sheet must attach to the window")
                             try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: lockedDir7.path)
                             try? FileManager.default.removeItem(at: unreadRoot7)
                             // 79: a real second volume (RAM disk) inside a fixture: the Not-scanned list must show it as on another volume.
@@ -995,11 +1001,23 @@ struct SpacelyzerApp: App {
                             var mountedDevice7: String? = nil
                             let (attachStatus, attachOut) = run7("/usr/bin/hdiutil", ["attach", "-nomount", "ram://20480"])
                             if attachStatus == 0, let dev = attachOut.split(separator: "\n").first.map({ $0.trimmingCharacters(in: .whitespaces) }), dev.hasPrefix("/dev/") {
-                                let (fsStatus, _) = run7("/sbin/newfs_hfs", ["-v", "SpzVolB7", dev])
+                                let (fsStatus, fsOut) = run7("/sbin/newfs_hfs", ["-v", "SpzVolB7", dev])
                                 if fsStatus == 0 {
-                                    let (mountStatus, _) = run7("/usr/bin/hdiutil", ["attach", "-mountpoint", mountPoint7.path, dev])
-                                    if mountStatus == 0 { mountedDevice7 = dev } else { volumeNote7 = "hdiutil attach -mountpoint failed"; _ = run7("/usr/bin/hdiutil", ["detach", dev]) }
-                                } else { volumeNote7 = "newfs_hfs failed" }
+                                    let (mountStatus, mountOut) = run7("/usr/bin/hdiutil", ["attach", "-mountpoint", mountPoint7.path, dev])
+                                    if mountStatus == 0 {
+                                        mountedDevice7 = dev
+                                    } else {
+                                        // hdiutil attach can reject a whole-disk HFS+ device; diskutil mounts it.
+                                        let (duStatus, duOut) = run7("/usr/sbin/diskutil", ["mount", "-mountPoint", mountPoint7.path, dev])
+                                        if duStatus == 0 { mountedDevice7 = dev } else {
+                                            volumeNote7 = "attach -mountpoint failed: \(mountOut.prefix(100)); diskutil mount failed: \(duOut.prefix(100))"
+                                            _ = run7("/usr/bin/hdiutil", ["detach", dev])
+                                        }
+                                    }
+                                } else {
+                                    volumeNote7 = "newfs_hfs failed: \(fsOut.prefix(120))"
+                                    _ = run7("/usr/bin/hdiutil", ["detach", dev])   // detach the -nomount node on every failure path
+                                }
                             } else { volumeNote7 = "hdiutil attach -nomount failed: \(attachOut.prefix(120))" }
                             var volumeListed = false
                             if let dev = mountedDevice7 {
@@ -1060,7 +1078,7 @@ struct SpacelyzerApp: App {
                             let bigDeadline7 = Date().addingTimeInterval(300)
                             while model.scanning && Date() < bigDeadline7 { try? await Task.sleep(nanoseconds: 50_000_000) }
                             Perf.log("batch7 big-scan: 200k items in \(String(format: "%.1f", Perf.ms(since: bigScanT0))) ms stillScanning=\(model.scanning)")
-                            DemoInput.window?.setContentSize(NSSize(width: 1280, height: 800))
+                            DemoInput.setContentSizeExact(DemoInput.window, NSSize(width: 1280, height: 800))
                             model.tab = .treemap
                             try? await Task.sleep(nanoseconds: 1_000_000_000)
                             mark(stepNumber); stepNumber += 1
@@ -1116,8 +1134,54 @@ struct SpacelyzerApp: App {
     }
 }
 
+/// CI-only: in-process accessibility lookup/press for SwiftUI controls that vend no NSButton in the
+/// view hierarchy (run 38986559192: the footer's plain-style button was invisible to an NSButton walk).
+@MainActor enum DemoAX {
+    /// Presses the footer's Not-scanned opener. Matches both authored copy variants: "N locations not
+    /// readable" (full width) and "N locations unreadable" (compact); the ViewThatFits picks one per
+    /// available width (ContentView summary(compact:)).
+    static func pressFooterUnreadable() -> Bool {
+        func axString(_ element: AXUIElement, _ attribute: String) -> String {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return "" }
+            return (value as? String) ?? ""
+        }
+        let appElement = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appElement, "AXWindows" as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement] else { return false }
+        for windowElement in windows {
+            var stack: [AXUIElement] = [windowElement]
+            var visited = 0
+            while let element = stack.popLast(), visited < 2048 {
+                visited += 1
+                if axString(element, "AXRole") == "AXButton" {
+                    let text = [axString(element, "AXTitle"), axString(element, "AXDescription"), axString(element, "AXLabel")].joined(separator: " ")
+                    if text.contains("not readable") || text.contains("unreadable") {
+                        return AXUIElementPerformAction(element, "AXPress" as CFString) == .success
+                    }
+                }
+                var childrenRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(element, "AXChildren" as CFString, &childrenRef) == .success,
+                   let children = childrenRef as? [AXUIElement] { stack.append(contentsOf: children) }
+            }
+        }
+        return false
+    }
+}
+
 /// CI-only: posts NSEvents straight to the app's key window so the real responder chain and SwiftUI focus handle them.
 @MainActor enum DemoInput {
+    /// CI-only: clears max-size clamps before setContentSize so the requested size applies exactly
+    /// (run 38986559192 clamped 1280x800 and 1600x1000 to a 625pt content height), then logs the
+    /// resulting geometry for diagnosis.
+    static func setContentSizeExact(_ window: NSWindow?, _ size: NSSize) {
+        guard let window else { return }
+        window.contentMaxSize = NSSize(width: 100_000, height: 100_000)
+        window.maxSize = NSSize(width: 100_000, height: 100_000)
+        window.setContentSize(size)
+        Perf.log("window-size requested=\(size) frame=\(window.frame) contentLayout=\(window.contentLayoutRect) screenVisible=\(String(describing: window.screen?.visibleFrame))")
+    }
     static func allViews<T: NSView>(of type: T.Type) -> [T] {
         var out: [T] = []
         func walk(_ v: NSView) { if let t = v as? T { out.append(t) }; v.subviews.forEach(walk) }
