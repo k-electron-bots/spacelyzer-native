@@ -9,7 +9,10 @@ See what is using your disk. A native macOS disk-space analyzer with a SwiftUI i
 - Follow folders in the outline or compare their size in the treemap.
 - Switch to Kinds for a file-type breakdown, or Largest for the 200 largest matching files.
 - Combine name, extension, kind, size and modified-date filters across every view.
-- Review the full path before moving an item to Trash. Hidden, protected and pending-filter selections are refused; removal has undo.
+- Check a scanned item on disk before deciding: preview, full path, size, then Move to Trash with Undo.
+- Move several reviewed items at once, and put any of them back from the removal history.
+- Review duplicate groups and move extra copies to the Trash.
+- Skip chosen locations with exclusions; the Not scanned list shows what was skipped and why.
 
 Sizes describe allocated disk space, with hard links counted once. Scans stay on your Mac; the app has no networking code.
 
