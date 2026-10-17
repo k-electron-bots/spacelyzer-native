@@ -803,6 +803,8 @@ struct SpacelyzerApp: App {
                             let footerAX = FooterAXEvidence.inspect(footerWindow)
                             let fullLabel = footerAX.entries.contains { $0.label.contains("Stopped early, partial accounting") && $0.label.contains("Filter:") && $0.label.contains("1 file") && $0.label.contains("1,234,567 locations not readable") && $0.label.contains("Scanned in") }
                             Check.expect("footer-native-accessibility-full-details", fullLabel, "native accessor from mixed AX/view discovery only; not external client reachability; truncated=\(footerAX.truncated); missing label inconclusive when truncated; not VoiceOver/client announcements or tooltip proof")
+                            let footerActions = DemoAX.footerActionNames()
+                            Check.expect("footer-voiceover-action-name-clean", footerActions.contains("Show locations not scanned") && !footerActions.contains { $0.contains("Target:0x") || $0.contains("Selector:(null)") }, "combined footer element must vend the authored action name, never a generated debug description (run 38993434887 leaked Name:/Target:/Selector:); actions=\(footerActions)")
                             mark(40)
                             footerWindow.close(); priorProductWindow?.makeKeyAndOrderFront(nil)
                             model.demoFooterUnreadable = nil; model.demoFooterPartial = nil
@@ -1140,25 +1142,25 @@ struct SpacelyzerApp: App {
 /// CI-only: in-process accessibility lookup/press for SwiftUI controls that vend no NSButton in the
 /// view hierarchy (run 38986559192: the footer's plain-style button was invisible to an NSButton walk).
 @MainActor enum DemoAX {
-    /// Presses the footer's Not-scanned opener. Matches both authored copy variants: "N locations not
-    /// readable" (full width) and "N locations unreadable" (compact); the ViewThatFits picks one per
-    /// available width (ContentView summary(compact:)). Run 38993434887 reproduced the run-167 miss:
-    /// the runner vends the copy only inside a custom ACTION name (a dumped description like
-    /// "Name:1 location not readable\nTarget:0x0...") while AXTitle reads "Scan summary", so the match
-    /// text includes action names - still anchored to the two authored variants, never the title.
+    private static func axString(_ element: AXUIElement, _ attribute: String) -> String {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return "" }
+        if let s = value as? String { return s }
+        if let a = value as? NSAttributedString { return a.string }
+        return ""
+    }
+    private static func axActions(_ element: AXUIElement) -> [String] {
+        var names: CFArray?
+        guard AXUIElementCopyActionNames(element, &names) == .success, let n = names as? [String] else { return [] }
+        return n
+    }
+    /// Presses the footer's Not-scanned opener through its one authored custom action. The combined
+    /// footer element vends "Show locations not scanned" (ContentView: the raw button is
+    /// accessibility-hidden, so VoiceOver gets this authored name instead of the generated action whose
+    /// name leaked a debug description - run 38993434887's "Name:1 location not
+    /// readable\nTarget:0x0..."). The match anchors to the authored action name, never the title
+    /// ("Scan summary") and never the button copy variants.
     static func pressFooterUnreadable() -> Bool {
-        func axString(_ element: AXUIElement, _ attribute: String) -> String {
-            var value: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return "" }
-            if let s = value as? String { return s }
-            if let a = value as? NSAttributedString { return a.string }
-            return ""
-        }
-        func axActions(_ element: AXUIElement) -> [String] {
-            var names: CFArray?
-            guard AXUIElementCopyActionNames(element, &names) == .success, let n = names as? [String] else { return [] }
-            return n
-        }
         let appElement = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
         var windowsRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(appElement, "AXWindows" as CFString, &windowsRef) == .success,
@@ -1170,25 +1172,46 @@ struct SpacelyzerApp: App {
             var visited = 0
             while let element = stack.popLast(), visited < 2048 {
                 visited += 1
-                if axString(element, "AXRole") == "AXButton" {
-                    buttonsSeen += 1
-                    let actions = axActions(element)
+                let role = axString(element, "AXRole")
+                if role == "AXButton" { buttonsSeen += 1 }
+                let actions = axActions(element)
+                if role == "AXButton" && buttonsSeen <= 12 {
                     let text = ([axString(element, "AXTitle"), axString(element, "AXDescription"), axString(element, "AXLabel"), axString(element, "AXValue"), axString(element, "AXRoleDescription")] + actions).joined(separator: " ")
-                    if buttonsSeen <= 12 { Perf.log("demo-ax button win=\(wTitle) text=\(text.prefix(80)) actions=\(actions)") }
-                    if text.contains("not readable") || text.contains("unreadable") {
-                        let pressName = actions.first { $0.contains("Press") } ?? "AXPress"
-                        let result = AXUIElementPerformAction(element, pressName as CFString)
-                        Perf.log("demo-ax press attempt name=\(pressName) result=\(result == .success) text=\(text.prefix(80))")
-                        if result == .success { return true }
-                    }
+                    Perf.log("demo-ax button win=\(wTitle) text=\(text.prefix(80)) actions=\(actions)")
+                }
+                if actions.contains("Show locations not scanned") {
+                    let result = AXUIElementPerformAction(element, "Show locations not scanned" as CFString)
+                    Perf.log("demo-ax press attempt name=Show locations not scanned result=\(result == .success)")
+                    if result == .success { return true }
                 }
                 var childrenRef: CFTypeRef?
                 if AXUIElementCopyAttributeValue(element, "AXChildren" as CFString, &childrenRef) == .success,
                    let children = childrenRef as? [AXUIElement] { stack.append(contentsOf: children) }
             }
         }
-        Perf.log("demo-ax press: no matching button (windows=\(windows.count) buttonsSeen=\(buttonsSeen))")
+        Perf.log("demo-ax press: no authored action (windows=\(windows.count) buttonsSeen=\(buttonsSeen))")
         return false
+    }
+    /// CI-only: the action names of the combined footer element (matched by its authored action or its
+    /// "Scan summary" title, any role), for the authored-name regression check. Empty when it is gone.
+    static func footerActionNames() -> [String] {
+        let appElement = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appElement, "AXWindows" as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement] else { return [] }
+        for windowElement in windows {
+            var stack: [AXUIElement] = [windowElement]
+            var visited = 0
+            while let element = stack.popLast(), visited < 2048 {
+                visited += 1
+                let actions = axActions(element)
+                if actions.contains("Show locations not scanned") || axString(element, "AXTitle") == "Scan summary" { return actions }
+                var childrenRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(element, "AXChildren" as CFString, &childrenRef) == .success,
+                   let children = childrenRef as? [AXUIElement] { stack.append(contentsOf: children) }
+            }
+        }
+        return []
     }
 }
 
