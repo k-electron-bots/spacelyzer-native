@@ -85,16 +85,19 @@ if 'Text("\\u{2014}")' not in TREEMAP:
     fails.append('TreemapView.swift: Kinds Folders row must show a dash, never "0 KB"')
 
 # Batch-8 pins (run 38986559192): the Not-scanned footer opener keeps both authored copy variants
-# (full width "not readable", compact "unreadable"), and the demo's AX lookup matches exactly those
-# variants - batch 7 pinned only the full-width copy and walked for an NSButton SwiftUI does not vend.
+# (full width "not readable", compact "unreadable").
+# Batch-12 pins: the combined footer element vends one authored VoiceOver action and DemoAX anchors to
+# that authored name - batches 8-10 matched the generated action name, which leaked a debug description
+# (run 38993434887). Product action, harness anchor and this pin move together.
 APP_SWIFT = (SRC / "SpacelyzerApp.swift").read_text()
 if 'compact ? "unreadable" : "not readable"' not in CONTENT:
     fails.append("ContentView.swift: Not-scanned footer opener lost its full/compact copy variants")
-for needle in ('text.contains("not readable")', 'text.contains("unreadable")'):
-    if needle not in APP_SWIFT:
-        fails.append("SpacelyzerApp.swift: DemoAX footer lookup drifted from the product's authored copy variants")
+if 'accessibilityAction(named: "Show locations not scanned")' not in CONTENT:
+    fails.append("ContentView.swift: combined footer element lost its authored VoiceOver action")
+if 'actions.contains("Show locations not scanned")' not in APP_SWIFT:
+    fails.append("SpacelyzerApp.swift: DemoAX footer lookup drifted from the product's authored VoiceOver action name")
 if '] + actions).joined(separator: " ")' not in APP_SWIFT:
-    fails.append("SpacelyzerApp.swift: DemoAX footer lookup no longer matches action names (run 38993434887 vends the copy only in an action name)")
+    fails.append("SpacelyzerApp.swift: DemoAX footer lookup no longer logs matched action names")
 
 # Batch-9 pins (run 38989729067): the size checks are environment-exact, not loosened - they must
 # still fail when the window is not driven or the layout does not fill the achieved size.
