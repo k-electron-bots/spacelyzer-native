@@ -93,6 +93,8 @@ if 'compact ? "unreadable" : "not readable"' not in CONTENT:
 for needle in ('text.contains("not readable")', 'text.contains("unreadable")'):
     if needle not in APP_SWIFT:
         fails.append("SpacelyzerApp.swift: DemoAX footer lookup drifted from the product's authored copy variants")
+if '] + actions).joined(separator: " ")' not in APP_SWIFT:
+    fails.append("SpacelyzerApp.swift: DemoAX footer lookup no longer matches action names (run 38993434887 vends the copy only in an action name)")
 
 # Batch-9 pins (run 38989729067): the size checks are environment-exact, not loosened - they must
 # still fail when the window is not driven or the layout does not fill the achieved size.
