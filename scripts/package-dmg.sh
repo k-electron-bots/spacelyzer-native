@@ -11,7 +11,14 @@ APP="dist/Spacelyzer.app"
 rm -rf dist && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Spacelyzer"
 sed "s/__VERSION__/$VERSION/g" Resources/Info.plist > "$APP/Contents/Info.plist"
-[[ -f Resources/AppIcon.icns ]] && cp Resources/AppIcon.icns "$APP/Contents/Resources/"
+if [[ -d Resources/AppIcon.iconset ]]; then
+  iconutil -c icns Resources/AppIcon.iconset -o "$APP/Contents/Resources/AppIcon.icns"
+elif [[ -f Resources/AppIcon.icns ]]; then
+  cp Resources/AppIcon.icns "$APP/Contents/Resources/"
+else
+  echo "error: no app icon source (Resources/AppIcon.iconset or Resources/AppIcon.icns)" >&2
+  exit 1
+fi
 codesign --force --deep --options runtime --timestamp=none --sign "$IDENTITY" \
   --entitlements Resources/Spacelyzer.entitlements "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
