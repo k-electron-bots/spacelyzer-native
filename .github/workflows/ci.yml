@@ -108,6 +108,37 @@ jobs:
       - name: Package signed DMG
         if: ${{ !inputs.compile_only }}
         run: ./scripts/package-dmg.sh "${{ steps.ver.outputs.version }}" "${{ steps.sign.outputs.hash }}"
+      - name: Capture DMG install window and app icon (evidence only; artifacts, no publish)
+        if: ${{ !inputs.compile_only }}
+        run: |
+          D="$(ls dist/*.dmg | head -1)"
+          MOUNT="/Volumes/Spacelyzer ${{ steps.ver.outputs.version }}"
+          hdiutil attach "$D"
+          test -f "$MOUNT/.background/background.png"
+          test -f "$MOUNT/.background/background@2x.png"
+          open "$MOUNT"
+          sleep 4
+          osascript -e 'tell application "Finder" to activate'
+          sleep 2
+          screencapture -x dist/screenshot-dmg-window.png
+          test -s dist/screenshot-dmg-window.png
+          hdiutil detach "$MOUNT" -force || echo "warning: dmg detach needed -force"
+          mkdir -p /tmp/iconctx && cp -R dist/Spacelyzer.app /tmp/iconctx/
+          open /tmp/iconctx
+          sleep 3
+          osascript <<'FINDEREOF'
+          tell application "Finder"
+            activate
+            tell front window
+              set current view to icon view
+              set toolbar visible to false
+              set icon size of icon view options to 128
+            end tell
+          end tell
+          FINDEREOF
+          sleep 2
+          screencapture -x dist/screenshot-app-icon-finder.png
+          test -s dist/screenshot-app-icon-finder.png
       - name: Build TEST-ONLY app with SPZ_CI_TESTS (never packaged or released; the DMG above is built without the flag)
         if: ${{ !inputs.compile_only }}
         run: bash ./scripts/build-test-app.sh dist-test "${{ steps.sign.outputs.hash }}"
