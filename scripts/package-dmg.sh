@@ -28,8 +28,9 @@ ln -s /Applications dist/dmg/Applications
 # Install-window art + Finder layout: 660x400 window, icon size 128,
 # Spacelyzer.app at (190,185), Applications alias at (470,185).
 BG="Resources/dmg-background.png"
-if [[ ! -f "$BG" ]]; then
-  echo "error: missing DMG background ($BG)" >&2
+BG2X="Resources/dmg-background@2x.png"
+if [[ ! -f "$BG" || ! -f "$BG2X" ]]; then
+  echo "error: missing DMG background ($BG and/or $BG2X)" >&2
   exit 1
 fi
 RW="dist/Spacelyzer-$VERSION-rw.dmg"
@@ -37,8 +38,10 @@ VOLUME="Spacelyzer $VERSION"
 hdiutil create -volname "$VOLUME" -srcfolder dist/dmg -ov -format UDRW "$RW"
 hdiutil attach -readwrite -noverify "$RW" >/dev/null
 MOUNT="/Volumes/$VOLUME"
+trap 'hdiutil detach "$MOUNT" -force 2>/dev/null || true' EXIT
 mkdir -p "$MOUNT/.background"
 cp "$BG" "$MOUNT/.background/background.png"
+cp "$BG2X" "$MOUNT/.background/background@2x.png"
 osascript <<APPLESCRIPT
 tell application "Finder"
   tell disk "$VOLUME"
@@ -46,6 +49,7 @@ tell application "Finder"
     set current view of container window to icon view
     set toolbar visible of container window to false
     set statusbar visible of container window to false
+    set sidebar visible of container window to false
     set bounds of container window to {100, 100, 760, 500}
     set opts to icon view options of container window
     set arrangement of opts to not arranged
@@ -59,7 +63,10 @@ tell application "Finder"
   end tell
 end tell
 APPLESCRIPT
+sync
+sleep 2
 hdiutil detach "$MOUNT" >/dev/null
+trap - EXIT
 hdiutil convert "$RW" -format UDZO -ov -o "dist/Spacelyzer-$VERSION.dmg"
 rm "$RW"
 shasum -a 256 "dist/Spacelyzer-$VERSION.dmg" | tee "dist/Spacelyzer-$VERSION.dmg.sha256"
