@@ -112,7 +112,12 @@ struct FullDiskAccessBanner: View {
     @StateObject private var model: FullDiskAccessModel
 
     init(model: FullDiskAccessModel? = nil) {
-        _model = StateObject(wrappedValue: model ?? FullDiskAccessModel())
+        // CI capture hook: SPZ_DEMO_FDA_REFUSED=1 forces a probe refusal so a runner can
+        // screenshot the banner state. Inert without the env; it can only refuse, never grant.
+        let forced: FullDiskAccessModel? = ProcessInfo.processInfo.environment["SPZ_DEMO_FDA_REFUSED"] == "1"
+            ? FullDiskAccessModel(probe: { .refused })
+            : nil
+        _model = StateObject(wrappedValue: model ?? forced ?? FullDiskAccessModel())
     }
 
     var body: some View {

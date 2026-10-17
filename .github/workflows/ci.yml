@@ -121,8 +121,31 @@ jobs:
           screencapture -x dist/screenshot-welcome.png || true
           pkill Spacelyzer || true
           sleep 2
+          # Welcome at several window sizes in both appearances, plus the FDA banner state
+          # (SPZ_DEMO_FDA_REFUSED forces a probe refusal; inert without the env).
+          for size in 960x600 1280x800 1600x1000; do
+            open -n dist/Spacelyzer.app --env SPZ_WINDOW_SIZE=$size
+            sleep 7
+            screencapture -x "dist/screenshot-welcome-$size.png" || true
+            pkill Spacelyzer || true
+            sleep 2
+            open -n dist/Spacelyzer.app --env SPZ_WINDOW_SIZE=$size --env SPZ_DEMO_APPEARANCE=dark
+            sleep 7
+            screencapture -x "dist/screenshot-welcome-$size-dark.png" || true
+            pkill Spacelyzer || true
+            sleep 2
+          done
+          open -n dist/Spacelyzer.app --env SPZ_WINDOW_SIZE=1280x800 --env SPZ_DEMO_FDA_REFUSED=1
+          sleep 7
+          screencapture -x dist/screenshot-fda-banner.png || true
+          pkill Spacelyzer || true
+          sleep 2
           open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Library
-          sleep 8
+          sleep 1.5
+          screencapture -x dist/screenshot-scanning-progress-a.png || true
+          sleep 1.5
+          screencapture -x dist/screenshot-scanning-progress-b.png || true
+          sleep 5
           screencapture -x dist/screenshot-scanning.png || true
           sleep 35
           screencapture -x dist/screenshot.png || true
@@ -134,7 +157,7 @@ jobs:
           rm -rf /tmp/spz-chronology
           rm -f /tmp/spz-interaction-envelope.txt /tmp/spz-footer-ax-status.txt /tmp/spz-footer-ax-result.txt /tmp/spz-footer-ax-expected.txt /tmp/spz-footer-ax-ready /tmp/spz-footer-ax-ack /tmp/spz-footer-ax-client.txt /tmp/spz-cold-click-subprocess-end.txt /tmp/spz-sample.txt /tmp/spz-cold-click-sample.txt /tmp/spz-cold-click-sample-command.txt /tmp/spz-cold-click-sample-status.txt /tmp/spz-cold-click-ready /tmp/spz-cold-click-ack /tmp/spz-demo-ready-* /tmp/spz-demo-ack-* /tmp/spz-demo-*.png /tmp/spz-demo-step /tmp/spz-demo-finished /tmp/spz-geom.txt /tmp/spz-timing.txt /tmp/spz-assertions.txt
           open -n dist-test/Spacelyzer.app --env SPZ_AUTOSCAN=/Library --env SPZ_DEMO=1
-          for step in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 23 24 19 25 20 21 22 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48; do
+          for step in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 23 24 19 25 20 21 22 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81; do
             for i in $(seq 1 240); do
               if [ -f /tmp/spz-footer-ax-ready ] && [ ! -f /tmp/spz-footer-ax-ack ]; then
                 target_pid=$(cat /tmp/spz-footer-ax-ready)
@@ -215,10 +238,10 @@ jobs:
           grep -E '^(before-resign|after-direct-resign|after-fixture-key-window|before-activation|activation-wait-seconds=|reload-after-responder-wait|tab-chain |rest-chain-|native-tab |boundary-sim |boundary-setup |boundary-native |boundary-hidden |interaction-clock |interaction-stage |interaction-sample |footer-constrained |footer-ax |treemap-mounted |treemap-tree-swap |treemap-filter |treemap-unmount |sample launched |sample completed |sample missing:|sample failed/missing report:|same-value-fixture-start |before-same-value-clear |check FAIL|app still running at end|APP NOT RUNNING|DEMO .*TIMEOUT)' /tmp/spz-timing.txt 2>/dev/null || true
           cat /tmp/spz-assertions.txt || true
           # Count of ^PASS/^FAIL lines the demo emits at this head; run 37959435404 emitted 126 (121 PASS, 5 FAIL before this fix). Change only with the name-by-name list in the PR that changes it. The batch-removal planning slice adds 5: batch-removal-single-copy-of-group-approved, batch-removal-all-copies-keeps-one-deterministically, batch-removal-unknown-path-refused, batch-removal-non-group-item-approved, batch-removal-out-of-date-model-refuses-all. The multi-select slice adds 6: multi-select-toggle-adds-and-removes-membership, multi-select-focus-follows-toggle-and-removal, multi-select-range-covers-row-order-slice, multi-select-range-without-anchor-anchors-on-click, multi-select-hidden-members-excluded-from-batch-candidates, multi-select-clear-resets-set-and-focus. The outline-sync slice adds 5: outline-sync-added-row-becomes-focus, outline-sync-removal-of-other-keeps-focus, outline-sync-removal-moves-focus-to-last-row-order-member, outline-sync-empty-clears-focus, multi-select-set-normalizes-to-row-order. The batch-quicklook slice adds 5: quicklook-batch-payload-row-order-and-focus, quicklook-batch-payload-focus-outside-falls-back-to-first, quicklook-batch-refuses-empty-and-relative-before-panel, quicklook-batch-show-presents-items-with-clamped-focus-synchronously, shift-click-range-focus-matches-table-path. The batch-execution slice adds 5: batch-execution-moves-each-item-through-per-item-path, batch-execution-failure-skips-and-reports-rest-complete, batch-execution-identity-refusal-skips-item, preview-targets-hidden-set-previews-nothing, preview-targets-empty-set-falls-back-to-focus. The batch-undo slice adds 5: batch-undo-restores-whole-batch-in-one-pass, batch-undo-collision-keeps-that-item-in-history, group-removal-plan-keeps-one-copy-deterministically, group-removal-executes-through-same-per-item-path, single-removal-clears-batch-undo-hint. The mid-batch consistency slice adds 2: batch-execution-poison-mid-batch-refuses-remaining-items, batch-execution-out-of-date-mid-batch-refuses-remaining-items. The outline readable-name slice adds 1: outline-names-keep-readable-width-at-min-window.
-          expected=160
+          expected=174
           if grep -q 'APP NOT RUNNING' /tmp/spz-timing.txt 2>/dev/null; then echo "::error title=ui-assertions::app was not running at the end of the demo (crash or exit)"; exit 1; fi
           if grep -q 'DEMO .*TIMEOUT' /tmp/spz-timing.txt 2>/dev/null; then echo "::error title=ui-assertions::$(grep 'DEMO .*TIMEOUT' /tmp/spz-timing.txt)"; exit 1; fi
-          for step in $(seq 1 48); do [ -s "dist/screenshot-demo-$step.png" ] || { echo "::error title=ui-assertions::missing screenshot step $step"; exit 1; }; done
+          for step in $(seq 1 81); do [ -s "dist/screenshot-demo-$step.png" ] || { echo "::error title=ui-assertions::missing screenshot step $step"; exit 1; }; done
           n=$(grep -c '^PASS\|^FAIL' /tmp/spz-assertions.txt 2>/dev/null || echo 0)
           if grep -q '^FAIL' /tmp/spz-assertions.txt 2>/dev/null || [ "$n" -ne "$expected" ]; then
             echo "::error title=ui-assertions::expected $expected results, got $n; $(tr '\n' ';' < /tmp/spz-assertions.txt 2>/dev/null)"
