@@ -109,8 +109,11 @@ struct ContentView: View {
             if let b = model.pendingBatchRemoval { Text(batchRemovalAlertText(b)) }
         }
         .alert(model.removalAlertTitle, isPresented: Binding(get: { model.removalMessage != nil }, set: { if !$0 { model.removalMessage = nil } })) {
+            // OK is the default (Return) and cancels (Escape): after a removal the expected next action
+            // is to dismiss. Undo stays a plain secondary button with no keyboard shortcut.
             if let n = model.lastBatchCount, n >= 2, model.lastRemoved.count >= n { Button("Undo \(n) items") { model.undoBatchRemoval() } } else if !model.lastRemoved.isEmpty { Button("Undo") { model.undoRemoval() } }
             Button("OK", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
         } message: { Text(model.removalMessage ?? "") }
         .alert("Export", isPresented: Binding(get: { model.exportMessage != nil }, set: { if !$0 { model.exportMessage = nil } })) {
             Button("OK", role: .cancel) {}
