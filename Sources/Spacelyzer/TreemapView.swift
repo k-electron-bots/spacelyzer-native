@@ -154,7 +154,7 @@ struct TreemapView: View {
             // the rect - a mousemove never touches the engine or the equatable base layer, the same
             // cost class as the existing hover stroke. Sighted-only; VoiceOver uses the outline.
             .overlay(alignment: .bottomLeading) {
-                if let h = hovered, let tree = model.tree {
+                if let h = hovered, let tree = model.tree, let layout = currentLayout, layout.treeID == ObjectIdentifier(tree) {
                     Text("\(tree.name(h.node).isEmpty ? tree.path(h.node) : tree.name(h.node)) · \(formatBytes(h.size))")
                         .font(.caption)
                         .padding(.horizontal, 6).padding(.vertical, 2)
@@ -168,10 +168,11 @@ struct TreemapView: View {
             .contextMenu {
                 // Right-click acts on the rect under the pointer (tracked by the hover pass);
                 // the same actions the outline's context menu offers, in the same order.
-                if let h = hovered {
+                // The hovered rect is only valid while its layout is the current tree's layout.
+                if let h = hovered, let layout = currentLayout, let tree = model.tree, layout.treeID == ObjectIdentifier(tree) {
                     Button("Show in Finder") { model.reveal(h.node) }
                     Button("Copy Scanned Path") {
-                        CopyPathPolicy.perform(path: model.tree?.path(h.node), enginePoisoned: model.enginePoisoned) { p in
+                        CopyPathPolicy.perform(path: tree.path(h.node), enginePoisoned: model.enginePoisoned) { p in
                             let pb = NSPasteboard.general
                             pb.clearContents()
                             pb.setString(p, forType: .string)
@@ -459,14 +460,17 @@ struct FoldersView: View {
                 .contextMenu {
                     // Right-click parity with the outline: the same actions, in the same order.
                     Button("Show in Finder") { model.reveal(id) }
+                    // Live-tree guard (the outline's pattern): after a rescan starts, this row's tree
+                    // can be stale - never copy a path from it.
+                    let live = model.tree === t && UInt64(id) < t.nodeCount
                     Button("Copy Scanned Path") {
-                        CopyPathPolicy.perform(path: t.path(id), enginePoisoned: model.enginePoisoned) { p in
+                        CopyPathPolicy.perform(path: live ? t.path(id) : nil, enginePoisoned: model.enginePoisoned) { p in
                             let pb = NSPasteboard.general
                             pb.clearContents()
                             pb.setString(p, forType: .string)
                         }
                     }
-                    .disabled(CopyPathPolicy.decide(path: t.path(id), enginePoisoned: model.enginePoisoned).isRefused)
+                    .disabled(CopyPathPolicy.decide(path: live ? t.path(id) : nil, enginePoisoned: model.enginePoisoned).isRefused)
                     Button("Check on disk") { model.proposeReview(of: id) }
                     Button("Move to Trash…", role: .destructive) { model.proposeRemoval(of: id) }
                         .disabled(model.removalBlockedReason(id) != nil)
@@ -524,14 +528,17 @@ struct LargestView: View {
                 .contextMenu {
                     // Right-click parity with the outline: the same actions, in the same order.
                     Button("Show in Finder") { model.reveal(id) }
+                    // Live-tree guard (the outline's pattern): after a rescan starts, this row's tree
+                    // can be stale - never copy a path from it.
+                    let live = model.tree === t && UInt64(id) < t.nodeCount
                     Button("Copy Scanned Path") {
-                        CopyPathPolicy.perform(path: t.path(id), enginePoisoned: model.enginePoisoned) { p in
+                        CopyPathPolicy.perform(path: live ? t.path(id) : nil, enginePoisoned: model.enginePoisoned) { p in
                             let pb = NSPasteboard.general
                             pb.clearContents()
                             pb.setString(p, forType: .string)
                         }
                     }
-                    .disabled(CopyPathPolicy.decide(path: t.path(id), enginePoisoned: model.enginePoisoned).isRefused)
+                    .disabled(CopyPathPolicy.decide(path: live ? t.path(id) : nil, enginePoisoned: model.enginePoisoned).isRefused)
                     Button("Check on disk") { model.proposeReview(of: id) }
                     Button("Move to Trash…", role: .destructive) { model.proposeRemoval(of: id) }
                         .disabled(model.removalBlockedReason(id) != nil)
