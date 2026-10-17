@@ -135,7 +135,7 @@ struct WelcomeView: View {
     var body: some View {
         VStack(spacing: 14) {
             Image(systemName: "square.grid.2x2").font(.system(size: 54)).foregroundStyle(.secondary)
-            Text("See what is using your disk").font(.title2.bold())
+            Text("See what's using your disk").font(.title2.bold())
             Text("Everything stays on this Mac. Spacelyzer has no networking code.")
                 .foregroundStyle(.secondary)
             HStack {
@@ -143,7 +143,7 @@ struct WelcomeView: View {
                 Button("Scan Home Folder") { model.scanHome() }
                 Button("Choose Folder…") { model.chooseFolder() }
             }
-            Text("Full Disk Access may improve access after relaunch; some protected locations remain unreadable.")
+            Text("Full Disk Access can include more protected locations after a relaunch. Some stay unreadable.")
                 .font(.caption).foregroundStyle(.tertiary)
             if let e = model.error { Text(e).foregroundStyle(.red) }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -269,7 +269,7 @@ struct FilterBar: View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
             NameFilterField(model: model)
-            TextField("extension", text: $model.filterExt).textFieldStyle(.plain).frame(width: 70)
+            TextField("extension", text: $model.filterExt).textFieldStyle(.roundedBorder).frame(width: 70)
                 .help("File extension, for example pdf or mp4")
                 .accessibilityLabel("Extension filter")
             if !model.filterText.isEmpty {
