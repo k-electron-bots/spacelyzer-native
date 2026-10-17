@@ -830,7 +830,10 @@ struct SpacelyzerApp: App {
                             for (sizeName, w, h) in sizeMatrix {
                                 DemoInput.setContentSizeExact(DemoInput.window, NSSize(width: w, height: h))
                                 try? await Task.sleep(nanoseconds: 1_000_000_000)
-                                Check.expect("batch7-size-applied-\(sizeName)", abs(DemoRootLayout.size.width - w) < 1 && abs(DemoRootLayout.size.height - h) < 1, "root=\(DemoRootLayout.size)")
+                                let expected7 = DemoInput.achievableContentSize(DemoInput.window, requested: NSSize(width: w, height: h))
+                                let achieved7 = DemoInput.window?.contentLayoutRect.size ?? .zero
+                                let sizeOk7 = abs(achieved7.width - expected7.width) < 1 && abs(achieved7.height - expected7.height) < 1 && abs(DemoRootLayout.size.width - achieved7.width) < 1 && abs(DemoRootLayout.size.height - achieved7.height) < 1
+                                Check.expect("batch7-size-applied-\(sizeName)", sizeOk7, "requested=\(w)x\(h) achieved-on-runner=\(achieved7) expected-achievable=\(expected7) root=\(DemoRootLayout.size); exact against the environment's visible frame - fails when the window is not driven or the layout does not fill it; not a true \(sizeName) capture when the runner clamps")
                                 Check.expect("batch7-outline-names-readable-\(sizeName)", OutlineDemoEvidence.nameWidthsAboveBudget, "every visible named outline row keeps readable width at \(sizeName)")
                                 for tab in tabMatrix {
                                     model.tab = tab
@@ -980,7 +983,7 @@ struct SpacelyzerApp: App {
                             } else {
                                 mark(stepNumber); stepNumber += 1
                             }
-                            Check.expect("batch7-not-scanned-sheet-opened", pressedSkip7 && sheetShown7, "footer Not-scanned opener pressed via AX (matches both authored copy variants); the sheet must attach to the window")
+                            Check.expect("batch7-not-scanned-sheet-opened", pressedSkip7 && sheetShown7, pressedSkip7 ? "footer opener pressed via AX but the Not-scanned sheet did not attach to the window" : "footer Not-scanned opener not found via AX (see demo-ax log lines)")
                             try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: lockedDir7.path)
                             try? FileManager.default.removeItem(at: unreadRoot7)
                             // 79: a real second volume (RAM disk) inside a fixture: the Not-scanned list must show it as on another volume.
@@ -1144,21 +1147,36 @@ struct SpacelyzerApp: App {
         func axString(_ element: AXUIElement, _ attribute: String) -> String {
             var value: CFTypeRef?
             guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return "" }
-            return (value as? String) ?? ""
+            if let s = value as? String { return s }
+            if let a = value as? NSAttributedString { return a.string }
+            return ""
+        }
+        func axActions(_ element: AXUIElement) -> [String] {
+            var names: CFArray?
+            guard AXUIElementCopyActionNames(element, &names) == .success, let n = names as? [String] else { return [] }
+            return n
         }
         let appElement = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
         var windowsRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(appElement, "AXWindows" as CFString, &windowsRef) == .success,
-              let windows = windowsRef as? [AXUIElement] else { return false }
+              let windows = windowsRef as? [AXUIElement] else { Perf.log("demo-ax press: AXWindows unavailable"); return false }
+        var buttonsSeen = 0
         for windowElement in windows {
+            let wTitle = axString(windowElement, "AXTitle")
             var stack: [AXUIElement] = [windowElement]
             var visited = 0
             while let element = stack.popLast(), visited < 2048 {
                 visited += 1
                 if axString(element, "AXRole") == "AXButton" {
-                    let text = [axString(element, "AXTitle"), axString(element, "AXDescription"), axString(element, "AXLabel")].joined(separator: " ")
+                    buttonsSeen += 1
+                    let text = [axString(element, "AXTitle"), axString(element, "AXDescription"), axString(element, "AXLabel"), axString(element, "AXValue"), axString(element, "AXRoleDescription")].joined(separator: " ")
+                    if buttonsSeen <= 12 { Perf.log("demo-ax button win=\(wTitle) text=\(text.prefix(80)) actions=\(axActions(element))") }
                     if text.contains("not readable") || text.contains("unreadable") {
-                        return AXUIElementPerformAction(element, "AXPress" as CFString) == .success
+                        let actions = axActions(element)
+                        let pressName = actions.first { $0.contains("Press") } ?? "AXPress"
+                        let result = AXUIElementPerformAction(element, pressName as CFString)
+                        Perf.log("demo-ax press attempt name=\(pressName) result=\(result == .success) text=\(text.prefix(80))")
+                        if result == .success { return true }
                     }
                 }
                 var childrenRef: CFTypeRef?
@@ -1166,6 +1184,7 @@ struct SpacelyzerApp: App {
                    let children = childrenRef as? [AXUIElement] { stack.append(contentsOf: children) }
             }
         }
+        Perf.log("demo-ax press: no matching button (windows=\(windows.count) buttonsSeen=\(buttonsSeen))")
         return false
     }
 }
@@ -1181,6 +1200,15 @@ struct SpacelyzerApp: App {
         window.maxSize = NSSize(width: 100_000, height: 100_000)
         window.setContentSize(size)
         Perf.log("window-size requested=\(size) frame=\(window.frame) contentLayout=\(window.contentLayoutRect) screenVisible=\(String(describing: window.screen?.visibleFrame))")
+    }
+    /// CI-only: the content size the runner's screen actually allows for a requested size: macOS clips
+    /// window height to the visible frame (menu bar, Dock, titlebar) but lets width overflow the right
+    /// edge - run 38989729067 clamped 800pt/1000pt requests to exactly 625pt on a 768pt screen.
+    static func achievableContentSize(_ window: NSWindow?, requested: NSSize) -> NSSize {
+        guard let window else { return .zero }
+        let chrome = window.frame.height - window.contentLayoutRect.height
+        let visibleH = window.screen?.visibleFrame.height ?? requested.height
+        return NSSize(width: requested.width, height: min(requested.height, visibleH - chrome))
     }
     static func allViews<T: NSView>(of type: T.Type) -> [T] {
         var out: [T] = []
