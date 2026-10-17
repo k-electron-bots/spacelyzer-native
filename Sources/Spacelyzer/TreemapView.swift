@@ -42,7 +42,11 @@ private struct TreemapBase: View, Equatable {
             var labeled = Set<String>()
             for r in layout.rects where !r.isDirectoryFrame && !r.isRemainder && r.rect.width > 70 && r.rect.height > 22 {
                 let box = r.rect.insetBy(dx: 4, dy: 3)
-                let label = fitLabel(tree.name(r.node), width: box.width, ctx: ctx)
+                let name = tree.name(r.node)
+                let label = fitLabel(name, width: box.width, ctx: ctx)
+                // A name truncated below six visible characters is noise, not information - skip it
+                // (the hover readout names every rect). Skipping also saves the resolve and the draw.
+                guard label.text == name || label.text.replacingOccurrences(of: "…", with: "").count >= 6 else { continue }
                 guard labeled.insert("\(r.branch)|\(r.depth)|\(label.text)").inserted else { continue }
                 ctx.drawLayer { l in
                     l.clip(to: Path(box))
@@ -139,6 +143,19 @@ struct TreemapView: View {
                 }
             }
             .clipped()
+            .overlay {
+                // First scan: the detail pane would otherwise sit blank until the tree publishes.
+                if model.tree == nil && model.scanning {
+                    VStack(spacing: 8) {
+                        ProgressView()
+                        Text("Scanning…").font(.headline)
+                        Text("\(model.progress.items.formatted()) items · \(formatBytes(model.progress.bytes))").font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                        Text("The treemap appears when the scan finishes.").font(.caption).foregroundStyle(.tertiary)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Scanning. \(model.progress.items.formatted()) items, \(formatBytes(model.progress.bytes)) so far. The treemap appears when the scan finishes.")
+                }
+            }
             .overlay {
                 if !model.filterPending, !model.enginePoisoned, model.activeFilter != nil, let currentLayout, currentLayout.rects.isEmpty {
                     if model.activeFilter?.count(model.displayedRoot) == 0 {
