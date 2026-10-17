@@ -3483,6 +3483,8 @@ final class BusyFlag: @unchecked Sendable {
         "batch-execution-moves-each-item-through-per-item-path",
         "batch-execution-failure-skips-and-reports-rest-complete",
         "batch-execution-identity-refusal-skips-item",
+        "batch-execution-out-of-date-mid-batch-refuses-remaining-items",
+        "batch-execution-poison-mid-batch-refuses-remaining-items",
         "preview-targets-hidden-set-previews-nothing",
         "preview-targets-empty-set-falls-back-to-focus",
         "batch-undo-restores-whole-batch-in-one-pass",
