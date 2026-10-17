@@ -149,12 +149,36 @@ struct TreemapView: View {
                     }
                 }
             }
+            // Hover readout: name + size of the rect under the pointer, so a thin sliver says what it
+            // is without a click. The name comes from the tree's cheap accessor and the bytes ride on
+            // the rect - a mousemove never touches the engine or the equatable base layer, the same
+            // cost class as the existing hover stroke. Sighted-only; VoiceOver uses the outline.
+            .overlay(alignment: .bottomLeading) {
+                if let h = hovered, let tree = model.tree, let layout = currentLayout, layout.treeID == ObjectIdentifier(tree) {
+                    Text("\(tree.name(h.node).isEmpty ? tree.path(h.node) : tree.name(h.node)) · \(formatBytes(h.size))")
+                        .font(.caption)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(.regularMaterial, in: .rect(cornerRadius: 4))
+                        .padding(6)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
             .contentShape(Rectangle())
             .contextMenu {
                 // Right-click acts on the rect under the pointer (tracked by the hover pass);
-                // the same three actions the outline's context menu offers.
-                if let h = hovered {
+                // the same actions the outline's context menu offers, in the same order.
+                // The hovered rect is only valid while its layout is the current tree's layout.
+                if let h = hovered, let layout = currentLayout, let tree = model.tree, layout.treeID == ObjectIdentifier(tree) {
                     Button("Show in Finder") { model.reveal(h.node) }
+                    Button("Copy Scanned Path") {
+                        CopyPathPolicy.perform(path: tree.path(h.node), enginePoisoned: model.enginePoisoned) { p in
+                            let pb = NSPasteboard.general
+                            pb.clearContents()
+                            pb.setString(p, forType: .string)
+                        }
+                    }
+                    .disabled(model.tree.map { CopyPathPolicy.decide(path: $0.path(h.node), enginePoisoned: model.enginePoisoned).isRefused } ?? true)
                     Button("Check on disk") { model.proposeReview(of: h.node) }
                     Button("Move to Trash…", role: .destructive) { model.proposeRemoval(of: h.node) }
                         .disabled(model.removalBlockedReason(h.node) != nil)
@@ -434,8 +458,19 @@ struct FoldersView: View {
                     Text(sizeOf[id].map(formatBytes) ?? "\u{2014}").monospacedDigit()
                 }.tag(id)
                 .contextMenu {
-                    // Right-click parity with the outline: the same three actions.
+                    // Right-click parity with the outline: the same actions, in the same order.
                     Button("Show in Finder") { model.reveal(id) }
+                    // Live-tree guard (the outline's pattern): after a rescan starts, this row's tree
+                    // can be stale - never copy a path from it.
+                    let live = model.tree === t && UInt64(id) < t.nodeCount
+                    Button("Copy Scanned Path") {
+                        CopyPathPolicy.perform(path: live ? t.path(id) : nil, enginePoisoned: model.enginePoisoned) { p in
+                            let pb = NSPasteboard.general
+                            pb.clearContents()
+                            pb.setString(p, forType: .string)
+                        }
+                    }
+                    .disabled(CopyPathPolicy.decide(path: live ? t.path(id) : nil, enginePoisoned: model.enginePoisoned).isRefused)
                     Button("Check on disk") { model.proposeReview(of: id) }
                     Button("Move to Trash…", role: .destructive) { model.proposeRemoval(of: id) }
                         .disabled(model.removalBlockedReason(id) != nil)
@@ -491,8 +526,19 @@ struct LargestView: View {
                     Text(sizeOf[id].map(formatBytes) ?? "\u{2014}").monospacedDigit()   // a missing size, or a poisoned engine, is a visible placeholder, never 0 B or an old number
                 }.tag(id)
                 .contextMenu {
-                    // Right-click parity with the outline: the same three actions.
+                    // Right-click parity with the outline: the same actions, in the same order.
                     Button("Show in Finder") { model.reveal(id) }
+                    // Live-tree guard (the outline's pattern): after a rescan starts, this row's tree
+                    // can be stale - never copy a path from it.
+                    let live = model.tree === t && UInt64(id) < t.nodeCount
+                    Button("Copy Scanned Path") {
+                        CopyPathPolicy.perform(path: live ? t.path(id) : nil, enginePoisoned: model.enginePoisoned) { p in
+                            let pb = NSPasteboard.general
+                            pb.clearContents()
+                            pb.setString(p, forType: .string)
+                        }
+                    }
+                    .disabled(CopyPathPolicy.decide(path: live ? t.path(id) : nil, enginePoisoned: model.enginePoisoned).isRefused)
                     Button("Check on disk") { model.proposeReview(of: id) }
                     Button("Move to Trash…", role: .destructive) { model.proposeRemoval(of: id) }
                         .disabled(model.removalBlockedReason(id) != nil)

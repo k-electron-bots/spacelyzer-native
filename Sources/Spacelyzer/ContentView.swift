@@ -171,6 +171,11 @@ struct StatusBar: View {
             .accessibilityElement(children: .combine)
             // The details announce once, from the invisible carrier below; this group gets a short label.
             .help(fullDetails).accessibilityLabel("Scan summary")
+            // One authored action for VoiceOver. The raw button below is accessibility-hidden: combined
+            // into this element it surfaced as a generated custom action whose name leaked a debug
+            // description, which is what VoiceOver read aloud (run 38993434887). DemoAX and the copy
+            // gate pin this authored name.
+            .accessibilityAction(named: "Show locations not scanned") { showSkipped = true }
             // External footer gate carrier: the combined summary bridges as AXButton, a role the client
             // contract excludes. A bare Text outside the merged node (this background is applied after
             // .combine) bridges accessibilityLabel into AXValue and .help into AXHelp (run 37971834595
@@ -205,7 +210,11 @@ struct StatusBar: View {
                 if unreadable > 0 {
                     Button("\(locationCount(unreadable)) \(compact ? "unreadable" : "not readable")") { showSkipped = true }
                         .buttonStyle(.plain).foregroundStyle(.orange)
+                        .underline()
                         .help("Show the locations that were not scanned")
+                        // Sighted users keep the real button; VoiceOver gets the authored action on the
+                        // combined element above, never this button's generated action name.
+                        .accessibilityHidden(true)
                 }
                 VolumeHeaderView(rootPath: model.rootPath)
             }
