@@ -94,6 +94,12 @@ for needle in ('text.contains("not readable")', 'text.contains("unreadable")'):
     if needle not in APP_SWIFT:
         fails.append("SpacelyzerApp.swift: DemoAX footer lookup drifted from the product's authored copy variants")
 
+# Batch-9 pins (run 38989729067): the size checks are environment-exact, not loosened - they must
+# still fail when the window is not driven or the layout does not fill the achieved size.
+size_check = [l for l in APP_SWIFT.splitlines() if 'Check.expect("batch7-size-applied-' in l]
+if not size_check or 'DemoRootLayout' not in size_check[0] or 'achieved' not in size_check[0]:
+    fails.append("SpacelyzerApp.swift: batch7-size-applied check lost its layout-fills-achieved assertion")
+
 # Outcome-to-title mapping: the removal alert title comes from the tracked outcome, not message text.
 if "enum RemovalReportKind" not in APP_MODEL or 'case .uncertain: return "Removal Result"' not in APP_MODEL:
     fails.append("AppModel.swift: tracked removal outcome (moved/putBack/notMoved/uncertain) is missing")
