@@ -1,19 +1,34 @@
 #!/usr/bin/env python3
-"""Source-only, run-independent check: the OrderingDriver.required list must equal the check names the five
-ordering/coherence suites declare in source. Never reads a run log. Dynamic names (containing \\( ) are expanded
-below by hand and must be edited with the check. Exit 1 on any difference."""
-import re, sys
-src = open('Sources/Spacelyzer/SpacelyzerApp.swift').read()
-m = re.search(r'static let required: \[String\] = \[(.*?)\n    \]', src, re.S)
+"""Source-only, run-independent check: the OrderingDriver.required list must equal the check names the
+ordering/coherence suites declare in source. Never reads a run log. Suites live across Sources/**/*.swift;
+a suite's declared names are its Check.expect("...") literals plus its `let names = [...]` arrays (the
+fixture-failure fallback emission lists). Dynamic names (containing \( ) are expanded below by hand and
+must be edited with the check. Exit 1 on any difference."""
+import re, sys, glob
+app = open('Sources/Spacelyzer/SpacelyzerApp.swift').read()
+m = re.search(r'static let required: \[String\] = \[(.*?)\n    \]', app, re.S)
 required = re.findall(r'"([^"]+)"', m.group(1))
 dup = {n for n in required if required.count(n) > 1}
-suites = ['PublicationRegression', 'CommitOrderingRegression', 'ZeroMatchRegression', 'AsyncRemovalRegression', 'MountedViewRegression', 'MountedOutlineRegression']
+SUITES = ['PublicationRegression', 'CommitOrderingRegression', 'ZeroMatchRegression', 'AsyncRemovalRegression',
+          'MountedViewRegression', 'MountedOutlineRegression', 'BatchRemovalChecks', 'BatchRemovalExecutionChecks',
+          'BatchUndoChecks', 'DuplicatesChecks', 'DuplicatesRemovalChecks', 'ExclusionsChecks', 'FullDiskAccessChecks',
+          'IdentityGateChecks', 'ItemReviewChecks', 'MultiSelectChecks', 'OutlineSelectionSyncChecks',
+          'QuickLookBatchChecks', 'QuickLookChecks', 'RemovalHistoryChecks', 'SkippedListChecks', 'VolumeChecks']
+files = {f: open(f).read() for f in glob.glob('Sources/**/*.swift', recursive=True)}
 declared, dynamic = set(), []
-for s in suites:
-    b = re.search(r'enum %s\b.*?\n}\n' % s, src, re.S)
-    if not b: print('suite not found', s); sys.exit(1)
-    for n in re.findall(r'Check\.expect\("([^"]+)"', b.group(0)):
+for s in SUITES:
+    body = None
+    for f, txt in files.items():
+        b = re.search(r'enum %s\b.*?\n}\n' % s, txt, re.S)
+        if b:
+            body = b.group(0)
+            break
+    if body is None:
+        print('suite not found', s); sys.exit(1)
+    for n in re.findall(r'Check\.expect\("([^"]+)"', body):
         (dynamic.append(n) if '\\(' in n else declared.add(n))
+    for arr in re.findall(r'(?:static )?let names = \[(.*?)\]', body, re.S):
+        declared.update(re.findall(r'"([^"]+)"', arr))
 expanded = set()
 for n in dynamic:
     if 'async-removal-commit-\\(label)' in n:
