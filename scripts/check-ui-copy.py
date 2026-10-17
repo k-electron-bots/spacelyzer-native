@@ -77,12 +77,22 @@ for name, body in (("TreemapView.swift", TREEMAP), ("ContentView.swift", CONTENT
     if '"Check on disk…"' in body:
         fails.append(f"{name}: ellipsis on Check on disk (it opens its popover directly, no further input)")
 
-# Batch-7 pins (Karim, Oct 16): the Kinds Folders row keeps its place but shows a dash for
+# Batch-7 pins: the Kinds Folders row keeps its place but shows a dash for
 # size (never "0 KB") and explains itself to VoiceOver.
 if "Folders own no size of their own." not in TREEMAP:
     fails.append("TreemapView.swift: Kinds Folders row lost its VoiceOver explanation")
 if 'Text("\\u{2014}")' not in TREEMAP:
     fails.append('TreemapView.swift: Kinds Folders row must show a dash, never "0 KB"')
+
+# Batch-8 pins (run 38986559192): the Not-scanned footer opener keeps both authored copy variants
+# (full width "not readable", compact "unreadable"), and the demo's AX lookup matches exactly those
+# variants - batch 7 pinned only the full-width copy and walked for an NSButton SwiftUI does not vend.
+APP_SWIFT = (SRC / "SpacelyzerApp.swift").read_text()
+if 'compact ? "unreadable" : "not readable"' not in CONTENT:
+    fails.append("ContentView.swift: Not-scanned footer opener lost its full/compact copy variants")
+for needle in ('text.contains("not readable")', 'text.contains("unreadable")'):
+    if needle not in APP_SWIFT:
+        fails.append("SpacelyzerApp.swift: DemoAX footer lookup drifted from the product's authored copy variants")
 
 # Outcome-to-title mapping: the removal alert title comes from the tracked outcome, not message text.
 if "enum RemovalReportKind" not in APP_MODEL or 'case .uncertain: return "Removal Result"' not in APP_MODEL:
