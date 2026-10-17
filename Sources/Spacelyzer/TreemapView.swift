@@ -371,11 +371,21 @@ struct KindsView: View {
                 HStack {
                     Circle().fill(categoryColor(r.category)).frame(width: 10, height: 10)
                     Text(r.category.label)
+                        .foregroundStyle(r.category == .folder ? .secondary : .primary)
                     Spacer()
                     Text("\(r.items.formatted()) items").foregroundStyle(.secondary)
-                    Text(formatBytes(r.bytes)).monospacedDigit().frame(width: 90, alignment: .trailing)
+                    if r.category == .folder {
+                        // Folders own no bytes of their own: a dash, never a misleading "0 KB".
+                        Text("\u{2014}").monospacedDigit().foregroundStyle(.secondary).frame(width: 90, alignment: .trailing)
+                    } else {
+                        Text(formatBytes(r.bytes)).monospacedDigit().frame(width: 90, alignment: .trailing)
+                    }
                     ShareBar(fraction: Double(r.bytes) / Double(total)).frame(width: 60, height: 6)
                 }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(r.category == .folder
+                    ? "Folders, \(r.items.formatted()) items. Folders own no size of their own."
+                    : "\(r.category.label), \(r.items.formatted()) items, \(formatBytes(r.bytes))")
             }
             .opacity(presentation == .ready ? 1 : 0.5)
             .disabled(presentation != .ready)
