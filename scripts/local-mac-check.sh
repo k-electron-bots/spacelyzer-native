@@ -19,8 +19,13 @@ if [ "$(uname -s)" != "Darwin" ]; then
   echo "NOT-RUN: this is $(uname -s), not macOS. Swift/UI/AX/PNG checks need a Mac; a Linux run is not a Mac pass." >&2; exit 2
 fi
 if [ "$SETUP" = 1 ]; then
-  rustup target add aarch64-apple-darwin x86_64-apple-darwin && cargo fetch --locked
-  echo "setup finished (network + toolchain changes happened only in this mode)"; exit $?
+  if ! rustup target add aarch64-apple-darwin x86_64-apple-darwin; then
+    echo "RAN FAIL  setup (rustup target add failed; cargo fetch not run)" >&2; exit 1
+  fi
+  if ! cargo fetch --locked; then
+    echo "RAN FAIL  setup (cargo fetch failed)" >&2; exit 1
+  fi
+  echo "setup finished (network + toolchain changes happened only in this mode)"; exit 0
 fi
 
 OUT="${SPZ_LOCAL_LOGS:-$HOME/spz-local-logs}/$(date -u +%Y%m%dT%H%M%SZ)"; mkdir -p "$OUT"
