@@ -19,7 +19,7 @@ Source review and Linux checks do not close these gates. No new run, tag, releas
 | Stability | Repeated rescans, tree swaps/cancel and long-session measurements, with memory samples and stall logs | Do not infer a plateau from one scan |
 | Icon | Inspect installed app icon at small sizes and in Finder | Asset pixels alone do not prove macOS rendering |
 | Installer | Create signed development DMG; mount; inspect Finder background/layout, app and Applications positions, 1x/2x appearance; verify detach | Self-signing is not Developer ID or notarization |
-| Documentation | The pinned candidate has 4 existing image slots in `docs/guide/tour.md`, all with PNGs present. The unmerged `ux-docs-2a` draft (`797cdcd`) adds 8 pending image slots; collect real captures for that draft and check captions against the final UI | Draft text is not a screenshot or supported-OS verification |
+| Documentation | The pinned candidate has 4 existing image slots in `docs/guide/tour.md`, all with PNGs present. The unmerged `ux-docs-2a` draft (`797cdcd`) adds 6 pending image slots and marks the 4 existing tour.md slots for refresh from real captures; collect real captures for that draft and check captions against the final UI | Draft text is not a screenshot or supported-OS verification |
 
 ## Runner limits
 
