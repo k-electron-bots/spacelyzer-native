@@ -12,6 +12,7 @@ See what is using your disk. A native macOS disk-space analyzer with a SwiftUI i
 - Check a scanned item on disk before deciding: preview, full path, size, then Move to Trash with Undo.
 - Move several reviewed items at once, and put any of them back from the removal history.
 - Review duplicate groups and move extra copies to the Trash.
+- Export the Largest list as a CSV file (built, awaiting Mac verification).
 - Skip chosen locations with exclusions; the Not scanned list shows what was skipped and why.
 
 Sizes describe allocated disk space, with hard links counted once. Scans stay on your Mac; the app has no networking code.
