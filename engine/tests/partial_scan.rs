@@ -7,6 +7,14 @@ use spacelyzer_engine::tree::Tree;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// Removes the fixture directory when the test ends, pass or fail.
+struct Cleanup(PathBuf);
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn fixture(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("spz-partial-{}-{}", std::process::id(), name));
     let _ = std::fs::remove_dir_all(&d);
@@ -45,6 +53,7 @@ fn assert_subset_of(partial: &Tree, full: &Tree) {
 #[test]
 fn a_complete_scan_is_not_flagged_and_a_cancelled_one_is_flagged_through_the_abi() {
     let d = fixture("flag");
+    let _cleanup = Cleanup(d.clone());
     let full = run(&d, vec![], false);
     let part = run(&d, vec![], true);
     unsafe {
@@ -59,6 +68,7 @@ fn a_complete_scan_is_not_flagged_and_a_cancelled_one_is_flagged_through_the_abi
 #[test]
 fn a_scan_cancelled_mid_walk_never_invents_or_inflates_an_entry_and_keeps_parent_totals_consistent() {
     let d = fixture("mid");
+    let _cleanup = Cleanup(d.clone());
     let full = run(&d, vec![], false);
     let mut saw_partial = false;
     for delay_us in [0u64, 50, 200, 800, 3000] {
@@ -88,6 +98,7 @@ fn a_scan_cancelled_mid_walk_never_invents_or_inflates_an_entry_and_keeps_parent
 #[test]
 fn a_cancelled_scan_reports_no_unobserved_exclusions_even_when_the_excluded_path_exists() {
     let d = fixture("excl");
+    let _cleanup = Cleanup(d.clone());
     let target = d.join("a3/b1");
     let full = run(&d, vec![target.clone()], false);
     let part = run(&d, vec![target.clone()], true);
@@ -112,6 +123,7 @@ fn a_cancelled_scan_reports_no_unobserved_exclusions_even_when_the_excluded_path
 #[test]
 fn forgetting_from_a_cancelled_tree_subtracts_exactly_the_observed_bytes_from_every_ancestor() {
     let d = fixture("forget");
+    let _cleanup = Cleanup(d.clone());
     // cancel after some entries were observed; retry until the cancel landed mid-walk with a non-trivial tree
     let full = run(&d, vec![], false);
     let mut found = None;
