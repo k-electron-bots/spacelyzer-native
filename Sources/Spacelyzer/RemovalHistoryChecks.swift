@@ -70,6 +70,7 @@ enum RemovalHistoryChecks {
         m1.identityCheck = { _, _ in .same }
         let log1 = RestoreLog()
         m1.restoreItem = { from, to in log1.record(from, to) }
+        m1.restoreCollisionProbe = { _ in false }   // the fixture file is still on disk (the Trash seam touches nothing), so the default probe would report a collision
         m1.proposeRemoval(of: a); m1.confirmRemoval()
         let s1 = await settleSurfaces(m1)
         m1.proposeRemoval(of: b); m1.confirmRemoval()
@@ -94,6 +95,7 @@ enum RemovalHistoryChecks {
         m2.identityCheck = { _, _ in .same }
         let log2 = RestoreLog()
         m2.restoreItem = { from, to in log2.record(from, to) }
+        m2.restoreCollisionProbe = { _ in false }   // the fixture file is still on disk (the Trash seam touches nothing), so the default probe would report a collision
         m2.proposeRemoval(of: a); m2.confirmRemoval()
         let s3 = await settleSurfaces(m2)
         m2.proposeRemoval(of: b); m2.confirmRemoval()
