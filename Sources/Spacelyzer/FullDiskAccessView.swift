@@ -36,7 +36,7 @@ final class FullDiskAccessModel: ObservableObject {
     /// macOS 13+ Privacy & Security pane, Full Disk Access anchor. Older macOS opens the pane root.
     static let settingsURL = URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles")!
     /// Protected location used by the default probe: readable only with Full Disk Access.
-    static let probePath = NSHomeDirectory() + "/Library/Safari"
+    nonisolated static let probePath = NSHomeDirectory() + "/Library/Safari"
 
     @Published private(set) var status: FullDiskAccessStatus = .notChecked
     /// Id of the latest refresh. Read-only outside; checks use it to wait for a specific probe.
@@ -53,7 +53,7 @@ final class FullDiskAccessModel: ObservableObject {
 
     /// The default probe: one directory listing of the protected path. A refusal means the
     /// location is not readable; a missing directory or any other error is inconclusive.
-    static func defaultProbe() -> FullDiskAccessProbeOutcome {
+    nonisolated static func defaultProbe() -> FullDiskAccessProbeOutcome {
         do {
             _ = try FileManager.default.contentsOfDirectory(atPath: probePath)
             return .readable
@@ -64,7 +64,7 @@ final class FullDiskAccessModel: ObservableObject {
 
     /// Error mapping, factored out so checks can pin it with synthetic errors: only a
     /// permission refusal is a refusal; every other error leaves the probe inconclusive.
-    static func outcome(forError error: NSError) -> FullDiskAccessProbeOutcome {
+    nonisolated static func outcome(forError error: NSError) -> FullDiskAccessProbeOutcome {
         if error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoPermissionError { return .refused }
         return .indeterminate
     }
