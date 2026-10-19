@@ -6,6 +6,8 @@ Spacelyzer has two audiences: people exploring disk space and people building or
 - [Install and permissions](guide/install.md)
 - [Visual tour](guide/tour.md)
 - [Space, filters and safe removal](guide/space-and-safety.md)
+- [FAQ](guide/faq.md)
+- [Troubleshooting](guide/troubleshooting.md)
 
 ## Build and understand it
 - [Development setup](development/README.md)
@@ -13,6 +15,7 @@ Spacelyzer has two audiences: people exploring disk space and people building or
 - [Engine CLI reference](development/cli.md)
 - [Scoped performance measurements](development/performance.md)
 - [Dependency policy](DEPENDENCIES.md)
+- [Contributing](development/contributing.md)
 - [Contributor and safety rules](../AGENTS.md)
 
 ## Plan and verify
