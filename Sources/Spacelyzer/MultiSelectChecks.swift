@@ -74,6 +74,25 @@ enum MultiSelectChecks {
         Check.expect("multi-select-clear-resets-set-and-focus",
                      m6.selectedSet.isEmpty && m6.selected == nil,
                      "set=\(m6.selectedSet) focus=\(String(describing: m6.selected))")
+
+        // 7. A focus set from outside the multi-selection (treemap click) replaces the set; one inside it keeps the set.
+        let m7 = model(rows: [1, 2, 3])
+        m7.selectOnly(1); m7.selectToggle(2)
+        m7.selected = 1
+        let keeps = m7.selectedSet == [1, 2]
+        m7.selected = 3
+        let replaced = m7.selectedSet == [3] && m7.selected == 3
+        // Range and toggle semantics are unchanged: a range keeps its slice, moving focus inside it keeps the slice, removing the focused member refocuses within the set.
+        let m8 = model(rows: [1, 2, 3, 4])
+        m8.selectOnly(1); m8.selectRange(to: 3)
+        let range = m8.selectedSet == [1, 2, 3]
+        m8.selected = 2
+        let rangeKept = m8.selectedSet == [1, 2, 3]
+        m8.selectToggle(2)
+        let toggled = m8.selectedSet == [1, 3] && m8.selected == 3
+        Check.expect("multi-select-focus-from-outside-set-replaces-set",
+                     keeps && replaced && range && rangeKept && toggled,
+                     "keeps=\(keeps) replaced=\(replaced) set=\(m7.selectedSet) range=\(range) rangeKept=\(rangeKept) toggled=\(toggled) m8=\(m8.selectedSet)")
     }
 }
 #endif
