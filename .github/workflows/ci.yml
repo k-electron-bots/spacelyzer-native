@@ -384,6 +384,7 @@ jobs:
           echo "RESET VERIFIED: no process, domain absent, plist absent, saved state absent" >> "$EV"
           cat "$EV"
       - name: Docs captures of a purpose-built sample tree (informational; real window-only captures, no mocks)
+        id: docs
         if: ${{ !inputs.compile_only && !inputs.perf && steps.reset.outcome == 'success' }}
         continue-on-error: true
         timeout-minutes: 8
@@ -431,6 +432,13 @@ jobs:
           cap "$PID" fda-banner
           pkill Spacelyzer; sleep 2
           ls -l dist/screenshot-docs-*.png || echo "no docs captures"
+          # The step above runs under set +e so one failed press does not lose the later captures; the outcome must still say whether
+          # every expected capture exists. Without this, 0 of 11 captures was a successful step and a green gate.
+          missing=""
+          for n in overview kinds largest review folders filtered-largest no-matches overview-dark welcome welcome-dark fda-banner; do
+            [ -s "dist/screenshot-docs-$n.png" ] || missing="$missing $n"
+          done
+          if [ -n "$missing" ]; then echo "::error title=docs-captures::missing docs captures:$missing"; exit 1; fi
       - uses: actions/upload-artifact@v4
         if: ${{ always() && !inputs.compile_only && !inputs.perf }}
         with:
@@ -527,5 +535,5 @@ jobs:
           pkill Spacelyzer || true
           hdiutil info | grep -q "/Volumes/Spacelyzer" && hdiutil detach "/Volumes/Spacelyzer ${{ steps.ver.outputs.version }}" -force || true
       - name: Fail the build if any required evidence failed or was lost (after artifacts and release are published)
-        if: ${{ always() && !inputs.compile_only && (steps.testbuild.outputs.optional_build == 'failed' || (inputs.perf && steps.perf.outcome != 'success') || (!inputs.perf && (steps.reset.outcome != 'success' || steps.asserts.outcome != 'success' || (inputs.perf_in_run && steps.perf.outcome != 'success') || (inputs.consolidated && (steps.ordering.outcome != 'success' || steps.rust.outcome != 'success' || steps.bulk.outcome != 'success' || steps.dmg.outcome != 'success'))))) }}
+        if: ${{ always() && !inputs.compile_only && (steps.testbuild.outputs.optional_build == 'failed' || (inputs.perf && steps.perf.outcome != 'success') || (!inputs.perf && (steps.reset.outcome != 'success' || steps.docs.outcome != 'success' || steps.asserts.outcome != 'success' || (inputs.perf_in_run && steps.perf.outcome != 'success') || (inputs.consolidated && (steps.ordering.outcome != 'success' || steps.rust.outcome != 'success' || steps.bulk.outcome != 'success' || steps.dmg.outcome != 'success'))))) }}
         run: exit 1
