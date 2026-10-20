@@ -10,6 +10,7 @@ exactly that closure). What this proves: model-level logic (selection, set/focus
 AX, layout, pixels, or anything on macOS.
 
     scripts/linux-model-harness/build.sh <out> [sources-dir]   # build
-    scripts/linux-model-harness/compare.sh <base-ref>          # run HEAD's checks against <base-ref>'s AppModel: shows old-fail / new-pass
+    scripts/linux-model-harness/compare.sh baseline                          # all declared checks pass on HEAD (NOT fix proof)
+    scripts/linux-model-harness/compare.sh regress <base-ref> <check>      # <check> fails on base AppModel, passes on HEAD, nothing else differs
 
 Needs a Swift 6.0.3 Linux toolchain on PATH (SWIFT_BIN=/path/to/usr/bin) and clang.
