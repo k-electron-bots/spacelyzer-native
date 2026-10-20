@@ -349,6 +349,19 @@ jobs:
             dist/footer-ax-status.txt
             dist/ordering/
             dist/perf/
+      - name: Reset persisted app state before the docs captures (the demo above ran the same bundle id; docs need a first-launch state)
+        if: ${{ !inputs.compile_only && !inputs.perf }}
+        continue-on-error: true
+        timeout-minutes: 2
+        run: |
+          pkill Spacelyzer || true
+          echo "defaults before reset (evidence of any state the demo left behind):"
+          defaults read com.k-electron.spacelyzer-native 2>&1 | head -20 || true
+          defaults delete com.k-electron.spacelyzer-native 2>/dev/null || true
+          rm -rf "$HOME/Library/Saved Application State/com.k-electron.spacelyzer-native.savedState"
+          killall cfprefsd 2>/dev/null || true
+          sleep 1
+          echo "defaults after reset:"; defaults read com.k-electron.spacelyzer-native 2>&1 | head -5 || true
       - name: Docs captures of a purpose-built sample tree (informational; real window-only captures, no mocks)
         if: ${{ !inputs.compile_only && !inputs.perf }}
         continue-on-error: true
@@ -485,6 +498,12 @@ jobs:
           V=v${{ steps.ver.outputs.version }}
           gh release create "$V" dist/*.dmg dist/*.sha256 dist/screenshot*.png dist/ui-assertions.txt dist/main-thread-sample.txt --title "Spacelyzer $V" --prerelease \
             --notes "UI assertions: ${{ steps.asserts.outcome }}. Self-signed development build (not notarized). Not Apple-verified: after the first blocked open, use System Settings > Privacy & Security > Open Anyway. Screenshots attached are from the CI runner, not a real Mac. Built from ${{ github.sha }}."
+      - name: Stop any app left running (also after a step timeout)
+        if: ${{ always() && !inputs.compile_only }}
+        continue-on-error: true
+        run: |
+          pkill Spacelyzer || true
+          hdiutil info | grep -q "/Volumes/Spacelyzer" && hdiutil detach "/Volumes/Spacelyzer ${{ steps.ver.outputs.version }}" -force || true
       - name: Fail the build if any required evidence failed or was lost (after artifacts and release are published)
         if: ${{ always() && !inputs.compile_only && (steps.testbuild.outputs.optional_build == 'failed' || (inputs.perf && steps.perf.outcome != 'success') || (!inputs.perf && (steps.asserts.outcome != 'success' || (inputs.perf_in_run && steps.perf.outcome != 'success') || (inputs.consolidated && (steps.ordering.outcome != 'success' || steps.rust.outcome != 'success' || steps.bulk.outcome != 'success' || steps.dmg.outcome != 'success'))))) }}
         run: exit 1
