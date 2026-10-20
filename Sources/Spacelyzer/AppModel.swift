@@ -1137,6 +1137,8 @@ final class AppModel {
         case .ok:
             // Clear every id-keyed piece of state inside the removed subtree in the same turn as the new numbers.
             if let s = selected, tree.isInside(s, subtreeOf: id) { selected = nil }
+            // The multi-selection is id-keyed state too: a removed node must not linger in it (it would count as selected).
+            if selectedSet.contains(where: { tree.isInside($0, subtreeOf: id) }) { selectedSet = selectedSet.filter { !tree.isInside($0, subtreeOf: id) } }
             expanded = expanded.filter { !tree.isInside($0, subtreeOf: id) }
             if tree.isInside(displayedRoot, subtreeOf: id) { displayedRoot = tree.info(id).parent ?? 0 }
             revision += 1
