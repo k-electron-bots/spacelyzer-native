@@ -1190,7 +1190,37 @@ struct SpacelyzerApp: App {
             }
         }
         Perf.log("demo-ax press: no authored action (windows=\(windows.count) buttonsSeen=\(buttonsSeen))")
+        logFooterCandidates()
         return false
+    }
+    /// CI-only diagnostic, no check depends on it: when the footer lookup fails, log what the in-process
+    /// accessibility tree actually vends for any element whose title, description, value or help mentions
+    /// the footer summary, with its role and the raw action names, so the next run records the evidence.
+    private static func logFooterCandidates() {
+        let appElement = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appElement, "AXWindows" as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement] else { Perf.log("demo-ax footer-candidates: AXWindows unavailable"); return }
+        var logged = 0
+        var visitedTotal = 0
+        for windowElement in windows {
+            var stack: [AXUIElement] = [windowElement]
+            var visited = 0
+            while let element = stack.popLast(), visited < 2048 {
+                visited += 1; visitedTotal += 1
+                let title = axString(element, "AXTitle"), desc = axString(element, "AXDescription")
+                let value = axString(element, "AXValue"), help = axString(element, "AXHelp")
+                let hit = [title, desc, value, help].contains { $0.contains("Scan summary") || $0.contains("not readable") || $0.contains("unreadable") }
+                if hit && logged < 8 {
+                    logged += 1
+                    Perf.log("demo-ax footer-candidate role=\(axString(element, "AXRole")) title=\(title.prefix(40)) desc=\(desc.prefix(40)) value=\(value.prefix(40).replacingOccurrences(of: "\n", with: "|")) actions=\(axActions(element).map { $0.replacingOccurrences(of: "\n", with: "|") })")
+                }
+                var childrenRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(element, "AXChildren" as CFString, &childrenRef) == .success,
+                   let children = childrenRef as? [AXUIElement] { stack.append(contentsOf: children) }
+            }
+        }
+        Perf.log("demo-ax footer-candidates: logged=\(logged) visited=\(visitedTotal) windows=\(windows.count)")
     }
     /// CI-only: the action names of the combined footer element (matched by its authored action or its
     /// "Scan summary" title, any role), for the authored-name regression check. Empty when it is gone.
@@ -1211,6 +1241,7 @@ struct SpacelyzerApp: App {
                    let children = childrenRef as? [AXUIElement] { stack.append(contentsOf: children) }
             }
         }
+        logFooterCandidates()
         return []
     }
 }
