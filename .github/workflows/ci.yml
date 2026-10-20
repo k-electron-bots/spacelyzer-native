@@ -110,6 +110,7 @@ jobs:
         run: ./scripts/package-dmg.sh "${{ steps.ver.outputs.version }}" "${{ steps.sign.outputs.hash }}"
       - name: Capture DMG install window and app icon (evidence only; artifacts, no publish)
         if: ${{ !inputs.compile_only }}
+        continue-on-error: true
         run: |
           D="$(ls dist/*.dmg | head -1)"
           MOUNT="/Volumes/Spacelyzer ${{ steps.ver.outputs.version }}"
@@ -132,7 +133,7 @@ jobs:
             tell front window
               set current view to icon view
               set toolbar visible to false
-              set icon size of icon view options to 128
+              set icon size of icon view options of it to 128
             end tell
           end tell
           FINDEREOF
