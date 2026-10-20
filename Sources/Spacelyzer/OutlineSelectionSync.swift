@@ -16,4 +16,13 @@ enum OutlineSelectionSync {
         if let f = previousFocus, current.contains(f) { return (current, f) }
         return (current, current.last)
     }
+
+    /// Model -> table: the outline rows the table must select. Set members plus the focus row (the focus may sit outside the set
+    /// during transitions). `rowIndex` maps node id to outline row. Pure so the Linux probe executes the same code the mounted table runs.
+    static func syncTarget(set: [UInt32], focusRow: Int?, rowIndex: [UInt32: Int]) -> IndexSet {
+        var target = IndexSet()
+        for member in set { if let i = rowIndex[member] { target.insert(i) } }
+        if let focusRow { target.insert(focusRow) }
+        return target
+    }
 }

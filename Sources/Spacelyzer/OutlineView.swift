@@ -513,9 +513,7 @@ private struct OutlineTable: NSViewRepresentable {
             syncCalls += 1; lastSync = "node=\(String(describing: node)) idx=\(String(describing: idx)) selectedRowBefore=\(t.selectedRow)"
             defer { lastSync += " after=\(t.selectedRow)"; publishDiag() }
             #endif
-            var target = IndexSet()
-            for member in model.selectedSet { if let i = model.outlineIndex[member] { target.insert(i) } }
-            if let idx { target.insert(idx) }   // focus may sit outside the set during transitions
+            let target = OutlineSelectionSync.syncTarget(set: model.selectedSet, focusRow: idx, rowIndex: model.outlineIndex)   // focus may sit outside the set during transitions
             if !target.isEmpty {
                 let focusRowChanged = idx != nil && t.selectedRow != idx
                 if t.selectedRowIndexes != target {

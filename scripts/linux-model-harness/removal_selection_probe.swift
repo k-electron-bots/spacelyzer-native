@@ -73,5 +73,27 @@ import CSpacelyzer
             }
         }
         Check.expect("probe-removal-sequences-with-selection-churn-leave-no-stale-ids", bad.isEmpty, bad)
+        // 3. The mounted-outline sequence that failed on Mac, model half only: focus -> table-driven selection of another row (reconcile, as
+        //    tableViewSelectionDidChange does) -> focus back on the first row from outside the table. The table target that syncSelection builds
+        //    (OutlineSelectionSync.syncTarget, the same function OutlineView.syncSelection calls) must be exactly the focus row. Whether AppKit then honours selectRowIndexes is NOT shown here.
+        do {
+            let (r4, d4) = fixture(); defer { try? FileManager.default.removeItem(at: d4) }
+            guard let t4 = await ScanSession(root: r4, excludes: [])?.run(progress: { _ in }) else { Check.expect("probe-mounted-sequence-scan", false, ""); return }
+            let m = await primed(model(t4))
+            let ids4 = ["big","mid","small","tiny"].compactMap { t4.find(path: "\(r4)/\($0).bin") }
+            let big = ids4[0], mid = ids4[1]
+            m.selected = big
+            let midRow = m.outlineIndex[mid] ?? -1
+            let rows: [UInt32] = [midRow].compactMap { $0 >= 0 && $0 < m.outlineRows.count ? m.outlineRows[$0].node : nil }
+            let r = OutlineSelectionSync.reconcile(previous: m.selectedSet, current: rows, previousFocus: m.selected)
+            if m.selectedSet != r.set { m.selectedSet = r.set }
+            if m.selected != r.focus { m.selected = r.focus }
+            let afterTable = m.selected == mid && m.selectedSet == [mid]
+            m.selected = big
+            let target = OutlineSelectionSync.syncTarget(set: m.selectedSet, focusRow: m.outlineIndex[big], rowIndex: m.outlineIndex)
+            Check.expect("probe-mounted-sequence-sync-target-is-focus-row-only",
+                         afterTable && m.selectedSet == [big] && target == IndexSet(integer: m.outlineIndex[big] ?? -1),
+                         "afterTable=\(afterTable) set=\(m.selectedSet) focus=\(String(describing: m.selected)) target=\(Array(target)) bigRow=\(String(describing: m.outlineIndex[big]))")
+        }
     }
 }
