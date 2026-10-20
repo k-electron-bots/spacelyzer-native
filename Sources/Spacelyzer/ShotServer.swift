@@ -47,7 +47,8 @@ import AppKit
         // Note first, then the PNG atomically (temp file, then rename), so a waiter that sees the PNG always sees a complete file and its note.
         try? text.write(toFile: note, atomically: true, encoding: .utf8)
         try? data.write(to: URL(fileURLWithPath: png + ".tmp"))
-        _ = try? FileManager.default.replaceItemAt(URL(fileURLWithPath: png), withItemAt: URL(fileURLWithPath: png + ".tmp"))
+        try? FileManager.default.removeItem(atPath: png)
+        try? FileManager.default.moveItem(atPath: png + ".tmp", toPath: png)   // rename on one volume is atomic
     }
 }
 #endif
