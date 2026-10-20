@@ -42,10 +42,12 @@ import AppKit
         guard let data = rep.representation(using: .png, properties: [:]) else {
             try? "FAILED: PNG encoding\n".write(toFile: note, atomically: true, encoding: .utf8); return
         }
-        try? data.write(to: URL(fileURLWithPath: png))
-        let text = "render-derived 2x via NSView.cacheDisplay of the window content view (no title bar, no shadow); not a native Retina capture\n"
+        let text = "render-derived 2x via NSView.cacheDisplay of the window content view, from the TEST-ONLY build (SPZ_CI_TESTS), not the shipped app; no title bar, no shadow; not a native Retina capture\n"
             + "view_points=\(Int(size.width))x\(Int(size.height)) bitmap_pixels=\(rep.pixelsWide)x\(rep.pixelsHigh) window_backing_scale=\(window.backingScaleFactor) appearance=\(view.effectiveAppearance.name.rawValue)\n"
+        // Note first, then the PNG atomically (temp file, then rename), so a waiter that sees the PNG always sees a complete file and its note.
         try? text.write(toFile: note, atomically: true, encoding: .utf8)
+        try? data.write(to: URL(fileURLWithPath: png + ".tmp"))
+        _ = try? FileManager.default.replaceItemAt(URL(fileURLWithPath: png), withItemAt: URL(fileURLWithPath: png + ".tmp"))
     }
 }
 #endif

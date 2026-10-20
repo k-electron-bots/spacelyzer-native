@@ -5,7 +5,7 @@
 # Usage: docs-capture-2x.sh <path to test-only Spacelyzer.app> <sample dir>
 set +e
 APP="${1:?app}"; SAMPLE="${2:?sample dir}"; HELPER=/tmp/spz-docs-capture
-SHOTS=$(mktemp -d); mkdir -p dist
+SHOTS=$(mktemp -d); trap 'rm -rf "$SHOTS"' EXIT; mkdir -p dist
 [ -x "$HELPER" ] || swiftc scripts/docs-capture.swift -o "$HELPER"
 launch() { pkill Spacelyzer; sleep 2; open -n "$APP" --env SPZ_WINDOW_SIZE=960x600 --env SPZ_SHOT_DIR="$SHOTS" "$@"; sleep 6
   PID=$(pgrep -n -f "$APP/Contents/MacOS/Spacelyzer"); echo "launched pid=$PID"; }
