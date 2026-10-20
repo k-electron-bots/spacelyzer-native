@@ -19,6 +19,7 @@ struct SpacelyzerApp: App {
                     let env = ProcessInfo.processInfo.environment
                     #if SPZ_CI_TESTS   // optional measurement mode; test builds only
                     if env["SPZ_CHECKS"] == "perf" { await PerfDriver.run(model: model, env: env) }   // never returns
+                    if let shotDir = env["SPZ_SHOT_DIR"], shotDir.hasPrefix("/") { ShotServer.start(dir: shotDir) }
                     #endif
                     if let path = env["SPZ_AUTOSCAN"] { model.scan(path) }
                     // CI capture hooks (inert without the envs): a fixed window size and a forced
