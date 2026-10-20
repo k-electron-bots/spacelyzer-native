@@ -230,6 +230,7 @@ private final class OutlineCell: NSTableCellView {
     /// Direct item count for folders; hidden when the sidebar is too narrow to keep names readable.
     let count = NSTextField(labelWithString: "")
     fileprivate let bar = ShareBarView()
+    fileprivate var barSuppressed = false
     var depth = 0
     var hasChildren = false
     var onToggle: (() -> Void)?
@@ -293,7 +294,7 @@ private final class OutlineCell: NSTableCellView {
         chevron.isHidden = !hasChildren
         icon.frame = NSRect(x: x0 + 18, y: (h - 16) / 2, width: 16, height: 16)
         let showBar = w >= 320
-        bar.isHidden = !showBar
+        bar.isHidden = barSuppressed || !showBar   // layout runs after configure and must not re-show a bar the poison state hid
         bar.frame = NSRect(x: w - 8 - 44, y: (h - 6) / 2, width: 44, height: 6)
         let sizeW: CGFloat = 70
         let sizeRight = showBar ? bar.frame.minX : w - 8
@@ -464,6 +465,7 @@ private struct OutlineTable: NSViewRepresentable {
                                                                    : "\(visibleKids.formatted()) of \(info.childCount.formatted()) item\(info.childCount == 1 ? "" : "s")"
             cell.count.stringValue = (!poisoned && isDir) ? countText : ""
             cell.bar.fraction = poisoned ? 0 : Double(shown) / Double(max(1, total))
+            cell.barSuppressed = poisoned
             cell.bar.isHidden = poisoned
             let node = r.node
             cell.onToggle = { [weak self] in self?.model.toggle(node) }
