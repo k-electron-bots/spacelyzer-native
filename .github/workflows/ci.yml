@@ -143,6 +143,53 @@ jobs:
       - name: Build TEST-ONLY app with SPZ_CI_TESTS (never packaged or released; the DMG above is built without the flag)
         if: ${{ !inputs.compile_only }}
         run: bash ./scripts/build-test-app.sh dist-test "${{ steps.sign.outputs.hash }}"
+      - name: Docs captures of a purpose-built sample tree (informational; real window-only captures, no mocks)
+        if: ${{ !inputs.compile_only }}
+        continue-on-error: true
+        run: |
+          # Real app, real scan of a friendly sample tree, window-only captures (screencapture -l, no shadow),
+          # driven by ordinary accessibility presses. Output names start with screenshot-docs- so the
+          # artifact upload below includes them. The runner display is small, so the window is the minimum
+          # size the app allows (960x600); captures are at the display's native scale.
+          set +e
+          bash scripts/make-docs-fixture.sh "$HOME/Sample"
+          swiftc scripts/docs-capture.swift -o /tmp/spz-docs-capture
+          cap() {   # cap <pid> <name>
+            wid=$(/tmp/spz-docs-capture "$1" windowid) || { echo "no window for $2"; return 1; }
+            screencapture -x -o -l "$wid" "dist/screenshot-docs-$2.png" || echo "capture failed: $2"
+          }
+          launch() {   # launch <extra open args...>; sets PID
+            pkill Spacelyzer; sleep 2
+            open -n dist/Spacelyzer.app --env SPZ_WINDOW_SIZE=960x600 "$@"
+            sleep 6
+            PID=$(pgrep -n -f "dist/Spacelyzer.app/Contents/MacOS/Spacelyzer")
+            echo "launched pid=$PID"
+          }
+          launch --env SPZ_AUTOSCAN="$HOME/Sample"
+          sleep 12
+          cap "$PID" overview
+          /tmp/spz-docs-capture "$PID" press Kinds && sleep 2 && cap "$PID" kinds
+          /tmp/spz-docs-capture "$PID" press Largest && sleep 2 && cap "$PID" largest
+          /tmp/spz-docs-capture "$PID" select 0 && sleep 1 && /tmp/spz-docs-capture "$PID" press "Check on disk" && sleep 3 && cap "$PID" review
+          /tmp/spz-docs-capture "$PID" escape; sleep 1
+          /tmp/spz-docs-capture "$PID" press Folders && sleep 2 && cap "$PID" folders
+          /tmp/spz-docs-capture "$PID" press Largest && sleep 1
+          /tmp/spz-docs-capture "$PID" type pdf && sleep 2 && cap "$PID" filtered-largest
+          /tmp/spz-docs-capture "$PID" type zzz && sleep 2 && cap "$PID" no-matches
+          launch --env SPZ_AUTOSCAN="$HOME/Sample" --env SPZ_DEMO_APPEARANCE=dark
+          sleep 12
+          cap "$PID" overview-dark
+          launch
+          sleep 2
+          cap "$PID" welcome
+          launch --env SPZ_DEMO_APPEARANCE=dark
+          sleep 2
+          cap "$PID" welcome-dark
+          launch --env SPZ_DEMO_FDA_REFUSED=1 --env SPZ_AUTOSCAN="$HOME/Sample"
+          sleep 12
+          cap "$PID" fda-banner
+          pkill Spacelyzer; sleep 2
+          ls -l dist/screenshot-docs-*.png || echo "no docs captures"
       - name: Launch app and screenshot (informational)
         if: ${{ !inputs.compile_only }}
         continue-on-error: true
