@@ -13,6 +13,11 @@ on:
         required: false
         type: boolean
         default: false
+      consolidated:
+        description: 'Consolidated run: also runs the ordering driver (model, engine-suite and mounted-view checks, one launch) and skips only the informational scan benchmark on macOS. All other steps and gates are unchanged.'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -81,7 +86,7 @@ jobs:
           done
           ./target/release/spz verify /Applications
       - name: Scan benchmark (informational, shared runner)
-        if: ${{ !inputs.compile_only }}
+        if: ${{ !inputs.compile_only && !inputs.consolidated }}
         run: ./target/release/spz bench /Applications 3
       - name: Build universal engine
         run: ./scripts/build-engine.sh
@@ -190,6 +195,31 @@ jobs:
           cap "$PID" fda-banner
           pkill Spacelyzer; sleep 2
           ls -l dist/screenshot-docs-*.png || echo "no docs captures"
+      - name: Ordering driver, one launch (consolidated option only; fails the build if any required check is missing, duplicated or failing)
+        if: ${{ !inputs.compile_only && inputs.consolidated }}
+        id: ordering
+        continue-on-error: true
+        run: |
+          set +e
+          mkdir -p dist/ordering
+          N=$(python3 scripts/check-ordering-manifest.py | sed -n 's/^OK \([0-9]*\) required == \([0-9]*\) declared$/\1/p')
+          [ -n "$N" ] || { echo "::error title=ordering::could not read the required-check count"; exit 1; }
+          W=$(mktemp -d); RES="$W/res"; FIX="$W/fix"; mkdir -p "$RES" "$FIX/d"
+          head -c 200000 /dev/zero > "$FIX/a.bin"; head -c 100000 /dev/zero > "$FIX/d/b.bin"
+          APP="$W/app/Spacelyzer.app"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp dist-test/Spacelyzer.app/Contents/MacOS/Spacelyzer "$APP/Contents/MacOS/Spacelyzer"
+          sed -e "s/__VERSION__/0.0.0-ordering/g" -e "s|com.k-electron.spacelyzer-native|com.k-electron.spacelyzer-native.ordering.$$|" Resources/Info.plist > "$APP/Contents/Info.plist"
+          codesign --force --deep --sign - --entitlements Resources/Spacelyzer.entitlements "$APP" && codesign --verify --deep --strict "$APP" || { echo "::error title=ordering::codesign failed"; exit 1; }
+          pkill Spacelyzer; sleep 2
+          open -n "$APP" --stdout "$W/stdout.log" --stderr "$W/stderr.log" \
+            --env SPZ_AUTOSCAN="$FIX" --env SPZ_DEMO=1 --env SPZ_CHECKS=ordering --env SPZ_RESULT_DIR="$RES"
+          for _ in $(seq 1 330); do [ -s "$RES/result.txt" ] && break; sleep 1; done
+          pkill -f "$APP/Contents/MacOS/Spacelyzer"; sleep 1; pkill -9 -f "$APP/Contents/MacOS/Spacelyzer"
+          cp "$RES"/* dist/ordering/ 2>/dev/null; cp "$W/stderr.log" dist/ordering/stderr.log 2>/dev/null
+          head -c 20000 "$RES/result.txt" 2>/dev/null
+          [ "$(head -1 "$RES/result.txt" 2>/dev/null)" = "PASS $N required checks, each exactly once" ] || { echo "::error title=ordering::$(head -3 "$RES/result.txt" 2>/dev/null | tr '\n' ';')"; exit 1; }
+          ! grep -q '^FAIL' "$RES/assertions.txt" || exit 1
+          echo "::notice title=ordering::PASS $N required checks, each exactly once"
       - name: Launch app and screenshot (informational)
         if: ${{ !inputs.compile_only }}
         continue-on-error: true
@@ -345,6 +375,7 @@ jobs:
             dist/footer-ax-expected.txt
             dist/footer-ax-result.txt
             dist/footer-ax-status.txt
+            dist/ordering/
       - name: Publish release (epic tags only)
         if: startsWith(github.ref, 'refs/tags/epic-')
         env:
@@ -354,5 +385,5 @@ jobs:
           gh release create "$V" dist/*.dmg dist/*.sha256 dist/screenshot*.png dist/ui-assertions.txt dist/main-thread-sample.txt --title "Spacelyzer $V" --prerelease \
             --notes "UI assertions: ${{ steps.asserts.outcome }}. Self-signed development build (not notarized). Not Apple-verified: after the first blocked open, use System Settings > Privacy & Security > Open Anyway. Screenshots attached are from the CI runner, not a real Mac. Built from ${{ github.sha }}."
       - name: Fail the build if UI assertions failed (after artifacts and release are published)
-        if: ${{ always() && !inputs.compile_only && steps.asserts.outcome != 'success' }}
+        if: ${{ always() && !inputs.compile_only && (steps.asserts.outcome != 'success' || (inputs.consolidated && steps.ordering.outcome != 'success')) }}
         run: exit 1
