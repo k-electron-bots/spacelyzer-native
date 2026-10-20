@@ -53,6 +53,14 @@ pub(crate) struct RawEntry {
     pub dev: u64,
     pub ino: u64,
     pub mtime: i64,
+    /// The kernel reported this directory as the root of a mounted filesystem (macOS `ATTR_DIR_MOUNTSTATUS`). Only the bulk backend sets it: `getattrlistbulk` can report the
+    /// attributes of the filesystem a mount point covers, so a device compare alone may not see the boundary. The portable backend leaves it false (its `lstat` device is the mount's own).
+    pub mount_point: bool,
+}
+
+/// A directory entry is a separate volume when its device differs from the scan root's, or when the kernel says it is a mount point. Pure so it is unit tested everywhere.
+pub(crate) fn is_separate_volume(dev: u64, mount_point: bool, root_dev: u64, cross_devices: bool) -> bool {
+    !cross_devices && (dev != root_dev || mount_point)
 }
 
 struct Ent {
@@ -243,7 +251,7 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
         match r.kind {
             Kind::Directory => {
                 let path = dir.join(&*r.name);
-                if !ctx.opts.cross_devices && r.dev != ctx.root_dev {
+                if is_separate_volume(r.dev, r.mount_point, ctx.root_dev, ctx.opts.cross_devices) {
                     ctx.skipped.lock().unwrap().push(Skipped::new(&path, SkipReason::SeparateVolume));
                     continue;
                 }
@@ -372,7 +380,7 @@ fn failed_entry(name: std::ffi::OsString, err: &std::io::Error) -> RawEntry {
         name_lossy: name.to_str().is_none(),
         name: name.to_string_lossy().into_owned().into_boxed_str(),
         failed: if err.kind() == std::io::ErrorKind::PermissionDenied { 1 } else { 2 },
-        kind: Kind::File, alloc: 0, nlink: 1, dev: 0, ino: 0, mtime: 0,
+        kind: Kind::File, alloc: 0, nlink: 1, dev: 0, ino: 0, mtime: 0, mount_point: false,
     }
 }
 
@@ -408,6 +416,7 @@ pub(crate) fn enumerate_portable(dir: &Path) -> std::io::Result<Vec<RawEntry>> {
             dev: md.dev(),
             ino: md.ino(),
             mtime: md.mtime(),
+            mount_point: false,
         });
     }
     Ok(out)
@@ -460,5 +469,26 @@ mod dev_intern_tests {
         let mut sorted = table.clone(); sorted.sort_unstable(); sorted.dedup();
         assert_eq!(sorted.len(), table.len(), "duplicate device in the shared table");
         for r in &results { for &(d, ix) in r { assert_eq!(table[ix as usize], d, "an index must always map back to its own device"); } }
+    }
+}
+
+#[cfg(test)]
+mod volume_boundary_tests {
+    use super::is_separate_volume;
+
+    #[test]
+    fn a_mount_point_is_a_separate_volume_even_when_its_reported_device_equals_the_roots() {
+        // The old rule was `dev != root_dev`; it cannot see this case, which is the suspected RAM-disk miss.
+        let old_rule = |dev: u64, root: u64| dev != root;
+        assert!(!old_rule(5, 5));
+        assert!(is_separate_volume(5, true, 5, false));
+    }
+
+    #[test]
+    fn device_difference_still_separates_and_cross_devices_still_overrides_both() {
+        assert!(is_separate_volume(6, false, 5, false));
+        assert!(!is_separate_volume(5, false, 5, false));
+        assert!(!is_separate_volume(6, false, 5, true));
+        assert!(!is_separate_volume(5, true, 5, true));
     }
 }
