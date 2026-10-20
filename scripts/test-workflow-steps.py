@@ -27,6 +27,13 @@ def check(name, ok, detail=''):
     if not ok: fails.append(name)
 
 STUBS = {
+ 'rustup': 'exit 0', 'cargo': '''# stands in for `cargo test`: prints per-binary summaries per $STUB_CARGO (pass | skips | fail | abort)
+case "$STUB_CARGO" in
+  pass) echo 'test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'; echo 'test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'; exit 0;;
+  skips) echo 'test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'; echo 'test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'; printf 'nonutf8_a\\nnonutf8_b\\n' >> "$SPZ_SKIP_MANIFEST"; exit 0;;
+  fail) echo 'test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'; echo "thread 'x' panicked at engine/tests/engine.rs:1:1"; echo 'test result: FAILED. 19 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out'; exit 101;;
+  abort) echo 'error: could not compile'; exit 101;;
+esac''',
  'pkill': 'exit 0', 'pgrep': '[ "$STUB_PGREP" = none ] && exit 1; echo 4242', 'open': '''
 # open -n APP --stdout F --stderr F --env K=V ... : emulate the ordering driver by writing result files per $STUB_ORDERING
 # SPZ_DEMO=1 (the scripted demo launch): emulate the app's ready markers, finished marker and assertion file per $STUB_DEMO (full | nofinish | stall:N | none)
@@ -238,7 +245,38 @@ def demo_cases():
             if name.startswith('all steps signalled'): check(f'demo [{opts}] missing finish is recorded', timing is not None and 'DEMO FINISH TIMEOUT' in timing, repr(timing))
             shutil.rmtree(w)
 
-asserts_cases(); ordering_cases(); gate_cases(); perf_cases(); demo_cases()
+def rust_cases():
+    doc = load(CI); body = step(doc, 'macos', 'rust')['run']
+    for opts in ('-e', '-eo pipefail'):
+        for name, env, want_rc0, want_in in [('all pass', {'STUB_CARGO': 'pass'}, True, ['raw passed=51 failed=0', 'exercised passes=51', 'cargo exit=0']),
+                                             ('passes with 2 platform skips', {'STUB_CARGO': 'skips'}, True, ['raw passed=51', 'NOT EXERCISED (platform skips, counted as passed by cargo)=2', 'exercised passes=49', 'nonutf8_a']),
+                                             ('one test fails', {'STUB_CARGO': 'fail'}, False, ['cargo exit=101', 'APPROXIMATE', '::error::']),
+                                             ('cargo cannot compile', {'STUB_CARGO': 'abort'}, False, ['cargo exit=101', 'raw passed=0'])]:
+            w = workdir(); b = body.replace('/tmp/cargotest.log', w + '/tmp/cargotest.log')
+            rc, out = run_step(b, w, opts, dict(env))
+            check(f'rust step [{opts}] {name}: {"exit 0" if want_rc0 else "fails"}', (rc == 0) == want_rc0, f'rc={rc} {out[-300:]}')
+            check(f'rust step [{opts}] {name}: accounting lines {want_in[:2]}', all(x in out for x in want_in), out[-500:])
+            shutil.rmtree(w)
+
+def testbuild_cases():
+    doc = load(CI); body = step(doc, 'macos', 'testbuild')['run']
+    def run(opts, inputs, env):
+        w = workdir(); open(w + '/scripts/build-test-app.sh', 'w').write('#!/bin/bash\n[ -n "$SPZ_TEST_EXTRA_DEFINES" ] && [ "$STUB_BUILD_OPT" = fail ] && exit 1\n[ -z "$SPZ_TEST_EXTRA_DEFINES" ] && [ "$STUB_BUILD_CORE" = fail ] && exit 1\nexit 0\n')
+        b = body.replace('${{ steps.sign.outputs.hash }}', 'HASH')
+        for k, v in {**dict(perf='false', perf_in_run='false', docs_2x='false'), **inputs}.items(): b = b.replace('${{ inputs.%s }}' % k, v)
+        out_file = w + '/gh_output'; open(out_file, 'w').write('')
+        rc, out = run_step(b, w, opts, dict(env, GITHUB_OUTPUT=out_file))
+        o = open(out_file).read(); shutil.rmtree(w); return rc, out, o
+    for opts in ('-e', '-eo pipefail'):
+        rc, out, o = run(opts, {}, {}); check(f'testbuild [{opts}] default build ok: exit 0, no optional_build output', rc == 0 and 'optional_build' not in o, f'{rc} {o}')
+        rc, out, o = run(opts, {}, {'STUB_BUILD_CORE': 'fail'}); check(f'testbuild [{opts}] core build fails: step fails', rc != 0, f'{rc} {out[-200:]}')
+        rc, out, o = run(opts, {'perf_in_run': 'true'}, {}); check(f'testbuild [{opts}] perf_in_run, optional ok: optional_build=ok, exit 0', rc == 0 and 'optional_build=ok' in o, f'{rc} {o}')
+        rc, out, o = run(opts, {'perf_in_run': 'true'}, {'STUB_BUILD_OPT': 'fail'}); check(f'testbuild [{opts}] perf_in_run, optional fails to compile: core rebuilt, exit 0, optional_build=failed', rc == 0 and 'optional_build=failed' in o and 'Rebuilding the core' in out, f'{rc} {o} {out[-200:]}')
+        rc, out, o = run(opts, {'perf_in_run': 'true'}, {'STUB_BUILD_OPT': 'fail', 'STUB_BUILD_CORE': 'fail'}); check(f'testbuild [{opts}] optional AND core fail: step fails', rc != 0, f'{rc}')
+        rc, out, o = run(opts, {'perf': 'true'}, {'STUB_BUILD_OPT': 'fail'}); check(f'testbuild [{opts}] perf-exclusive, optional fails: exit 1 with optional_build=failed', rc != 0 and 'optional_build=failed' in o, f'{rc} {o}')
+        rc, out, o = run(opts, {'docs_2x': 'true'}, {'STUB_BUILD_OPT': 'fail'}); check(f'testbuild [{opts}] docs_2x optional fails: core rebuilt, optional_build=failed', rc == 0 and 'optional_build=failed' in o, f'{rc} {o}')
+
+asserts_cases(); ordering_cases(); gate_cases(); perf_cases(); demo_cases(); rust_cases(); testbuild_cases()
 docs_cases(CI, 'head', True)
 if base_ci: docs_cases(base_ci, 'base', False)
 timing()
