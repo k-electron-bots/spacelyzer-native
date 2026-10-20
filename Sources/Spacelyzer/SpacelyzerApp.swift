@@ -17,8 +17,10 @@ struct SpacelyzerApp: App {
                 .task {
                     // CI uses this to launch with a scan already running and take a screenshot.
                     let env = ProcessInfo.processInfo.environment
-                    #if SPZ_CI_TESTS   // optional measurement mode; test builds only
+                    #if SPZ_CI_TESTS && SPZ_CI_PERF   // optional measurement mode; compiled only when the perf flag is passed to a test build
                     if env["SPZ_CHECKS"] == "perf" { await PerfDriver.run(model: model, env: env) }   // never returns
+                    #endif
+                    #if SPZ_CI_TESTS && SPZ_CI_SHOTS   // experimental render-derived 2x capture server; compiled only when the shots flag is passed to a test build
                     if let shotDir = env["SPZ_SHOT_DIR"], shotDir.hasPrefix("/") { ShotServer.start(dir: shotDir) }
                     #endif
                     if let path = env["SPZ_AUTOSCAN"] { model.scan(path) }
