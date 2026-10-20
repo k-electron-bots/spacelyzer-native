@@ -28,6 +28,11 @@ on:
         required: false
         type: string
         default: '/Applications'
+      docs_2x:
+        description: 'Experimental: after the real 1x docs captures (unchanged), also write render-derived 2x PNGs from the TEST-ONLY app (NSView re-render, not a native Retina capture). Default off.'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -250,6 +255,13 @@ jobs:
           [ "$(head -1 "$RES/result.txt" 2>/dev/null)" = "PASS $N required checks, each exactly once" ] || { echo "::error title=ordering::$(head -3 "$RES/result.txt" 2>/dev/null | tr '\n' ';')"; exit 1; }
           ! grep -q '^FAIL' "$RES/assertions.txt" || exit 1
           echo "::notice title=ordering::PASS $N required checks, each exactly once"
+      - name: Docs captures, experimental render-derived 2x (option only; test-only app; real 1x captures above are unchanged)
+        if: ${{ !inputs.compile_only && !inputs.perf && inputs.docs_2x }}
+        continue-on-error: true
+        run: |
+          set +e
+          [ -d "$HOME/Sample" ] || bash scripts/make-docs-fixture.sh "$HOME/Sample"
+          bash scripts/docs-capture-2x.sh dist-test/Spacelyzer.app "$HOME/Sample"
       - name: Launch app and screenshot (informational)
         if: ${{ !inputs.compile_only && !inputs.perf }}
         continue-on-error: true
@@ -395,6 +407,7 @@ jobs:
             dist/*.dmg
             dist/*.sha256
             dist/screenshot*.png
+            dist/screenshot-docs-2x-render-*.txt
             dist/ui-assertions.txt
             dist/main-thread-sample.txt
             dist/crash-report.ips
