@@ -810,7 +810,7 @@ struct SpacelyzerApp: App {
                             let fullLabel = footerAX.entries.contains { $0.label.contains("Stopped early, partial accounting") && $0.label.contains("Filter:") && $0.label.contains("1 file") && $0.label.contains("1,234,567 locations not readable") && $0.label.contains("Scanned in") }
                             Check.expect("footer-native-accessibility-full-details", fullLabel, "native accessor from mixed AX/view discovery only; not external client reachability; truncated=\(footerAX.truncated); missing label inconclusive when truncated; not VoiceOver/client announcements or tooltip proof")
                             let footerActions = DemoAX.footerActionNames()
-                            Check.expect("footer-voiceover-action-name-clean", footerActions.count == 1 && footerActions.allSatisfy { DemoAX.authoredActionName($0) == "Show locations not scanned" }, "in-process AX only: the combined footer element vends exactly one custom action whose authored name is Show locations not scanned (AppKit wraps it as Name:|Target:|Selector: in this API; any other authored name or extra action fails). What VoiceOver speaks is NOT verified here and the user-facing cleanliness requirement stays open; actions=\(footerActions)")
+                            Check.expect("footer-voiceover-action-name-clean", AXActionName.isOnly(footerActions, authored: "Show locations not scanned"), "in-process AX only: the combined footer element vends exactly one custom action whose authored name is Show locations not scanned (AppKit wraps it as Name:|Target:|Selector: in this API; any other authored name or extra action fails). What VoiceOver speaks is NOT verified here and the user-facing cleanliness requirement stays open; actions=\(footerActions)")
                             mark(40)
                             footerWindow.close(); priorProductWindow?.makeKeyAndOrderFront(nil)
                             model.demoFooterUnreadable = nil; model.demoFooterPartial = nil
@@ -1160,17 +1160,6 @@ struct SpacelyzerApp: App {
         if let a = value as? NSAttributedString { return a.string }
         return ""
     }
-    /// The in-process AX API vends a custom action's name wrapped in AppKit's description of the action
-    /// ("Name:<authored>|Target:0x0|Selector:(null)", or newline separated); run 39451419467 recorded exactly that for the
-    /// footer. This returns the authored part so a check can compare the authored name itself: a wrapper around the
-    /// right name is accepted, a wrapper around any other name is not, and the vended string is what gets performed.
-    static func authoredActionName(_ vended: String) -> String {
-        guard vended.hasPrefix("Name:") else { return vended }
-        let rest = vended.dropFirst(5)
-        let end = rest.firstIndex(where: { $0 == "|" || $0 == "\n" }) ?? rest.endIndex
-        return String(rest[..<end])
-    }
-    static func vendedAction(_ actions: [String], authored: String) -> String? { actions.first { authoredActionName($0) == authored } }
     private static func axActions(_ element: AXUIElement) -> [String] {
         var names: CFArray?
         guard AXUIElementCopyActionNames(element, &names) == .success, let n = names as? [String] else { return [] }
@@ -1201,7 +1190,7 @@ struct SpacelyzerApp: App {
                     let text = ([axString(element, "AXTitle"), axString(element, "AXDescription"), axString(element, "AXLabel"), axString(element, "AXValue"), axString(element, "AXRoleDescription")] + actions).joined(separator: " ")
                     Perf.log("demo-ax button win=\(wTitle) text=\(text.prefix(80)) actions=\(actions)")
                 }
-                if let vended = vendedAction(actions, authored: "Show locations not scanned") {
+                if let vended = AXActionName.vended(in: actions, authored: "Show locations not scanned") {
                     let result = AXUIElementPerformAction(element, vended as CFString)
                     Perf.log("demo-ax press attempt name=Show locations not scanned result=\(result == .success)")
                     if result == .success { return true }
@@ -1257,7 +1246,7 @@ struct SpacelyzerApp: App {
             while let element = stack.popLast(), visited < 2048 {
                 visited += 1
                 let actions = axActions(element)
-                if vendedAction(actions, authored: "Show locations not scanned") != nil || axString(element, "AXTitle") == "Scan summary" { return actions }
+                if AXActionName.vended(in: actions, authored: "Show locations not scanned") != nil || axString(element, "AXTitle") == "Scan summary" { return actions }
                 var childrenRef: CFTypeRef?
                 if AXUIElementCopyAttributeValue(element, "AXChildren" as CFString, &childrenRef) == .success,
                    let children = childrenRef as? [AXUIElement] { stack.append(contentsOf: children) }
