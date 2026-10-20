@@ -17,6 +17,9 @@ struct SpacelyzerApp: App {
                 .task {
                     // CI uses this to launch with a scan already running and take a screenshot.
                     let env = ProcessInfo.processInfo.environment
+                    #if SPZ_CI_TESTS   // optional measurement mode; test builds only
+                    if env["SPZ_CHECKS"] == "perf" { await PerfDriver.run(model: model, env: env) }   // never returns
+                    #endif
                     if let path = env["SPZ_AUTOSCAN"] { model.scan(path) }
                     // CI capture hooks (inert without the envs): a fixed window size and a forced
                     // appearance let release-app screenshots cover several sizes and both appearances.

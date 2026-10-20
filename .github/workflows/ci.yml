@@ -18,6 +18,16 @@ on:
         required: false
         type: boolean
         default: false
+      perf:
+        description: 'Perf option (exclusive): builds the test-only app and runs ONLY the optional perf driver (cancel and full-scan milestones, informational, no thresholds); skips tests, packaging, captures and UI assertions. Not part of any other run.'
+        required: false
+        type: boolean
+        default: false
+      perf_root:
+        description: 'Absolute folder the perf option scans (default /Applications). The item count is measured and reported, not assumed.'
+        required: false
+        type: string
+        default: '/Applications'
 
 permissions:
   contents: write
@@ -26,7 +36,7 @@ jobs:
   engine-linux:
     runs-on: ubuntu-latest
     timeout-minutes: 35
-    if: ${{ !inputs.compile_only }}
+    if: ${{ !inputs.compile_only && !inputs.perf }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -47,7 +57,7 @@ jobs:
           sw_vers; xcodebuild -version; swift --version; rustc --version || true
           echo "::notice title=toolchain::$(sw_vers -productVersion) | $(xcodebuild -version | tr '\n' ' ') | sdk $(xcrun --show-sdk-version) | $(swift --version 2>&1 | head -1)"
       - name: Rust engine tests (native macOS, includes getattrlistbulk backend)
-        if: ${{ !inputs.compile_only }}
+        if: ${{ !inputs.compile_only && !inputs.perf }}
         run: |
           rustup update stable --no-self-update
           set -o pipefail
@@ -78,7 +88,7 @@ jobs:
           fi
           exit "$status"
       - name: Bulk backend vs portable backend on real macOS trees
-        if: ${{ !inputs.compile_only }}
+        if: ${{ !inputs.compile_only && !inputs.perf }}
         run: |
           cargo build --release -p spacelyzer-engine
           for d in /Applications /usr/lib "$HOME/Library"; do
@@ -86,7 +96,7 @@ jobs:
           done
           ./target/release/spz verify /Applications
       - name: Scan benchmark (informational, shared runner)
-        if: ${{ !inputs.compile_only && !inputs.consolidated }}
+        if: ${{ !inputs.compile_only && !inputs.consolidated && !inputs.perf }}
         run: ./target/release/spz bench /Applications 3
       - name: Build universal engine
         run: ./scripts/build-engine.sh
@@ -111,10 +121,10 @@ jobs:
           HASH="$(./scripts/sign-setup.sh | tail -1)"
           echo "hash=$HASH" >> "$GITHUB_OUTPUT"
       - name: Package signed DMG
-        if: ${{ !inputs.compile_only }}
+        if: ${{ !inputs.compile_only && !inputs.perf }}
         run: ./scripts/package-dmg.sh "${{ steps.ver.outputs.version }}" "${{ steps.sign.outputs.hash }}"
       - name: Capture DMG install window and app icon (evidence only; artifacts, no publish)
-        if: ${{ !inputs.compile_only }}
+        if: ${{ !inputs.compile_only && !inputs.perf }}
         continue-on-error: true
         run: |
           D="$(ls dist/*.dmg | head -1)"
@@ -148,8 +158,28 @@ jobs:
       - name: Build TEST-ONLY app with SPZ_CI_TESTS (never packaged or released; the DMG above is built without the flag)
         if: ${{ !inputs.compile_only }}
         run: bash ./scripts/build-test-app.sh dist-test "${{ steps.sign.outputs.hash }}"
+      - name: Perf driver (perf option only; informational, no thresholds; incomplete or missing milestones fail the build)
+        if: ${{ !inputs.compile_only && inputs.perf }}
+        id: perf
+        continue-on-error: true
+        run: |
+          set +e
+          mkdir -p dist/perf
+          W=$(mktemp -d); RES="$W/res"; mkdir -p "$RES"
+          APP="$W/app/Spacelyzer.app"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp dist-test/Spacelyzer.app/Contents/MacOS/Spacelyzer "$APP/Contents/MacOS/Spacelyzer"
+          sed -e "s/__VERSION__/0.0.0-perf/g" -e "s|com.k-electron.spacelyzer-native|com.k-electron.spacelyzer-native.perf.$$|" Resources/Info.plist > "$APP/Contents/Info.plist"
+          codesign --force --deep --sign - --entitlements Resources/Spacelyzer.entitlements "$APP" && codesign --verify --deep --strict "$APP" || { echo "::error title=perf::codesign failed"; exit 1; }
+          pkill Spacelyzer; sleep 2
+          open -n "$APP" --stdout "$W/stdout.log" --stderr "$W/stderr.log" \
+            --env SPZ_DEMO=1 --env SPZ_CHECKS=perf --env SPZ_RESULT_DIR="$RES" --env SPZ_PERF_ROOT="${{ inputs.perf_root }}"
+          for _ in $(seq 1 930); do [ -s "$RES/result.txt" ] && break; sleep 1; done
+          pkill -f "$APP/Contents/MacOS/Spacelyzer"; sleep 1; pkill -9 -f "$APP/Contents/MacOS/Spacelyzer"
+          cp "$RES"/* dist/perf/ 2>/dev/null; cp "$W/stderr.log" dist/perf/stderr.log 2>/dev/null
+          cat "$RES/perf.txt" 2>/dev/null; cat "$RES/result.txt" 2>/dev/null
+          [ "$(head -1 "$RES/result.txt" 2>/dev/null)" = "PERF-COMPLETE" ] || { echo "::error title=perf::$(tr '\n' ';' < "$RES/result.txt" 2>/dev/null | head -c 600)"; exit 1; }
       - name: Docs captures of a purpose-built sample tree (informational; real window-only captures, no mocks)
-        if: ${{ !inputs.compile_only }}
+        if: ${{ !inputs.compile_only && !inputs.perf }}
         continue-on-error: true
         run: |
           # Real app, real scan of a friendly sample tree, window-only captures (screencapture -l, no shadow),
@@ -196,7 +226,7 @@ jobs:
           pkill Spacelyzer; sleep 2
           ls -l dist/screenshot-docs-*.png || echo "no docs captures"
       - name: Ordering driver, one launch (consolidated option only; fails the build if any required check is missing, duplicated or failing)
-        if: ${{ !inputs.compile_only && inputs.consolidated }}
+        if: ${{ !inputs.compile_only && !inputs.perf && inputs.consolidated }}
         id: ordering
         continue-on-error: true
         run: |
@@ -221,7 +251,7 @@ jobs:
           ! grep -q '^FAIL' "$RES/assertions.txt" || exit 1
           echo "::notice title=ordering::PASS $N required checks, each exactly once"
       - name: Launch app and screenshot (informational)
-        if: ${{ !inputs.compile_only }}
+        if: ${{ !inputs.compile_only && !inputs.perf }}
         continue-on-error: true
         run: |
           # First-launch window, no autoscan: the welcome screen the demo run never shows.
@@ -337,7 +367,7 @@ jobs:
             echo "::notice title=crash::$c"
           done
       - name: UI assertions (fail the build on any failure)
-        if: ${{ !inputs.compile_only }}
+        if: ${{ !inputs.compile_only && !inputs.perf }}
         id: asserts
         continue-on-error: true
         run: |
@@ -376,6 +406,7 @@ jobs:
             dist/footer-ax-result.txt
             dist/footer-ax-status.txt
             dist/ordering/
+            dist/perf/
       - name: Publish release (epic tags only)
         if: startsWith(github.ref, 'refs/tags/epic-')
         env:
@@ -385,5 +416,5 @@ jobs:
           gh release create "$V" dist/*.dmg dist/*.sha256 dist/screenshot*.png dist/ui-assertions.txt dist/main-thread-sample.txt --title "Spacelyzer $V" --prerelease \
             --notes "UI assertions: ${{ steps.asserts.outcome }}. Self-signed development build (not notarized). Not Apple-verified: after the first blocked open, use System Settings > Privacy & Security > Open Anyway. Screenshots attached are from the CI runner, not a real Mac. Built from ${{ github.sha }}."
       - name: Fail the build if UI assertions failed (after artifacts and release are published)
-        if: ${{ always() && !inputs.compile_only && (steps.asserts.outcome != 'success' || (inputs.consolidated && steps.ordering.outcome != 'success')) }}
+        if: ${{ always() && !inputs.compile_only && ((!inputs.perf && (steps.asserts.outcome != 'success' || (inputs.consolidated && steps.ordering.outcome != 'success'))) || (inputs.perf && steps.perf.outcome != 'success')) }}
         run: exit 1
