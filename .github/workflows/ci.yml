@@ -351,19 +351,39 @@ jobs:
             dist/perf/
       - name: Reset persisted app state before the docs captures (the demo above ran the same bundle id; docs need a first-launch state)
         if: ${{ !inputs.compile_only && !inputs.perf }}
+        id: reset
         continue-on-error: true
         timeout-minutes: 2
         run: |
-          pkill Spacelyzer || true
-          echo "defaults before reset (evidence of any state the demo left behind):"
-          defaults read com.k-electron.spacelyzer-native 2>&1 | head -20 || true
-          defaults delete com.k-electron.spacelyzer-native 2>/dev/null || true
-          rm -rf "$HOME/Library/Saved Application State/com.k-electron.spacelyzer-native.savedState"
+          set -u
+          DOM=com.k-electron.spacelyzer-native
+          EV=dist/docs-reset-evidence.txt
+          mkdir -p dist; : > "$EV"
+          fail() { echo "::error title=docs-reset::$1"; echo "RESET FAILED: $1" >> "$EV"; cat "$EV"; exit 1; }
+          # 1. Stop every Spacelyzer process BEFORE touching defaults, so a running app cannot write cached state back.
+          pkill -TERM -x Spacelyzer || true
+          for _ in $(seq 1 10); do pgrep -x Spacelyzer >/dev/null || break; sleep 1; done
+          if pgrep -x Spacelyzer >/dev/null; then pkill -KILL -x Spacelyzer || true; for _ in $(seq 1 5); do pgrep -x Spacelyzer >/dev/null || break; sleep 1; done; fi
+          pgrep -x Spacelyzer >/dev/null && fail "a Spacelyzer process survived SIGKILL: $(pgrep -lx Spacelyzer | tr '\n' ' ')"
+          echo "no Spacelyzer process running" >> "$EV"
+          # 2. Evidence of what the demo left behind.
+          { echo "--- defaults before reset"; defaults read "$DOM" 2>&1 | head -40; echo "--- plist before reset"; ls -l "$HOME/Library/Preferences/$DOM.plist" 2>&1; echo "--- saved state before reset"; ls -la "$HOME/Library/Saved Application State/$DOM.savedState" 2>&1 | head -10; } >> "$EV"
+          # 3. Remove state, then prove it is gone. A failed delete or an unreadable result counts as not clean.
+          defaults delete "$DOM" >> "$EV" 2>&1 || echo "defaults delete returned nonzero (accepted only if the domain is verified absent below)" >> "$EV"
+          rm -f "$HOME/Library/Preferences/$DOM.plist" || fail "could not remove the preferences plist"
+          rm -rf "$HOME/Library/Saved Application State/$DOM.savedState" || fail "could not remove saved window state"
           killall cfprefsd 2>/dev/null || true
-          sleep 1
-          echo "defaults after reset:"; defaults read com.k-electron.spacelyzer-native 2>&1 | head -5 || true
+          sleep 2
+          OUT=$(defaults read "$DOM" 2>&1); RC=$?
+          { echo "--- defaults after reset (rc=$RC)"; echo "$OUT" | head -5; } >> "$EV"
+          if [ "$RC" -eq 0 ]; then fail "defaults domain still readable after reset"; fi
+          echo "$OUT" | grep -q "does not exist" || fail "defaults read failed for a reason other than the domain being absent: $(echo "$OUT" | head -2)"
+          [ ! -e "$HOME/Library/Preferences/$DOM.plist" ] || fail "preferences plist still present"
+          [ ! -e "$HOME/Library/Saved Application State/$DOM.savedState" ] || fail "saved window state still present"
+          echo "RESET VERIFIED: no process, domain absent, plist absent, saved state absent" >> "$EV"
+          cat "$EV"
       - name: Docs captures of a purpose-built sample tree (informational; real window-only captures, no mocks)
-        if: ${{ !inputs.compile_only && !inputs.perf }}
+        if: ${{ !inputs.compile_only && !inputs.perf && steps.reset.outcome == 'success' }}
         continue-on-error: true
         timeout-minutes: 8
         run: |
@@ -416,6 +436,7 @@ jobs:
           name: Spacelyzer-${{ steps.ver.outputs.version }}-docs
           path: |
             dist/screenshot-docs-*.png
+            dist/docs-reset-evidence.txt
       - name: Ordering driver, one launch (consolidated option only; fails the build if any required check is missing, duplicated or failing)
         if: ${{ !inputs.compile_only && !inputs.perf && inputs.consolidated }}
         id: ordering
@@ -449,7 +470,7 @@ jobs:
           path: |
             dist/ordering/
       - name: Docs captures, experimental render-derived 2x (option only; test-only app; real 1x captures above are unchanged)
-        if: ${{ !inputs.compile_only && !inputs.perf && inputs.docs_2x && steps.testbuild.outputs.optional_build != 'failed' }}
+        if: ${{ !inputs.compile_only && !inputs.perf && inputs.docs_2x && steps.reset.outcome == 'success' && steps.testbuild.outputs.optional_build != 'failed' }}
         continue-on-error: true
         timeout-minutes: 6
         run: |
@@ -505,5 +526,5 @@ jobs:
           pkill Spacelyzer || true
           hdiutil info | grep -q "/Volumes/Spacelyzer" && hdiutil detach "/Volumes/Spacelyzer ${{ steps.ver.outputs.version }}" -force || true
       - name: Fail the build if any required evidence failed or was lost (after artifacts and release are published)
-        if: ${{ always() && !inputs.compile_only && (steps.testbuild.outputs.optional_build == 'failed' || (inputs.perf && steps.perf.outcome != 'success') || (!inputs.perf && (steps.asserts.outcome != 'success' || (inputs.perf_in_run && steps.perf.outcome != 'success') || (inputs.consolidated && (steps.ordering.outcome != 'success' || steps.rust.outcome != 'success' || steps.bulk.outcome != 'success' || steps.dmg.outcome != 'success'))))) }}
+        if: ${{ always() && !inputs.compile_only && (steps.testbuild.outputs.optional_build == 'failed' || (inputs.perf && steps.perf.outcome != 'success') || (!inputs.perf && (steps.reset.outcome != 'success' || steps.asserts.outcome != 'success' || (inputs.perf_in_run && steps.perf.outcome != 'success') || (inputs.consolidated && (steps.ordering.outcome != 'success' || steps.rust.outcome != 'success' || steps.bulk.outcome != 'success' || steps.dmg.outcome != 'success'))))) }}
         run: exit 1
