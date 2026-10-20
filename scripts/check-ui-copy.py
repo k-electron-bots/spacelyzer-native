@@ -137,6 +137,15 @@ else:
     if not harness_ph or any(h != ph for h in harness_ph):
         fails.append(f"SpacelyzerApp.swift: extension-field placeholder lookups {harness_ph} drifted from the product placeholder {ph!r}")
 
+# Source binding for the Linux mounted-selection probe: the table sync target must come from OutlineSelectionSync.syncTarget
+# (the function the probe executes), and the probe must call it. A hand-copied target loop in either place fails here.
+_OV = (SRC / "OutlineView.swift").read_text()
+_PROBE = (ROOT / "scripts" / "linux-model-harness" / "removal_selection_probe.swift").read_text()
+if "OutlineSelectionSync.syncTarget(set: model.selectedSet" not in _OV or "target.insert(" in _OV:
+    fails.append("OutlineView.swift: syncSelection must build its target via OutlineSelectionSync.syncTarget (no local target loop)")
+if "OutlineSelectionSync.syncTarget(" not in _PROBE:
+    fails.append("removal_selection_probe.swift: probe must execute OutlineSelectionSync.syncTarget")
+
 if fails:
     print("UI COPY CHECK FAILED:")
     for x in fails:
