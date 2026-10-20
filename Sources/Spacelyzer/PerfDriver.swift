@@ -1,4 +1,4 @@
-#if SPZ_CI_TESTS   // test/development builds only: never compiled into the shipped app
+#if SPZ_CI_TESTS && SPZ_CI_PERF   // test builds with the perf flag only: never compiled into the shipped app or the default test build
 import Foundation
 
 /// Optional measurement mode (SPZ_CHECKS=perf). Drives the real AppModel scan and cancel paths in the real window and
