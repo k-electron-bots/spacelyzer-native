@@ -3561,6 +3561,7 @@ final class BusyFlag: @unchecked Sendable {
         "group-removal-plan-keeps-one-copy-deterministically",
         "group-removal-executes-through-same-per-item-path",
         "single-removal-clears-batch-undo-hint",
+        "single-removal-drops-removed-id-from-multi-selection",
     ]
     static func run(tree: Tree) async -> Never {
         // Results go to a unique per-run directory chosen by the runner (SPZ_RESULT_DIR). Nothing shared is deleted or
