@@ -35,7 +35,8 @@ o='''    var trashItem: (URL) throws -> URL = { url in
 assert o in s, 'trashItem closure changed; update the harness replacement'
 open(w+'/AppModel.patched.swift','w').write(s.replace(o,'    var trashItem: (URL) throws -> URL = { url in url }   // HARNESS-ONLY'))
 v=open(r+'/ItemReview.swift').read(); i=v.index('enum IdentityVerdict'); j=v.index('\n}\n',i)+3
-open(w+'/verdict.swift','w').write('import Foundation\n'+v[i:j])
+k=v.index('struct ItemDetailsView')
+open(w+'/verdict.swift','w').write('import Foundation\nimport CSpacelyzer\n'+v[:k].replace('import SwiftUI','').replace('import CSpacelyzer',''))
 a=open(r+'/SpacelyzerApp.swift').read().split('\n')
 st=next(k for k,l in enumerate(a) if 'private static func foldersChecks() async {' in l)
 en=next(k for k in range(st+1,len(a)) if a[k]=='    }')
@@ -45,21 +46,34 @@ nd=next(l for l in a if 'private static func node(_ t: Tree, _ name: String)' in
 body='\n'.join(a[st:en+1]); box='\n'.join(a[bx:be+1])
 d=open(r+'/DuplicatesReviewView.swift').read(); i=d.index('enum DuplicateRemoval {'); j=d.index('\n}\n',i)+3
 open(w+'/dupremoval.swift','w').write('import Foundation\nimport CSpacelyzer\n'+d[i:j])
+def sl(f,key):
+    t=open(r+'/'+f).read(); i=t.index(key)
+    # include a directly preceding @MainActor line
+    pre=t.rfind('\n',0,i-1)+1
+    if t[pre:i].strip()=='@MainActor': i=pre
+    j=t.index('\n}\n',i)+3
+    return t[i:j]
+parts=[('DuplicatesReviewView.swift','final class DuplicatesModel'),('SkippedListView.swift','final class SkippedListModel'),('VolumeHeaderView.swift','final class VolumeHeaderModel'),('FullDiskAccessView.swift','enum FullDiskAccessStatus'),('FullDiskAccessView.swift','enum FullDiskAccessProbeOutcome'),('FullDiskAccessView.swift','final class FullDiskAccessModel'),('ExclusionsView.swift','enum ExclusionEditing'),('ExclusionsView.swift','final class ExclusionsModel'),('SpacelyzerApp.swift','final class OpenGate')]
+open(w+'/sliced_models.swift','w').write('import Foundation\nimport CSpacelyzer\nimport AppKit\n'+'\n'.join(sl(f,k) for f,k in parts))
 open(w+'/folders_exec.swift','w').write('import Foundation\n@MainActor enum FoldersExec {\n'+box+'\n'+nd+'\n'+body+'\n    static func go() async { await foldersChecks() }\n}\n')
 PY
 cat > "$W/main.swift" <<'M'
 import Foundation
 @MainActor func go() async {
-    await FoldersExec.go(); await MultiSelectChecks.run(); await BatchRemovalChecks.run(); await BatchRemovalExecutionChecks.run(); await BatchUndoChecks.run(); await IdentityGateChecks.run(); await OutlineSelectionSyncChecks.run(); await DuplicatesRemovalChecks.run()
+    await FoldersExec.go(); await MultiSelectChecks.run(); await BatchRemovalChecks.run(); await BatchRemovalExecutionChecks.run(); await BatchUndoChecks.run(); await IdentityGateChecks.run(); await OutlineSelectionSyncChecks.run(); await DuplicatesRemovalChecks.run(); await DuplicatesChecks.run(); await SkippedListChecks.run(); await VolumeChecks.run(); await FullDiskAccessChecks.run(); await ItemReviewChecks.run(); await ExclusionsChecks.run(); await RemovalHistoryChecks.run()
     print("DONE passes=\(Check.passes) fails=\(Check.fails)")
     exit(Check.fails == 0 ? 0 : 1)
 }
 await go()
 M
+cat > "$W/observable_stub.swift" <<'OS'
+protocol ObservableObject: AnyObject {}
+@propertyWrapper struct Published<V> { var wrappedValue: V; init(wrappedValue: V) { self.wrappedValue = wrappedValue } }
+OS
 cd "$W"
 for m in UniformTypeIdentifiers AppKit; do swiftc -emit-module -emit-library -module-name $m -I stubs stubs/$m.swift -o stubs/lib$m.so -emit-module-path stubs/$m.swiftmodule; done
 swiftc -Onone -DSPZ_CI_TESTS -I CSpacelyzer/include -I stubs -L stubs -lAppKit -lUniformTypeIdentifiers -swift-version 5 \
   -Xlinker --unresolved-symbols=ignore-all -Xlinker -rpath -Xlinker "$OUT.lib" \
-  AppModel.patched.swift "$R/Engine.swift" "$R/BatchRemoval.swift" "$R/OutlineSelectionSync.swift" "$R/CSVExport.swift" "$R/MultiSelectChecks.swift" "$R/BatchRemovalChecks.swift" "$R/BatchRemovalExecutionChecks.swift" "$R/BatchUndoChecks.swift" "$R/IdentityGateChecks.swift" "$R/OutlineSelectionSyncChecks.swift" "$R/DuplicatesRemovalChecks.swift" \
-  verdict.swift check.swift main.swift shim.swift folders_exec.swift dupremoval.swift -Xlinker "$LIB" -Xlinker -lpthread -Xlinker -ldl -Xlinker -lm -o "$OUT"
+  AppModel.patched.swift "$R/Engine.swift" "$R/BatchRemoval.swift" "$R/OutlineSelectionSync.swift" "$R/CSVExport.swift" "$R/MultiSelectChecks.swift" "$R/BatchRemovalChecks.swift" "$R/BatchRemovalExecutionChecks.swift" "$R/BatchUndoChecks.swift" "$R/IdentityGateChecks.swift" "$R/OutlineSelectionSyncChecks.swift" "$R/DuplicatesRemovalChecks.swift" "$R/DuplicatesChecks.swift" "$R/SkippedListChecks.swift" "$R/VolumeChecks.swift" "$R/FullDiskAccessChecks.swift" "$R/ItemReviewChecks.swift" "$R/ExclusionsChecks.swift" "$R/RemovalHistoryChecks.swift" \
+  verdict.swift check.swift main.swift shim.swift folders_exec.swift dupremoval.swift sliced_models.swift observable_stub.swift -Xlinker "$LIB" -Xlinker -lpthread -Xlinker -ldl -Xlinker -lm -o "$OUT"
 mkdir -p "$OUT.lib"; cp stubs/*.so "$OUT.lib/"
