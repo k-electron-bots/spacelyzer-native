@@ -5,8 +5,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 OUT="${1:?outdir}"; IDENTITY="${2:--}"
 SCRATCH=".build-citests"
-swift build -c release --arch arm64 --arch x86_64 -Xswiftc -DSPZ_CI_TESTS --scratch-path "$SCRATCH"
-BIN="$(swift build -c release --arch arm64 --arch x86_64 -Xswiftc -DSPZ_CI_TESTS --scratch-path "$SCRATCH" --show-bin-path)/Spacelyzer"
+# Optional extra compile flags (space-separated names, e.g. "SPZ_CI_PERF SPZ_CI_SHOTS"). Empty by default: the ordinary test build is unchanged.
+EXTRA=(); for d in ${SPZ_TEST_EXTRA_DEFINES:-}; do EXTRA+=(-Xswiftc "-D$d"); done
+swift build -c release --arch arm64 --arch x86_64 -Xswiftc -DSPZ_CI_TESTS ${EXTRA[@]+"${EXTRA[@]}"} --scratch-path "$SCRATCH"
+BIN="$(swift build -c release --arch arm64 --arch x86_64 -Xswiftc -DSPZ_CI_TESTS ${EXTRA[@]+"${EXTRA[@]}"} --scratch-path "$SCRATCH" --show-bin-path)/Spacelyzer"
 APP="$OUT/Spacelyzer.app"
 rm -rf "$OUT" && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Spacelyzer"

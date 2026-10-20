@@ -1,4 +1,4 @@
-#if SPZ_CI_TESTS   // test/development builds only: never compiled into the shipped app
+#if SPZ_CI_TESTS && SPZ_CI_SHOTS   // test builds with the shots flag only: never compiled into the shipped app or the default test build
 import AppKit
 
 /// Experimental render-derived 2x window capture (env SPZ_SHOT_DIR). An external script writes `<name>.req` into the
