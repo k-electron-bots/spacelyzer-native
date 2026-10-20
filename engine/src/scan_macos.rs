@@ -2,6 +2,7 @@
 //!
 //! Requested attributes (packed in ascending bit order within each group):
 //!   common: RETURNED_ATTRS, ERROR, NAME, DEVID, OBJTYPE, MODTIME, FILEID
+//!   dir:    MOUNTSTATUS (directories only; a mount point is then separate from its parent volume even if the reported DEVID equals the parent's)
 //!   file:   LINKCOUNT, ALLOCSIZE
 //! ERROR is requested so a per-entry failure is reported by the kernel instead of leaving an entry without attributes. Record parsing lives in `bulk_record`
 //! (pure, bounds-checked, unit tested on every platform); this file only makes the syscalls.
@@ -58,7 +59,7 @@ pub(crate) fn enumerate_bulk(dir: &Path) -> std::io::Result<Vec<RawEntry>> {
         reserved: 0,
         commonattr: ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_ERROR | ATTR_CMN_NAME | ATTR_CMN_DEVID | ATTR_CMN_OBJTYPE | ATTR_CMN_MODTIME | ATTR_CMN_FILEID,
         volattr: 0,
-        dirattr: 0,
+        dirattr: ATTR_DIR_MOUNTSTATUS,
         fileattr: ATTR_FILE_LINKCOUNT | ATTR_FILE_ALLOCSIZE,
         forkattr: 0,
     };

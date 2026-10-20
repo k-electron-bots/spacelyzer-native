@@ -23,6 +23,8 @@ pub(crate) const ATTR_CMN_DEVID: u32 = 0x0000_0002;
 pub(crate) const ATTR_CMN_OBJTYPE: u32 = 0x0000_0008;
 pub(crate) const ATTR_CMN_MODTIME: u32 = 0x0000_0400;
 pub(crate) const ATTR_CMN_FILEID: u32 = 0x0200_0000;
+pub(crate) const ATTR_DIR_MOUNTSTATUS: u32 = 0x0000_0004;
+pub(crate) const DIR_MNTSTATUS_MNTPOINT: u32 = 0x0000_0001;
 pub(crate) const ATTR_FILE_LINKCOUNT: u32 = 0x0000_0001;
 pub(crate) const ATTR_FILE_ALLOCSIZE: u32 = 0x0000_0004;
 
@@ -68,7 +70,7 @@ enum Rec {
 }
 
 fn failed_raw(name: Box<str>, lossy: bool, failed: u8) -> RawEntry {
-    RawEntry { name, name_lossy: lossy, failed, kind: Kind::File, alloc: 0, nlink: 1, dev: 0, ino: 0, mtime: 0 }
+    RawEntry { name, name_lossy: lossy, failed, kind: Kind::File, alloc: 0, nlink: 1, dev: 0, ino: 0, mtime: 0, mount_point: false }
 }
 
 /// The directory-level marker: empty name, see `walk` in scan.rs.
@@ -95,7 +97,7 @@ fn read_name(c: &mut Cursor, rec: &[u8]) -> Option<(Box<str>, bool)> {
 fn parse_record(rec: &[u8]) -> Rec {
     let bad = |name: Option<(Box<str>, bool)>| Rec::Bad { name, failed: 2 };
     let mut c = Cursor { buf: rec, pos: 4 }; // skip length
-    let (Some(ret_common), Some(_vol), Some(_dir), Some(ret_file), Some(_fork)) = (c.u32(), c.u32(), c.u32(), c.u32(), c.u32()) else { return bad(None) };
+    let (Some(ret_common), Some(_vol), Some(ret_dir), Some(ret_file), Some(_fork)) = (c.u32(), c.u32(), c.u32(), c.u32(), c.u32()) else { return bad(None) };
 
     let mut error = 0u32;
     if ret_common & ATTR_CMN_ERROR != 0 {
@@ -115,6 +117,7 @@ fn parse_record(rec: &[u8]) -> Rec {
     let (mut dev, mut ino, mut objtype) = (0u64, 0u64, 0u32);
     let (mut nlink, mut alloc) = (1u32, 0u64);
     let mut mtime = 0i64;
+    let mut mount_point = false;
     let ok = (|| -> Option<()> {
         if ret_common & ATTR_CMN_DEVID != 0 { dev = c.i32()? as u32 as u64; }
         if ret_common & ATTR_CMN_OBJTYPE != 0 { objtype = c.u32()?; }
@@ -123,6 +126,8 @@ fn parse_record(rec: &[u8]) -> Rec {
             let _nsec = c.i64()?;
         }
         if ret_common & ATTR_CMN_FILEID != 0 { ino = c.u64()?; }
+        // Directory attributes come after the common ones and before the file ones.
+        if ret_dir & ATTR_DIR_MOUNTSTATUS != 0 { mount_point = c.u32()? & DIR_MNTSTATUS_MNTPOINT != 0; }
         if ret_file & ATTR_FILE_LINKCOUNT != 0 { nlink = c.u32()?; }
         if ret_file & ATTR_FILE_ALLOCSIZE != 0 { alloc = c.i64()?.max(0) as u64; }
         Some(())
@@ -135,7 +140,7 @@ fn parse_record(rec: &[u8]) -> Rec {
         VREG => Kind::File,
         _ => Kind::File, // devices, sockets, fifos: recorded as files with whatever size they report
     };
-    Rec::Entry(RawEntry { name, name_lossy, failed: 0, kind, alloc, nlink, dev, ino, mtime })
+    Rec::Entry(RawEntry { name, name_lossy, failed: 0, kind, alloc, nlink, dev, ino, mtime, mount_point })
 }
 
 /// Parse the `n` records of one `getattrlistbulk` batch from `buf`. Returns true when some part of the batch could not be attributed to a name, so the caller
@@ -291,5 +296,48 @@ mod tests {
             let mut out = Vec::new();
             let _ = parse_batch(&b, (next() % 6) as usize, &mut out);
         }
+    }
+
+    /// A directory record carrying ATTR_DIR_MOUNTSTATUS (dirattr bit 0x4) after the common attributes, as the kernel orders them.
+    fn rec_dir(name: &[u8], mntstatus: Option<u32>, dev: i32) -> Vec<u8> {
+        let common = ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_NAME | ATTR_CMN_DEVID | ATTR_CMN_OBJTYPE | ATTR_CMN_MODTIME | ATTR_CMN_FILEID;
+        let dirattr = if mntstatus.is_some() { ATTR_DIR_MOUNTSTATUS } else { 0 };
+        let mut b = vec![0u8; 4];
+        for v in [common, 0, dirattr, 0, 0] { b.extend_from_slice(&v.to_ne_bytes()); }
+        let tail = 4 + 4 + 16 + 8 + if mntstatus.is_some() { 4 } else { 0 };
+        b.extend_from_slice(&((8 + tail) as i32).to_ne_bytes());
+        b.extend_from_slice(&((name.len() + 1) as u32).to_ne_bytes());
+        b.extend_from_slice(&dev.to_ne_bytes()); b.extend_from_slice(&VDIR.to_ne_bytes());
+        b.extend_from_slice(&5i64.to_ne_bytes()); b.extend_from_slice(&0i64.to_ne_bytes());
+        b.extend_from_slice(&42u64.to_ne_bytes());
+        if let Some(m) = mntstatus { b.extend_from_slice(&m.to_ne_bytes()); }
+        b.extend_from_slice(name); b.push(0);
+        while b.len() % 8 != 0 { b.push(0); }
+        let l = b.len() as u32; b[0..4].copy_from_slice(&l.to_ne_bytes());
+        b
+    }
+
+    #[test]
+    fn a_mount_point_directory_is_flagged_even_when_its_reported_device_is_the_parents() {
+        // Same dev as the parent (the case that hides the boundary from a device compare): only the mount status says it is a mount point.
+        let mut out = Vec::new();
+        let b = batch(&[rec_dir(b"RAMDISK", Some(DIR_MNTSTATUS_MNTPOINT), 7), rec_dir(b"plain", Some(0), 7), rec_dir(b"nostatus", None, 7), rec(b"after", None, true)]);
+        assert!(!parse_batch(&b, 4, &mut out));
+        let got: Vec<_> = out.iter().map(|e| (e.name.to_string(), e.mount_point, e.dev, e.failed)).collect();
+        assert_eq!(got, vec![("RAMDISK".to_string(), true, 7, 0), ("plain".to_string(), false, 7, 0), ("nostatus".to_string(), false, 7, 0), ("after".to_string(), false, 7, 0)]);
+        // Other mount-status bits (trigger = 0x2) are not mount points; the following record still parses (field order intact).
+        let mut o2 = Vec::new();
+        assert!(!parse_batch(&batch(&[rec_dir(b"trig", Some(2), 7), rec(b"n", None, true)]), 2, &mut o2));
+        assert!(!o2[0].mount_point && o2[1].name.as_ref() == "n" && o2[1].alloc == 4096);
+    }
+
+    #[test]
+    fn a_truncated_mount_status_field_is_a_named_failure() {
+        let mut r = rec_dir(b"cut", Some(1), 7);
+        r.truncate(4 + 20 + 8 + 4 + 4 + 16 + 8); // everything up to, not including, the mount status and the name
+        let l = r.len() as u32; r[0..4].copy_from_slice(&l.to_ne_bytes());
+        let mut out = Vec::new();
+        parse_batch(&r, 1, &mut out);
+        assert!(out.iter().all(|e| e.failed != 0 || !e.mount_point));
     }
 }
