@@ -105,10 +105,42 @@ jobs:
         continue-on-error: ${{ inputs.consolidated }}
         run: |
           cargo build --release -p spacelyzer-engine
-          for d in /Applications /usr/lib "$HOME/Library"; do
-            [ -d "$d" ] && ./target/release/spz verify "$d" || true
-          done
-          ./target/release/spz verify /Applications
+          # Contract. BINDING (any failure fails this step, every attempted probe still runs and is reported): a deterministic fixture tree built here
+          # (nothing else writes to it), /Applications and /usr/lib (read-only system trees that agreed in the observed run). A missing binding root, a
+          # MISMATCH, and any other nonzero exit (scan error, panic) are all failures. INFORMATIONAL (reported as a warning with the full diff, never
+          # silent, never a gate): $HOME/Library. The observed run showed a backend MISMATCH there from one transient journal file that appeared between the two
+          # scans and was absent again in the recheck, so equality of a live, written-to tree cannot be a deterministic gate. No retries.
+          SPZ=./target/release/spz
+          OUT="$RUNNER_TEMP/bulk-verify"; mkdir -p "$OUT"; SUMMARY="$OUT/summary.txt"; : > "$SUMMARY"
+          failures=0
+          probe() {
+            label="$1"; mode="$2"; path="$3"; log="$OUT/$label.txt"
+            if [ ! -d "$path" ]; then
+              echo "ABSENT $mode $label $path (not compared)" >> "$SUMMARY"
+              if [ "$mode" = binding ]; then echo "::error title=bulk-verify::binding root absent, not compared: $path"; failures=$((failures + 1));
+              else echo "::warning title=bulk-verify::informational root absent, not compared: $path"; fi
+              return 0
+            fi
+            rc=0; "$SPZ" verify "$path" > "$log" 2>&1 || rc=$?
+            cat "$log"
+            if [ "$rc" -eq 0 ]; then echo "AGREE $mode $label $path" >> "$SUMMARY"; return 0; fi
+            if [ "$rc" -eq 1 ]; then kind=MISMATCH; else kind="ERROR(exit $rc)"; fi
+            echo "$kind $mode $label $path" >> "$SUMMARY"
+            if [ "$mode" = binding ]; then echo "::error title=bulk-verify::$kind on binding root $path (full output above)"; failures=$((failures + 1));
+            else echo "::warning title=bulk-verify::$kind on informational root $path (live tree; full output above)"; fi
+            return 0
+          }
+          F="$RUNNER_TEMP/bulk-fixture"; rm -rf "$F"; mkdir -p "$F/a/b/c" "$F/empty" "$F/with space"
+          for n in 0 1 4095 4096 4097 1048576; do head -c "$n" /dev/zero > "$F/a/f$n.bin"; done
+          i=0; while [ "$i" -lt 300 ]; do head -c 100 /dev/zero > "$F/a/b/small$i.bin"; i=$((i + 1)); done
+          ln "$F/a/f4097.bin" "$F/a/b/c/hardlink.bin"; ln -s "$F/a/f1.bin" "$F/a/link"; head -c 5000 /dev/zero > "$F/with space/x y.bin"
+          probe fixture binding "$F"
+          probe applications binding /Applications
+          probe usr-lib binding /usr/lib
+          probe home-library informational "$HOME/Library"
+          echo "bulk verify summary:"; cat "$SUMMARY"
+          { echo "### bulk backend vs portable"; echo '```'; cat "$SUMMARY"; echo '```'; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          if [ "$failures" -ne 0 ]; then echo "::error title=bulk-verify::$failures binding probe(s) failed"; exit 1; fi
       - name: Scan benchmark (informational, shared runner)
         if: ${{ !inputs.compile_only && !inputs.consolidated && !inputs.perf }}
         run: ./target/release/spz bench /Applications 3
