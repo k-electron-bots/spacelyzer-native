@@ -27,8 +27,17 @@ def check(name, ok, detail=''):
     if not ok: fails.append(name)
 
 STUBS = {
- 'pkill': 'exit 0', 'pgrep': 'echo 4242', 'open': '''
+ 'pkill': 'exit 0', 'pgrep': '[ "$STUB_PGREP" = none ] && exit 1; echo 4242', 'open': '''
 # open -n APP --stdout F --stderr F --env K=V ... : emulate the ordering driver by writing result files per $STUB_ORDERING
+# SPZ_DEMO=1 (the scripted demo launch): emulate the app's ready markers, finished marker and assertion file per $STUB_DEMO (full | nofinish | stall:N | none)
+case "${STUB_DEMO:+x} $* " in x*" SPZ_DEMO=1 "*)
+  T="$STUB_TMPDIR"
+  case "$STUB_DEMO" in
+    none) :;;
+    *) n=81; case "$STUB_DEMO" in stall:*) n=$((${STUB_DEMO#stall:} - 1));; esac
+       for i in $(seq 1 $n); do touch "$T/spz-demo-ready-$i"; done
+       [ "$STUB_DEMO" = full ] && { touch "$T/spz-demo-finished"; for i in $(seq 1 176); do echo "PASS c$i d"; done > "$T/spz-assertions.txt"; };;
+  esac; exit 0;; esac
 rd=""; for a in "$@"; do case "$a" in SPZ_RESULT_DIR=*) rd="${a#SPZ_RESULT_DIR=}";; esac; done
 [ -n "$rd" ] || exit 0
 case "$STUB_PERF" in
@@ -199,7 +208,37 @@ def perf_cases():
             ok = bool(eval(e2.replace('always()', 'True'), {}, {'I': I, 'O': {k: 'success' for k in ('reset', 'docs', 'asserts')}, 'U': {'testbuild.optional_build': ''}})) if 'if' in s_ else True
             check(f'perf-exclusive: step {s_.get("id")} is skipped', ok is False)
 
-asserts_cases(); ordering_cases(); gate_cases(); perf_cases()
+def demo_cases():
+    doc = load(CI); launch = step(doc, 'macos', 'Launch app and screenshot')['run']; asserts = step(doc, 'macos', 'asserts')['run']
+    def prep(opts, env):
+        w = workdir(); os.makedirs(w + '/dist-test/Spacelyzer.app/Contents/MacOS'); os.makedirs(w + '/dist/Spacelyzer.app'); os.makedirs(w + '/scripts', exist_ok=True)
+        os.makedirs(w + '/home/Library/Logs/DiagnosticReports')
+        e = dict(env, STUB_TMPDIR=w + '/tmp')
+        body = launch.replace('/tmp/spz-', w + '/tmp/spz-').replace('python3 scripts/capture-interactions.py &', 'true &')
+        rc, out = run_step(body, w, opts, e)
+        ab = asserts.replace('/tmp/spz-', w + '/tmp/spz-')
+        rc2, out2 = run_step(ab, w, opts, e)
+        timing = open(w + '/dist/ui-timing.txt').read() if os.path.exists(w + '/dist/ui-timing.txt') else None
+        shots = len([f for f in os.listdir(w + '/dist') if f.startswith('screenshot-demo-')])
+        return w, rc, out, rc2, out2, timing, shots
+    for opts in ('-e', '-eo pipefail'):
+        cases = [('app completes all 81 steps and finishes', {'STUB_DEMO': 'full'}, True, True),
+                 ('app never signals a step (launch failure)', {'STUB_DEMO': 'none', 'STUB_PGREP': 'none'}, None, False),
+                 ('app stalls at step 40', {'STUB_DEMO': 'stall:40'}, None, False),
+                 ('all steps signalled but final assertions never finish', {'STUB_DEMO': 'nofinish'}, None, False),
+                 ('app crashed before finishing (not running at end)', {'STUB_DEMO': 'stall:12', 'STUB_PGREP': 'none'}, None, False),
+                 ('screencapture fails during the demo steps', {'STUB_DEMO': 'full', 'STUB_SCREENCAP': 'fail'}, False, False)]
+        for name, env, want_launch_ok, want_asserts_ok in cases:
+            w, rc, out, rc2, out2, timing, shots = prep(opts, env)
+            if want_launch_ok is not None: check(f'demo launch step [{opts}] {name}: {"completes" if want_launch_ok else "fails"}', (rc == 0) == want_launch_ok, f'rc={rc} {out[-200:]}')
+            check(f'demo launch then asserts [{opts}] {name}: asserts step {"passes" if want_asserts_ok else "FAILS"}', (rc2 == 0) == want_asserts_ok, f'launch rc={rc} asserts rc={rc2} timing={timing!r} shots={shots} {out2[-200:]}')
+            if name.startswith('app completes'): check(f'demo [{opts}] full run keeps 81 screenshots and a timing file', shots == 81 and timing is not None)
+            if name.startswith('app stalls'): check(f'demo [{opts}] stall records the expected step in ui-timing.txt', timing is not None and 'DEMO STEP TIMEOUT: expected 40' in timing, repr(timing))
+            if name.startswith('app never'): check(f'demo [{opts}] launch failure records a step timeout and APP NOT RUNNING', timing is not None and 'DEMO STEP TIMEOUT: expected 1' in timing and 'APP NOT RUNNING' in timing, repr(timing))
+            if name.startswith('all steps signalled'): check(f'demo [{opts}] missing finish is recorded', timing is not None and 'DEMO FINISH TIMEOUT' in timing, repr(timing))
+            shutil.rmtree(w)
+
+asserts_cases(); ordering_cases(); gate_cases(); perf_cases(); demo_cases()
 docs_cases(CI, 'head', True)
 if base_ci: docs_cases(base_ci, 'base', False)
 timing()
