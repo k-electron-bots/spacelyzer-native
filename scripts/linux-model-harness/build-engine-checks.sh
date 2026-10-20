@@ -15,7 +15,7 @@ LIB="${SPZ_ENGINE_LIB:-$REPO/target/release/libspacelyzer_engine.a}"
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 cp -r "$HERE/stubs" "$W/stubs"; mkdir -p "$W/CSpacelyzer"; cp -r "$REPO/Sources/CSpacelyzer/include" "$W/CSpacelyzer/include"
 printf 'module CSpacelyzer { header "spacelyzer.h" export * }\n' > "$W/CSpacelyzer/include/module.modulemap"
-cp "$HERE"/{shim.swift,check.swift} "$W/"
+cp "$HERE"/{shim.swift,check.swift,removal_selection_probe.swift} "$W/"
 python3 - "$W/shim.swift" <<'PY2'
 import sys
 p=sys.argv[1]; t=open(p).read().split("\n")
@@ -60,7 +60,7 @@ PY
 cat > "$W/main.swift" <<'M'
 import Foundation
 @MainActor func go() async {
-    await FoldersExec.go(); await MultiSelectChecks.run(); await BatchRemovalChecks.run(); await BatchRemovalExecutionChecks.run(); await BatchUndoChecks.run(); await IdentityGateChecks.run(); await OutlineSelectionSyncChecks.run(); await DuplicatesRemovalChecks.run(); await DuplicatesChecks.run(); await SkippedListChecks.run(); await VolumeChecks.run(); await FullDiskAccessChecks.run(); await ItemReviewChecks.run(); await ExclusionsChecks.run(); await RemovalHistoryChecks.run()
+    await FoldersExec.go(); await MultiSelectChecks.run(); await BatchRemovalChecks.run(); await BatchRemovalExecutionChecks.run(); await BatchUndoChecks.run(); await IdentityGateChecks.run(); await OutlineSelectionSyncChecks.run(); await DuplicatesRemovalChecks.run(); await DuplicatesChecks.run(); await SkippedListChecks.run(); await VolumeChecks.run(); await FullDiskAccessChecks.run(); await ItemReviewChecks.run(); await ExclusionsChecks.run(); await RemovalHistoryChecks.run(); await RemovalSelectionProbe.run()
     print("DONE passes=\(Check.passes) fails=\(Check.fails)")
     exit(Check.fails == 0 ? 0 : 1)
 }
@@ -75,5 +75,5 @@ for m in UniformTypeIdentifiers AppKit; do swiftc -emit-module -emit-library -mo
 swiftc -Onone -DSPZ_CI_TESTS -I CSpacelyzer/include -I stubs -L stubs -lAppKit -lUniformTypeIdentifiers -swift-version 5 \
   -Xlinker --unresolved-symbols=ignore-all -Xlinker -rpath -Xlinker "$OUT.lib" \
   AppModel.patched.swift "$R/Engine.swift" "$R/BatchRemoval.swift" "$R/OutlineSelectionSync.swift" "$R/CSVExport.swift" "$R/MultiSelectChecks.swift" "$R/BatchRemovalChecks.swift" "$R/BatchRemovalExecutionChecks.swift" "$R/BatchUndoChecks.swift" "$R/IdentityGateChecks.swift" "$R/OutlineSelectionSyncChecks.swift" "$R/DuplicatesRemovalChecks.swift" "$R/DuplicatesChecks.swift" "$R/SkippedListChecks.swift" "$R/VolumeChecks.swift" "$R/FullDiskAccessChecks.swift" "$R/ItemReviewChecks.swift" "$R/ExclusionsChecks.swift" "$R/RemovalHistoryChecks.swift" \
-  verdict.swift check.swift main.swift shim.swift folders_exec.swift dupremoval.swift sliced_models.swift observable_stub.swift -Xlinker "$LIB" -Xlinker -lpthread -Xlinker -ldl -Xlinker -lm -o "$OUT"
+  verdict.swift check.swift main.swift shim.swift folders_exec.swift dupremoval.swift sliced_models.swift observable_stub.swift removal_selection_probe.swift -Xlinker "$LIB" -Xlinker -lpthread -Xlinker -ldl -Xlinker -lm -o "$OUT"
 mkdir -p "$OUT.lib"; cp stubs/*.so "$OUT.lib/"

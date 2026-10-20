@@ -48,28 +48,32 @@ enum BatchUndoChecks {
                 let err = String(cString: strerror(errno))
                 for n in ["batch-undo-restores-whole-batch-in-one-pass",
                           "batch-undo-collision-keeps-that-item-in-history",
-                          "single-removal-clears-batch-undo-hint"] { Check.expect(n, false, "realpath failed for \(d1.path): \(err)") }
+                          "single-removal-clears-batch-undo-hint",
+                          "single-removal-drops-removed-id-from-multi-selection"] { Check.expect(n, false, "realpath failed for \(d1.path): \(err)") }
                 return
             }
             let root1 = String(cString: buf)
             guard let t1 = await ScanSession(root: root1, excludes: [])?.run(progress: { _ in }) else {
                 for n in ["batch-undo-restores-whole-batch-in-one-pass",
                           "batch-undo-collision-keeps-that-item-in-history",
-                          "single-removal-clears-batch-undo-hint"] { Check.expect(n, false, "fixture scan") }
+                          "single-removal-clears-batch-undo-hint",
+                          "single-removal-drops-removed-id-from-multi-selection"] { Check.expect(n, false, "fixture scan") }
                 return
             }
             let engineRoot = t1.path(0)
             guard engineRoot == root1 else {
                 for n in ["batch-undo-restores-whole-batch-in-one-pass",
                           "batch-undo-collision-keeps-that-item-in-history",
-                          "single-removal-clears-batch-undo-hint"] { Check.expect(n, false, "path-form mismatch engine=\(engineRoot) fixture=\(root1)") }
+                          "single-removal-clears-batch-undo-hint",
+                          "single-removal-drops-removed-id-from-multi-selection"] { Check.expect(n, false, "path-form mismatch engine=\(engineRoot) fixture=\(root1)") }
                 return
             }
             guard let a = t1.find(path: "\(root1)/a.bin"), let b = t1.find(path: "\(root1)/b.bin"),
                   let c = t1.find(path: "\(root1)/c.bin"), a != 0, b != 0, c != 0 else {
                 for n in ["batch-undo-restores-whole-batch-in-one-pass",
                           "batch-undo-collision-keeps-that-item-in-history",
-                          "single-removal-clears-batch-undo-hint"] { Check.expect(n, false, "fixture find") }
+                          "single-removal-clears-batch-undo-hint",
+                          "single-removal-drops-removed-id-from-multi-selection"] { Check.expect(n, false, "fixture find") }
                 return
             }
             func model3() -> AppModel {
@@ -138,6 +142,19 @@ enum BatchUndoChecks {
             Check.expect("single-removal-clears-batch-undo-hint",
                          hintAfterBatch == 2 && proposed && m5.lastBatchCount == nil,
                          "hintAfterBatch=\(hintAfterBatch) proposed=\(proposed) hint=\(String(describing: m5.lastBatchCount))")
+
+            // 6. Removing one member of a multi-selection leaves no stale id in the set (the removed node no longer exists).
+            let m6 = model3()
+            m6.trashItem = { url in url.appendingPathExtension("trashed") }
+            m6.identityCheck = { _, _ in .same }
+            m6.selectOnly(a); m6.selectToggle(b); m6.selectToggle(c)
+            m6.proposeRemoval(of: b)
+            m6.confirmRemoval()
+            await m6.removalTask?.value
+            _ = await settleSurfaces(m6)
+            Check.expect("single-removal-drops-removed-id-from-multi-selection",
+                         !m6.selectedSet.contains(b) && m6.selectedSet.contains(a) && m6.selectedSet.contains(c),
+                         "set=\(m6.selectedSet) removed=\(b) kept=[\(a), \(c)]")
         }
         await batchUndoAndHintChecks()
 

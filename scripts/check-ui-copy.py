@@ -88,13 +88,14 @@ if 'Text("\\u{2014}")' not in TREEMAP:
 # (full width "not readable", compact "unreadable").
 # Batch-12 pins: the combined footer element vends one authored VoiceOver action and DemoAX anchors to
 # that authored name - batches 8-10 matched the generated action name, which leaked a debug description
-# (run 38993434887). Product action, harness anchor and this pin move together.
+# (run 38993434887). Product action, harness anchor and this pin move together. The anchor is now the
+# AXActionName.vended lookup (89dff8d moved the parsing out of SpacelyzerApp.swift).
 APP_SWIFT = (SRC / "SpacelyzerApp.swift").read_text()
 if 'compact ? "unreadable" : "not readable"' not in CONTENT:
     fails.append("ContentView.swift: Not-scanned footer opener lost its full/compact copy variants")
 if 'accessibilityAction(named: "Show locations not scanned")' not in CONTENT:
     fails.append("ContentView.swift: combined footer element lost its authored VoiceOver action")
-if 'actions.contains("Show locations not scanned")' not in APP_SWIFT:
+if 'AXActionName.vended(in: actions, authored: "Show locations not scanned")' not in APP_SWIFT:
     fails.append("SpacelyzerApp.swift: DemoAX footer lookup drifted from the product's authored VoiceOver action name")
 if '] + actions).joined(separator: " ")' not in APP_SWIFT:
     fails.append("SpacelyzerApp.swift: DemoAX footer lookup no longer logs matched action names")
