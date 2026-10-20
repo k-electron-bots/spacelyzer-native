@@ -276,7 +276,37 @@ def testbuild_cases():
         rc, out, o = run(opts, {'perf': 'true'}, {'STUB_BUILD_OPT': 'fail'}); check(f'testbuild [{opts}] perf-exclusive, optional fails: exit 1 with optional_build=failed', rc != 0 and 'optional_build=failed' in o, f'{rc} {o}')
         rc, out, o = run(opts, {'docs_2x': 'true'}, {'STUB_BUILD_OPT': 'fail'}); check(f'testbuild [{opts}] docs_2x optional fails: core rebuilt, optional_build=failed', rc == 0 and 'optional_build=failed' in o, f'{rc} {o}')
 
-asserts_cases(); ordering_cases(); gate_cases(); perf_cases(); demo_cases(); rust_cases(); testbuild_cases()
+def bulk_cases():
+    """The real bulk step body. Contract under test: fixture, /Applications and /usr/lib are BINDING (mismatch, error, or absent root all fail the step, every
+    probe still runs); $HOME/Library is INFORMATIONAL (reported as a warning with the log, never a gate). spz is a stub that exits per STUB_BULK."""
+    doc = load(CI); body = step(doc, 'macos', 'bulk')['run']
+    def run(opts, codes=None, absent=()):
+        w = workdir(); os.makedirs(w + '/target/release'); os.makedirs(w + '/home/Library', exist_ok=True)
+        for d in ('Applications', 'usrlib'):
+            if d not in absent: os.makedirs(w + '/' + d)
+        if 'Library' in absent: shutil.rmtree(w + '/home/Library')
+        open(w + '/bin/cargo', 'w').write('#!/bin/bash\nexit 0\n'); os.chmod(w + '/bin/cargo', 0o755)
+        spz = ('#!/bin/bash\nb=$(basename "$2"); code=$(echo ",$STUB_BULK," | tr "," "\\n" | sed -n "s/^$b=//p" | head -1)\n'
+               'if [ "$b" = bulk-fixture ]; then echo "files=$(find "$2" -type f | wc -l | tr -d " ") links=$(find "$2" -type l | wc -l | tr -d " ")"; fi\n'
+               'case "${code:-0}" in 0) echo "OK backends agree $b";; 1) echo "MISMATCH $b";; *) echo "scan failed $b"; exit "$code";; esac; [ "${code:-0}" = 1 ] && exit 1; exit 0\n')
+        open(w + '/target/release/spz', 'w').write(spz); os.chmod(w + '/target/release/spz', 0o755)
+        b = body.replace('/Applications', w + '/Applications').replace('/usr/lib', w + '/usrlib')
+        rc, out = run_step(b, w, opts, {'STUB_BULK': ','.join(f'{k}={v}' for k, v in (codes or {}).items())})
+        summ = open(w + '/tmp/bulk-verify/summary.txt').read() if os.path.exists(w + '/tmp/bulk-verify/summary.txt') else ''
+        shutil.rmtree(w); return rc, out, summ
+    for opts in ('-e', '-eo pipefail'):
+        rc, out, sm = run(opts); check(f'bulk [{opts}] clean pass: exit 0, four AGREE lines, fixture has 308 files + 1 symlink', rc == 0 and sm.count('AGREE') == 4 and 'files=308 links=1' in out, f'{rc} {sm} {out[-300:]}')
+        for name, key in [('fixture', 'bulk-fixture'), ('/Applications', 'Applications'), ('/usr/lib', 'usrlib')]:
+            rc, out, sm = run(opts, {key: 1}); check(f'bulk [{opts}] {name} MISMATCH alone: step FAILS, all 4 probes still ran', rc != 0 and f'MISMATCH binding' in sm and len(sm.strip().splitlines()) == 4 and '::error title=bulk-verify::MISMATCH' in out, f'{rc} {sm}')
+        rc, out, sm = run(opts, {'Library': 1}); check(f'bulk [{opts}] ~/Library MISMATCH alone: exit 0 but warning + summary line + log kept', rc == 0 and 'MISMATCH informational' in sm and '::warning title=bulk-verify::MISMATCH' in out and 'MISMATCH Library' in out, f'{rc} {sm}')
+        rc, out, sm = run(opts, {'Applications': 101}); check(f'bulk [{opts}] scan error (exit 101) on /Applications: FAILS as ERROR, not as parity', rc != 0 and 'ERROR(exit 101) binding' in sm, f'{rc} {sm}')
+        rc, out, sm = run(opts, {'Library': 101}); check(f'bulk [{opts}] scan error on ~/Library: exit 0, surfaced as informational ERROR', rc == 0 and 'ERROR(exit 101) informational' in sm and '::warning' in out, f'{rc} {sm}')
+        rc, out, sm = run(opts, {'bulk-fixture': 1, 'usrlib': 1}); check(f'bulk [{opts}] two binding failures: FAILS, both reported, count says 2', rc != 0 and out.count('::error title=bulk-verify::MISMATCH') == 2 and '2 binding probe(s) failed' in out, f'{rc} {out[-300:]}')
+        rc, out, sm = run(opts, {'bulk-fixture': 1, 'Applications': 1, 'usrlib': 101, 'Library': 1}); check(f'bulk [{opts}] all four fail: FAILS, 3 binding errors + 1 warning, every log printed', rc != 0 and '3 binding probe(s) failed' in out and out.count('MISMATCH bulk-fixture') + out.count('MISMATCH Applications') == 2 and 'scan failed usrlib' in out and 'MISMATCH Library' in out, f'{rc} {sm}')
+        rc, out, sm = run(opts, absent=('Applications',)); check(f'bulk [{opts}] /Applications absent: FAILS as binding root absent (not parity)', rc != 0 and 'ABSENT binding applications' in sm and 'binding root absent' in out, f'{rc} {sm}')
+        rc, out, sm = run(opts, absent=('Library',)); check(f'bulk [{opts}] ~/Library absent: exit 0, warned as not compared', rc == 0 and 'ABSENT informational' in sm and 'not compared' in out, f'{rc} {sm}')
+
+asserts_cases(); ordering_cases(); gate_cases(); perf_cases(); demo_cases(); rust_cases(); testbuild_cases(); bulk_cases()
 docs_cases(CI, 'head', True)
 if base_ci: docs_cases(base_ci, 'base', False)
 timing()
