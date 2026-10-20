@@ -31,6 +31,11 @@ STUBS = {
 # open -n APP --stdout F --stderr F --env K=V ... : emulate the ordering driver by writing result files per $STUB_ORDERING
 rd=""; for a in "$@"; do case "$a" in SPZ_RESULT_DIR=*) rd="${a#SPZ_RESULT_DIR=}";; esac; done
 [ -n "$rd" ] || exit 0
+case "$STUB_PERF" in
+  complete) printf 'PERF-COMPLETE\\n' > "$rd/result.txt"; echo 'cancel 1.2s' > "$rd/perf.txt"; exit 0;;
+  incomplete) printf 'PERF-INCOMPLETE missing full-scan milestone\\n' > "$rd/result.txt"; exit 0;;
+  none) exit 0;;
+esac
 case "$STUB_ORDERING" in
   pass) printf 'PASS %s required checks, each exactly once\\n' "$STUB_N" > "$rd/result.txt"; echo "PASS x" > "$rd/assertions.txt";;
   failassert) printf 'PASS %s required checks, each exactly once\\n' "$STUB_N" > "$rd/result.txt"; echo "FAIL x detail" > "$rd/assertions.txt";;
@@ -135,6 +140,15 @@ def gate_cases():
     check('gate runs when testbuild optional_build == failed', gate(U={'testbuild.optional_build': 'failed'}) is True)
     check('gate runs when docs missing because reset failed (docs skipped, reset failure)', gate(O={'reset': 'failure', 'docs': 'skipped'}) is True)
     check('gate does NOT run for compile_only', gate(I={'compile_only': True}, O={'docs': 'failure'}) is False)
+    # perf option is exclusive: every other evidence step is skipped by design and must not trip the gate; only perf matters.
+    check('perf-exclusive: perf success, other steps skipped -> gate does NOT run', gate(I={'perf': True}, O={'reset': 'skipped', 'docs': 'skipped', 'asserts': 'skipped', 'ordering': 'skipped', 'rust': 'skipped', 'bulk': 'skipped', 'dmg': 'skipped'}) is False)
+    for bad in ('failure', 'skipped', 'cancelled'):
+        check(f'perf-exclusive: perf {bad} -> gate runs', gate(I={'perf': True}, O={'perf': bad, 'reset': 'skipped', 'docs': 'skipped', 'asserts': 'skipped'}) is True)
+    check('perf-exclusive: testbuild optional_build failed -> gate runs', gate(I={'perf': True}, U={'testbuild.optional_build': 'failed'}) is True)
+    for bad in ('failure', 'skipped', 'cancelled'):
+        check(f'perf_in_run: perf {bad} (everything else success) -> gate runs', gate(I={'perf_in_run': True}, O={'perf': bad}) is True)
+    check('perf_in_run: perf success and everything else success -> gate does NOT run', gate(I={'perf_in_run': True}) is False)
+    check('perf not requested: a perf outcome of failure/skipped is ignored by the gate', gate(O={'perf': 'skipped'}) is False and gate(O={'perf': 'failure'}) is False)
     # always() keeps the gate after earlier failures, and it sits after every upload step
     names = [s.get('name', '') or s.get('uses', '') for s in doc['jobs']['macos']['steps']]
     gi = [i for i, s in enumerate(doc['jobs']['macos']['steps']) if s.get('name', '').startswith('Fail the build')][0]
@@ -153,7 +167,39 @@ def timing():
     print(f'info observed run 39451419467 step seconds (real): {sum(observed.values())}s = {sum(observed.values())/60:.1f} min; docs step static sleep seconds in its body: {sl}s (+ app launch/scan time, never measured)')
     check('observed time + docs sleeps leaves headroom under the 35 min job timeout', sum(observed.values()) + sl < 35 * 60 * 0.85, f'{sum(observed.values()) + sl}s')
 
-asserts_cases(); ordering_cases(); gate_cases()
+def perf_cases():
+    doc = load(CI); st = step(doc, 'macos', 'perf'); body = st['run'].replace('${{ inputs.perf_root }}', '/Applications')
+    assert 'inputs.perf_root' not in body
+    for opts in ('-e', '-eo pipefail'):
+        for name, env, want_fail in [('driver writes PERF-COMPLETE', {'STUB_PERF': 'complete'}, False), ('driver writes an incomplete result', {'STUB_PERF': 'incomplete'}, True),
+                                     ('result.txt never written (timeout path)', {'STUB_PERF': 'none'}, True), ('codesign fails', {'STUB_PERF': 'complete', 'STUB_CODESIGN': 'fail'}, True)]:
+            w = workdir(); os.makedirs(w + '/dist-test/Spacelyzer.app/Contents/MacOS'); open(w + '/dist-test/Spacelyzer.app/Contents/MacOS/Spacelyzer', 'w').write('x')
+            rc, out = run_step(body, w, opts, env)
+            check(f'perf step [{opts}] {name}: {"fails" if want_fail else "passes"}', (rc != 0) == want_fail, f'rc={rc} {out[-250:]}')
+            if not want_fail: check(f'perf step [{opts}] copies the result into dist/perf', os.path.exists(w + '/dist/perf/result.txt') and os.path.exists(w + '/dist/perf/perf.txt'))
+            shutil.rmtree(w)
+    # the step's own if: expression, translated like the gate's
+    expr = st['if'].strip()[3:-2].strip()
+    py = expr.replace('&&', ' and ').replace('||', ' or ')
+    py = re.sub(r'!(?!=)', ' not ', py); py = re.sub(r'inputs\.(\w+)', r"I['\1']", py); py = re.sub(r'steps\.(\w+)\.outputs\.(\w+)', r"U['\1.\2']", py)
+    def runs(I=None, U=None):
+        b = dict(compile_only=False, perf=False, perf_in_run=False); b.update(I or {}); u = {'testbuild.optional_build': ''}; u.update(U or {})
+        return bool(eval(py, {}, {'I': b, 'U': u}))
+    check('perf step runs for perf (exclusive)', runs(I={'perf': True}) is True)
+    check('perf step runs for perf_in_run', runs(I={'perf_in_run': True}) is True)
+    check('perf step does NOT run when neither is set', runs() is False)
+    check('perf step does NOT run for compile_only', runs(I={'perf': True, 'compile_only': True}) is False)
+    check('perf step does NOT run when the optional test build failed', runs(I={'perf': True}, U={'testbuild.optional_build': 'failed'}) is False)
+    # perf-exclusive skips every required evidence step
+    skipped = [s.get('id') or s.get('name', '')[:40] for s in doc['jobs']['macos']['steps'] if s.get('id') in ('reset', 'docs', 'asserts', 'ordering', 'rust', 'bulk', 'dmg')]
+    for s_ in doc['jobs']['macos']['steps']:
+        if s_.get('id') in ('reset', 'docs', 'asserts', 'ordering', 'rust', 'bulk', 'dmg'):
+            e2 = re.sub(r'steps\.(\w+)\.outputs\.(\w+)', r"U['\1.\2']", re.sub(r'steps\.(\w+)\.outcome', r"O['\1']", re.sub(r'inputs\.(\w+)', r"I['\1']", s_['if'].strip()[3:-2].strip().replace('&&', ' and ').replace('||', ' or ')))).replace('!', ' not ').replace(' not =', '!=') if 'if' in s_ else 'True'
+            I = dict(compile_only=False, perf=True, perf_in_run=False, consolidated=True, docs_2x=False)
+            ok = bool(eval(e2.replace('always()', 'True'), {}, {'I': I, 'O': {k: 'success' for k in ('reset', 'docs', 'asserts')}, 'U': {'testbuild.optional_build': ''}})) if 'if' in s_ else True
+            check(f'perf-exclusive: step {s_.get("id")} is skipped', ok is False)
+
+asserts_cases(); ordering_cases(); gate_cases(); perf_cases()
 docs_cases(CI, 'head', True)
 if base_ci: docs_cases(base_ci, 'base', False)
 timing()
