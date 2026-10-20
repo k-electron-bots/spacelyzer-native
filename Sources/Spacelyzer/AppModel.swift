@@ -82,7 +82,11 @@ final class AppModel {
     /// Bumped on every real selection change (table or model). It is an input of the outline table so SwiftUI cannot skip a table sync when
     /// coalesced changes end on the value last rendered while the table sits elsewhere. A hypothesis-driven remedy, see the CI selection variant.
     var selectionRevision = 0
-    var selected: UInt32? { didSet { if selected != oldValue { selectionRevision &+= 1; retryDone("node") } } }   // a retry for the old selection must not outlive it
+    var selected: UInt32? { didSet {
+        if selected != oldValue { selectionRevision &+= 1; retryDone("node") }
+        // A focus set from outside the multi-selection (treemap click, drill) replaces it: the set must contain its focus.
+        if let s = selected, !selectedSet.isEmpty, !selectedSet.contains(s) { selectedSet = [s] }
+    } }   // a retry for the old selection must not outlive it
 
     /// Ordered multi-selection for batch operations (batch-removal epic, slice 2). `selected` stays the
     /// focus item and drives every existing single-selection behavior; `selectedSet` is the batch input.
