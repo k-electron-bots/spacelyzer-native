@@ -23,6 +23,11 @@ on:
         required: false
         type: boolean
         default: false
+      perf_in_run:
+        description: 'Also run the perf driver inside this run (after the UI assertions and the other optional steps), without skipping anything. Informational, no thresholds; adds a few minutes, so mind the 35-minute cap.'
+        required: false
+        type: boolean
+        default: false
       perf_root:
         description: 'Absolute folder the perf option scans (default /Applications). The item count is measured and reported, not assumed.'
         required: false
@@ -63,6 +68,8 @@ jobs:
           echo "::notice title=toolchain::$(sw_vers -productVersion) | $(xcodebuild -version | tr '\n' ' ') | sdk $(xcrun --show-sdk-version) | $(swift --version 2>&1 | head -1)"
       - name: Rust engine tests (native macOS, includes getattrlistbulk backend)
         if: ${{ !inputs.compile_only && !inputs.perf }}
+        id: rust
+        continue-on-error: ${{ inputs.consolidated }}
         run: |
           rustup update stable --no-self-update
           set -o pipefail
@@ -94,6 +101,8 @@ jobs:
           exit "$status"
       - name: Bulk backend vs portable backend on real macOS trees
         if: ${{ !inputs.compile_only && !inputs.perf }}
+        id: bulk
+        continue-on-error: ${{ inputs.consolidated }}
         run: |
           cargo build --release -p spacelyzer-engine
           for d in /Applications /usr/lib "$HOME/Library"; do
@@ -127,6 +136,8 @@ jobs:
           echo "hash=$HASH" >> "$GITHUB_OUTPUT"
       - name: Package signed DMG
         if: ${{ !inputs.compile_only && !inputs.perf }}
+        id: dmg
+        continue-on-error: ${{ inputs.consolidated }}
         run: ./scripts/package-dmg.sh "${{ steps.ver.outputs.version }}" "${{ steps.sign.outputs.hash }}"
       - name: Capture DMG install window and app icon (evidence only; artifacts, no publish)
         if: ${{ !inputs.compile_only && !inputs.perf }}
@@ -162,106 +173,24 @@ jobs:
           test -s dist/screenshot-app-icon-finder.png
       - name: Build TEST-ONLY app with SPZ_CI_TESTS (never packaged or released; the DMG above is built without the flag)
         if: ${{ !inputs.compile_only }}
-        run: bash ./scripts/build-test-app.sh dist-test "${{ steps.sign.outputs.hash }}"
-      - name: Perf driver (perf option only; informational, no thresholds; incomplete or missing milestones fail the build)
-        if: ${{ !inputs.compile_only && inputs.perf }}
-        id: perf
-        continue-on-error: true
+        id: testbuild
         run: |
-          set +e
-          mkdir -p dist/perf
-          W=$(mktemp -d); RES="$W/res"; mkdir -p "$RES"
-          APP="$W/app/Spacelyzer.app"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-          cp dist-test/Spacelyzer.app/Contents/MacOS/Spacelyzer "$APP/Contents/MacOS/Spacelyzer"
-          sed -e "s/__VERSION__/0.0.0-perf/g" -e "s|com.k-electron.spacelyzer-native|com.k-electron.spacelyzer-native.perf.$$|" Resources/Info.plist > "$APP/Contents/Info.plist"
-          codesign --force --deep --sign - --entitlements Resources/Spacelyzer.entitlements "$APP" && codesign --verify --deep --strict "$APP" || { echo "::error title=perf::codesign failed"; exit 1; }
-          pkill Spacelyzer; sleep 2
-          open -n "$APP" --stdout "$W/stdout.log" --stderr "$W/stderr.log" \
-            --env SPZ_DEMO=1 --env SPZ_CHECKS=perf --env SPZ_RESULT_DIR="$RES" --env SPZ_PERF_ROOT="${{ inputs.perf_root }}"
-          for _ in $(seq 1 930); do [ -s "$RES/result.txt" ] && break; sleep 1; done
-          pkill -f "$APP/Contents/MacOS/Spacelyzer"; sleep 1; pkill -9 -f "$APP/Contents/MacOS/Spacelyzer"
-          cp "$RES"/* dist/perf/ 2>/dev/null; cp "$W/stderr.log" dist/perf/stderr.log 2>/dev/null
-          cat "$RES/perf.txt" 2>/dev/null; cat "$RES/result.txt" 2>/dev/null
-          [ "$(head -1 "$RES/result.txt" 2>/dev/null)" = "PERF-COMPLETE" ] || { echo "::error title=perf::$(tr '\n' ';' < "$RES/result.txt" 2>/dev/null | head -c 600)"; exit 1; }
-      - name: Docs captures of a purpose-built sample tree (informational; real window-only captures, no mocks)
-        if: ${{ !inputs.compile_only && !inputs.perf }}
-        continue-on-error: true
-        run: |
-          # Real app, real scan of a friendly sample tree, window-only captures (screencapture -l, no shadow),
-          # driven by ordinary accessibility presses. Output names start with screenshot-docs- so the
-          # artifact upload below includes them. The runner display is small, so the window is the minimum
-          # size the app allows (960x600); captures are at the display's native scale.
-          set +e
-          bash scripts/make-docs-fixture.sh "$HOME/Sample"
-          swiftc scripts/docs-capture.swift -o /tmp/spz-docs-capture
-          cap() {   # cap <pid> <name>
-            wid=$(/tmp/spz-docs-capture "$1" windowid) || { echo "no window for $2"; return 1; }
-            screencapture -x -o -l "$wid" "dist/screenshot-docs-$2.png" || echo "capture failed: $2"
-          }
-          launch() {   # launch <extra open args...>; sets PID
-            pkill Spacelyzer; sleep 2
-            open -n dist/Spacelyzer.app --env SPZ_WINDOW_SIZE=960x600 "$@"
-            sleep 6
-            PID=$(pgrep -n -f "dist/Spacelyzer.app/Contents/MacOS/Spacelyzer")
-            echo "launched pid=$PID"
-          }
-          launch --env SPZ_AUTOSCAN="$HOME/Sample"
-          sleep 12
-          cap "$PID" overview
-          /tmp/spz-docs-capture "$PID" press Kinds && sleep 2 && cap "$PID" kinds
-          /tmp/spz-docs-capture "$PID" press Largest && sleep 2 && cap "$PID" largest
-          /tmp/spz-docs-capture "$PID" select 0 && sleep 1 && /tmp/spz-docs-capture "$PID" press "Check on disk" && sleep 3 && cap "$PID" review
-          /tmp/spz-docs-capture "$PID" escape; sleep 1
-          /tmp/spz-docs-capture "$PID" press Folders && sleep 2 && cap "$PID" folders
-          /tmp/spz-docs-capture "$PID" press Largest && sleep 1
-          /tmp/spz-docs-capture "$PID" type pdf && sleep 2 && cap "$PID" filtered-largest
-          /tmp/spz-docs-capture "$PID" type zzz && sleep 2 && cap "$PID" no-matches
-          launch --env SPZ_AUTOSCAN="$HOME/Sample" --env SPZ_DEMO_APPEARANCE=dark
-          sleep 12
-          cap "$PID" overview-dark
-          launch
-          sleep 2
-          cap "$PID" welcome
-          launch --env SPZ_DEMO_APPEARANCE=dark
-          sleep 2
-          cap "$PID" welcome-dark
-          launch --env SPZ_DEMO_FDA_REFUSED=1 --env SPZ_AUTOSCAN="$HOME/Sample"
-          sleep 12
-          cap "$PID" fda-banner
-          pkill Spacelyzer; sleep 2
-          ls -l dist/screenshot-docs-*.png || echo "no docs captures"
-      - name: Ordering driver, one launch (consolidated option only; fails the build if any required check is missing, duplicated or failing)
-        if: ${{ !inputs.compile_only && !inputs.perf && inputs.consolidated }}
-        id: ordering
-        continue-on-error: true
-        run: |
-          set +e
-          mkdir -p dist/ordering
-          N=$(python3 scripts/check-ordering-manifest.py | sed -n 's/^OK \([0-9]*\) required == \([0-9]*\) declared$/\1/p')
-          [ -n "$N" ] || { echo "::error title=ordering::could not read the required-check count"; exit 1; }
-          W=$(mktemp -d); RES="$W/res"; FIX="$W/fix"; mkdir -p "$RES" "$FIX/d"
-          head -c 200000 /dev/zero > "$FIX/a.bin"; head -c 100000 /dev/zero > "$FIX/d/b.bin"
-          APP="$W/app/Spacelyzer.app"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-          cp dist-test/Spacelyzer.app/Contents/MacOS/Spacelyzer "$APP/Contents/MacOS/Spacelyzer"
-          sed -e "s/__VERSION__/0.0.0-ordering/g" -e "s|com.k-electron.spacelyzer-native|com.k-electron.spacelyzer-native.ordering.$$|" Resources/Info.plist > "$APP/Contents/Info.plist"
-          codesign --force --deep --sign - --entitlements Resources/Spacelyzer.entitlements "$APP" && codesign --verify --deep --strict "$APP" || { echo "::error title=ordering::codesign failed"; exit 1; }
-          pkill Spacelyzer; sleep 2
-          open -n "$APP" --stdout "$W/stdout.log" --stderr "$W/stderr.log" \
-            --env SPZ_AUTOSCAN="$FIX" --env SPZ_DEMO=1 --env SPZ_CHECKS=ordering --env SPZ_RESULT_DIR="$RES"
-          for _ in $(seq 1 330); do [ -s "$RES/result.txt" ] && break; sleep 1; done
-          pkill -f "$APP/Contents/MacOS/Spacelyzer"; sleep 1; pkill -9 -f "$APP/Contents/MacOS/Spacelyzer"
-          cp "$RES"/* dist/ordering/ 2>/dev/null; cp "$W/stderr.log" dist/ordering/stderr.log 2>/dev/null
-          head -c 20000 "$RES/result.txt" 2>/dev/null
-          [ "$(head -1 "$RES/result.txt" 2>/dev/null)" = "PASS $N required checks, each exactly once" ] || { echo "::error title=ordering::$(head -3 "$RES/result.txt" 2>/dev/null | tr '\n' ';')"; exit 1; }
-          ! grep -q '^FAIL' "$RES/assertions.txt" || exit 1
-          echo "::notice title=ordering::PASS $N required checks, each exactly once"
-      - name: Docs captures, experimental render-derived 2x (option only; test-only app; real 1x captures above are unchanged)
-        if: ${{ !inputs.compile_only && !inputs.perf && inputs.docs_2x }}
-        continue-on-error: true
-        run: |
-          set +e
-          [ -d "$HOME/Sample" ] || bash scripts/make-docs-fixture.sh "$HOME/Sample"
-          bash scripts/docs-capture-2x.sh dist-test/Spacelyzer.app "$HOME/Sample"
+          # Optional code (perf driver, 2x shot server) is compiled only when its option is requested, behind its own flag, so the
+          # default and consolidated test build contains exactly the code already built on a Mac. If the optional code fails to
+          # compile, the core test app is rebuilt without it (core evidence is kept) and the build is failed visibly at the end.
+          DEFS=""
+          if [ "${{ inputs.perf }}" = "true" ] || [ "${{ inputs.perf_in_run }}" = "true" ]; then DEFS="$DEFS SPZ_CI_PERF"; fi
+          if [ "${{ inputs.docs_2x }}" = "true" ]; then DEFS="$DEFS SPZ_CI_SHOTS"; fi
+          if [ -n "$DEFS" ]; then
+            if SPZ_TEST_EXTRA_DEFINES="$DEFS" bash ./scripts/build-test-app.sh dist-test "${{ steps.sign.outputs.hash }}"; then
+              echo "optional_build=ok" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            echo "optional_build=failed" >> "$GITHUB_OUTPUT"
+            echo "::error title=optional-code::the test build with optional code ($DEFS) failed to compile"
+            if [ "${{ inputs.perf }}" = "true" ]; then exit 1; fi
+            echo "Rebuilding the core test app without the optional code"
+          fi
+          bash ./scripts/build-test-app.sh dist-test "${{ steps.sign.outputs.hash }}"
       - name: Launch app and screenshot (informational)
         if: ${{ !inputs.compile_only && !inputs.perf }}
         continue-on-error: true
@@ -400,7 +329,7 @@ jobs:
           fi
           echo "::notice title=ui-assertions::all $n UI assertions passed: $(cut -d' ' -f2 /tmp/spz-assertions.txt | tr '\n' ' ')"
       - uses: actions/upload-artifact@v4
-        if: ${{ !inputs.compile_only }}
+        if: ${{ always() && !inputs.compile_only }}
         with:
           name: Spacelyzer-${{ steps.ver.outputs.version }}
           path: |
@@ -420,6 +349,168 @@ jobs:
             dist/footer-ax-status.txt
             dist/ordering/
             dist/perf/
+      - name: Reset persisted app state before the docs captures (the demo above ran the same bundle id; docs need a first-launch state)
+        if: ${{ !inputs.compile_only && !inputs.perf }}
+        id: reset
+        continue-on-error: true
+        timeout-minutes: 2
+        run: |
+          set -u
+          DOM=com.k-electron.spacelyzer-native
+          EV=dist/docs-reset-evidence.txt
+          mkdir -p dist; : > "$EV"
+          fail() { echo "::error title=docs-reset::$1"; echo "RESET FAILED: $1" >> "$EV"; cat "$EV"; exit 1; }
+          # 1. Stop every Spacelyzer process BEFORE touching defaults, so a running app cannot write cached state back.
+          pkill -TERM -x Spacelyzer || true
+          for _ in $(seq 1 10); do pgrep -x Spacelyzer >/dev/null || break; sleep 1; done
+          if pgrep -x Spacelyzer >/dev/null; then pkill -KILL -x Spacelyzer || true; for _ in $(seq 1 5); do pgrep -x Spacelyzer >/dev/null || break; sleep 1; done; fi
+          pgrep -x Spacelyzer >/dev/null && fail "a Spacelyzer process survived SIGKILL: $(pgrep -lx Spacelyzer | tr '\n' ' ')"
+          echo "no Spacelyzer process running" >> "$EV"
+          # 2. Evidence of what the demo left behind.
+          { echo "--- defaults before reset"; defaults read "$DOM" 2>&1 | head -40; echo "--- plist before reset"; ls -l "$HOME/Library/Preferences/$DOM.plist" 2>&1; echo "--- saved state before reset"; ls -la "$HOME/Library/Saved Application State/$DOM.savedState" 2>&1 | head -10; } >> "$EV"
+          # 3. Remove state, then prove it is gone. A failed delete or an unreadable result counts as not clean.
+          defaults delete "$DOM" >> "$EV" 2>&1 || echo "defaults delete returned nonzero (accepted only if the domain is verified absent below)" >> "$EV"
+          rm -f "$HOME/Library/Preferences/$DOM.plist" || fail "could not remove the preferences plist"
+          rm -rf "$HOME/Library/Saved Application State/$DOM.savedState" || fail "could not remove saved window state"
+          killall cfprefsd 2>/dev/null || true
+          sleep 2
+          OUT=$(defaults read "$DOM" 2>&1); RC=$?
+          { echo "--- defaults after reset (rc=$RC)"; echo "$OUT" | head -5; } >> "$EV"
+          if [ "$RC" -eq 0 ]; then fail "defaults domain still readable after reset"; fi
+          echo "$OUT" | grep -q "does not exist" || fail "defaults read failed for a reason other than the domain being absent: $(echo "$OUT" | head -2)"
+          [ ! -e "$HOME/Library/Preferences/$DOM.plist" ] || fail "preferences plist still present"
+          [ ! -e "$HOME/Library/Saved Application State/$DOM.savedState" ] || fail "saved window state still present"
+          echo "RESET VERIFIED: no process, domain absent, plist absent, saved state absent" >> "$EV"
+          cat "$EV"
+      - name: Docs captures of a purpose-built sample tree (informational; real window-only captures, no mocks)
+        if: ${{ !inputs.compile_only && !inputs.perf && steps.reset.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 8
+        run: |
+          # Real app, real scan of a friendly sample tree, window-only captures (screencapture -l, no shadow),
+          # driven by ordinary accessibility presses. Output names start with screenshot-docs- so the
+          # artifact upload below includes them. The runner display is small, so the window is the minimum
+          # size the app allows (960x600); captures are at the display's native scale.
+          set +e
+          bash scripts/make-docs-fixture.sh "$HOME/Sample"
+          swiftc scripts/docs-capture.swift -o /tmp/spz-docs-capture
+          cap() {   # cap <pid> <name>
+            wid=$(/tmp/spz-docs-capture "$1" windowid) || { echo "no window for $2"; return 1; }
+            screencapture -x -o -l "$wid" "dist/screenshot-docs-$2.png" || echo "capture failed: $2"
+          }
+          launch() {   # launch <extra open args...>; sets PID
+            pkill Spacelyzer; sleep 2
+            open -n dist/Spacelyzer.app --env SPZ_WINDOW_SIZE=960x600 "$@"
+            sleep 6
+            PID=$(pgrep -n -f "dist/Spacelyzer.app/Contents/MacOS/Spacelyzer")
+            echo "launched pid=$PID"
+          }
+          launch --env SPZ_AUTOSCAN="$HOME/Sample"
+          sleep 12
+          cap "$PID" overview
+          /tmp/spz-docs-capture "$PID" press Kinds && sleep 2 && cap "$PID" kinds
+          /tmp/spz-docs-capture "$PID" press Largest && sleep 2 && cap "$PID" largest
+          /tmp/spz-docs-capture "$PID" select 0 && sleep 1 && /tmp/spz-docs-capture "$PID" press "Check on disk" && sleep 3 && cap "$PID" review
+          /tmp/spz-docs-capture "$PID" escape; sleep 1
+          /tmp/spz-docs-capture "$PID" press Folders && sleep 2 && cap "$PID" folders
+          /tmp/spz-docs-capture "$PID" press Largest && sleep 1
+          /tmp/spz-docs-capture "$PID" type pdf && sleep 2 && cap "$PID" filtered-largest
+          /tmp/spz-docs-capture "$PID" type zzz && sleep 2 && cap "$PID" no-matches
+          launch --env SPZ_AUTOSCAN="$HOME/Sample" --env SPZ_DEMO_APPEARANCE=dark
+          sleep 12
+          cap "$PID" overview-dark
+          launch
+          sleep 2
+          cap "$PID" welcome
+          launch --env SPZ_DEMO_APPEARANCE=dark
+          sleep 2
+          cap "$PID" welcome-dark
+          launch --env SPZ_DEMO_FDA_REFUSED=1 --env SPZ_AUTOSCAN="$HOME/Sample"
+          sleep 12
+          cap "$PID" fda-banner
+          pkill Spacelyzer; sleep 2
+          ls -l dist/screenshot-docs-*.png || echo "no docs captures"
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && !inputs.compile_only && !inputs.perf }}
+        with:
+          name: Spacelyzer-${{ steps.ver.outputs.version }}-docs
+          path: |
+            dist/screenshot-docs-*.png
+            dist/docs-reset-evidence.txt
+      - name: Ordering driver, one launch (consolidated option only; fails the build if any required check is missing, duplicated or failing)
+        if: ${{ !inputs.compile_only && !inputs.perf && inputs.consolidated }}
+        id: ordering
+        continue-on-error: true
+        timeout-minutes: 7
+        run: |
+          set +e
+          mkdir -p dist/ordering
+          N=$(python3 scripts/check-ordering-manifest.py | sed -n 's/^OK \([0-9]*\) required == \([0-9]*\) declared$/\1/p')
+          [ -n "$N" ] || { echo "::error title=ordering::could not read the required-check count"; exit 1; }
+          W=$(mktemp -d); RES="$W/res"; FIX="$W/fix"; mkdir -p "$RES" "$FIX/d"
+          head -c 200000 /dev/zero > "$FIX/a.bin"; head -c 100000 /dev/zero > "$FIX/d/b.bin"
+          APP="$W/app/Spacelyzer.app"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp dist-test/Spacelyzer.app/Contents/MacOS/Spacelyzer "$APP/Contents/MacOS/Spacelyzer"
+          sed -e "s/__VERSION__/0.0.0-ordering/g" -e "s|com.k-electron.spacelyzer-native|com.k-electron.spacelyzer-native.ordering.$$|" Resources/Info.plist > "$APP/Contents/Info.plist"
+          codesign --force --deep --sign - --entitlements Resources/Spacelyzer.entitlements "$APP" && codesign --verify --deep --strict "$APP" || { echo "::error title=ordering::codesign failed"; exit 1; }
+          pkill Spacelyzer; sleep 2
+          open -n "$APP" --stdout "$W/stdout.log" --stderr "$W/stderr.log" \
+            --env SPZ_AUTOSCAN="$FIX" --env SPZ_DEMO=1 --env SPZ_CHECKS=ordering --env SPZ_RESULT_DIR="$RES"
+          for _ in $(seq 1 330); do [ -s "$RES/result.txt" ] && break; sleep 1; done
+          pkill -f "$APP/Contents/MacOS/Spacelyzer"; sleep 1; pkill -9 -f "$APP/Contents/MacOS/Spacelyzer"
+          cp "$RES"/* dist/ordering/ 2>/dev/null; cp "$W/stderr.log" dist/ordering/stderr.log 2>/dev/null
+          head -c 20000 "$RES/result.txt" 2>/dev/null
+          [ "$(head -1 "$RES/result.txt" 2>/dev/null)" = "PASS $N required checks, each exactly once" ] || { echo "::error title=ordering::$(head -3 "$RES/result.txt" 2>/dev/null | tr '\n' ';')"; exit 1; }
+          ! grep -q '^FAIL' "$RES/assertions.txt" || exit 1
+          echo "::notice title=ordering::PASS $N required checks, each exactly once"
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && !inputs.compile_only && !inputs.perf && inputs.consolidated }}
+        with:
+          name: Spacelyzer-${{ steps.ver.outputs.version }}-ordering
+          path: |
+            dist/ordering/
+      - name: Docs captures, experimental render-derived 2x (option only; test-only app; real 1x captures above are unchanged)
+        if: ${{ !inputs.compile_only && !inputs.perf && inputs.docs_2x && steps.reset.outcome == 'success' && steps.testbuild.outputs.optional_build != 'failed' }}
+        continue-on-error: true
+        timeout-minutes: 6
+        run: |
+          set +e
+          [ -d "$HOME/Sample" ] || bash scripts/make-docs-fixture.sh "$HOME/Sample"
+          bash scripts/docs-capture-2x.sh dist-test/Spacelyzer.app "$HOME/Sample"
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && !inputs.compile_only && !inputs.perf && inputs.docs_2x }}
+        with:
+          name: Spacelyzer-${{ steps.ver.outputs.version }}-docs-2x
+          path: |
+            dist/screenshot-docs-2x-render-*.png
+            dist/screenshot-docs-2x-render-*.txt
+      - name: Perf driver (perf option only; informational, no thresholds; incomplete or missing milestones fail the build)
+        if: ${{ !inputs.compile_only && (inputs.perf || inputs.perf_in_run) && steps.testbuild.outputs.optional_build != 'failed' }}
+        id: perf
+        continue-on-error: true
+        timeout-minutes: 8
+        run: |
+          set +e
+          mkdir -p dist/perf
+          W=$(mktemp -d); RES="$W/res"; mkdir -p "$RES"
+          APP="$W/app/Spacelyzer.app"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp dist-test/Spacelyzer.app/Contents/MacOS/Spacelyzer "$APP/Contents/MacOS/Spacelyzer"
+          sed -e "s/__VERSION__/0.0.0-perf/g" -e "s|com.k-electron.spacelyzer-native|com.k-electron.spacelyzer-native.perf.$$|" Resources/Info.plist > "$APP/Contents/Info.plist"
+          codesign --force --deep --sign - --entitlements Resources/Spacelyzer.entitlements "$APP" && codesign --verify --deep --strict "$APP" || { echo "::error title=perf::codesign failed"; exit 1; }
+          pkill Spacelyzer; sleep 2
+          open -n "$APP" --stdout "$W/stdout.log" --stderr "$W/stderr.log" \
+            --env SPZ_DEMO=1 --env SPZ_CHECKS=perf --env SPZ_RESULT_DIR="$RES" --env SPZ_PERF_ROOT="${{ inputs.perf_root }}"
+          for _ in $(seq 1 930); do [ -s "$RES/result.txt" ] && break; sleep 1; done
+          pkill -f "$APP/Contents/MacOS/Spacelyzer"; sleep 1; pkill -9 -f "$APP/Contents/MacOS/Spacelyzer"
+          cp "$RES"/* dist/perf/ 2>/dev/null; cp "$W/stderr.log" dist/perf/stderr.log 2>/dev/null
+          cat "$RES/perf.txt" 2>/dev/null; cat "$RES/result.txt" 2>/dev/null
+          [ "$(head -1 "$RES/result.txt" 2>/dev/null)" = "PERF-COMPLETE" ] || { echo "::error title=perf::$(tr '\n' ';' < "$RES/result.txt" 2>/dev/null | head -c 600)"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && !inputs.compile_only && (inputs.perf || inputs.perf_in_run) }}
+        with:
+          name: Spacelyzer-${{ steps.ver.outputs.version }}-perf
+          path: |
+            dist/perf/
       - name: Publish release (epic tags only)
         if: startsWith(github.ref, 'refs/tags/epic-')
         env:
@@ -428,6 +519,12 @@ jobs:
           V=v${{ steps.ver.outputs.version }}
           gh release create "$V" dist/*.dmg dist/*.sha256 dist/screenshot*.png dist/ui-assertions.txt dist/main-thread-sample.txt --title "Spacelyzer $V" --prerelease \
             --notes "UI assertions: ${{ steps.asserts.outcome }}. Self-signed development build (not notarized). Not Apple-verified: after the first blocked open, use System Settings > Privacy & Security > Open Anyway. Screenshots attached are from the CI runner, not a real Mac. Built from ${{ github.sha }}."
-      - name: Fail the build if UI assertions failed (after artifacts and release are published)
-        if: ${{ always() && !inputs.compile_only && ((!inputs.perf && (steps.asserts.outcome != 'success' || (inputs.consolidated && steps.ordering.outcome != 'success'))) || (inputs.perf && steps.perf.outcome != 'success')) }}
+      - name: Stop any app left running (also after a step timeout)
+        if: ${{ always() && !inputs.compile_only }}
+        continue-on-error: true
+        run: |
+          pkill Spacelyzer || true
+          hdiutil info | grep -q "/Volumes/Spacelyzer" && hdiutil detach "/Volumes/Spacelyzer ${{ steps.ver.outputs.version }}" -force || true
+      - name: Fail the build if any required evidence failed or was lost (after artifacts and release are published)
+        if: ${{ always() && !inputs.compile_only && (steps.testbuild.outputs.optional_build == 'failed' || (inputs.perf && steps.perf.outcome != 'success') || (!inputs.perf && (steps.reset.outcome != 'success' || steps.asserts.outcome != 'success' || (inputs.perf_in_run && steps.perf.outcome != 'success') || (inputs.consolidated && (steps.ordering.outcome != 'success' || steps.rust.outcome != 'success' || steps.bulk.outcome != 'success' || steps.dmg.outcome != 'success'))))) }}
         run: exit 1
