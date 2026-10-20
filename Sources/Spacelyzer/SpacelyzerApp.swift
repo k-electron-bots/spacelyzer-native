@@ -810,7 +810,7 @@ struct SpacelyzerApp: App {
                             let fullLabel = footerAX.entries.contains { $0.label.contains("Stopped early, partial accounting") && $0.label.contains("Filter:") && $0.label.contains("1 file") && $0.label.contains("1,234,567 locations not readable") && $0.label.contains("Scanned in") }
                             Check.expect("footer-native-accessibility-full-details", fullLabel, "native accessor from mixed AX/view discovery only; not external client reachability; truncated=\(footerAX.truncated); missing label inconclusive when truncated; not VoiceOver/client announcements or tooltip proof")
                             let footerActions = DemoAX.footerActionNames()
-                            Check.expect("footer-voiceover-action-name-clean", footerActions.contains("Show locations not scanned") && !footerActions.contains { $0.contains("Target:0x") || $0.contains("Selector:(null)") }, "combined footer element must vend the authored action name, never a generated debug description (run 38993434887 leaked Name:/Target:/Selector:); actions=\(footerActions)")
+                            Check.expect("footer-voiceover-action-name-clean", footerActions.count == 1 && footerActions.allSatisfy { DemoAX.authoredActionName($0) == "Show locations not scanned" }, "combined footer element must vend the authored action name, exactly one action whose authored name is Show locations not scanned (the AX API wraps it as Name:|Target:|Selector:; any other authored name, or extra actions, fails); actions=\(footerActions)")
                             mark(40)
                             footerWindow.close(); priorProductWindow?.makeKeyAndOrderFront(nil)
                             model.demoFooterUnreadable = nil; model.demoFooterPartial = nil
@@ -1042,6 +1042,11 @@ struct SpacelyzerApp: App {
                                     let volListDeadline = Date().addingTimeInterval(15)
                                     while volList.items == nil && !volList.readFailed && Date() < volListDeadline { try? await Task.sleep(nanoseconds: 20_000_000) }
                                     volumeListed = volList.items?.contains { $0.reason == .separateVolume && $0.path.contains("subvol") } == true
+                                    // Evidence for the next run, no check depends on it: what the OS says about the two directories and what the list held.
+                                    var stRoot = stat(), stMount = stat()
+                                    let rootOK = stat(volRoot7.path, &stRoot) == 0, mountOK = stat(mountPoint7.path, &stMount) == 0
+                                    let listed = (volList.items ?? []).map { "\($0.reason):\($0.path.suffix(40))" }
+                                    Check.note("batch7-volume-evidence: stat(root).dev=\(rootOK ? Int(stRoot.st_dev) : -1) stat(mountpoint).dev=\(mountOK ? Int(stMount.st_dev) : -1) mountedDevice=\(dev) skippedItems=\(listed)")
                                     let volWindow = NSWindow(contentRect: NSRect(x: 150, y: 150, width: 640, height: 420), styleMask: [.titled], backing: .buffered, defer: false)
                                     volWindow.isReleasedWhenClosed = false
                                     volWindow.title = "CI Not-scanned list with a real second volume"
@@ -1155,6 +1160,17 @@ struct SpacelyzerApp: App {
         if let a = value as? NSAttributedString { return a.string }
         return ""
     }
+    /// The in-process AX API vends a custom action's name wrapped in AppKit's description of the action
+    /// ("Name:<authored>|Target:0x0|Selector:(null)", or newline separated); run 39451419467 recorded exactly that for the
+    /// footer. This returns the authored part so a check can compare the authored name itself: a wrapper around the
+    /// right name is accepted, a wrapper around any other name is not, and the vended string is what gets performed.
+    static func authoredActionName(_ vended: String) -> String {
+        guard vended.hasPrefix("Name:") else { return vended }
+        let rest = vended.dropFirst(5)
+        let end = rest.firstIndex(where: { $0 == "|" || $0 == "\n" }) ?? rest.endIndex
+        return String(rest[..<end])
+    }
+    static func vendedAction(_ actions: [String], authored: String) -> String? { actions.first { authoredActionName($0) == authored } }
     private static func axActions(_ element: AXUIElement) -> [String] {
         var names: CFArray?
         guard AXUIElementCopyActionNames(element, &names) == .success, let n = names as? [String] else { return [] }
@@ -1185,8 +1201,8 @@ struct SpacelyzerApp: App {
                     let text = ([axString(element, "AXTitle"), axString(element, "AXDescription"), axString(element, "AXLabel"), axString(element, "AXValue"), axString(element, "AXRoleDescription")] + actions).joined(separator: " ")
                     Perf.log("demo-ax button win=\(wTitle) text=\(text.prefix(80)) actions=\(actions)")
                 }
-                if actions.contains("Show locations not scanned") {
-                    let result = AXUIElementPerformAction(element, "Show locations not scanned" as CFString)
+                if let vended = vendedAction(actions, authored: "Show locations not scanned") {
+                    let result = AXUIElementPerformAction(element, vended as CFString)
                     Perf.log("demo-ax press attempt name=Show locations not scanned result=\(result == .success)")
                     if result == .success { return true }
                 }
@@ -1241,7 +1257,7 @@ struct SpacelyzerApp: App {
             while let element = stack.popLast(), visited < 2048 {
                 visited += 1
                 let actions = axActions(element)
-                if actions.contains("Show locations not scanned") || axString(element, "AXTitle") == "Scan summary" { return actions }
+                if vendedAction(actions, authored: "Show locations not scanned") != nil || axString(element, "AXTitle") == "Scan summary" { return actions }
                 var childrenRef: CFTypeRef?
                 if AXUIElementCopyAttributeValue(element, "AXChildren" as CFString, &childrenRef) == .success,
                    let children = childrenRef as? [AXUIElement] { stack.append(contentsOf: children) }
@@ -2651,6 +2667,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         let readyAgain = am4.derivedPresentation == .ready
         am4.panicBaseline = EnginePanics.count &- 1
         let poisonBlank = isUnavailable(am4.derivedPresentation)
+        am4.panicBaseline = EnginePanics.count                                  // leave the poisoned state before the filter case: it tests a healthy engine
         am4.derivedVersion = t2.version
         am4.filterPending = true
         let filterRetained = isRetained(am4.derivedPresentation)                // filter-only pending: snapshot kept (dimmed), not withheld
@@ -2660,7 +2677,9 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         Check.expect("derived-presentation-retains-only-for-filter-withholds-when-table-moved-or-poisoned", allOK, "filterRetained=\(filterRetained) afterFilter=\(afterFilter) noVersion=\(noVersion) ready=\(ready) tableMovedWithheld=\(tableMovedWithheld) settlingWithheld=\(settlingWithheld) outOfDateWithheld=\(outOfDateWithheld) readyAgain=\(readyAgain) poisonBlank=\(poisonBlank)")
 
         // 6. Stored poison (markPoisoned, as the poison watch calls it) while Folders are ready: failed, no rows, no version.
-        let am5 = AppModel(); am5.tree = t2; am5.panicBaseline = EnginePanics.count
+        // A fresh scan of the same fixture: t2 has had x and y forgotten by the cases above, so its folder list is empty.
+        guard let t5 = await ScanSession(root: d2.path, excludes: [])?.run(progress: { _ in }) else { Check.expect("folders-model-stored-poison-forces-failed-and-clears-rows", false, "fixture 5"); return }
+        let am5 = AppModel(); am5.tree = t5; am5.panicBaseline = EnginePanics.count
         am5.refreshFolders(); await am5.folderTask?.value
         let wasReady = am5.folderLoad == .ready && !am5.folderIDs.isEmpty
         am5.markPoisoned()
@@ -3530,6 +3549,7 @@ final class BusyFlag: @unchecked Sendable {
         "multi-select-range-without-anchor-anchors-on-click",
         "multi-select-hidden-members-excluded-from-batch-candidates",
         "multi-select-clear-resets-set-and-focus",
+        "multi-select-focus-from-outside-set-replaces-set",
         "outline-sync-added-row-becomes-focus",
         "outline-sync-removal-of-other-keeps-focus",
         "outline-sync-removal-moves-focus-to-last-row-order-member",
