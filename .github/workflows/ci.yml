@@ -367,14 +367,15 @@ jobs:
           pgrep -x Spacelyzer >/dev/null && fail "a Spacelyzer process survived SIGKILL: $(pgrep -lx Spacelyzer | tr '\n' ' ')"
           echo "no Spacelyzer process running" >> "$EV"
           # 2. Evidence of what the demo left behind.
-          { echo "--- defaults before reset"; defaults read "$DOM" 2>&1 | head -40; echo "--- plist before reset"; ls -l "$HOME/Library/Preferences/$DOM.plist" 2>&1; echo "--- saved state before reset"; ls -la "$HOME/Library/Saved Application State/$DOM.savedState" 2>&1 | head -10; } >> "$EV"
+          { echo "--- defaults before reset"; { defaults read "$DOM" 2>&1 | head -40 || true; }; echo "--- plist before reset"; { ls -l "$HOME/Library/Preferences/$DOM.plist" 2>&1 || true; }; echo "--- saved state before reset"; { ls -la "$HOME/Library/Saved Application State/$DOM.savedState" 2>&1 | head -10 || true; }; } >> "$EV"
           # 3. Remove state, then prove it is gone. A failed delete or an unreadable result counts as not clean.
           defaults delete "$DOM" >> "$EV" 2>&1 || echo "defaults delete returned nonzero (accepted only if the domain is verified absent below)" >> "$EV"
           rm -f "$HOME/Library/Preferences/$DOM.plist" || fail "could not remove the preferences plist"
           rm -rf "$HOME/Library/Saved Application State/$DOM.savedState" || fail "could not remove saved window state"
           killall cfprefsd 2>/dev/null || true
           sleep 2
-          OUT=$(defaults read "$DOM" 2>&1); RC=$?
+          # `OUT=$(cmd); RC=$?` would exit the whole step under bash -e when cmd fails, which is exactly the expected "domain absent" case.
+          OUT=$(defaults read "$DOM" 2>&1) && RC=0 || RC=$?
           { echo "--- defaults after reset (rc=$RC)"; echo "$OUT" | head -5; } >> "$EV"
           if [ "$RC" -eq 0 ]; then fail "defaults domain still readable after reset"; fi
           echo "$OUT" | grep -q "does not exist" || fail "defaults read failed for a reason other than the domain being absent: $(echo "$OUT" | head -2)"
