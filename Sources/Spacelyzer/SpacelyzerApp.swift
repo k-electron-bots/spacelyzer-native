@@ -2135,11 +2135,11 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         let selectedBeforeRemoval = await PublicationRegression.wait { if let i = m.outlineIndex[big] { return table.selectedRow == i }; return false }
         var lateSync = false
         if !selectedBeforeRemoval { try? await Task.sleep(nanoseconds: 1_000_000_000); if let i = m.outlineIndex[big] { lateSync = table.selectedRow == i } }
-        var selDiag = "BASELINE modelSelected=\(String(describing: m.selected)) big=\(big) bigIndex=\(String(describing: m.outlineIndex[big])) tableRow=\(table.selectedRow) lateSync=\(lateSync) coordinator[\(table.accessibilityHelp() ?? "nil")] \(SelDiag.summary)"
+        var selDiag = "BASELINE modelSelected=\(String(describing: m.selected)) big=\(big) bigIndex=\(String(describing: m.outlineIndex[big])) tableRow=\(table.selectedRow) checkTID=\(ObjectIdentifier(table).hashValue) lateSync=\(lateSync) coordinator[\(table.accessibilityHelp() ?? "nil")] \(SelDiag.summary)"
         if !selectedBeforeRemoval {
             // Labelled PROBES, run only after the baseline above was captured; they never feed the precondition. Each ends with the same row/model readout.
             let bigRow: () -> Bool = { if let i = m.outlineIndex[big] { return table.selectedRow == i }; return false }
-            func readout(_ tag: String) -> String { "\(tag): tableAtBig=\(bigRow()) tableRow=\(table.selectedRow) model=\(String(describing: m.selected)) coordinator[\(table.accessibilityHelp() ?? "nil")] \(SelDiag.summary)" }
+            func readout(_ tag: String) -> String { "\(tag): tableAtBig=\(bigRow()) tableRow=\(table.selectedRow) checkTID=\(ObjectIdentifier(table).hashValue) model=\(String(describing: m.selected)) coordinator[\(table.accessibilityHelp() ?? "nil")] \(SelDiag.summary)" }
             // DISPLAY-PROBE (not a product fix): force layout and display on the stuck state, then one real run-loop turn.
             host.layoutSubtreeIfNeeded(); host.displayIfNeeded(); window.displayIfNeeded()
             let afterDisplay = bigRow()
