@@ -10,7 +10,7 @@ See what is using your disk. A native macOS disk-space analyzer with a SwiftUI i
 
 - Follow folders in the outline or compare their size in the treemap.
 - Switch to Kinds for a file-type breakdown, or Largest for the 200 largest matching files.
-- Combine name, extension, kind, size and modified-date filters across every view.
+- Combine name, extension, kind, size and modified-date filters across outline, treemap, Kinds and Largest. The Folders list is unfiltered.
 
 <!-- CAPTURE PENDING: the on-disk review capture is the one missing docs capture from run 39602481035 (10 of 11 landed; the capture flow was repaired in PR126 but has not produced a capture on Mac yet). Add docs/images/readme-review.png from a future verified CI capture; no stand-in. -->
 
