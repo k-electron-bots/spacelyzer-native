@@ -268,6 +268,17 @@ jobs:
             dist/*.sha256
             dist/screenshot-dmg-window.png
             dist/screenshot-app-icon-finder.png
+      - uses: actions/upload-artifact@v4
+        # docs_only retention: the packaged DMG + its sha256 upload as their own artifact right after packaging,
+        # because a docs_only run skips the normal dmg-evidence/main uploads and this DMG is the release-asset
+        # candidate - the runner-local file must never be lost to a later failure or the job cap. Gated on a
+        # successful package step; carries no screenshots, so the render evidence class stays separate.
+        if: ${{ always() && !inputs.compile_only && !inputs.perf && inputs.docs_only && steps.dmg.outcome == 'success' }}
+        with:
+          name: Spacelyzer-${{ steps.ver.outputs.version }}-dmg
+          path: |
+            dist/*.dmg
+            dist/*.sha256
       - name: Reset persisted app state (guarantees a first-launch state for the docs captures and the demo below; runs before any app launch in this job)
         if: ${{ !inputs.compile_only && !inputs.perf }}
         id: reset
