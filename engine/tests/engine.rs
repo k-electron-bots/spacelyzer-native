@@ -119,11 +119,11 @@ fn cancel_returns_partial_flagged() {
 #[test]
 fn forget_updates_ancestors() {
     let t = fixture();
-    let mut tree = scan(t.path(), &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    let tree = scan(t.path(), &ScanOptions::default(), &ScanProgress::default()).unwrap();
     let before = tree.size(0);
     let n = tree.find(&format!("{}/d3", tree.root_path())).unwrap();
     let sz = tree.size(n);
-    tree.forget(n);
+    assert!(tree.forget(n).is_ok());
     assert_eq!(tree.size(0), before - sz);
 }
 
@@ -409,19 +409,22 @@ fn outline_sort_modes_order_siblings_and_keep_every_row() {
 #[test]
 fn nameasc_matches_reference_lowercase_order_on_unicode_edges() {
     use spacelyzer_engine::outline::{visible_rows_sorted, SortMode};
-    use spacelyzer_engine::scan::{scan, ScanOptions, ScanProgress};
+    use spacelyzer_engine::Tree;
     use std::collections::HashSet;
     // Regression for the NameAsc comparator: sibling order must equal the
     // original sort_by_cached_key(|n| tree.name(n).to_lowercase()) exactly,
     // including context-sensitive Greek final sigma (a per-char lowercase
     // maps word-final capital sigma differently) and stable tie order.
-    // Returns (sorted names, pre-sort scan order) for a tree of `names`.
+    // The tree is synthetic, NOT a filesystem fixture: case-insensitive APFS
+    // folds "\u{039F}\u{03A3}" and "\u{039F}\u{03C3}" (and "apple"/"Apple") onto one directory
+    // entry, so a fixture holding both collapses to a single node there and the
+    // case never reaches the comparator (run 39653416924 failed exactly this
+    // way). The comparator input is names, not disk entries; a synthetic tree
+    // exercises the identical code path on every platform, with the pre-sort
+    // sibling order defined as the input order given here.
+    // Returns (sorted names, pre-sort sibling order) for a tree of `names`.
     let order = |names: &[&str]| -> (Vec<String>, Vec<String>) {
-        let t = tempdir::T::new();
-        for n in names {
-            std::fs::create_dir_all(t.path().join(n)).unwrap();
-        }
-        let tree = scan(t.path(), &ScanOptions::default(), &ScanProgress::default()).unwrap();
+        let tree = Tree::from_child_names(names);
         let prescan: Vec<String> = tree.children(0).map(|n| tree.name(n).to_string()).collect();
         let got: Vec<String> = visible_rows_sorted(&tree, 0, &HashSet::new(), None, SortMode::NameAsc)
             .iter().map(|r| tree.name(r.node).to_string()).collect();
@@ -624,6 +627,236 @@ fn unicode_name_and_extension_lowercase_contract() {
         assert_eq!(r.total_count, 1);
     }
                             }
+
+/// A removed node stays in the arena with size 0, so size alone cannot tell it from a real zero-byte file.
+/// The outline hides removed rows by the table's removal list and keeps genuine empty files and empty folders.
+#[test]
+fn outline_hides_forgotten_rows_but_keeps_zero_byte_files() {
+    let t = tempdir::T::new();
+    let r = t.path();
+    fs::write(r.join("keep.bin"), vec![1u8; 20_000]).unwrap();
+    fs::write(r.join("gone.bin"), vec![2u8; 30_000]).unwrap();
+    fs::write(r.join("empty.txt"), b"").unwrap();
+    fs::create_dir_all(r.join("emptydir")).unwrap();
+    fs::create_dir_all(r.join("gonedir")).unwrap();
+    fs::write(r.join("gonedir/inner.bin"), vec![3u8; 10_000]).unwrap();
+    fs::create_dir_all(r.join("gonezero")).unwrap();   // an empty folder that is then removed
+    let tree = scan(r, &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    let id = |n: &str| tree.find(&format!("{}/{}", tree.root_path(), n)).unwrap();
+    let names = |t: &Tree| -> Vec<String> {
+        let tab = t.table();
+        outline::visible_rows_sorted_in(t, &tab, 0, &Default::default(), None, outline::SortMode::NameAsc).iter().map(|r| t.name(r.node).to_string()).collect()
+    };
+    let before = names(&tree);
+    for n in ["keep.bin", "gone.bin", "empty.txt", "emptydir", "gonedir", "gonezero"] { assert!(before.contains(&n.to_string()), "missing {n} before"); }
+    let v0 = tree.table().version;
+    assert!(tree.forget(id("gone.bin")).is_ok());
+    assert!(tree.forget(id("gonedir")).is_ok());
+    assert!(tree.forget(id("gonezero")).is_ok());   // zero-size directory: still removed from the outline
+    let after = names(&tree);
+    for n in ["gone.bin", "gonedir", "gonezero"] { assert!(!after.contains(&n.to_string()), "{n} still listed: {after:?}"); }
+    for n in ["keep.bin", "empty.txt", "emptydir"] { assert!(after.contains(&n.to_string()), "{n} wrongly hidden: {after:?}"); }
+    assert_eq!(tree.table().version, v0 + 3);
+    // Forgetting an already removed node changes nothing, including the version.
+    let v = tree.table().version;
+    assert!(tree.forget(id("gone.bin")).is_ok());
+    assert_eq!(tree.table().version, v);
+    assert_eq!(tree.table().forgotten.len(), 3);
+}
+
+/// Every readout agrees about removed nodes: child counts, filters, largest files, category totals, descendants, item sort.
+#[test]
+fn removed_nodes_are_consistent_across_counts_filters_and_totals() {
+    let t = tempdir::T::new();
+    let r = t.path();
+    fs::create_dir_all(r.join("dir/gonesub/deep")).unwrap();
+    fs::write(r.join("dir/keep.bin"), vec![1u8; 20_000]).unwrap();
+    fs::write(r.join("dir/gone.bin"), vec![2u8; 30_000]).unwrap();
+    fs::write(r.join("dir/empty.txt"), b"").unwrap();
+    fs::write(r.join("dir/gonesub/inner.bin"), vec![3u8; 10_000]).unwrap();
+    fs::write(r.join("dir/gonesub/deep/deeper.bin"), vec![4u8; 12_000]).unwrap();
+    fs::create_dir_all(r.join("lonely")).unwrap();      // genuine empty folder
+    fs::create_dir_all(r.join("allgone")).unwrap();
+    fs::write(r.join("allgone/only.bin"), vec![5u8; 8_000]).unwrap();
+    let tree = scan(r, &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    let id = |n: &str| tree.find(&format!("{}/{}", tree.root_path(), n)).unwrap();
+    let dir = id("dir");
+    let live = |n: u32| tree.live_child_count_in(&tree.table(), n);
+    assert_eq!(live(dir), 4); // keep.bin, gone.bin, empty.txt, gonesub
+    let all = Filter::default();
+    let f0 = apply_filter(&tree, &all);
+    let files0 = f0.counts[0];
+    let totals0: u64 = tree.category_totals().iter().map(|c| c.1).sum();
+    let largest0 = tree.largest_files(100).len();
+    assert_eq!(files0 as usize, largest0);
+    // Remove a file, a folder with nested files, and the only child of a folder.
+    tree.forget(id("dir/gone.bin")).unwrap();
+    tree.forget(id("dir/gonesub")).unwrap();
+    tree.forget(id("allgone/only.bin")).unwrap();
+    let tab = tree.table();
+    assert_eq!(live(dir), 2, "keep.bin and empty.txt remain");
+    assert_eq!(live(id("allgone")), 0, "a folder whose only child was removed reads as empty");
+    assert_eq!(live(id("lonely")), 0);
+    // Filter: removed files and everything below a removed folder never match; the genuine zero-byte file still does.
+    let f1 = apply_filter(&tree, &all);
+    assert_eq!(f1.counts[0], files0 - 4, "gone.bin, inner.bin, deeper.bin, only.bin");
+    let ids: Vec<u32> = tree.largest_files(100);
+    for n in ["dir/gone.bin", "dir/gonesub/inner.bin", "dir/gonesub/deep/deeper.bin", "allgone/only.bin"] { assert!(!ids.contains(&id(n)), "{n} listed as a largest file"); }
+    assert!(ids.contains(&id("dir/empty.txt")) && ids.contains(&id("dir/keep.bin")));
+    assert_eq!(ids.len(), largest0 - 4);
+    let totals1: u64 = tree.category_totals().iter().map(|c| c.1).sum();
+    assert_eq!(totals1, totals0 - 4, "item counts per kind exclude removed files");
+    assert_eq!(filter::largest_files(&tree, &f1, 100).len(), largest0 - 4);
+    // Outline: a removed folder's descendants cannot appear even when it is expanded; item-count sort uses live counts.
+    let mut open = std::collections::HashSet::new();
+    open.insert(dir); open.insert(id("dir/gonesub")); open.insert(id("allgone"));
+    let rows = outline::visible_rows_sorted_in(&tree, &tab, 0, &open, None, outline::SortMode::ItemsDesc);
+    let names: Vec<String> = rows.iter().map(|r| tree.name(r.node).to_string()).collect();
+    for n in ["gone.bin", "gonesub", "inner.bin", "deep", "deeper.bin", "only.bin"] { assert!(!names.contains(&n.to_string()), "{n} listed: {names:?}"); }
+    for n in ["keep.bin", "empty.txt", "lonely", "allgone", "dir"] { assert!(names.contains(&n.to_string()), "{n} missing: {names:?}"); }
+    let pos = |n: &str| names.iter().position(|x| x == n).unwrap();
+    assert!(pos("dir") < pos("allgone"), "dir (2 live items) sorts before allgone (0): {names:?}");
+    // A displayed root that was removed, or lies inside a removed folder, lists nothing (children are not tombstoned themselves).
+    let inside = outline::visible_rows_sorted_in(&tree, &tab, id("dir/gonesub"), &Default::default(), None, outline::SortMode::SizeDesc);
+    let deeper = outline::visible_rows_sorted_in(&tree, &tab, id("dir/gonesub/deep"), &Default::default(), None, outline::SortMode::SizeDesc);
+    assert!(inside.is_empty() && deeper.is_empty(), "rows listed under a removed root");
+    assert!(tab.is_dead(&tree, id("dir/gonesub/deep/deeper.bin")) && !tab.is_dead(&tree, id("dir/keep.bin")) && !tab.is_dead(&tree, id("lonely")));
+    // Genuine empty controls with a filter that needs 0-byte files: the zero-byte file still matches, the empty folder stays listed.
+    let f2 = apply_filter(&tree, &Filter { max_size: Some(0), ..Default::default() });
+    assert_eq!(f2.counts[id("dir/empty.txt") as usize], 1);
+    assert_eq!(f2.counts[id("dir/gone.bin") as usize], 0);
+    assert_eq!(f2.counts[id("dir/gonesub/deep/deeper.bin") as usize], 0);
+}
+
+// ---- Visible-children display count (filtered "V of T items"), see outline::visible_child_count_in ----
+
+fn vis_fixture() -> (tempdir::T, Tree) {
+    let t = tempdir::T::new();
+    let r = t.path();
+    fs::create_dir_all(r.join("dir/sub/deep")).unwrap();
+    fs::create_dir_all(r.join("dir/nomatch")).unwrap();
+    fs::write(r.join("dir/a.txt"), vec![1u8; 20_000]).unwrap();
+    fs::write(r.join("dir/b.log"), vec![2u8; 10_000]).unwrap();
+    fs::write(r.join("dir/z.txt"), b"").unwrap();                       // zero-byte MATCH
+    fs::write(r.join("dir/gone.txt"), vec![3u8; 30_000]).unwrap();
+    fs::write(r.join("dir/sub/deep/x.txt"), vec![4u8; 5_000]).unwrap();   // only a deep match under sub
+    fs::write(r.join("dir/nomatch/only.log"), vec![5u8; 7_000]).unwrap();
+    fs::create_dir_all(r.join("zf")).unwrap();                           // filtered size == structural size (both 0), count differs
+    fs::write(r.join("zf/m.txt"), b"").unwrap();
+    fs::write(r.join("zf/n.log"), b"").unwrap();
+    let tree = scan(r, &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    (t, tree)
+}
+
+#[test]
+fn visible_children_unfiltered_equals_live_and_filtered_counts_rows_not_sizes() {
+    let (_t, tree) = vis_fixture();
+    let id = |n: &str| tree.find(&format!("{}/{}", tree.root_path(), n)).unwrap();
+    let (dir, zf, sub, nomatch) = (id("dir"), id("zf"), id("dir/sub"), id("dir/nomatch"));
+    let tab = tree.table();
+    for n in [dir, zf, sub, nomatch] {
+        assert_eq!(outline::visible_child_count_in(&tree, &tab, n, None), tree.live_child_count_in(&tab, n), "unfiltered must equal the live count");
+    }
+    assert_eq!(tree.live_child_count_in(&tab, dir), 6);
+    let f = apply_filter(&tree, &Filter { extension: "txt".into(), ..Default::default() });
+    // a.txt, z.txt (zero-byte match), sub (deep match), gone.txt are shown; b.log and nomatch are not.
+    assert_eq!(outline::visible_child_count_in(&tree, &tab, dir, Some(&f)), 4);
+    assert_eq!(outline::visible_child_count_in(&tree, &tab, sub, Some(&f)), 1, "a folder with only a deep match is visible");
+    assert_eq!(outline::visible_child_count_in(&tree, &tab, nomatch, Some(&f)), 0);
+    // False pair: filtered size equals structural size (0 == 0), the count must still differ.
+    assert_eq!(f.sizes[zf as usize], tab.sizes[zf as usize]);
+    assert_eq!(outline::visible_child_count_in(&tree, &tab, zf, Some(&f)), 1);
+    assert_eq!(tree.live_child_count_in(&tab, zf), 2);
+    // The folder with no matching descendant has no row; the visible count agrees with the rows themselves.
+    let rows = outline::visible_rows_sorted_in(&tree, &tab, 0, &[dir].into_iter().collect(), Some(&f), SortMode::NameAsc);
+    let names: Vec<String> = rows.iter().map(|r| tree.name(r.node).to_string()).collect();
+    assert!(!names.contains(&"nomatch".to_string()) && !names.contains(&"b.log".to_string()), "{names:?}");
+    let under_dir = rows.iter().filter(|r| r.depth == 1).count();
+    assert_eq!(under_dir as u32, outline::visible_child_count_in(&tree, &tab, dir, Some(&f)), "rows shown when expanded == visible count");
+}
+
+#[test]
+fn visible_children_after_removal_use_the_new_capture_and_stale_filters_are_refused() {
+    use spacelyzer_engine::ffi::*;
+    let (_t, tree) = vis_fixture();
+    let id = |n: &str| tree.find(&format!("{}/{}", tree.root_path(), n)).unwrap();
+    let (dir, gone) = (id("dir"), id("dir/gone.txt"));
+    let f0 = apply_filter(&tree, &Filter { extension: "txt".into(), ..Default::default() });
+    assert_eq!(outline::visible_child_count_in(&tree, &tree.table(), dir, Some(&f0)), 4);
+    tree.forget(gone).unwrap();
+    let tab = tree.table();
+    assert_eq!(tree.live_child_count_in(&tab, dir), 5);
+    // Fresh filter on the new table: removed match is neither visible nor counted.
+    let f1 = apply_filter(&tree, &Filter { extension: "txt".into(), ..Default::default() });
+    assert_eq!(outline::visible_child_count_in(&tree, &tab, dir, Some(&f1)), 3);
+    // Even with the OLD filter result, the removal list excludes the removed child (never a ghost row in the count).
+    assert_eq!(outline::visible_child_count_in(&tree, &tab, dir, Some(&f0)), 3);
+    // Through the FFI snapshot: rows, infos and visible_children come from one capture; an old filter handle is refused (status 1).
+    unsafe {
+        let tp = &tree as *const Tree;
+        let ext = std::ffi::CString::new("txt").unwrap();
+        let h_new = spz_filter_apply(tp, std::ptr::null(), ext.as_ptr(), std::mem::zeroed());
+        let (mut v, mut rs, mut tot, mut st) = (0u64, 0u64, 0u64, -1i32);
+        let ex = [dir];
+        let n = spz_outline_snapshot_status(tp, 0, ex.as_ptr(), 1, h_new, 0, std::ptr::null_mut(), std::ptr::null_mut(), 0, u64::MAX, &mut v, &mut rs, &mut tot, &mut st);
+        assert_eq!(st, 0);
+        let mut rows = vec![outline::Row { node: 0, depth: 0 }; n as usize];
+        let mut infos: Vec<SpzRowInfo> = Vec::new();
+        for _ in 0..n { infos.push(std::mem::zeroed()); }
+        let (mut v2, mut rs2, mut tot2, mut st2) = (0u64, 0u64, 0u64, -1i32);
+        let got = spz_outline_snapshot_status(tp, 0, ex.as_ptr(), 1, h_new, 0, rows.as_mut_ptr(), infos.as_mut_ptr(), n, v, &mut v2, &mut rs2, &mut tot2, &mut st2);
+        assert_eq!((got, st2, v2), (n, 0, v));
+        let i = rows.iter().position(|r| r.node == dir).unwrap();
+        assert_eq!((infos[i].visible_children, infos[i].node.child_count), (3, 5));
+        let zf = rows.iter().position(|r| r.node == id("zf")).unwrap();
+        assert_eq!((infos[zf].visible_children, infos[zf].node.child_count), (1, 2), "false pair through the FFI");
+        // A handle computed before the removal is stale: refused, nothing written.
+        let h_stale = spz_filter_apply(tp, std::ptr::null(), ext.as_ptr(), std::mem::zeroed());
+        tree.forget(id("dir/a.txt")).unwrap();
+        let (mut v3, mut rs3, mut tot3, mut st3) = (0u64, 0u64, 0u64, -1i32);
+        let mut infos2: Vec<SpzRowInfo> = Vec::new();
+        for _ in 0..n { infos2.push(std::mem::zeroed()); }
+        let _ = spz_outline_snapshot_status(tp, 0, ex.as_ptr(), 1, h_stale, 0, rows.as_mut_ptr(), infos2.as_mut_ptr(), n, u64::MAX, &mut v3, &mut rs3, &mut tot3, &mut st3);
+        assert_eq!(st3, 1, "a filter handle older than the table is refused as STALE");
+        spz_filter_free(h_new); spz_filter_free(h_stale);
+    }
+}
+
+#[test]
+fn items_sort_under_a_filter_uses_visible_count_with_live_total_as_tiebreak() {
+    let t = tempdir::T::new();
+    let r = t.path();
+    // A: 3 children, 1 matches. B: 2 children, 2 match. C: 4 children, 1 matches. D: 3 children, 1 matches (ties with A on both counts).
+    for (d, files) in [("A", vec!["1.txt", "2.log", "3.log"]), ("B", vec!["1.txt", "2.txt"]), ("C", vec!["1.txt", "2.log", "3.log", "4.log"]), ("D", vec!["1.txt", "2.log", "3.log"])] {
+        fs::create_dir_all(r.join(d)).unwrap();
+        for f in files { fs::write(r.join(d).join(f), b"x").unwrap(); }
+    }
+    let tree = scan(r, &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    let tab = tree.table();
+    let order = |f: Option<&FilterResult>| -> Vec<String> {
+        outline::visible_rows_sorted_in(&tree, &tab, 0, &HashSet::new(), f, SortMode::ItemsDesc).iter().map(|r| tree.name(r.node).to_string()).collect()
+    };
+    let unfiltered = order(None);
+    assert_eq!(unfiltered[0], "C", "unfiltered: most live children first: {unfiltered:?}");
+    let f = apply_filter(&tree, &Filter { extension: "txt".into(), ..Default::default() });
+    let filtered = order(Some(&f));
+    assert_eq!(filtered[0], "B", "filtered: 2 visible beats 1 visible: {filtered:?}");
+    let pos = |n: &str| filtered.iter().position(|x| x == n).unwrap();
+    assert!(pos("C") < pos("A"), "equal visible count: larger live total first: {filtered:?}");
+    let rel = |v: &Vec<String>| v.iter().position(|x| x == "A").unwrap() < v.iter().position(|x| x == "D").unwrap();
+    assert_eq!(rel(&filtered), rel(&unfiltered), "full ties keep the native order (stable): {filtered:?} vs {unfiltered:?}");
+}
+
+#[test]
+fn row_info_abi_layout_is_exactly_what_the_header_declares() {
+    use spacelyzer_engine::ffi::*;
+    let mut l = [0u64; 5];
+    unsafe { spz_row_info_layout(l.as_mut_ptr()); }
+    assert_eq!(l[0] % l[1], 0, "size is a multiple of align");
+    assert!(l[2] == 0 && l[3] >= std::mem::size_of::<SpzNode>() as u64 && l[4] >= l[3] + 8, "field order node, shown, visible_children: {l:?}");
+    assert_eq!(l[4] % 4, 0);
+    assert!(l[0] >= l[4] + 4);
+}
 
 #[test]
 fn layout_with_equal_size_ties_emit_in_native_order() {

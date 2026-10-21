@@ -11,5 +11,7 @@ or any package from a non-registry source (git, path, other registries). Adding 
 | `rayon-core` | 1.13.0 | rayon's runtime | same repository as rayon |
 | `crossbeam-deque`, `crossbeam-epoch`, `crossbeam-utils` | 0.8.8, 0.9.21, 0.8.23 | rayon's scheduler | `crossbeam-rs/crossbeam` |
 | `either` | 1.18.0 | rayon's iterator plumbing | `rayon-rs/either` |
+| `arc-swap` | 1.9.2 | atomically publishes the immutable size table; readers load an `Arc` snapshot | `vorner/arc-swap`, owners `vorner` and team `github:rust-bus:maintainers`, MIT OR Apache-2.0, about 345 million downloads, 1.9.2 published 28 Jun 2026, checksum `c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b` (crates.io API, checked 3 Oct 2026). Its docs say a load can occasionally wait; we do not claim a strictly wait-free main-thread read. |
+| `rustversion` | 1.0.23 | proc-macro that `arc-swap` uses at build time to pick features by compiler version | `dtolnay/rustversion`, owner `dtolnay`, about 808 million downloads, checksum `cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f` (crates.io API, checked 3 Oct 2026) |
 
 No Swift packages are used. The app links the Rust engine as a static library and uses only Apple frameworks.
