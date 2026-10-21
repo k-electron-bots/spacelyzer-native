@@ -147,11 +147,11 @@ def gate_cases():
     py = re.sub(r'inputs\.(\w+)', r"I['\1']", py); py = re.sub(r'steps\.(\w+)\.outcome', r"O['\1']", py); py = re.sub(r'steps\.(\w+)\.outputs\.(\w+)', r"U['\1.\2']", py)
     def gate(I=None, O=None, U=None):
         base_I = dict(compile_only=False, perf=False, perf_in_run=False, consolidated=True); base_I.update(I or {})
-        base_O = {k: 'success' for k in ['reset', 'docs', 'asserts', 'perf', 'ordering', 'rust', 'bulk', 'dmg']}; base_O.update(O or {})
+        base_O = {k: 'success' for k in ['reset', 'docs', 'asserts', 'perf', 'ordering', 'rust', 'failpoints', 'bulk', 'dmg']}; base_O.update(O or {})
         base_U = {'testbuild.optional_build': ''}; base_U.update(U or {})
         return bool(eval(py, {}, {'I': base_I, 'O': base_O, 'U': base_U}))
     check('gate does NOT run when everything succeeded (consolidated)', gate() is False)
-    for k in ['reset', 'docs', 'asserts', 'ordering', 'rust', 'bulk', 'dmg']:
+    for k in ['reset', 'docs', 'asserts', 'ordering', 'rust', 'failpoints', 'bulk', 'dmg']:
         for bad in ('failure', 'skipped', 'cancelled'):
             check(f'gate runs when {k} is {bad}', gate(O={k: bad}) is True)
     check('gate runs when testbuild optional_build == failed', gate(U={'testbuild.optional_build': 'failed'}) is True)
@@ -176,7 +176,7 @@ def gate_cases():
             mi = re.fullmatch(r'\$\{\{ inputs\.(\w+) \}\}', e)
             if mi: return {'compile_only': 'false', 'perf': 'false', 'perf_in_run': 'false', 'consolidated': 'true', **I}[mi.group(1)]
             mo = re.fullmatch(r'\$\{\{ steps\.(\w+)\.outcome \}\}', e)
-            if mo: return {'reset': 'success', 'docs': 'success', 'asserts': 'success', 'perf': 'success', 'ordering': 'success', 'rust': 'success', 'bulk': 'success', 'dmg': 'success', **O}[mo.group(1)]
+            if mo: return {'reset': 'success', 'docs': 'success', 'asserts': 'success', 'perf': 'success', 'ordering': 'success', 'rust': 'success', 'failpoints': 'success', 'bulk': 'success', 'dmg': 'success', **O}[mo.group(1)]
             mu = re.fullmatch(r'\$\{\{ steps\.testbuild\.outputs\.(\w+) \}\}', e)
             if mu: return U.get('testbuild.' + mu.group(1), '')
             raise AssertionError(e)
@@ -307,10 +307,10 @@ def testbuild_cases():
         rc, out, o = run(opts, {}, {}); check(f'testbuild [{opts}] default build ok: exit 0, no optional_build output', rc == 0 and 'optional_build' not in o, f'{rc} {o}')
         rc, out, o = run(opts, {}, {'STUB_BUILD_CORE': 'fail'}); check(f'testbuild [{opts}] core build fails: step fails', rc != 0, f'{rc} {out[-200:]}')
         rc, out, o = run(opts, {'perf_in_run': 'true'}, {}); check(f'testbuild [{opts}] perf_in_run, optional ok: optional_build=ok, exit 0', rc == 0 and 'optional_build=ok' in o, f'{rc} {o}')
-        rc, out, o = run(opts, {'perf_in_run': 'true'}, {'STUB_BUILD_OPT': 'fail'}); check(f'testbuild [{opts}] perf_in_run, optional fails to compile: core rebuilt, exit 0, optional_build=failed', rc == 0 and 'optional_build=failed' in o and 'Rebuilding the core' in out, f'{rc} {o} {out[-200:]}')
+        rc, out, o = run(opts, {'perf_in_run': 'true'}, {'STUB_BUILD_OPT': 'fail'}); check(f'testbuild [{opts}] perf_in_run, optional fails to compile: hard fail, exit 1, optional_build=failed, no absorbed core rebuild', rc != 0 and 'optional_build=failed' in o and 'Rebuilding the core' not in out, f'{rc} {o} {out[-200:]}')
         rc, out, o = run(opts, {'perf_in_run': 'true'}, {'STUB_BUILD_OPT': 'fail', 'STUB_BUILD_CORE': 'fail'}); check(f'testbuild [{opts}] optional AND core fail: step fails', rc != 0, f'{rc}')
         rc, out, o = run(opts, {'perf': 'true'}, {'STUB_BUILD_OPT': 'fail'}); check(f'testbuild [{opts}] perf-exclusive, optional fails: exit 1 with optional_build=failed', rc != 0 and 'optional_build=failed' in o, f'{rc} {o}')
-        rc, out, o = run(opts, {'docs_2x': 'true'}, {'STUB_BUILD_OPT': 'fail'}); check(f'testbuild [{opts}] docs_2x optional fails: core rebuilt, optional_build=failed', rc == 0 and 'optional_build=failed' in o, f'{rc} {o}')
+        rc, out, o = run(opts, {'docs_2x': 'true'}, {'STUB_BUILD_OPT': 'fail'}); check(f'testbuild [{opts}] docs_2x optional fails: hard fail, optional_build=failed, no absorbed core rebuild', rc != 0 and 'optional_build=failed' in o and 'Rebuilding the core' not in out, f'{rc} {o}')
 
 def bulk_cases():
     """The real bulk step body. Contract under test: fixture, /Applications and /usr/lib are BINDING (mismatch, error, or absent root all fail the step, every
