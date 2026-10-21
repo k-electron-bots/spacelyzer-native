@@ -407,6 +407,57 @@ fn outline_sort_modes_order_siblings_and_keep_every_row() {
 }
 
 #[test]
+fn nameasc_matches_reference_lowercase_order_on_unicode_edges() {
+    use spacelyzer_engine::outline::{visible_rows_sorted, SortMode};
+    use spacelyzer_engine::scan::{scan, ScanOptions, ScanProgress};
+    use std::collections::HashSet;
+    // Regression for the NameAsc comparator: sibling order must equal the
+    // original sort_by_cached_key(|n| tree.name(n).to_lowercase()) exactly,
+    // including context-sensitive Greek final sigma (a per-char lowercase
+    // maps word-final capital sigma differently) and stable tie order.
+    // Returns (sorted names, pre-sort scan order) for a tree of `names`.
+    let order = |names: &[&str]| -> (Vec<String>, Vec<String>) {
+        let t = tempdir::T::new();
+        for n in names {
+            std::fs::create_dir_all(t.path().join(n)).unwrap();
+        }
+        let tree = scan(t.path(), &ScanOptions::default(), &ScanProgress::default()).unwrap();
+        let prescan: Vec<String> = tree.children(0).map(|n| tree.name(n).to_string()).collect();
+        let got: Vec<String> = visible_rows_sorted(&tree, 0, &HashSet::new(), None, SortMode::NameAsc)
+            .iter().map(|r| tree.name(r.node).to_string()).collect();
+        // Reference: the original algorithm on the same input vector.
+        let mut expect: Vec<u32> = tree.children(0).collect();
+        expect.sort_by_cached_key(|&n| tree.name(n).to_lowercase());
+        let expect: Vec<String> = expect.iter().map(|&n| tree.name(n).to_string()).collect();
+        assert_eq!(got, expect, "NameAsc diverges from the reference lowercase order for {names:?}");
+        (got, prescan)
+    };
+    // Final sigma: "\u{039F}\u{03A3}" lowercases to "o\u{03C2}" which sorts before "o\u{03C3}".
+    // Deterministic in both input orders (no tie).
+    assert_eq!(order(&["\u{039F}\u{03A3}", "\u{039F}\u{03C3}"]).0, vec!["\u{039F}\u{03A3}", "\u{039F}\u{03C3}"]);
+    assert_eq!(order(&["\u{039F}\u{03C3}", "\u{039F}\u{03A3}"]).0, vec!["\u{039F}\u{03A3}", "\u{039F}\u{03C3}"]);
+    // "\u{039F}\u{03A3}" and "\u{039F}\u{03C2}" tie under lowercase ("o\u{03C2}" both):
+    // the pre-sort sibling order decides, whatever the scan handed us.
+    for names in [["\u{039F}\u{03A3}", "\u{039F}\u{03C2}"], ["\u{039F}\u{03C2}", "\u{039F}\u{03A3}"]] {
+        let (got, prescan) = order(&names);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0], prescan[0], "tied names must keep the pre-sort order for {names:?}");
+        assert_eq!(got[1], prescan[1]);
+    }
+    // Sigma next to case-ignorable marks: trailing combining acute does not
+    // block final-sigma; a following cased letter does. Deterministic (no tie).
+    assert_eq!(
+        order(&["\u{039F}\u{03A3}\u{0301}\u{0391}", "\u{039F}\u{03A3}\u{0301}"]).0,
+        vec!["\u{039F}\u{03A3}\u{0301}", "\u{039F}\u{03A3}\u{0301}\u{0391}"]
+    );
+    // Mixed battery: reference equality across ASCII, accented, and Greek names
+    // (exercises the any-non-ASCII fallback path).
+    order(&["apple", "Apple", "APPLE", "\u{00E4}", "Z", "z", "\u{039F}\u{03A3}", "\u{039F}\u{03C3}", "\u{03BF}\u{03C2}", "\u{03BF}\u{03C3}", "\u{00DF}", "\u{0130}"]);
+    // All-ASCII battery: exercises the allocation-free comparator path.
+    order(&["apple", "Apple", "APPLE", "Zebra", "zebra", "10", "02", "_hidden", "Report", "REPORT", "delta", "Delta"]);
+}
+
+#[test]
 fn filtered_outline_shows_zero_byte_matches_and_their_folders() {
     use spacelyzer_engine::filter::{apply, Filter};
     use spacelyzer_engine::outline::{visible_rows_sorted, SortMode};
@@ -802,4 +853,64 @@ fn row_info_abi_layout_is_exactly_what_the_header_declares() {
     assert!(l[2] == 0 && l[3] >= std::mem::size_of::<SpzNode>() as u64 && l[4] >= l[3] + 8, "field order node, shown, visible_children: {l:?}");
     assert_eq!(l[4] % 4, 0);
     assert!(l[0] >= l[4] + 4);
+}
+
+#[test]
+fn layout_with_equal_size_ties_emit_in_native_order() {
+    // Equal external sizes, different names and extensions (categories). Ties must
+    // emit in native (NodeId ascending) order, deterministically.
+    let t = tempdir::T::new();
+    let r = t.path();
+    for n in ["delta.txt", "alpha.rs", "charlie.png", "bravo.txt"] {
+        fs::write(r.join(n), b"x").unwrap();
+    }
+    let tree = scan(r, &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    let mut sizes = vec![0u64; tree.len()];
+    sizes[0] = 4000;
+    for c in tree.children(0) { sizes[c as usize] = 1000; }
+    let opts = LayoutOptions { width: 400.0, height: 400.0, min_edge: 0.0, inset: 0.0, ..Default::default() };
+    let rects = layout_with(&tree, 0, &opts, Some(&sizes));
+    let ids: Vec<u32> = rects.iter().filter(|x| x.depth == 1).map(|x| x.node).collect();
+    assert_eq!(ids.len(), 4);
+    let mut sorted = ids.clone();
+    sorted.sort();
+    assert_eq!(ids, sorted, "equal-size ties must emit in NodeId (native) order");
+    // Arena tie order for equal on-disk sizes is name ascending; the files share a
+    // size, so native order here is also name order.
+    let names: Vec<&str> = rects.iter().filter(|x| x.depth == 1).map(|x| tree.name(x.node)).collect();
+    assert_eq!(names, ["alpha.rs", "bravo.txt", "charlie.png", "delta.txt"]);
+    let sig = |v: &[Rect]| v.iter().map(|x| (x.node, x.x, x.y, x.w, x.h, x.size, x.flags, x.depth, x.branch)).collect::<Vec<_>>();
+    let rects2 = layout_with(&tree, 0, &opts, Some(&sizes));
+    assert_eq!(sig(&rects), sig(&rects2), "same input must give bit-identical output");
+}
+
+#[test]
+fn layout_with_equal_size_dirs_deterministic_under_rect_cap() {
+    // Two equal-size directories with unequal subtree shapes under a tight max_rects
+    // cap: which descendants get emitted is decided by the tie contract, so it must
+    // be deterministic.
+    let t = tempdir::T::new();
+    let r = t.path();
+    fs::create_dir_all(r.join("aa")).unwrap();
+    fs::create_dir_all(r.join("zz")).unwrap();
+    for i in 0..5 { fs::write(r.join("aa").join(format!("f{i}")), b"x").unwrap(); }
+    fs::write(r.join("zz").join("only"), b"x").unwrap();
+    let tree = scan(r, &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    let mut sizes = vec![0u64; tree.len()];
+    let aa = tree.children(0).find(|&c| tree.name(c) == "aa").unwrap();
+    let zz = tree.children(0).find(|&c| tree.name(c) == "zz").unwrap();
+    sizes[0] = 20000;
+    sizes[aa as usize] = 10000;
+    sizes[zz as usize] = 10000;
+    for c in tree.children(aa) { sizes[c as usize] = 2000; }
+    for c in tree.children(zz) { sizes[c as usize] = 10000; }
+    let opts = LayoutOptions { width: 400.0, height: 400.0, min_edge: 0.0, inset: 0.0, max_rects: 4, ..Default::default() };
+    let sig = |v: &[Rect]| v.iter().map(|x| (x.node, x.x, x.y, x.w, x.h, x.size, x.flags, x.depth, x.branch)).collect::<Vec<_>>();
+    let r1 = layout_with(&tree, 0, &opts, Some(&sizes));
+    let r2 = layout_with(&tree, 0, &opts, Some(&sizes));
+    assert_eq!(sig(&r1), sig(&r2), "same input must give bit-identical output");
+    // Equal-size dirs emit in native order (aa before zz); breadth-first descent then
+    // emits aa's first native-order child before the cap cuts.
+    let names: Vec<&str> = r1.iter().skip(1).map(|x| tree.name(x.node)).collect();
+    assert_eq!(names, ["aa", "zz", "f0"]);
 }

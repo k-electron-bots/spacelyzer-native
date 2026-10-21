@@ -562,7 +562,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           V=v${{ steps.ver.outputs.version }}
-          gh release create "$V" dist/*.dmg dist/*.sha256 dist/screenshot*.png dist/ui-assertions.txt dist/main-thread-sample.txt --title "Spacelyzer $V" --prerelease \
+          gh release create "$V" dist/*.dmg dist/*.sha256 dist/screenshot*.png dist/ui-assertions.txt $(ls dist/main-thread-sample.txt 2>/dev/null || true) --title "Spacelyzer $V" --prerelease \
             --notes "UI assertions: ${{ steps.asserts.outcome }}. Self-signed development build (not notarized). Not Apple-verified: after the first blocked open, use System Settings > Privacy & Security > Open Anyway. Screenshots attached are from the CI runner, not a real Mac. Built from ${{ github.sha }}."
       - name: Stop any app left running (also after a step timeout)
         if: ${{ always() && !inputs.compile_only }}
