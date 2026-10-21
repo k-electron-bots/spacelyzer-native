@@ -12,7 +12,7 @@ See what is using your disk. A native macOS disk-space analyzer with a SwiftUI i
 - Switch to Kinds for a file-type breakdown, or Largest for the 200 largest matching files.
 - Combine name, extension, kind, size and modified-date filters across outline, treemap, Kinds and Largest. The Folders list is unfiltered.
 
-<!-- CAPTURE PENDING: the on-disk review capture is the one missing docs capture from run 39602481035 (10 of 11 landed; the capture flow was repaired in PR126 but has not produced a capture on Mac yet). Add docs/images/readme-review.png from a future verified CI capture; no stand-in. -->
+![On-disk review popover: preview, sizes, and the read-only safety note](docs/images/readme-review.png)
 
 - Check a scanned item on disk before deciding: preview, full path, size, then Move to Trash with Undo.
 - Move several reviewed items at once, and put any of them back from the removal history.
