@@ -153,12 +153,25 @@ struct Ctx<'a> {
 const WALK_STACK_BYTES: usize = 64 << 20;
 
 pub fn scan(root: &Path, opts: &ScanOptions, progress: &ScanProgress) -> std::io::Result<Tree> {
+    // Fail closed: every path the tree builds is root + node names, and the root is stored as text. A root that is not valid UTF-8 would be stored lossily
+    // and every later removal/reveal path would point somewhere else (or nowhere).
+    let root = &root.canonicalize()?;
+    if root.to_str().is_none() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "scan root path is not valid UTF-8"));
+    }
     scan_inner(root, opts, progress, None, #[cfg(test)] None)
 }
 
-/// `scan` plus progressive preview events. The returned `Tree` is identical to what
-/// `scan` produces; events are best-effort extras bound to the sink's generation and
-/// canonical root. Errors when the sink was built for a different root.
+/// `scan` plus progressive preview events. Events are best-effort extras bound to the sink's
+/// generation and canonical root, carried with byte-exact paths. Errors when the sink was
+/// built for a different root.
+///
+/// Root policy differs from `scan` BY CONTRACT: this entry does not refuse a non-UTF-8
+/// root, because the measurement pipeline binds and compares raw path bytes. The returned
+/// Tree still stores its root as lossy text, so for a non-UTF-8 root its derived paths
+/// (removal/reveal/rescan) would point nowhere or at a colliding lossy sibling: such a
+/// Tree is measurement-only and must never feed a mutation or navigation path. `scan`
+/// (the app's entry) keeps the fail-closed refusal, so no app Tree can carry a lossy root.
 pub fn scan_with_events(
     root: &Path,
     opts: &ScanOptions,
@@ -189,11 +202,6 @@ fn scan_inner(
     #[cfg(test)] mid_walk_hook: Option<&(dyn Fn(&Path) + Sync)>,
 ) -> std::io::Result<Tree> {
     let root = root.canonicalize()?;
-    // Fail closed: every path the tree builds is root + node names, and the root is stored as text. A root that is not valid UTF-8 would be stored lossily
-    // and every later removal/reveal path would point somewhere else (or nowhere).
-    if root.to_str().is_none() {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "scan root path is not valid UTF-8"));
-    }
     if let Some(ev) = events {
         if !ev.root_matches(&root) {
             return Err(std::io::Error::new(
