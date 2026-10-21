@@ -35,7 +35,8 @@ func descendants(limit: Int = 4096) -> [AXUIElement] {
     return seen
 }
 func label(_ element: AXUIElement, matches text: String) -> Bool {
-    string(element, "AXTitle") == text || string(element, "AXDescription") == text || string(element, "AXValue") == text
+    // SwiftUI .accessibilityLabel can surface as AXTitle or AXLabel depending on control and OS version; match both.
+    string(element, "AXTitle") == text || string(element, "AXDescription") == text || string(element, "AXValue") == text || string(element, "AXLabel") == text
 }
 func post(key: CGKeyCode) {
     let down = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: true)
