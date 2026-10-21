@@ -991,7 +991,7 @@ struct SpacelyzerApp: App {
                             } else {
                                 mark(stepNumber); stepNumber += 1
                             }
-                            Check.expect("batch7-not-scanned-sheet-opened", pressedSkip7 && sheetShown7, pressedSkip7 ? "footer opener pressed via AX but the Not-scanned sheet did not attach to the window" : "footer Not-scanned opener not found via AX (see demo-ax log lines)")
+                            Check.expect("batch7-not-scanned-sheet-opened", pressedSkip7 && sheetShown7, "openerPressed=\(pressedSkip7) sheetAttached=\(sheetShown7) (pressed through the in-process AX authored action; on failure see the demo-ax log lines)")
                             try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: lockedDir7.path)
                             try? FileManager.default.removeItem(at: unreadRoot7)
                             // 79: a real second volume (RAM disk) inside a fixture: the Not-scanned list must show it as on another volume.
