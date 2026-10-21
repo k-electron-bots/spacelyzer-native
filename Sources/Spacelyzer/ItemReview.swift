@@ -208,11 +208,29 @@ struct ItemDetailsView: View {
                     GridRow { Text("On disk").foregroundStyle(.secondary); Text(formatBytes(live.allocated)) }
                     GridRow { Text("Length").foregroundStyle(.secondary); Text(formatBytes(live.logical)) }
                     GridRow { Text("Modified").foregroundStyle(.secondary); Text(live.modified.formatted(date: .abbreviated, time: .shortened)) }
-                    if live.hardLinks > 1 { GridRow { Text("Hard links").foregroundStyle(.secondary); Text("\(live.hardLinks): other names share this data, so removing one name may free no space") } }
+                    // Only a FILE's link count names shared data. A folder's count is a filesystem detail
+                    // (2 + its immediate subfolders), so showing the file explanation there would be a false claim.
+                    if live.kind == .file && live.hardLinks > 1 {
+                        GridRow { Text("Hard links").foregroundStyle(.secondary); Text("\(live.hardLinks)") }
+                    }
                 }.font(.caption)
+                if live.kind == .folder {
+                    // The sidebar shows the recursive total; these rows are the folder's own tiny entry. Say so,
+                    // or "0 KB" next to a 304 MB selection reads like the folder holds nothing.
+                    Text("These describe the folder's own entry, not its contents; the window's size for a folder counts everything inside it.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if live.kind == .file && live.hardLinks > 1 {
+                    Text("Other names share this data, so removing one name may free no space.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Text(result.verdict.message)
                 .font(.caption).foregroundStyle(result.verdict.allowsProceeding ? Color.secondary : Color.red)
+                // The safety qualifier must wrap in full at the popover's fixed width, never ellipsize.
+                .fixedSize(horizontal: false, vertical: true)
                 .accessibilityLabel(result.verdict.allowsProceeding ? "Matches the scan when checked" : "Cannot confirm this item. \(result.verdict.message)")
         }
     }
