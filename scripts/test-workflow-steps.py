@@ -43,7 +43,7 @@ case "${STUB_DEMO:+x} $* " in x*" SPZ_DEMO=1 "*)
     none) :;;
     *) n=81; case "$STUB_DEMO" in stall:*) n=$((${STUB_DEMO#stall:} - 1));; esac
        for i in $(seq 1 $n); do touch "$T/spz-demo-ready-$i"; done
-       [ "$STUB_DEMO" = full ] && { touch "$T/spz-demo-finished"; for i in $(seq 1 176); do echo "PASS c$i d"; done > "$T/spz-assertions.txt"; };;
+       [ "$STUB_DEMO" = full ] && { touch "$T/spz-demo-finished"; for i in $(seq 1 178); do echo "PASS c$i d"; done > "$T/spz-assertions.txt"; };;
   esac; exit 0;; esac
 rd=""; for a in "$@"; do case "$a" in SPZ_RESULT_DIR=*) rd="${a#SPZ_RESULT_DIR=}";; esac; done
 [ -n "$rd" ] || exit 0
@@ -110,22 +110,23 @@ def docs_cases(ci_path, label, expect_gate_fix):
 def asserts_cases():
     doc = load(CI); body = step(doc, 'macos', 'asserts')['run']
     lines = lambda n, f=0: ''.join((f'FAIL c{i} d\n' if i < f else f'PASS c{i} d\n') for i in range(n))
-    def mk(n=176, f=0, shots=81, timing='', extra=None):
+    def mk(n=178, f=0, shots=81, timing='', extra=None):
         w = workdir(); open(w + '/tmp/spz-assertions.txt', 'w').write(lines(n, f)); open(w + '/tmp/spz-timing.txt', 'w').write(timing)
         for i in range(1, shots + 1): open(f'{w}/dist/screenshot-demo-{i}.png', 'w').write('x')
         return w
     for opts in ('-e', '-eo pipefail'):
-        for name, kw, want_fail in [('176 PASS, all screenshots', {}, False), ('175 results', {'n': 175}, True), ('176 results, one FAIL', {'f': 1}, True),
+        for name, kw, want_fail in [('178 PASS, all screenshots', {}, False), ('177 results', {'n': 177}, True), ('178 results, one FAIL', {'f': 1}, True),
                                     ('80 of 81 screenshots', {'shots': 80}, True), ('APP NOT RUNNING', {'timing': 'APP NOT RUNNING\n'}, True), ('DEMO TIMEOUT', {'timing': 'DEMO x TIMEOUT\n'}, True)]:
             w = mk(**kw); rc, out = run_step(subst(body, w), w, opts); check(f'asserts step [{opts}] {name}: {"fails" if want_fail else "passes"}', (rc != 0) == want_fail, f'rc={rc} {out[-200:]}'); shutil.rmtree(w)
         w = workdir(); rc, out = run_step(subst(body, w), w, opts); check(f'asserts step [{opts}] assertion file absent: fails', rc != 0, out[-200:]); shutil.rmtree(w)
-    real = '/downloads/run176/core/ui-assertions.txt'
-    if os.path.exists(real):
-        w = workdir(); shutil.copy(real, w + '/tmp/spz-assertions.txt')
-        for i in range(1, 82): open(f'{w}/dist/screenshot-demo-{i}.png', 'w').write('x')
-        open(w + '/tmp/spz-timing.txt', 'w').write('')
-        rc, out = run_step(subst(body, w), w, '-e'); check('asserts step on the REAL run-39451419467 ui-assertions.txt (173 PASS, 3 FAIL): fails', rc != 0, out[-200:]); shutil.rmtree(w)
-    else: print('info real run evidence not present; skipped')
+    for real, label, want_fail in [('/downloads/run176/0.1.176/ui-assertions.txt', 'run-39451419467 (176 lines, 3 FAIL)', True),
+                                   ('/downloads/run177/0.1.177/ui-assertions.txt', 'run-39602481035 (178 PASS, 0 FAIL)', False)]:
+        if os.path.exists(real):
+            w = workdir(); shutil.copy(real, w + '/tmp/spz-assertions.txt')
+            for i in range(1, 82): open(f'{w}/dist/screenshot-demo-{i}.png', 'w').write('x')
+            open(w + '/tmp/spz-timing.txt', 'w').write('')
+            rc, out = run_step(subst(body, w), w, '-e'); check(f'asserts step on the REAL {label} ui-assertions.txt: {"fails" if want_fail else "passes"}', (rc != 0) == want_fail, out[-200:]); shutil.rmtree(w)
+        else: print(f'info real run evidence not present ({real}); skipped')
 
 def ordering_cases():
     doc = load(CI); body = step(doc, 'macos', 'ordering')['run']
@@ -306,7 +307,51 @@ def bulk_cases():
         rc, out, sm = run(opts, absent=('Applications',)); check(f'bulk [{opts}] /Applications absent: FAILS as binding root absent (not parity)', rc != 0 and 'ABSENT binding applications' in sm and 'binding root absent' in out, f'{rc} {sm}')
         rc, out, sm = run(opts, absent=('Library',)); check(f'bulk [{opts}] ~/Library absent: exit 0, warned as not compared', rc == 0 and 'ABSENT informational' in sm and 'not compared' in out, f'{rc} {sm}')
 
-asserts_cases(); ordering_cases(); gate_cases(); perf_cases(); demo_cases(); rust_cases(); testbuild_cases(); bulk_cases()
+
+def bulk_bsd_head_case():
+    """Run 39602481035: the fixture loop `head -c "$n"` with n=0 fails on macOS BSD head ('illegal byte count -- 0');
+    GNU head accepts 0, so a Linux-only pass proves nothing. Execute the REAL bulk step's fixture line under a head shim
+    with BSD semantics: the pre-fix line must fail, the current line must pass and produce all six fixture files."""
+    doc = load(CI); body = step(doc, 'macos', 'bulk')['run']
+    line = next((l.strip() for l in body.splitlines() if l.strip().startswith('for n in 0 1 4095')), None)
+    check('bulk fixture loop found in the real step', line is not None)
+    shim = ('#!/bin/sh\n'
+            'case " $* " in *" -c 0 "*|*" -c0 "*) echo "head: illegal byte count -- 0" >&2; exit 1;; esac\n'
+            'exec /usr/bin/head "$@"\n')
+    prefix = 'for n in 0 1 4095 4096 4097 1048576; do head -c "$n" /dev/zero > "$F/a/f$n.bin"; done'
+    for name, snippet, want_fail in [('pre-fix loop (BSD head shim): FAILS', prefix, True),
+                                     ('current step loop (BSD head shim): passes', line, False)]:
+        w = workdir(); os.makedirs(w + '/shim'); open(w + '/shim/head', 'w').write(shim); os.chmod(w + '/shim/head', 0o755)
+        os.makedirs(w + '/fx/a')
+        rc, out = run_step('F="' + w + '/fx"\n' + snippet, w, '-e', {'PATH': w + '/shim:' + os.environ['PATH']})
+        check(f'bulk {name}', (rc != 0) == want_fail, f'rc={rc} {out[-200:]}')
+        if not want_fail:
+            sizes = {n: os.path.getsize(f'{w}/fx/a/f{n}.bin') for n in (0, 1, 4095, 4096, 4097, 1048576)} if rc == 0 else {}
+            check('bulk BSD-shim fixture has the six exact sizes', sizes == {0: 0, 1: 1, 4095: 4095, 4096: 4096, 4097: 4097, 1048576: 1048576}, repr(sizes))
+        shutil.rmtree(w)
+
+def docs_review_flow_case():
+    """Run 39602481035: the docs review capture pressed the visible title "Check on disk", which matches nothing - the
+    SelectionBar opener's accessibility label is "Check selected item on disk, read only" (TreemapView.swift), and the
+    review is a popover (separate window), so a window-id capture would miss it. Static pins for the repaired flow;
+    Mac verification of the capture itself remains open."""
+    ci = open(CI).read()
+    check('docs review presses the opener by its real accessibility label', 'press "Check selected item on disk, read only"' in ci)
+    check('docs review no longer presses the unmatched visible title', 'press "Check on disk"' not in ci)
+    check('docs review capture is full-screen (popover is a separate window)', 'screencapture -x "dist/screenshot-docs-review.png"' in ci)
+    src = open(REPO + '/scripts/docs-capture.swift').read()
+    check('docs-capture matches AXLabel as well as AXTitle/AXDescription/AXValue', 'AXLabel' in src)
+    app = open(REPO + '/Sources/Spacelyzer/TreemapView.swift').read()
+    check('the pressed label still exists in the source (SelectionBar)', 'Check selected item on disk, read only' in app)
+
+def sheet_line_case():
+    """Run 39602481035: batch7-not-scanned-sheet-opened PASSED but printed the failure-branch message ("did not attach").
+    Pin the factual message naming both observed facts on pass and fail."""
+    app = open(REPO + '/Sources/Spacelyzer/SpacelyzerApp.swift').read()
+    check('batch7 sheet line states openerPressed and sheetAttached', 'openerPressed=' in app and 'sheetAttached=' in app)
+    check('batch7 sheet line no longer prints the failure-branch text unconditionally', 'pressedSkip7 ? "footer opener pressed via AX' not in app)
+
+asserts_cases(); ordering_cases(); gate_cases(); perf_cases(); demo_cases(); rust_cases(); testbuild_cases(); bulk_cases(); bulk_bsd_head_case(); docs_review_flow_case(); sheet_line_case()
 docs_cases(CI, 'head', True)
 if base_ci: docs_cases(base_ci, 'base', False)
 timing()
