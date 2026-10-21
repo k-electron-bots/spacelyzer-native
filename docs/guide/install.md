@@ -8,7 +8,6 @@ macOS 14 or later. Builds are in development; see [verification status](../verif
 2. Open the DMG. You get one window: the app on the left, your Applications folder on the right.
 3. Drag Spacelyzer onto Applications.
 
-<!-- CAPTURE: docs/images/install-dmg-window.png <- CI artifact screenshot-dmg-window.png, cropped to the Finder window -->
 ![The install window: drag Spacelyzer onto Applications](../images/install-dmg-window.png)
 
 ## First launch
@@ -23,7 +22,6 @@ Do not disable Gatekeeper or clear quarantine flags. Diagnostic builds are not a
 ## Protected folders
 Full Disk Access in **System Settings > Privacy & Security** may be needed to read protected locations; it does not guarantee complete coverage of every protected path. Without it, the app reports unreadable locations. A partial scan is not a complete view of your disk.
 
-<!-- CAPTURE: docs/images/install-fda-banner.png <- CI artifact screenshot-fda-banner.png -->
 ![The in-app banner shown when Full Disk Access is missing](../images/install-fda-banner.png)
 
 No networking code is present in the app. Scanning and filtering run locally.

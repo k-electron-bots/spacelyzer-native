@@ -2,20 +2,17 @@
 
 See what is using your disk. A native macOS disk-space analyzer with a SwiftUI interface and a Rust engine.
 
-<!-- CAPTURE: docs/images/overview.png <- refresh from CI artifact demo capture (outline + treemap) -->
 ![Outline and treemap showing a scan of Library](docs/images/overview.png)
 
 ## Explore before you remove
 
-<!-- CAPTURE: docs/images/readme-kinds.png <- CI artifact screenshot or demo capture of Kinds view -->
 ![Kinds view grouping files by type with counts and allocated sizes](docs/images/readme-kinds.png)
 
 - Follow folders in the outline or compare their size in the treemap.
 - Switch to Kinds for a file-type breakdown, or Largest for the 200 largest matching files.
 - Combine name, extension, kind, size and modified-date filters across every view.
 
-<!-- CAPTURE: docs/images/readme-review.png <- CI demo capture of the on-disk review panel -->
-![On-disk review showing preview, full path and size for a selected item](docs/images/readme-review.png)
+<!-- CAPTURE PENDING: the on-disk review capture is the one missing docs capture from run 39602481035 (10 of 11 landed; the capture flow was repaired in PR126 but has not produced a capture on Mac yet). Add docs/images/readme-review.png from a future verified CI capture; no stand-in. -->
 
 - Check a scanned item on disk before deciding: preview, full path, size, then Move to Trash with Undo.
 - Move several reviewed items at once, and put any of them back from the removal history.

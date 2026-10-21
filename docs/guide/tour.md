@@ -1,9 +1,8 @@
 # Visual tour
 
-These images come from a shared GitHub CI Mac. Their file names, counts and times are example scan results, not expected values for your Mac. Acceptance of newer behavior is tracked separately in [verification](../verification/README.md).
+These images were captured on a shared GitHub CI Mac (CI run 39602481035, October 2026) and show the current interface. Their file names, counts and times are example scan results, not expected values for your Mac. Acceptance of behavior is tracked separately in [verification](../verification/README.md).
 
 ## Follow folders or compare areas
-<!-- CAPTURE: docs/images/overview.png <- refresh from CI artifact demo capture (outline + treemap) -->
 ![Outline beside the treemap](../images/overview.png)
 
 The outline shows folders and files with size bars. Expand a folder to follow its children. Selection reveals ancestors when needed. Arrow keys navigate; Right/Left expand and collapse; Return drills in. Cross-host Tab/Shift-Tab behavior is being repaired and is not yet accepted.
@@ -11,19 +10,16 @@ The outline shows folders and files with size bars. Expand a folder to follow it
 The treemap uses area for allocated size. Choose folder, kind or depth coloring. Hover for a readout, click to select, or double-click to drill in. Tiny regions combine into a labeled remainder. Zero-byte matches have no drawable area: use the outline or Largest to inspect them.
 
 ## See the file-type breakdown
-<!-- CAPTURE: docs/images/kinds.png <- refresh from CI artifact -->
 ![Kinds view with counts and allocated sizes](../images/kinds.png)
 
 Kinds groups matching files by type. This helps distinguish, for example, code from archives without leaving the selected scan.
 
 ## Find large files within a filter
-<!-- CAPTURE: docs/images/filtered-largest.png <- refresh from CI artifact -->
-![Largest view filtered by lib, with hidden selection warning](../images/filtered-largest.png)
+![Largest view filtered by pdf, with hidden selection warning](../images/filtered-largest.png)
 
-Largest lists the 200 largest matching files and their paths. The header identifies the cap. A name filter of `lib` changes every view. The orange selection warning means the selected item is outside the filter; Move to Trash stays unavailable until you clear the filter or select a matching item.
+Largest lists the 200 largest matching files and their paths. The header identifies the cap. A name filter of `pdf` changes every view. The orange selection warning means the selected item is outside the filter; Move to Trash stays unavailable until you clear the filter or select a matching item.
 
 ## Understand an empty view
-<!-- CAPTURE: docs/images/no-matches.png <- refresh from CI artifact -->
 ![No matches in the outline and treemap](../images/no-matches.png)
 
 No matches means the current filter excludes the files under the displayed root. It is distinct from matching files with zero drawable allocated space. Clear filters or inspect the outline/Largest rather than assuming the scan contains nothing.
