@@ -18,6 +18,11 @@ on:
         required: false
         type: boolean
         default: false
+      docs_only:
+        description: 'Render verification only (exclusive, combine with no other input): build, typecheck, package, reset, docs captures and their artifact. Every functional test/assert step is intentionally skipped and labeled; this run is render evidence, never a functional pass. No release path.'
+        required: false
+        type: boolean
+        default: false
       perf:
         description: 'Perf option (exclusive): builds the test-only app and runs ONLY the optional perf driver (cancel and full-scan milestones, informational, no thresholds); skips tests, packaging, captures and UI assertions. Not part of any other run.'
         required: false
@@ -46,7 +51,7 @@ jobs:
   engine-linux:
     runs-on: ubuntu-latest
     timeout-minutes: 35
-    if: ${{ !inputs.compile_only && !inputs.perf }}
+    if: ${{ !inputs.compile_only && !inputs.perf && !inputs.docs_only }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -66,6 +71,21 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
+      - name: Validate a docs_only dispatch and label the run's evidence class
+        if: ${{ inputs.docs_only }}
+        run: |
+          echo "::notice title=docs-only-run::RENDER VERIFICATION ONLY. Build, typecheck, package, reset and docs captures run; every functional test/assert step (engine tests, failpoints, bulk agreement, benchmark, test-only build, DMG evidence, ordering, launch screenshot, UI assertions, perf) is intentionally skipped. This run is render evidence, never a functional pass; functional evidence stays pinned to the last full run at its own exact head."
+          bad=""
+          [ "${{ inputs.compile_only }}" = "true" ] && bad="$bad compile_only" || true
+          [ "${{ inputs.consolidated }}" = "true" ] && bad="$bad consolidated" || true
+          [ "${{ inputs.perf }}" = "true" ] && bad="$bad perf" || true
+          [ "${{ inputs.perf_in_run }}" = "true" ] && bad="$bad perf_in_run" || true
+          [ "${{ inputs.docs_2x }}" = "true" ] && bad="$bad docs_2x" || true
+          if [ -n "$bad" ]; then
+            echo "::error title=docs-only-run::docs_only is exclusive; do not combine it with:$bad"
+            exit 1
+          fi
+
       - name: Toolchain versions
         run: |
           sw_vers; xcodebuild -version; swift --version; rustc --version || true
@@ -97,6 +117,7 @@ jobs:
           echo "hash=$HASH" >> "$GITHUB_OUTPUT"
       - name: Build TEST-ONLY app with SPZ_CI_TESTS (never packaged or released; the packaged DMG is built without the flag)
         id: testbuild
+        if: ${{ !inputs.docs_only }}
         run: |
           # Optional code (perf driver, 2x shot server) is compiled only when its option is requested, behind its own flag, so the
           # default and consolidated test build contains exactly the code already built on a Mac. If requested optional code fails
@@ -115,7 +136,7 @@ jobs:
           fi
           bash ./scripts/build-test-app.sh dist-test "${{ steps.sign.outputs.hash }}"
       - name: Rust engine tests (native macOS, includes getattrlistbulk backend)
-        if: ${{ !inputs.compile_only && !inputs.perf }}
+        if: ${{ !inputs.compile_only && !inputs.perf && !inputs.docs_only }}
         id: rust
         continue-on-error: ${{ inputs.consolidated }}
         run: |
@@ -148,12 +169,12 @@ jobs:
           fi
           exit "$status"
       - name: Failpoint panic-injection tests (size-table writer)
-        if: ${{ !inputs.compile_only && !inputs.perf }}
+        if: ${{ !inputs.compile_only && !inputs.perf && !inputs.docs_only }}
         id: failpoints
         continue-on-error: ${{ inputs.consolidated }}
         run: cargo test --release -p spacelyzer-engine --features failpoints --test dupes_abi
       - name: Bulk backend vs portable backend on real macOS trees
-        if: ${{ !inputs.compile_only && !inputs.perf }}
+        if: ${{ !inputs.compile_only && !inputs.perf && !inputs.docs_only }}
         id: bulk
         continue-on-error: ${{ inputs.consolidated }}
         timeout-minutes: 6
@@ -197,7 +218,7 @@ jobs:
           { echo "### bulk backend vs portable"; echo '```'; cat "$SUMMARY"; echo '```'; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
           if [ "$failures" -ne 0 ]; then echo "::error title=bulk-verify::$failures binding probe(s) failed"; exit 1; fi
       - name: Scan benchmark (informational, shared runner)
-        if: ${{ !inputs.compile_only && !inputs.consolidated && !inputs.perf }}
+        if: ${{ !inputs.compile_only && !inputs.consolidated && !inputs.perf && !inputs.docs_only }}
         run: ./target/release/spz bench /Applications 3
       - name: Package signed DMG
         if: ${{ !inputs.compile_only && !inputs.perf }}
@@ -205,7 +226,7 @@ jobs:
         continue-on-error: ${{ inputs.consolidated }}
         run: ./scripts/package-dmg.sh "${{ steps.ver.outputs.version }}" "${{ steps.sign.outputs.hash }}"
       - name: Capture DMG install window and app icon (evidence only; artifacts, no publish)
-        if: ${{ !inputs.compile_only && !inputs.perf }}
+        if: ${{ !inputs.compile_only && !inputs.perf && !inputs.docs_only }}
         continue-on-error: true
         run: |
           D="$(ls dist/*.dmg | head -1)"
@@ -239,7 +260,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         # Early, separate upload of the packaged-DMG evidence: a later step timeout or the job cap must not be able
         # to lose the signed DMG, its sha256 and the install-window/icon captures that the render gate inspects.
-        if: ${{ always() && !inputs.compile_only && !inputs.perf }}
+        if: ${{ always() && !inputs.compile_only && !inputs.perf && !inputs.docs_only }}
         with:
           name: Spacelyzer-${{ steps.ver.outputs.version }}-dmg-evidence
           path: |
@@ -368,7 +389,7 @@ jobs:
             dist/screenshot-docs-*.png
             dist/docs-reset-evidence.txt
       - name: Ordering driver, one launch (consolidated option only; fails the build if any required check is missing, duplicated or failing)
-        if: ${{ !inputs.compile_only && !inputs.perf && inputs.consolidated }}
+        if: ${{ !inputs.compile_only && !inputs.perf && inputs.consolidated && !inputs.docs_only }}
         id: ordering
         continue-on-error: true
         timeout-minutes: 7
@@ -394,13 +415,13 @@ jobs:
           ! grep -q '^FAIL' "$RES/assertions.txt" || exit 1
           echo "::notice title=ordering::PASS $N required checks, each exactly once"
       - uses: actions/upload-artifact@v4
-        if: ${{ always() && !inputs.compile_only && !inputs.perf && inputs.consolidated }}
+        if: ${{ always() && !inputs.compile_only && !inputs.perf && inputs.consolidated && !inputs.docs_only }}
         with:
           name: Spacelyzer-${{ steps.ver.outputs.version }}-ordering
           path: |
             dist/ordering/
       - name: Launch app and screenshot (informational)
-        if: ${{ !inputs.compile_only && !inputs.perf }}
+        if: ${{ !inputs.compile_only && !inputs.perf && !inputs.docs_only }}
         continue-on-error: true
         run: |
           # First-launch window, no autoscan: the welcome screen the demo run never shows.
@@ -516,7 +537,7 @@ jobs:
             echo "::notice title=crash::$c"
           done
       - name: UI assertions (fail the build on any failure)
-        if: ${{ !inputs.compile_only && !inputs.perf }}
+        if: ${{ !inputs.compile_only && !inputs.perf && !inputs.docs_only }}
         id: asserts
         continue-on-error: true
         run: |
@@ -537,7 +558,7 @@ jobs:
           fi
           echo "::notice title=ui-assertions::all $n UI assertions passed: $(cut -d' ' -f2 /tmp/spz-assertions.txt | tr '\n' ' ')"
       - uses: actions/upload-artifact@v4
-        if: ${{ always() && !inputs.compile_only }}
+        if: ${{ always() && !inputs.compile_only && !inputs.docs_only }}
         with:
           name: Spacelyzer-${{ steps.ver.outputs.version }}
           path: |
@@ -558,7 +579,7 @@ jobs:
             dist/ordering/
             dist/perf/
       - name: Docs captures, experimental render-derived 2x (option only; test-only app; real 1x captures above are unchanged)
-        if: ${{ !inputs.compile_only && !inputs.perf && inputs.docs_2x && steps.reset.outcome == 'success' && steps.testbuild.outputs.optional_build != 'failed' }}
+        if: ${{ !inputs.compile_only && !inputs.perf && !inputs.docs_only && inputs.docs_2x && steps.reset.outcome == 'success' && steps.testbuild.outputs.optional_build != 'failed' }}
         continue-on-error: true
         timeout-minutes: 6
         run: |
@@ -566,14 +587,14 @@ jobs:
           [ -d "$HOME/Sample" ] || bash scripts/make-docs-fixture.sh "$HOME/Sample"
           bash scripts/docs-capture-2x.sh dist-test/Spacelyzer.app "$HOME/Sample"
       - uses: actions/upload-artifact@v4
-        if: ${{ always() && !inputs.compile_only && !inputs.perf && inputs.docs_2x }}
+        if: ${{ always() && !inputs.compile_only && !inputs.perf && !inputs.docs_only && inputs.docs_2x }}
         with:
           name: Spacelyzer-${{ steps.ver.outputs.version }}-docs-2x
           path: |
             dist/screenshot-docs-2x-render-*.png
             dist/screenshot-docs-2x-render-*.txt
       - name: Perf driver (perf option only; informational, no thresholds; incomplete or missing milestones fail the build)
-        if: ${{ !inputs.compile_only && (inputs.perf || inputs.perf_in_run) && steps.testbuild.outputs.optional_build != 'failed' }}
+        if: ${{ !inputs.compile_only && !inputs.docs_only && (inputs.perf || inputs.perf_in_run) && steps.testbuild.outputs.optional_build != 'failed' }}
         id: perf
         continue-on-error: true
         timeout-minutes: 8
@@ -594,7 +615,7 @@ jobs:
           cat "$RES/perf.txt" 2>/dev/null; cat "$RES/result.txt" 2>/dev/null
           [ "$(head -1 "$RES/result.txt" 2>/dev/null)" = "PERF-COMPLETE" ] || { echo "::error title=perf::$(tr '\n' ';' < "$RES/result.txt" 2>/dev/null | head -c 600)"; exit 1; }
       - uses: actions/upload-artifact@v4
-        if: ${{ always() && !inputs.compile_only && (inputs.perf || inputs.perf_in_run) }}
+        if: ${{ always() && !inputs.compile_only && !inputs.docs_only && (inputs.perf || inputs.perf_in_run) }}
         with:
           name: Spacelyzer-${{ steps.ver.outputs.version }}-perf
           path: |
@@ -608,7 +629,7 @@ jobs:
           gh release create "$V" dist/*.dmg dist/*.sha256 dist/screenshot*.png dist/ui-assertions.txt $(ls dist/main-thread-sample.txt 2>/dev/null || true) --title "Spacelyzer $V" --prerelease \
             --notes "UI assertions: ${{ steps.asserts.outcome }}. Self-signed development build (not notarized). Not Apple-verified: after the first blocked open, use System Settings > Privacy & Security > Open Anyway. Screenshots attached are from the CI runner, not a real Mac. Built from ${{ github.sha }}."
       - name: Fail the build if any required evidence failed or was lost (after artifacts and release are published)
-        if: ${{ always() && !inputs.compile_only && (steps.testbuild.outputs.optional_build == 'failed' || (inputs.perf && steps.perf.outcome != 'success') || (!inputs.perf && (steps.reset.outcome != 'success' || steps.docs.outcome != 'success' || steps.asserts.outcome != 'success' || (inputs.perf_in_run && steps.perf.outcome != 'success') || (inputs.consolidated && (steps.ordering.outcome != 'success' || steps.rust.outcome != 'success' || steps.failpoints.outcome != 'success' || steps.bulk.outcome != 'success' || steps.dmg.outcome != 'success'))))) }}
+        if: ${{ always() && !inputs.compile_only && !inputs.docs_only && (steps.testbuild.outputs.optional_build == 'failed' || (inputs.perf && steps.perf.outcome != 'success') || (!inputs.perf && (steps.reset.outcome != 'success' || steps.docs.outcome != 'success' || steps.asserts.outcome != 'success' || (inputs.perf_in_run && steps.perf.outcome != 'success') || (inputs.consolidated && (steps.ordering.outcome != 'success' || steps.rust.outcome != 'success' || steps.failpoints.outcome != 'success' || steps.bulk.outcome != 'success' || steps.dmg.outcome != 'success'))))) }}
         run: |
           # Name the failing evidence, not just exit 1: run 39602481035 ended red and a bare exit 1 hid WHICH of the
           # continue-on-error outcomes tripped the gate, which let one cause (the stale pin) look like the only one.
@@ -626,6 +647,12 @@ jobs:
           [ "${{ steps.testbuild.outputs.optional_build }}" = failed ] && bad="$bad testbuild(optional_build)=failed"
           echo "::error title=evidence-gate::failed or lost evidence:$bad"
           exit 1
+      - name: docs_only render-evidence gate (fails when the reset or the docs captures did not succeed; never a functional pass)
+        if: ${{ always() && inputs.docs_only && (steps.reset.outcome != 'success' || steps.docs.outcome != 'success') }}
+        run: |
+          echo "::error title=docs-only-gate::render evidence incomplete: reset=${{ steps.reset.outcome }} docs=${{ steps.docs.outcome }}"
+          exit 1
+
       - name: Stop any app left running (also after a step timeout)
         if: ${{ always() && !inputs.compile_only }}
         continue-on-error: true

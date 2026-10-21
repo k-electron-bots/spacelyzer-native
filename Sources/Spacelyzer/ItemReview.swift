@@ -203,6 +203,7 @@ struct ItemDetailsView: View {
             if let live = result.live {
                 if live.describes == .differentItem {
                     Text("Now at this path (a different item than the scan recorded):").font(.caption.bold()).foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 2) {
                     GridRow { Text("On disk").foregroundStyle(.secondary); Text(formatBytes(live.allocated)) }
@@ -259,11 +260,16 @@ struct ItemReviewPopover: View {
                     .accessibilityLabel("Preview the item as it is on disk now")
             } else if review.outdated {
                 Text("The results changed while this was being checked. Close this and check again.").font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             } else if review.inProgress {
                 ProgressView("Checking…").controlSize(.small)
             }
             Text("Read only. This compares the item on disk with what the scan recorded at this moment. It does not make a later removal safe.")
                 .font(.caption2).foregroundStyle(.secondary)
+                // The safety qualifier must wrap in full at the popover's fixed width, never ellipsize - the same
+                // standard as the verdict text above. Without this the run-39683697776 capture ellipsized the line to
+                // "Read only. ... what the scan rec..." and hid "It does not make a later removal safe."
+                .fixedSize(horizontal: false, vertical: true)
             HStack {
                 Spacer()
                 Button("Close") { dismiss() }.controlSize(.small)
