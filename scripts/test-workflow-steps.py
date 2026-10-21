@@ -166,6 +166,41 @@ def gate_cases():
         check(f'perf_in_run: perf {bad} (everything else success) -> gate runs', gate(I={'perf_in_run': True}, O={'perf': bad}) is True)
     check('perf_in_run: perf success and everything else success -> gate does NOT run', gate(I={'perf_in_run': True}) is False)
     check('perf not requested: a perf outcome of failure/skipped is ignored by the gate', gate(O={'perf': 'skipped'}) is False and gate(O={'perf': 'failure'}) is False)
+    # The gate names the failing evidence (run 39602481035's bare `exit 1` hid which outcome tripped it).
+    # Execute the REAL gate body with the ${{ }} expressions substituted per scenario; the annotation must name
+    # exactly the triggering steps - no more (perf-exclusive skips are by design), no less.
+    def render_gate(I, O, U):
+        body = st['run']
+        def sub(m):
+            e = m.group(0)
+            mi = re.fullmatch(r'\$\{\{ inputs\.(\w+) \}\}', e)
+            if mi: return {'compile_only': 'false', 'perf': 'false', 'perf_in_run': 'false', 'consolidated': 'true', **I}[mi.group(1)]
+            mo = re.fullmatch(r'\$\{\{ steps\.(\w+)\.outcome \}\}', e)
+            if mo: return {'reset': 'success', 'docs': 'success', 'asserts': 'success', 'perf': 'success', 'ordering': 'success', 'rust': 'success', 'bulk': 'success', 'dmg': 'success', **O}[mo.group(1)]
+            mu = re.fullmatch(r'\$\{\{ steps\.testbuild\.outputs\.(\w+) \}\}', e)
+            if mu: return U.get('testbuild.' + mu.group(1), '')
+            raise AssertionError(e)
+        return re.sub(r'\$\{\{[^}]+\}\}', sub, body)
+    def gate_msg(I, O, U=None):
+        w = workdir(); rc, out = run_step(render_gate(I, O, U or {}), w, '-eo pipefail'); shutil.rmtree(w)
+        assert rc == 1, f'gate body rc={rc} out={out[-200:]}'
+        m = re.search(r'::error title=evidence-gate::failed or lost evidence:(.*)', out)
+        assert m, out[-300:]
+        return m.group(1).strip()
+    msg = gate_msg({'consolidated': 'true'}, {'bulk': 'failure'})
+    check('gate annotation names only bulk when only bulk failed', msg == 'bulk=failure', msg)
+    msg = gate_msg({'perf': 'true'}, {'perf': 'failure', 'reset': 'skipped', 'docs': 'skipped', 'asserts': 'skipped', 'ordering': 'skipped', 'rust': 'skipped', 'bulk': 'skipped', 'dmg': 'skipped'})
+    check('perf-exclusive: annotation names only perf, not the by-design skips', msg == 'perf=failure', msg)
+    msg = gate_msg({}, {'reset': 'failure', 'docs': 'skipped'})
+    check('reset failure + docs skipped: both named in order', msg == 'reset=failure docs=skipped', msg)
+    msg = gate_msg({'perf_in_run': 'true'}, {'perf': 'failure'})
+    check('perf_in_run: annotation names perf', 'perf=failure' in msg, msg)
+    msg = gate_msg({}, {}, {'testbuild.optional_build': 'failed'})
+    check('testbuild optional build failure is named', msg == 'testbuild(optional_build)=failed', msg)
+    msg = gate_msg({'consolidated': 'false'}, {'asserts': 'failure', 'ordering': 'skipped', 'rust': 'skipped', 'bulk': 'skipped', 'dmg': 'skipped'})
+    check('non-consolidated: names asserts only, skipped consolidated steps not listed', msg == 'asserts=failure', msg)
+    check('gate body is no longer a bare exit 1', st['run'].strip() != 'exit 1')
+
     # always() keeps the gate after earlier failures, and it sits after every upload step
     names = [s.get('name', '') or s.get('uses', '') for s in doc['jobs']['macos']['steps']]
     gi = [i for i, s in enumerate(doc['jobs']['macos']['steps']) if s.get('name', '').startswith('Fail the build')][0]
