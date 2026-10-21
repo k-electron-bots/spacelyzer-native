@@ -404,7 +404,9 @@ private struct OutlineTable: NSViewRepresentable {
         if c.shownRevision != revision || poisonReload {
             c.shownRevision = revision
             c.shownPoisoned = poisoned
+            let tReload = Perf.now()
             c.table?.reloadData()
+            Perf.timingLog("outline-reloadData rows=\(model.outlineRows.count) reload_ms=\(Perf.ms(since: tReload)) at_ns=\(tReload)")
         }
         c.syncSelection(selected)
         if let table = c.table {

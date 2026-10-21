@@ -1,6 +1,7 @@
 import ApplicationServices
 import CSpacelyzer
 import SwiftUI
+import ApplicationServices
 
 @main
 struct SpacelyzerApp: App {
@@ -807,8 +808,25 @@ struct SpacelyzerApp: App {
                             let freshAck = FileManager.default.fileExists(atPath: "/tmp/spz-footer-ax-ack")
                             Check.expect("footer-external-same-node-help-value-exact-details", expectedFixture && freshAck && clientStatus == "EXIT_0" && externalResult == "VERIFIED", "external verified window/PID/role same-node exact UTF8 Help+Value; successful process exit required; denied/error/timeout/truncation is not a pass; native failed gate separate")
                             let footerAX = FooterAXEvidence.inspect(footerWindow)
-                            let fullLabel = footerAX.entries.contains { $0.label.contains("Stopped early, partial accounting") && $0.label.contains("Filter:") && $0.label.contains("1 file") && $0.label.contains("1,234,567 locations not readable") && $0.label.contains("Scanned in") }
-                            Check.expect("footer-native-accessibility-full-details", fullLabel, "native accessor from mixed AX/view discovery only; not external client reachability; truncated=\(footerAX.truncated); missing label inconclusive when truncated; not VoiceOver/client announcements or tooltip proof")
+                            // macOS 26.6.2 (run 37814251307): the external client verifies the combined
+                            // footer static text carries exact Help+Value, but a typed-only native walk
+                            // never reached the SwiftUI subtree (help/value empty on the 3 discovered
+                            // nodes). Exact match on value or help - never a fragment/label-only test.
+                            let nativeFull = expectedDetails?.isEmpty == false && footerAX.entries.contains { $0.value == expectedDetails! || $0.help == expectedDetails! }
+                            Check.expect("footer-native-accessibility-full-details", nativeFull, "native accessor from mixed AX/view discovery only; exact exported-details match on AXValue or AXHelp; AXDescription unused by SwiftUI combined static text on macOS 26.6.2; truncated=\(footerAX.truncated); not VoiceOver/client announcements or tooltip proof. Lineage: this exact-match implementation comes from the main-line walker (evidence run 37834771695); run 39602481035's PASS covered the prior label-fragment implementation under this same check id and does NOT cover this implementation - fresh Mac verification on the combined tree is pending")
+                            // Observability: the workflow launches the app via `open -n`, which detaches
+                            // stdout/stderr, so the walker's Perf.log diagnostics never reach the runner.
+                            // Write every candidate entry and the walk counters to a file the workflow
+                            // prints into the step log; the artifact must never be the only copy.
+                            var footerWalkDump = "nodes=\(footerAX.entries.count) discovered=\(footerAX.discovered) rejectedBranches=\(footerAX.rejected) truncated=\(footerAX.truncated)\n"
+                            for (walkIndex, walkEntry) in footerAX.entries.enumerated() {
+                                footerWalkDump += "entry \(walkIndex) label=\(walkEntry.label.debugDescription) help=\(walkEntry.help.debugDescription) value=\(walkEntry.value.debugDescription)\n"
+                            }
+                            // Completion marker: written only when the dump itself succeeded,
+                            // so the workflow never reads the marker as proof when evidence is missing.
+                            if (try? footerWalkDump.write(toFile: "/tmp/spz-footer-ax-entries.txt", atomically: true, encoding: .utf8)) != nil {
+                                try? Data().write(to: URL(fileURLWithPath: "/tmp/spz-footer-ax-entries-done"))
+                            }
                             let footerActions = DemoAX.footerActionNames()
                             Check.expect("footer-voiceover-action-name-clean", AXActionName.isOnly(footerActions, authored: "Show locations not scanned"), "in-process AX only: the combined footer element vends exactly one custom action whose authored name is Show locations not scanned (AppKit wraps it as Name:|Target:|Selector: in this API; any other authored name or extra action fails). What VoiceOver speaks is NOT verified here and the user-facing cleanliness requirement stays open; actions=\(footerActions)")
                             mark(40)
@@ -3051,8 +3069,8 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
 
 /// CI-only: read the real hosted native accessibility descendants, never substitute the authored SwiftUI label.
 @MainActor private enum FooterAXEvidence {
-    struct Entry { let label: String; let help: String }
-    struct Result { let entries: [Entry]; let truncated: Bool }
+    struct Entry { let label: String; let help: String; let value: String }
+    struct Result { let entries: [Entry]; let truncated: Bool; let discovered: Int; let rejected: Int }
     static func inspect(_ root: NSWindow) -> Result {
         var entries: [Entry] = []
         var seen = Set<ObjectIdentifier>()
@@ -3070,25 +3088,48 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
             let protocolNode = instance as? NSAccessibilityProtocol
             let view = instance as? NSView
             let window = instance as? NSWindow
-            let label: String?, help: String?, children: [Any]
+            let label: String?, help: String?, value: String?, children: [Any]
             // Typed AppKit methods are supported even when protocol discovery is rejected.
             // Hierarchy discovery does not depend on a successful accessibility protocol cast.
+            // Run 37814251307 evidence: on macOS 26.6.2 the typed accessibilityChildren()
+            // of NSHostingView returns nothing even though an external AX client sees the
+            // full SwiftUI subtree, so the walk stopped at the hosting view (3 readable
+            // nodes, footer element never reached). Typed branches therefore merge the
+            // informal AXChildren attribute into the child list and fall back to informal
+            // attribute reads for label/help/value; `seen` deduplicates shared nodes.
+            let informalChildren = instance.accessibilityAttributeValue(.children) as? [Any] ?? []
+            let informalLabel = instance.accessibilityAttributeValue(.description) as? String
+            let informalHelp = instance.accessibilityAttributeValue(.help) as? String
+            let informalValue = instance.accessibilityAttributeValue(.value) as? String
             if let view {
-                label = view.accessibilityLabel(); help = view.accessibilityHelp()
-                children = view.accessibilityChildren() ?? []
+                label = view.accessibilityLabel() ?? informalLabel; help = view.accessibilityHelp() ?? informalHelp
+                value = (view.accessibilityValue() as? String) ?? informalValue
+                children = (view.accessibilityChildren() ?? []) + informalChildren
             } else if let window {
-                label = window.accessibilityLabel(); help = window.accessibilityHelp()
-                children = window.accessibilityChildren() ?? []
+                label = window.accessibilityLabel() ?? informalLabel; help = window.accessibilityHelp() ?? informalHelp
+                value = (window.accessibilityValue() as? String) ?? informalValue
+                children = (window.accessibilityChildren() ?? []) + informalChildren
             } else if let protocolNode {
-                label = protocolNode.accessibilityLabel(); help = protocolNode.accessibilityHelp()
-                children = protocolNode.accessibilityChildren() ?? []
+                label = protocolNode.accessibilityLabel() ?? informalLabel; help = protocolNode.accessibilityHelp() ?? informalHelp
+                value = (protocolNode.accessibilityValue() as? String) ?? informalValue
+                children = (protocolNode.accessibilityChildren() ?? []) + informalChildren
             } else {
-                label = nil; help = nil; children = []; rejected += 1
+                // SwiftUI hosts accessibility through private proxy nodes (SwiftUI.AccessibilityNode,
+                // NSAccessibilityReparentingCellProxy) that reject the formal NSAccessibilityProtocol
+                // cast. Every NSObject answers the informal attribute accessors, so read
+                // AXDescription (the label attribute), AXHelp, AXValue and AXChildren through them
+                // and keep walking the proxy subtree.
+                label = instance.accessibilityAttributeValue(.description) as? String
+                help = instance.accessibilityAttributeValue(.help) as? String
+                value = instance.accessibilityAttributeValue(.value) as? String
+                children = instance.accessibilityAttributeValue(.children) as? [Any] ?? []
+                if (label ?? "").isEmpty, (help ?? "").isEmpty, (value ?? "").isEmpty, children.isEmpty { rejected += 1 }
             }
-            Perf.log("footer-ax discovery edge=\(edge) depth=\(depth) class=\(NSStringFromClass(type(of: instance))) protocol=\(protocolNode != nil) view=\(view != nil) window=\(window != nil) readable=\(view != nil || window != nil || protocolNode != nil)")
-            if view != nil || window != nil || protocolNode != nil {
-                entries.append(Entry(label: label ?? "", help: help ?? ""))
-                Perf.log("footer-ax edge=\(edge) depth=\(depth) label=\((label ?? "").debugDescription) help=\((help ?? "").debugDescription)")
+            let readable = view != nil || window != nil || protocolNode != nil || (label ?? "").isEmpty == false || (help ?? "").isEmpty == false || (value ?? "").isEmpty == false
+            Perf.log("footer-ax discovery edge=\(edge) depth=\(depth) class=\(NSStringFromClass(type(of: instance))) protocol=\(protocolNode != nil) view=\(view != nil) window=\(window != nil) readable=\(readable)")
+            if readable {
+                entries.append(Entry(label: label ?? "", help: help ?? "", value: value ?? ""))
+                Perf.log("footer-ax edge=\(edge) depth=\(depth) label=\((label ?? "").debugDescription) help=\((help ?? "").debugDescription) value=\((value ?? "").debugDescription)")
             }
             let views = view?.subviews ?? []
             let content = window?.contentView.map { [$0] } ?? []
@@ -3101,42 +3142,58 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
             }
         }
         visit(root, depth: 0, edge: "root-window")
-        Perf.log("footer-ax complete nodes=\(entries.count) discovered=\(discovered) rejectedBranches=\(rejected) truncated=\(truncated); rejected non-view/nonprotocol branches remain uninspected, no authored substitution")
-        // SwiftUI bridges accessibility through internal node classes that reject every typed cast above
-        // (run 37959435404: three SwiftUI.AccessibilityNode children, all unreadable through the walk).
-        // Read the same hosted content through the in-process AX API on this app's own process: a native
-        // accessor reading what the accessibility server actually exposes, not an authored substitution
-        // and not external-client reachability. AXDescription is accepted as the label carrier: the same
-        // run's external client log shows SwiftUI routing the combined element's label into AXDescription.
-        let appElement = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
-        func axString(_ element: AXUIElement, _ attribute: String) -> String {
-            var value: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return "" }
-            return value as? String ?? ""
-        }
-        var windowsRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(appElement, "AXWindows" as CFString, &windowsRef) == .success,
-           let windows = windowsRef as? [AXUIElement] {
-            for windowElement in windows where axString(windowElement, "AXTitle") == root.title {
-                var stack: [AXUIElement] = [windowElement]
-                var axVisited = 0
-                while let element = stack.popLast(), axVisited < 512 {
-                    axVisited += 1
-                    var childrenRef: CFTypeRef?
-                    if AXUIElementCopyAttributeValue(element, "AXChildren" as CFString, &childrenRef) == .success,
-                       let axChildren = childrenRef as? [AXUIElement] {
-                        stack.append(contentsOf: axChildren)
-                    }
-                    let label = ["AXLabel", "AXTitle", "AXDescription", "AXValue"].map { axString(element, $0) }.first { !$0.isEmpty } ?? ""
-                    let help = axString(element, "AXHelp")
-                    if !label.isEmpty || !help.isEmpty {
-                        entries.append(Entry(label: label, help: help))
-                    }
-                }
-                Perf.log("footer-ax ax-pass window=\(root.title) visited=\(axVisited)")
+        // Same-PID AXUIElement walk. Run 37834771695: the in-process NSObject graph
+        // stops at the NSHostingView - typed accessibilityChildren() and the informal
+        // AXChildren both return nothing on macOS 26.6.2 - while the out-of-process
+        // ax-client sees the full SwiftUI subtree with exact Help+Value. Read the
+        // app's OWN exported AX tree through the AX server the same way the external
+        // client does (AXUIElementCreateApplication on this PID, window matched by
+        // the footer title, AXDescription/AXHelp/AXValue per node). The attributes
+        // are still SwiftUI's own exports via the AX server: no authored
+        // substitution, no private API. If the self-AX read is unavailable the
+        // NSObject-graph entries above stand alone and the gate keeps its prior
+        // verdict - an unavailable walk is logged, never silently treated as proof.
+        let selfAX = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+        var axWalkAvailable = false
+        func axVisit(_ element: AXUIElement, depth: Int, edge: String) {
+            guard depth < 24, discovered < 512 else { truncated = true; return }
+            discovered += 1
+            var labelRef: CFTypeRef?, helpRef: CFTypeRef?, valueRef: CFTypeRef?, childrenRef: CFTypeRef?
+            AXUIElementCopyAttributeValue(element, kAXDescriptionAttribute as CFString, &labelRef)
+            AXUIElementCopyAttributeValue(element, kAXHelpAttribute as CFString, &helpRef)
+            AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &valueRef)
+            let label = labelRef as? String ?? ""
+            let help = helpRef as? String ?? ""
+            let value = valueRef as? String ?? ""
+            if !label.isEmpty || !help.isEmpty || !value.isEmpty {
+                entries.append(Entry(label: label, help: help, value: value))
+                Perf.log("footer-ax axuielement edge=\(edge) depth=\(depth) label=\(label.debugDescription) help=\(help.debugDescription) value=\(value.debugDescription)")
+            } else {
+                rejected += 1
+            }
+            guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+                  let axChildren = childrenRef as? [AXUIElement] else { return }
+            for child in axChildren {
+                if discovered >= 512 { truncated = true; break }
+                axVisit(child, depth: depth + 1, edge: "axuielement-child")
             }
         }
-        return Result(entries: entries, truncated: truncated)
+        var windowsRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(selfAX, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+           let axWindows = windowsRef as? [AXUIElement] {
+            for axWindow in axWindows {
+                var titleRef: CFTypeRef?
+                AXUIElementCopyAttributeValue(axWindow, kAXTitleAttribute as CFString, &titleRef)
+                guard (titleRef as? String) == root.title else { continue }
+                axWalkAvailable = true
+                axVisit(axWindow, depth: 0, edge: "axuielement-window")
+            }
+        }
+        if !axWalkAvailable {
+            Perf.log("footer-ax axuielement self-walk unavailable (window list unreadable or footer window not found by title); NSObject-graph entries only, prior verdict preserved")
+        }
+        Perf.log("footer-ax complete nodes=\(entries.count) discovered=\(discovered) rejectedBranches=\(rejected) truncated=\(truncated) axuielementWalk=\(axWalkAvailable); informal attribute accessors plus same-PID AX server reads, no authored substitution")
+        return Result(entries: entries, truncated: truncated, discovered: discovered, rejected: rejected)
     }
 
 }
