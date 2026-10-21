@@ -20,6 +20,6 @@ Follow folders in the outline, compare areas in the treemap, or use Kinds and La
 ## 4. Review, then remove
 Select an item and check it on disk: preview, full path and size, refreshed from the filesystem. If it is what you expect, Move to Trash. The removal is confirmed with the full path, and Undo is available from the removal history. Batch removal moves several reviewed items in one pass with one undo.
 
-<!-- CAPTURE PENDING: the on-disk review capture is the one missing docs capture from run 39602481035 (10 of 11 landed; the capture flow was repaired in PR126 but has not produced a capture on Mac yet). Add docs/images/quickstart-review.png from a future verified CI capture; no stand-in. -->
+![The on-disk review popover: preview, sizes, and the read-only safety note](../images/quickstart-review.png)
 
 Protected paths, selections outside the current filter and selections awaiting a filter result are refused. Read [space, filters and safe removal](space-and-safety.md) before deleting anything unfamiliar, and the [visual tour](tour.md) for a full walk of the views.
