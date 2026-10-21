@@ -4,6 +4,7 @@ Spacelyzer has two audiences: people exploring disk space and people building or
 
 ## Use the app
 - [Install and permissions](guide/install.md)
+- [Quick start](guide/quick-start.md)
 - [Visual tour](guide/tour.md)
 - [Space, filters and safe removal](guide/space-and-safety.md)
 - [FAQ](guide/faq.md)
