@@ -409,19 +409,22 @@ fn outline_sort_modes_order_siblings_and_keep_every_row() {
 #[test]
 fn nameasc_matches_reference_lowercase_order_on_unicode_edges() {
     use spacelyzer_engine::outline::{visible_rows_sorted, SortMode};
-    use spacelyzer_engine::scan::{scan, ScanOptions, ScanProgress};
+    use spacelyzer_engine::Tree;
     use std::collections::HashSet;
     // Regression for the NameAsc comparator: sibling order must equal the
     // original sort_by_cached_key(|n| tree.name(n).to_lowercase()) exactly,
     // including context-sensitive Greek final sigma (a per-char lowercase
     // maps word-final capital sigma differently) and stable tie order.
-    // Returns (sorted names, pre-sort scan order) for a tree of `names`.
+    // The tree is synthetic, NOT a filesystem fixture: case-insensitive APFS
+    // folds "\u{039F}\u{03A3}" and "\u{039F}\u{03C3}" (and "apple"/"Apple") onto one directory
+    // entry, so a fixture holding both collapses to a single node there and the
+    // case never reaches the comparator (run 39653416924 failed exactly this
+    // way). The comparator input is names, not disk entries; a synthetic tree
+    // exercises the identical code path on every platform, with the pre-sort
+    // sibling order defined as the input order given here.
+    // Returns (sorted names, pre-sort sibling order) for a tree of `names`.
     let order = |names: &[&str]| -> (Vec<String>, Vec<String>) {
-        let t = tempdir::T::new();
-        for n in names {
-            std::fs::create_dir_all(t.path().join(n)).unwrap();
-        }
-        let tree = scan(t.path(), &ScanOptions::default(), &ScanProgress::default()).unwrap();
+        let tree = Tree::from_child_names(names);
         let prescan: Vec<String> = tree.children(0).map(|n| tree.name(n).to_string()).collect();
         let got: Vec<String> = visible_rows_sorted(&tree, 0, &HashSet::new(), None, SortMode::NameAsc)
             .iter().map(|r| tree.name(r.node).to_string()).collect();

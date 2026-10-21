@@ -544,6 +544,37 @@ impl Tree {
 }
 
 impl Tree {
+
+    /// Test/benchmark helper (same family as `synthetic`): a flat tree whose root has exactly `names` as
+    /// directory children IN THE GIVEN ORDER, for comparator tests that need specific names a filesystem
+    /// cannot always hold (case-insensitive APFS folds e.g. "ΟΣ"/"Οσ" onto one entry, so a fixture of both
+    /// collapses to one directory). Not a scan; sibling order is the caller's input order.
+    #[doc(hidden)]
+    pub fn from_child_names(names: &[&str]) -> Tree {
+        let mut t = Tree { root_path: "/synthetic".into(), ..Default::default() };
+        let push = |t: &mut Tree, name: &str, parent: u32| -> u32 {
+            let id = t.names.len() as u32;
+            t.names.push(name.into());
+            t.parent.push(parent);
+            t.kind.push(Kind::Directory as u8);
+            t.category.push(Category::Folder as u8);
+            t.size.push(0);
+            t.mtime.push(0);
+            t.first_child.push(NO_NODE);
+            t.child_count.push(0);
+            id
+        };
+        push(&mut t, "", NO_NODE);
+        let first = t.names.len() as u32;
+        for n in names {
+            push(&mut t, n, 0);
+        }
+        t.first_child[0] = first;
+        t.child_count[0] = t.names.len() as u32 - first;
+        t.items = t.names.len() as u64 - 1;
+        t.seal()
+    }
+
     /// Deterministic synthetic tree with about `n` nodes for benchmarks and tests (not a scan).
     /// Every directory has up to 50 children, a fifth of which are directories.
     #[doc(hidden)]
