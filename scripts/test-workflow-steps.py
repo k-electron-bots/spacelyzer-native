@@ -35,7 +35,7 @@ case "$STUB_CARGO" in
   fail) echo 'test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'; echo "thread 'x' panicked at engine/tests/engine.rs:1:1"; echo 'test result: FAILED. 19 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out'; exit 101;;
   abort) echo 'error: could not compile'; exit 101;;
 esac''',
- 'pkill': 'exit 0', 'pgrep': '[ "$STUB_PGREP" = none ] && exit 1; echo 4242', 'open': '''
+ 'pkill': 'echo pkill >> "$TMPDIR/pkill.log"; exit 0', 'pgrep': '[ "$STUB_PGREP" = none ] && exit 1; echo 4242', 'open': '''
 # open -n APP --stdout F --stderr F --env K=V ... : emulate the ordering driver by writing result files per $STUB_ORDERING
 # SPZ_DEMO=1 (the scripted demo launch): emulate the app's ready markers, finished marker and assertion file per $STUB_DEMO (full | nofinish | stall:N | none)
 case "${STUB_DEMO:+x} $* " in x*" SPZ_DEMO=1 "*)
@@ -60,12 +60,20 @@ case "$STUB_ORDERING" in
   none) :;;
 esac; exit 0''',
  'codesign': '[ "$STUB_CODESIGN" = fail ] && exit 1; exit 0', 'sleep': 'exit 0', 'hdiutil': 'exit 0',
- 'swiftc': 'out=""; while [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done; [ -n "$out" ] && cp "$STUB_CAPBIN" "$out" && chmod +x "$out"; exit 0',
+ 'swiftc': '[ "$STUB_SWIFTC" = fail ] && exit 1; out=""; while [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done; [ -n "$out" ] && cp "$STUB_CAPBIN" "$out" && chmod +x "$out"; exit 0',
  'screencapture': '[ "$STUB_SCREENCAP" = fail ] && exit 1; f=""; for a in "$@"; do f="$a"; done; case "$STUB_SCREENCAP_ONLY" in "") :;; *) case "$f" in *"$STUB_SCREENCAP_ONLY"*) :;; *) exit 1;; esac;; esac; echo png > "$f"; exit 0',
 }
 CAPBIN = '''#!/bin/bash
-# stands in for the compiled docs-capture helper: windowid prints a number, press/select/type/escape succeed
-if [ "$2" = windowid ]; then [ "$STUB_WINDOW" = none ] && exit 1; echo 77; fi; exit 0
+# stands in for the compiled docs-capture helper: windowid prints a number, press/select/type/escape/hastext succeed
+if [ "$2" = windowid ]; then [ "$STUB_WINDOW" = none ] && exit 1; echo 77; fi
+if [ "$2" = hastext ]; then
+  case "$STUB_HASTEXT" in
+    miss) echo "text not present"; exit 1;;
+    late:*) n="${STUB_HASTEXT#late:}"; c=$(cat "$TMPDIR/hastext-count" 2>/dev/null || echo 0); c=$((c + 1)); echo "$c" > "$TMPDIR/hastext-count"; [ "$c" -le "$n" ] && exit 1; exit 0;;
+    hang:*) n="${STUB_HASTEXT#hang:}"; c=$(cat "$TMPDIR/hastext-count" 2>/dev/null || echo 0); c=$((c + 1)); echo "$c" > "$TMPDIR/hastext-count"; [ "$c" -le "$n" ] && { tail -f /dev/null; }; exit 0;;
+  esac
+  exit 0
+fi; exit 0
 '''
 
 def workdir():
@@ -90,22 +98,47 @@ def run_step(body, w, shellopts, env=None):
     p = subprocess.run(['bash'] + shellopts.split() + ['-c', body], cwd=w, env=e, capture_output=True, text=True, timeout=120)
     return p.returncode, p.stdout + p.stderr
 
-DOCS = ['overview','kinds','largest','review','folders','filtered-largest','no-matches','overview-dark','welcome','welcome-dark','fda-banner']
+DOCS = ['overview','kinds','largest','review','folders','filtered-largest','no-matches','scanning','overview-dark','welcome','welcome-dark','fda-banner']
+
+def typecheck_case():
+    """docs-capture.swift is a standalone script compiled on demand inside the docs step - the package build never
+    touches it, so a type error would otherwise surface only in a scarce consolidated run. The compile-covered
+    typecheck step must exist, run under compile_only (no if), and fail the build (no continue-on-error)."""
+    doc = load(CI); st = step(doc, 'macos', 'Typecheck the on-demand helper tools')
+    check('typecheck step typechecks BOTH on-demand helpers', 'swiftc -typecheck scripts/docs-capture.swift' in st['run'] and 'swiftc -typecheck scripts/ax-client.swift' in st['run'])
+    check('typecheck step has no continue-on-error (a type error fails the build)', 'continue-on-error' not in st)
+    check('typecheck step has no if: (covered by compile_only and full runs alike)', 'if' not in st)
+    for opts in ('-e', '-eo pipefail'):
+        w = workdir(); rc, out = run_step(st['run'], w, opts, {'STUB_SWIFTC': 'fail'})
+        check(f'typecheck step [{opts}] failing swiftc fails the step', rc != 0, f'rc={rc}')
+        shutil.rmtree(w)
 
 def docs_cases(ci_path, label, expect_gate_fix):
     doc = load(ci_path); body = step(doc, 'macos', 'Docs captures')['run']
     for opts in ('-e', '-eo pipefail'):
         for name, env, want_fail in [
-            ('all 11 captures succeed', {}, False),
+            ('all 12 captures succeed', {}, False),
             ('screencapture fails every time', {'STUB_SCREENCAP': 'fail'}, True),
             ('no window found', {'STUB_WINDOW': 'none'}, True),
-            ('only one capture succeeds', {'STUB_SCREENCAP_ONLY': 'overview.png'}, True)]:
+            ('only one capture succeeds', {'STUB_SCREENCAP_ONLY': 'overview.png'}, True),
+            ('scanning state absent from the AX tree: step fails closed', {'STUB_HASTEXT': 'miss'}, True),
+            ('scanning state observed on the third bounded probe: step passes', {'STUB_HASTEXT': 'late:2'}, False),
+            ('first AX probe hangs past the 5s wall bound, second succeeds: step passes', {'STUB_HASTEXT': 'hang:1'}, False)]:
             w = workdir(); rc, out = run_step(subst(body, w), w, opts, env)
             got_fail = rc != 0
             if expect_gate_fix: check(f'[{label}] docs step [{opts}] {name}: exit {"!=0" if want_fail else "0"}', got_fail == want_fail, f'rc={rc} {out[-200:]}')
             else: print(f'info [{label}] docs step [{opts}] {name}: rc={rc} (old behavior)')
             if expect_gate_fix and want_fail and name.startswith('only one'):
-                check(f'[{label}] error names the 10 missing captures', all(n in out for n in DOCS[1:]) and '::error title=docs-captures' in out, out[-300:])
+                check(f'[{label}] error names the 11 missing captures', all(n in out for n in DOCS[1:]) and '::error title=docs-captures' in out, out[-300:])
+            if expect_gate_fix and name.startswith('scanning state absent'):
+                check(f'[{label}] scanning-state miss fails closed AND stops the /Library scan (pkill evidence)',
+                      'scanning state never observed' in out and os.path.exists(w + '/tmp/pkill.log') and open(w + '/tmp/pkill.log').read().count('pkill') >= 2, out[-200:])
+            if expect_gate_fix and name.startswith('no window found'):
+                check(f'[{label}] scanning capture failure exits through its own branch AND cleans up (pkill evidence)',
+                      'scanning capture failed' in out and os.path.exists(w + '/tmp/pkill.log') and open(w + '/tmp/pkill.log').read().count('pkill') >= 2, out[-200:])
+            if expect_gate_fix and name.startswith('first AX probe hangs'):
+                check(f'[{label}] hang-recovery took the 5s wall bound then passed (real timeout execution)',
+                      rc == 0 and os.path.exists(w + '/tmp/hastext-count') and open(w + '/tmp/hastext-count').read().strip() == '2', f'rc={rc}')
             shutil.rmtree(w)
 
 def asserts_cases():
@@ -206,19 +239,42 @@ def gate_cases():
     names = [s.get('name', '') or s.get('uses', '') for s in doc['jobs']['macos']['steps']]
     gi = [i for i, s in enumerate(doc['jobs']['macos']['steps']) if s.get('name', '').startswith('Fail the build')][0]
     ups = [i for i, s in enumerate(doc['jobs']['macos']['steps']) if str(s.get('uses', '')).startswith('actions/upload-artifact')]
-    check('final gate is the last step and follows every artifact upload', gi == len(names) - 1 and all(i < gi for i in ups))
+    tail = [n[:60] for n in names[gi+1:]]
+    check('final gate follows every artifact upload', all(i < gi for i in ups), f'gate idx {gi}, uploads {ups}')
+    check('only the cleanup step may follow the gate',
+          all(t.startswith('Stop any app left running') for t in tail), repr(tail))
+    # No informational warm-timing tail in this candidate: an optional step after the gate could still eat the
+    # completion/artifact-finalization margin and turn a passed gate into a cancelled headline on a slow runner.
 
 def timing():
+    """Budget after the restructure: every cheap gating step (reset/docs/ordering) runs BEFORE the demo long-pole, and the
+    informational warm timings run AFTER the gate, so the 35-min job cap can only ever cut the demo/asserts tail or the
+    non-gating tail - never the cheap evidence. Two checks: the pre-demo subtotal must fit the first HALF of the budget, and
+    the full gating path must fit 35 min even at the slowest observed runner speed. Seconds below are observed run-2/run-3
+    actuals at the slowest observed scale where marked; docs/ordering are run-2 actuals scaled by the run-3 demo ratio (1.56),
+    labelled estimates, not bounds."""
     doc = load(CI); job = doc['jobs']['macos']; steps = job['steps']
     tmo = [(s.get('name', '')[:50], s.get('timeout-minutes')) for s in steps if s.get('timeout-minutes')]
-    worst = sum(t for _, t in tmo)
-    print('info per-step timeouts on the macos job:', tmo, '| sum =', worst, 'min | job timeout-minutes =', job.get('timeout-minutes'))
-    observed = {'rust': 90, 'bulk': 152, 'universal': 20, 'swift': 32, 'dmg': 27, 'installer_icon': 17, 'testbuild': 96, 'demo': 509, 'reset': 2, 'ordering': 68}
-    docs = open(REPO + '/.github/workflows/ci.yml').read()
-    d = step(doc, 'macos', 'Docs captures')['run']
-    sl = sum(int(x) for x in re.findall(r'\bsleep (\d+)', d)) + 0
-    print(f'info observed run 39451419467 step seconds (real): {sum(observed.values())}s = {sum(observed.values())/60:.1f} min; docs step static sleep seconds in its body: {sl}s (+ app launch/scan time, never measured)')
-    check('observed time + docs sleeps leaves headroom under the 35 min job timeout', sum(observed.values()) + sl < 35 * 60 * 0.85, f'{sum(observed.values()) + sl}s')
+    print('info per-step timeouts on the macos job:', tmo, '| job timeout-minutes =', job.get('timeout-minutes'))
+    # observed-worst seconds: rust = run3 405s minus the 192s firmlink bug burn (fix verified by the boundary battery);
+    # bulk = run3 cold pairs (32.2+128.3 /Applications, ~1s fixture+usr-lib, ~/Library cold pair estimate 30s) + cached build;
+    # demo = run3 span 849s (slowest observed); docs/ordering = run2 actuals (114s/54s) x 1.56 slow-runner estimate.
+    pre_demo = {'universal': 20, 'swift': 32, 'testbuild': 96, 'rust': 213, 'failpoints': 47, 'bulk_cold': 200,
+                'dmg': 27, 'installer_icon': 17, 'dmg_capture': 15, 'reset': 30, 'docs': 178, 'docs_upload': 20,
+                'ordering': 85, 'ordering_upload': 15, 'dmg_evidence_upload': 25}
+    tail = {'demo': 849, 'asserts': 2, 'main_upload': 30, 'gate': 1}
+    pre = sum(pre_demo.values()); total = pre + sum(tail.values())
+    print(f'info pre-demo subtotal {pre}s = {pre/60:.1f} min | gating total {total}s = {total/60:.1f} min (no warm-timing tail in this candidate; full spz verify capability retained in the binary)')
+    check('pre-demo gating evidence fits the first HALF of the 35-min job budget', pre < 35 * 60 * 0.5, f'{pre}s')
+    check('full gating path fits the 35-min job budget at the slowest observed runner speed', total < 35 * 60, f'{total}s')
+    names = [s_.get('name', '') or s_.get('uses', '') for s_ in steps]
+    def idx(prefix):
+        return [i for i, n in enumerate(names) if n.startswith(prefix)][0]
+    check('docs captures run BEFORE the demo long-pole', idx('Docs captures') < idx('Launch app and screenshot'))
+    check('ordering runs BEFORE the demo long-pole', idx('Ordering driver') < idx('Launch app and screenshot'))
+    check('state reset runs BEFORE docs and the demo', idx('Reset persisted app state') < idx('Docs captures') and idx('Reset persisted app state') < idx('Launch app and screenshot'))
+    ups = [i for i, s_ in enumerate(steps) if str(s_.get('uses', '')).startswith('actions/upload-artifact')]
+    check('an early DMG-evidence upload runs BEFORE the demo long-pole', any(i < idx('Launch app and screenshot') for i in ups), f'uploads {ups}')
 
 def perf_cases():
     doc = load(CI); st = step(doc, 'macos', 'perf'); body = st['run'].replace('${{ inputs.perf_root }}', '/Applications')
@@ -318,13 +374,14 @@ def bulk_cases():
     """The real bulk step body. Contract under test: fixture, /Applications and /usr/lib are BINDING (mismatch, error, or absent root all fail the step, every
     probe still runs); $HOME/Library is INFORMATIONAL (reported as a warning with the log, never a gate). spz is a stub that exits per STUB_BULK."""
     doc = load(CI); body = step(doc, 'macos', 'bulk')['run']
+    check('bulk step compares COLD agreement only (verify-cold), warm timings live in the informational step', 'verify-cold' in body and '"$SPZ" verify ' not in body)
     def run(opts, codes=None, absent=()):
         w = workdir(); os.makedirs(w + '/target/release'); os.makedirs(w + '/home/Library', exist_ok=True)
         for d in ('Applications', 'usrlib'):
             if d not in absent: os.makedirs(w + '/' + d)
         if 'Library' in absent: shutil.rmtree(w + '/home/Library')
         open(w + '/bin/cargo', 'w').write('#!/bin/bash\nexit 0\n'); os.chmod(w + '/bin/cargo', 0o755)
-        spz = ('#!/bin/bash\nb=$(basename "$2"); code=$(echo ",$STUB_BULK," | tr "," "\\n" | sed -n "s/^$b=//p" | head -1)\n'
+        spz = ('#!/bin/bash\n[ "$1" = verify-cold ] || { echo "spz called without verify-cold: $*"; exit 97; }\nb=$(basename "$2"); code=$(echo ",$STUB_BULK," | tr "," "\\n" | sed -n "s/^$b=//p" | head -1)\n'
                'if [ "$b" = bulk-fixture ]; then echo "files=$(find "$2" -type f | wc -l | tr -d " ") links=$(find "$2" -type l | wc -l | tr -d " ")"; fi\n'
                'case "${code:-0}" in 0) echo "OK backends agree $b";; 1) echo "MISMATCH $b";; *) echo "scan failed $b"; exit "$code";; esac; [ "${code:-0}" = 1 ] && exit 1; exit 0\n')
         open(w + '/target/release/spz', 'w').write(spz); os.chmod(w + '/target/release/spz', 0o755)
@@ -434,7 +491,7 @@ def dmg_label_plate_case():
         check(f'{path}: body between the plates stays navy (lum {mid:.2f} < 0.45)', mid < 0.45, f'{mid:.3f}')
 
 asserts_cases(); ordering_cases(); gate_cases(); perf_cases(); demo_cases(); rust_cases(); testbuild_cases(); bulk_cases(); dmg_label_plate_case(); bulk_bsd_head_case(); docs_review_flow_case(); sheet_line_case()
-docs_cases(CI, 'head', True)
+typecheck_case(); docs_cases(CI, 'head', True)
 if base_ci: docs_cases(base_ci, 'base', False)
 timing()
 print(f'\n{ran} checks, {len(fails)} failed'); sys.exit(1 if fails else 0)
