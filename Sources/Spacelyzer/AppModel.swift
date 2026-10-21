@@ -365,6 +365,7 @@ final class AppModel {
         guard let tree else { outlineRows = []; outlineInfos = []; outlineShown = []; outlineIndex = [:]; outlineRevision += 1; outlineRootSize = 0; publishedTotalBytes = nil; return }
         let root = displayedRoot, ex = expanded, flt = activeFilter, sort = outlineSort
         outlineTask?.cancel()
+        let tStart = Perf.now()
         outlineTask = Task.detached(priority: .userInitiated) { [weak self] in
             let t0 = DispatchTime.now().uptimeNanoseconds
             let result = tree.outlineSnapshot(root: root, expanded: ex, filter: flt, sort: sort)
@@ -393,6 +394,8 @@ final class AppModel {
                 self.publishedTotalBytes = snap.totalBytes; self.outlineVersion = snap.version
                 self.outlineIndex = indexFinal; self.outlineRevision += 1; self.outlineMillis = ms
                 self.surfaceCheck()
+                let publishNs = Perf.now()
+                Perf.timingLog("outline-published rows=\(snap.rows.count) rust_ms=\(ms) refresh_to_publish_ms=\(Perf.ms(since: tStart)) at_ns=\(publishNs)")
             }
             await completed?("outline", generation, publication)
         }
@@ -416,6 +419,9 @@ final class AppModel {
     }
 
     func toggle(_ id: UInt32) {
+        // CI-only (SPZ_TIMING): absolute mach-uptime stamp so the bench's per-rep
+        // t0_ns (same clock) splits event-delivery from app-side latency.
+        Perf.timingLog("outline-toggle-enter node=\(id) at_ns=\(Perf.now())")
         if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
         refreshOutline()
     }

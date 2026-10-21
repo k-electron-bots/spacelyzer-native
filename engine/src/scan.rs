@@ -7,6 +7,7 @@
 //! and directories reachable by two paths (firmlinks) are counted once.
 
 use crate::category::Category;
+use crate::events::{EventKind, PreviewEvents, ScanIdentity};
 use crate::tree::{Kind, SkipReason, Skipped, Tree, NO_NODE};
 use rayon::prelude::*;
 use std::collections::HashSet;
@@ -32,12 +33,38 @@ pub struct ScanProgress {
     pub items: AtomicU64,
     pub bytes: AtomicU64,
     pub cancel: AtomicBool,
+    #[cfg(test)]
+    visited_dirs: AtomicU64,
+    #[cfg(test)]
+    cancel_after: AtomicU64,
 }
 
 impl ScanProgress {
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
+
+    /// Deterministic cancel injection for tests: the scan cancels when the Nth
+    /// directory walk begins. 0 (the default) disables the tripwire.
+    #[cfg(test)]
+    #[doc(hidden)]
+    pub fn cancel_after_dirs(&self, n: u64) {
+        self.cancel_after.store(n, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    fn note_dir(&self) {
+        let n = self.visited_dirs.fetch_add(1, Ordering::Relaxed) + 1;
+        let trip = self.cancel_after.load(Ordering::Relaxed);
+        if trip != 0 && n >= trip {
+            self.cancel();
+        }
+    }
+
+    /// Shipping builds keep the per-directory path untouched.
+    #[cfg(not(test))]
+    #[inline(always)]
+    fn note_dir(&self) {}
 }
 
 pub(crate) struct RawEntry {
@@ -111,19 +138,75 @@ struct Ctx<'a> {
     excl_display: Vec<String>,
     /// Exclusion index by parent directory text: only directories that are the parent of some exclusion pay any per-entry matching cost.
     excl_by_parent: std::collections::HashMap<String, Vec<(Box<str>, usize)>>,
+    events: Option<&'a PreviewEvents>,
     #[allow(dead_code)]
     bulk: bool,
+    /// Test-only: runs once per walk right after the pre-walk identity capture, so
+    /// tests can swap the directory mid-walk deterministically. Absent in release.
+    /// A borrowed closure (not a fn pointer) so each test carries its OWN arming
+    /// state - a process-global flag let parallel tests disarm each other (R2).
+    #[cfg(test)]
+    mid_walk_hook: Option<&'a (dyn Fn(&Path) + Sync + 'a)>,
 }
 
 /// Stack for each walker thread. Linux PATH_MAX (4096) bounds depth near 2000 one-letter levels; this leaves roughly 30x headroom on that.
 const WALK_STACK_BYTES: usize = 64 << 20;
 
 pub fn scan(root: &Path, opts: &ScanOptions, progress: &ScanProgress) -> std::io::Result<Tree> {
+    scan_inner(root, opts, progress, None, #[cfg(test)] None)
+}
+
+/// `scan` plus progressive preview events. The returned `Tree` is identical to what
+/// `scan` produces; events are best-effort extras bound to the sink's generation and
+/// canonical root. Errors when the sink was built for a different root.
+pub fn scan_with_events(
+    root: &Path,
+    opts: &ScanOptions,
+    progress: &ScanProgress,
+    events: &PreviewEvents,
+) -> std::io::Result<Tree> {
+    scan_inner(root, opts, progress, Some(events), #[cfg(test)] None)
+}
+
+/// Test-only: like `scan_with_events` with a mid-walk hook installed, so tests can
+/// change a directory's identity during the walk deterministically.
+#[cfg(test)]
+pub(crate) fn scan_with_events_hook(
+    root: &Path,
+    opts: &ScanOptions,
+    progress: &ScanProgress,
+    events: &PreviewEvents,
+    hook: &(dyn Fn(&Path) + Sync),
+) -> std::io::Result<Tree> {
+    scan_inner(root, opts, progress, Some(events), Some(hook))
+}
+
+fn scan_inner(
+    root: &Path,
+    opts: &ScanOptions,
+    progress: &ScanProgress,
+    events: Option<&PreviewEvents>,
+    #[cfg(test)] mid_walk_hook: Option<&(dyn Fn(&Path) + Sync)>,
+) -> std::io::Result<Tree> {
     let root = root.canonicalize()?;
     // Fail closed: every path the tree builds is root + node names, and the root is stored as text. A root that is not valid UTF-8 would be stored lossily
     // and every later removal/reveal path would point somewhere else (or nowhere).
     if root.to_str().is_none() {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "scan root path is not valid UTF-8"));
+    }
+    if let Some(ev) = events {
+        if !ev.root_matches(&root) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "preview event sink root does not match the canonical scan root",
+            ));
+        }
+        if !ev.claim() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "preview event sink already claimed by a scan (sinks are one-shot)",
+            ));
+        }
     }
     let md = std::fs::symlink_metadata(&root)?;
     if !md.is_dir() {
@@ -148,8 +231,11 @@ pub fn scan(root: &Path, opts: &ScanOptions, progress: &ScanProgress) -> std::io
             // form could overmatch a real U+FFFD-named sibling. It stays in the list so it is REPORTED as unmatched rather than silently vanishing.
             .map(|p| p.to_str().map(|p| p.trim_end_matches('/').to_string()))
             .collect(),
+        events,
         bulk: cfg!(target_os = "macos") && !opts.force_portable,
         excl_by_parent: Default::default(),
+        #[cfg(test)]
+        mid_walk_hook,
     };
     let mut ctx = ctx;
     ctx.excl_by_parent = build_exclusion_index(&ctx.exclude);
@@ -162,9 +248,16 @@ pub fn scan(root: &Path, opts: &ScanOptions, progress: &ScanProgress) -> std::io
     if opts.threads > 0 {
         pool = pool.num_threads(opts.threads);
     }
-    let node = pool.build().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?.install(run);
+    let (node, complete, previews_complete) = pool.build().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?.install(run);
 
-    Ok(flatten(root.to_string_lossy().into_owned(), node, ctx, progress))
+    let tree = flatten(root.to_string_lossy().into_owned(), node, ctx, progress);
+    if let Some(ev) = events {
+        // Root completeness (under the scanner's accounting) rides the terminal: a
+        // suppressed subtree leaves previews provisional even when the scan was
+        // neither cancelled nor lossy.
+        ev.finish(tree.cancelled, complete, previews_complete);
+    }
+    Ok(tree)
 }
 
 fn is_package(name: &str) -> bool {
@@ -202,9 +295,34 @@ fn build_exclusion_index(ex: &[Option<String>]) -> std::collections::HashMap<Str
     m
 }
 
-fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
+/// Post-walk identity gate over the FULL captured identity (dev, ino, ctime, and
+/// birthtime where available), compared by value: a mid-walk swap or metadata change
+/// suppresses the preview record. The ctime/birthtime components are part of the
+/// contract, not just dev/ino.
+fn walk_identity_intact(pre: Option<ScanIdentity>, post: Option<ScanIdentity>) -> bool {
+    pre.is_some() && pre == post
+}
+
+/// Returns the node, whether the subtree completed under the scanner's accounting,
+/// and whether every eligible preview event was emitted with an intact identity
+/// (false when a mid-walk identity change suppressed this directory's record or any
+/// descendant's). Tree accounting is unaffected by the third flag.
+fn walk(dir: &Path, ctx: &Ctx) -> (DirNode, bool, bool) {
+    // Pre-walk identity binding: the preview record carries the FULL identity of the
+    // directory ACTUALLY traversed (dev, ino, ctime, birthtime where available),
+    // captured at walk start - not the parent's earlier enumeration. If the directory
+    // was swapped between enumeration and this walk, the record simply describes the
+    // directory that was walked; if it changes mid-walk, the post-walk gate below
+    // suppresses the record. Captured ONLY for event-enabled scans: a plain scan
+    // pays zero extra stats.
+    let pre = ctx.events.and_then(|_| ScanIdentity::live(dir));
+    #[cfg(test)]
+    if let Some(h) = ctx.mid_walk_hook {
+        h(dir);
+    }
+    ctx.progress.note_dir();
     if ctx.progress.cancel.load(Ordering::Relaxed) {
-        return DirNode { ents: vec![], total: 0 };
+        return (DirNode { ents: vec![], total: 0 }, false, true);
     }
     let raw = match enumerate(dir, ctx) {
         Ok(r) => r,
@@ -215,7 +333,7 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
                 SkipReason::Unreadable
             };
             ctx.skipped.lock().unwrap().push(Skipped::new(dir, reason));
-            return DirNode { ents: vec![], total: 0 };
+            return (DirNode { ents: vec![], total: 0 }, false, true);
         }
     };
 
@@ -223,6 +341,10 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
     let mut subdirs: Vec<(usize, PathBuf)> = Vec::new();
     let mut local_bytes = 0u64;
     let mut last_dev: (u64, u8) = (0, crate::tree::DEV_UNKNOWN);
+    // Entry-level accounting failures (non-UTF-8 or failed entries) dirty completeness the same
+    // way a failed directory enumeration does: those bytes are in no total, so the directory is
+    // not "complete under the scanner's accounting" and no final preview record may claim it.
+    let mut entries_complete = true;
     let dir_excl: Option<&Vec<(Box<str>, usize)>> = if ctx.excl_by_parent.is_empty() { None } else {
         dir.to_str().and_then(|d| ctx.excl_by_parent.get(if d == "/" { "" } else { d }))
     };
@@ -231,12 +353,14 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
             // Fail closed: a node must never carry a name that can alias a sibling or point at a different real entry (removal/reveal/rescan build
             // paths from names). Left out of the tree and listed as unreadable with the lossy flag; its bytes are NOT in any total.
             ctx.skipped.lock().unwrap().push(Skipped::new(&dir.join(&*r.name), SkipReason::Unreadable));
+            entries_complete = false;
             continue;
         }
         if r.failed != 0 {
             // Empty name = the iterator failed for this directory: the skipped path is the directory itself.
             let path = if r.name.is_empty() { dir.to_path_buf() } else { dir.join(&*r.name) };
             ctx.skipped.lock().unwrap().push(Skipped::new(&path, if r.failed == 1 { SkipReason::PermissionDenied } else { SkipReason::Unreadable }));
+            entries_complete = false;
             continue;
         }
         if let Some(list) = dir_excl {
@@ -277,18 +401,46 @@ fn walk(dir: &Path, ctx: &Ctx) -> DirNode {
     ctx.progress.items.fetch_add(ents.len() as u64, Ordering::Relaxed);
     ctx.progress.bytes.fetch_add(local_bytes, Ordering::Relaxed);
 
-    let results: Vec<(usize, DirNode)> = if subdirs.len() > 1 {
-        subdirs.par_iter().map(|(i, p)| { crate::tree::worker_failpoint(); (*i, walk(p, ctx)) }).collect()
+    let results: Vec<(usize, (DirNode, bool, bool))> = if subdirs.len() > 1 {
+        subdirs
+            .par_iter()
+            .map(|(i, p)| {
+                crate::tree::worker_failpoint();
+                (*i, walk(p, ctx))
+            })
+            .collect()
     } else {
         subdirs.iter().map(|(i, p)| (*i, walk(p, ctx))).collect()
     };
     let mut total = local_bytes;
-    for (i, node) in results {
+    let mut complete = entries_complete;
+    let mut previews_complete = true;
+    for (i, (node, child_complete, child_previews)) in results {
         total += node.total;
         ents[i].size = node.total;
         ents[i].dir = Some(Box::new(node));
+        complete &= child_complete;
+        previews_complete &= child_previews;
     }
-    DirNode { ents, total }
+    if complete {
+        if let Some(ev) = ctx.events {
+            // Post-walk gate over the full identity: emit only when the traversed
+            // directory survived the walk unchanged. A mid-walk swap or metadata
+            // change suppresses the record and marks the preview stream incomplete
+            // (propagated to the terminal); the Tree above already accounted the
+            // bytes as walked.
+            if walk_identity_intact(pre, ScanIdentity::live(dir)) {
+                ev.emit(EventKind::DirComplete {
+                    path: dir.to_path_buf(),
+                    size: total,
+                    id: pre.unwrap(),
+                });
+            } else {
+                previews_complete = false;
+            }
+        }
+    }
+    (DirNode { ents, total }, complete, previews_complete)
 }
 
 /// Breadth-first flatten so each directory's children are contiguous and size-sorted.
@@ -490,5 +642,164 @@ mod volume_boundary_tests {
         assert!(!is_separate_volume(5, false, 5, false));
         assert!(!is_separate_volume(6, false, 5, true));
         assert!(!is_separate_volume(5, true, 5, true));
+    }
+}
+
+/// Test-only: one-shot arming against PER-TEST state. True exactly once per flag.
+/// No process-global state: parallel tests each hold their own flag and cannot
+/// disarm one another (the R2 flake).
+#[cfg(test)]
+pub(crate) fn armed_once(flag: &std::sync::atomic::AtomicBool) -> bool {
+    !flag.swap(true, std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Test-only mid-walk effect: replace the walked directory with a different identity
+/// at the same path, exactly once per `flag` (mkdir aside first, then rename over -
+/// no inode-recycling race). Tests install it as `move |d| swap_dir_once(d, &flag)`.
+#[cfg(test)]
+pub(crate) fn swap_dir_once(dir: &Path, flag: &std::sync::atomic::AtomicBool) {
+    if !armed_once(flag) {
+        return;
+    }
+    let staging = dir.with_file_name(format!("{}-staging", dir.file_name().unwrap().to_string_lossy()));
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging).unwrap();
+    std::fs::write(staging.join("g"), vec![1u8; 8192]).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+    std::fs::rename(&staging, dir).unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn ctx_for<'a>(opts: &'a ScanOptions, progress: &'a ScanProgress, events: &'a PreviewEvents, root_dev: u64) -> Ctx<'a> {
+        Ctx {
+            opts,
+            progress,
+            files: Seen::new(),
+            dirs: Seen::new(),
+            root_dev,
+            root_ino: 0,
+            devs: Mutex::new(Vec::new()),
+            skipped: Mutex::new(Vec::new()),
+            exclude: Vec::new(),
+            events: Some(events),
+            excl_hit: Vec::new(),
+            excl_display: Vec::new(),
+            excl_by_parent: Default::default(),
+            bulk: false,
+            mid_walk_hook: None,
+        }
+    }
+
+    fn fixture(tag: &str, bytes: usize) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("spz-walk-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("f"), vec![1u8; bytes]).unwrap();
+        dir.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn walk_identity_gate_compares_full_identity() {
+        let a = ScanIdentity { dev: 1, ino: 2, ctime: 10, ctime_nsec: 5, birthtime: Some((9, 1)) };
+        assert!(walk_identity_intact(Some(a), Some(a)));
+        assert!(!walk_identity_intact(Some(a), None));
+        assert!(!walk_identity_intact(None, Some(a)));
+        let mut b = a;
+        b.ctime = 11;
+        assert!(!walk_identity_intact(Some(a), Some(b)), "ctime is part of the gate");
+        let mut c = a;
+        c.birthtime = Some((9, 2));
+        assert!(!walk_identity_intact(Some(a), Some(c)), "birthtime is part of the gate");
+        let mut d = a;
+        d.ino = 3;
+        assert!(!walk_identity_intact(Some(a), Some(d)), "ino is part of the gate");
+    }
+
+    #[test]
+    fn walk_emits_preview_record_with_traversed_identity() {
+        // The record carries the walked directory's own live identity.
+        let dir = fixture("ok", 2048);
+        let want = ScanIdentity::live(&dir).unwrap();
+        let opts = ScanOptions::default();
+        let progress = ScanProgress::default();
+        let (events, rx) = PreviewEvents::new(1, &dir);
+        let ctx = ctx_for(&opts, &progress, &events, want.dev);
+        let (_node, complete, previews) = walk(&dir, &ctx);
+        assert!(complete && previews);
+        let ev = rx.recv_timeout(std::time::Duration::from_millis(100)).expect("record emitted");
+        match ev.kind {
+            EventKind::DirComplete { id, .. } => assert_eq!(id, want),
+            other => panic!("unexpected event: {other:?}"),
+        }
+        events.finish(false, true, true);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hook_arming_is_per_state_not_global() {
+        // Regression pin for the R2 process-global flake: independent flags must not
+        // share firing state - firing one leaves the other armed.
+        let a = std::sync::atomic::AtomicBool::new(false);
+        let b = std::sync::atomic::AtomicBool::new(false);
+        assert!(armed_once(&a), "first use of state A fires");
+        assert!(armed_once(&b), "independent state B still fires - a global would have consumed it");
+        assert!(!armed_once(&a), "state A is consumed");
+        assert!(armed_once(&b) == false, "state B is consumed");
+    }
+
+    #[test]
+    fn walk_suppresses_record_marks_previews_incomplete_when_identity_changes_mid_walk() {
+        let swapped = std::sync::atomic::AtomicBool::new(false);
+        let hook = |d: &Path| swap_dir_once(d, &swapped);
+        let dir = fixture("swap", 2048);
+        let want = ScanIdentity::live(&dir).unwrap();
+        let opts = ScanOptions::default();
+        let progress = ScanProgress::default();
+        let (events, rx) = PreviewEvents::new(1, &dir);
+        let mut ctx = ctx_for(&opts, &progress, &events, want.dev);
+        ctx.mid_walk_hook = Some(&hook);
+        let (node, complete, previews) = walk(&dir, &ctx);
+        assert!(complete, "walk completed on the swapped-in directory");
+        assert!(!previews, "suppressed record must mark previews incomplete");
+        assert!(node.total >= 8192, "bytes accounted as walked: {}", node.total);
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(100)).is_none(),
+            "mid-walk identity change must suppress the preview record"
+        );
+        events.finish(false, true, false);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn plain_scan_walk_captures_no_identity() {
+        // Event-disabled scans pay zero preview stats: pre is None, no event path runs.
+        let dir = fixture("plain", 1024);
+        let opts = ScanOptions::default();
+        let progress = ScanProgress::default();
+        let ctx = Ctx {
+            opts: &opts,
+            progress: &progress,
+            files: Seen::new(),
+            dirs: Seen::new(),
+            root_dev: 0,
+            root_ino: 0,
+            devs: Mutex::new(Vec::new()),
+            skipped: Mutex::new(Vec::new()),
+            exclude: Vec::new(),
+            events: None,
+            excl_hit: Vec::new(),
+            excl_display: Vec::new(),
+            excl_by_parent: Default::default(),
+            bulk: false,
+            mid_walk_hook: None,
+        };
+        let (node, complete, previews) = walk(&dir, &ctx);
+        assert!(complete && previews);
+        assert!(node.total >= 1024);
+        let _ = fs::remove_dir_all(&dir);
     }
 }
