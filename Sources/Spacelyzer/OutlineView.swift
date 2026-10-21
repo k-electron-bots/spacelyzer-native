@@ -427,8 +427,8 @@ private struct OutlineTable: NSViewRepresentable {
         private var suppress = false
         #if SPZ_CI_TESTS
         /// Test-binary-only counters, read back through the table's accessibility help by the mounted-outline check.
-        var syncCalls = 0, delegateCalls = 0, lastSync = "none"
-        func publishDiag() { table?.setAccessibilityHelp("syncCalls=\(syncCalls) delegateCalls=\(delegateCalls) suppress=\(suppress) last=\(lastSync)") }
+        var syncCalls = 0, delegateCalls = 0, lastSync = "none", lastCallback = "none"
+        func publishDiag() { table?.setAccessibilityHelp("syncCalls=\(syncCalls) delegateCalls=\(delegateCalls) suppress=\(suppress) last=\(lastSync) cb=\(lastCallback)") }
         #endif
         init(_ m: AppModel) { model = m }
 
@@ -492,7 +492,9 @@ private struct OutlineTable: NSViewRepresentable {
             InteractionTrace.record("native-selection-callback-enter")
             defer { InteractionTrace.record("native-selection-callback-exit") }
             #if SPZ_CI_TESTS
-            delegateCalls += 1; publishDiag()
+            delegateCalls += 1
+            lastCallback = "selIdxAtEntry=\(table.map { Array($0.selectedRowIndexes).sorted() } ?? []) suppressAtEntry=\(suppress)"
+            publishDiag()
             #endif
             guard !suppress, let t = table else { return }
             let rows: [UInt32] = t.selectedRowIndexes.compactMap { $0 >= 0 && $0 < model.outlineRows.count ? model.outlineRows[$0].node : nil }
@@ -510,8 +512,11 @@ private struct OutlineTable: NSViewRepresentable {
             guard let t = table else { return }
             let idx = node.flatMap { model.outlineIndex[$0] }
             #if SPZ_CI_TESTS
-            syncCalls += 1; lastSync = "node=\(String(describing: node)) idx=\(String(describing: idx)) selectedRowBefore=\(t.selectedRow)"
-            defer { lastSync += " after=\(t.selectedRow)"; publishDiag() }
+            syncCalls += 1
+            var branch = "noop"
+            let selIdxBefore = Array(t.selectedRowIndexes).sorted()
+            lastSync = "node=\(String(describing: node)) idx=\(String(describing: idx)) selectedRowBefore=\(t.selectedRow)"
+            defer { lastSync += " after=\(t.selectedRow) selIdx=\(selIdxBefore)->\(Array(t.selectedRowIndexes).sorted()) branch=\(branch) rows=\(t.numberOfRows)/\(model.outlineRows.count) tid=\(ObjectIdentifier(t).hashValue)"; publishDiag() }
             #endif
             let target = OutlineSelectionSync.syncTarget(set: model.selectedSet, focusRow: idx, rowIndex: model.outlineIndex)   // focus may sit outside the set during transitions
             if !target.isEmpty {
@@ -520,12 +525,21 @@ private struct OutlineTable: NSViewRepresentable {
                     suppress = true
                     t.selectRowIndexes(target, byExtendingSelection: false)
                     suppress = false
+                    #if SPZ_CI_TESTS
+                    branch = "select"
+                    #endif
                     if let idx { t.scrollRowToVisible(idx) }
                 } else if focusRowChanged, let idx {
+                    #if SPZ_CI_TESTS
+                    branch = "scroll"
+                    #endif
                     t.scrollRowToVisible(idx)   // same set, focus moved within it (e.g. reconcile after removal)
                 }
             } else if t.selectedRow >= 0 {
                 suppress = true; t.deselectAll(nil); suppress = false
+                #if SPZ_CI_TESTS
+                branch = "deselect"
+                #endif
             }
         }
 

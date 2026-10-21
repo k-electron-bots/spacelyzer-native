@@ -146,6 +146,18 @@ if "OutlineSelectionSync.syncTarget(set: model.selectedSet" not in _OV or "targe
 if "OutlineSelectionSync.syncTarget(" not in _PROBE:
     fails.append("removal_selection_probe.swift: probe must execute OutlineSelectionSync.syncTarget")
 
+# Mounted-selection diagnosis fields (run 39451419467 left the mounted failure unexplained: the coordinator recorded only
+# node/idx/selectedRow). The diag must keep the legacy tokens AND record the branch taken, the index set before/after,
+# table row count vs published rows, and the coordinator's table identity; the check must print its own table identity.
+_APP = (SRC / "SpacelyzerApp.swift").read_text()
+for tok in ["selIdx=", "branch=", "rows=", "tid="]:
+    if tok not in _OV:
+        fails.append(f"OutlineView.swift: mounted-selection diag missing {tok}")
+if "selectedRowBefore=" not in _OV or "lastCallback" not in _OV or "cb=\\(" not in _OV:
+    fails.append("OutlineView.swift: mounted-selection diag must keep selectedRowBefore and record the delegate callback entry (lastCallback/cb=)")
+if _APP.count("checkTID=") < 2:
+    fails.append("SpacelyzerApp.swift: mounted-outline check must print checkTID in the baseline and probe readouts")
+
 if fails:
     print("UI COPY CHECK FAILED:")
     for x in fails:
