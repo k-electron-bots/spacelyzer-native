@@ -351,7 +351,52 @@ def sheet_line_case():
     check('batch7 sheet line states openerPressed and sheetAttached', 'openerPressed=' in app and 'sheetAttached=' in app)
     check('batch7 sheet line no longer prints the failure-branch text unconditionally', 'pressedSkip7 ? "footer opener pressed via AX' not in app)
 
-asserts_cases(); ordering_cases(); gate_cases(); perf_cases(); demo_cases(); rust_cases(); testbuild_cases(); bulk_cases(); bulk_bsd_head_case(); docs_review_flow_case(); sheet_line_case()
+def dmg_label_plate_case():
+    """Run 39602481035's screenshot-dmg-window.png: Finder draws the icon labels black, and on the navy background
+    'Spacelyzer' / 'Applications' were barely readable (polish defect). The background now carries a light plate
+    behind each label zone (positions calibrated from the real capture: labels at y ~275-305 under the pinned icon
+    positions). Stdlib PNG decode; asserts both plates are light and the window body between them stays navy."""
+    import zlib, struct
+    def pixels(path):
+        d = open(path, 'rb').read()
+        assert d[:8] == b'\x89PNG\r\n\x1a\n', path
+        pos = 8; w = h = None; depth = ctype = None; idat = b''
+        while pos < len(d):
+            ln = struct.unpack('>I', d[pos:pos+4])[0]; typ = d[pos+4:pos+8]; chunk = d[pos+8:pos+8+ln]; pos += 12 + ln
+            if typ == b'IHDR': w, h, depth, ctype = struct.unpack('>IIBB', chunk[:10])
+            elif typ == b'IDAT': idat += chunk
+            elif typ == b'IEND': break
+        assert depth == 8 and ctype in (2, 6), f'{path}: unsupported depth={depth} ctype={ctype}'
+        ch = 3 if ctype == 2 else 4; raw = zlib.decompress(idat); stride = w * ch; out = bytearray(); prev = bytearray(stride)
+        i = 0
+        for _ in range(h):
+            f = raw[i]; line = bytearray(raw[i+1:i+1+stride]); i += 1 + stride
+            for x in range(stride):
+                a = line[x-ch] if x >= ch else 0; b = prev[x]; c = prev[x-ch] if x >= ch else 0
+                if f == 1: line[x] = (line[x] + a) & 255
+                elif f == 2: line[x] = (line[x] + b) & 255
+                elif f == 3: line[x] = (line[x] + (a + b) // 2) & 255
+                elif f == 4:
+                    p_ = a + b - c; pa, pb, pc = abs(p_-a), abs(p_-b), abs(p_-c)
+                    line[x] = (line[x] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+            out += line; prev = line
+        return w, h, ch, out
+    def lum(w, ch, buf, x0, x1, y0, y1):
+        tot = n = 0
+        for y in range(y0, y1):
+            for x in range(x0, x1):
+                o = (y*w + x)*ch; r, g, b = buf[o], buf[o+1], buf[o+2]
+                tot += (0.2126*r + 0.7152*g + 0.0722*b) / 255; n += 1
+        return tot / n
+    for path, sc in [('Resources/dmg-background.png', 1), ('Resources/dmg-background@2x.png', 2)]:
+        w, h, ch, buf = pixels(REPO + '/' + path)
+        for cx in (190, 470):
+            m = lum(w, ch, buf, (cx-85)*sc, (cx+85)*sc, 270*sc, 310*sc)
+            check(f'{path}: label plate under icon x={cx} is light (lum {m:.2f} >= 0.75)', m >= 0.75, f'{m:.3f}')
+        mid = lum(w, ch, buf, 320*sc, 340*sc, 270*sc, 310*sc)
+        check(f'{path}: body between the plates stays navy (lum {mid:.2f} < 0.45)', mid < 0.45, f'{mid:.3f}')
+
+asserts_cases(); ordering_cases(); gate_cases(); perf_cases(); demo_cases(); rust_cases(); testbuild_cases(); bulk_cases(); dmg_label_plate_case(); bulk_bsd_head_case(); docs_review_flow_case(); sheet_line_case()
 docs_cases(CI, 'head', True)
 if base_ci: docs_cases(base_ci, 'base', False)
 timing()
