@@ -673,6 +673,57 @@ impl PreviewCollector {
 
 #[cfg(test)]
 mod tests {
+
+    /// Same contract as engine/tests/common/mod.rs `made` (integration tests), duplicated here because unit tests
+    /// inside src/ cannot import the integration-test helper. APFS refuses non-UTF-8 names with EILSEQ, so a fixture
+    /// that needs one cannot exist there. Rust has no runtime "skipped" state, so a bare early `return` is reported
+    /// `ok`; to keep that from reading as a pass:
+    ///  * Linux: ANY creation failure panics. A fixture that cannot be built is a failure, never a skip.
+    ///  * Elsewhere, EILSEQ panics UNLESS `SPZ_ALLOW_PLATFORM_SKIP=1` with `SPZ_SKIP_MANIFEST` naming an ABSOLUTE
+    ///    path to a caller-created file; then one line `<test name>\t<reason>` is appended under a lock, the test
+    ///    returns false here, and the caller returns early. Any other error still panics.
+    fn made(r: std::io::Result<()>) -> bool {
+        use std::io::Write;
+        static MANIFEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        match r {
+            Ok(()) => true,
+            Err(e) if e.raw_os_error() == Some(92) && !cfg!(target_os = "linux") => {
+                let name = std::thread::current().name().unwrap_or("?").to_string();
+                if std::env::var("SPZ_ALLOW_PLATFORM_SKIP").ok().as_deref() != Some("1") {
+                    panic!("{name}: this filesystem refuses non-UTF-8 names (EILSEQ), so the case cannot run here. Set SPZ_ALLOW_PLATFORM_SKIP=1 and SPZ_SKIP_MANIFEST=<absolute path of a fresh file> to record it as not exercised instead of failing.");
+                }
+                let path = std::path::PathBuf::from(std::env::var("SPZ_SKIP_MANIFEST").unwrap_or_else(|_| panic!("{name}: SPZ_SKIP_MANIFEST is required with SPZ_ALLOW_PLATFORM_SKIP=1")));
+                assert!(path.is_absolute(), "{name}: SPZ_SKIP_MANIFEST must be an absolute path, got {}", path.display());
+                let line = format!("{name}\tNOT EXERCISED: non-UTF-8 name refused (EILSEQ)\n");
+                let _g = MANIFEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+                let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap_or_else(|e| panic!("{name}: manifest {} must be created by the caller before the run: {e}", path.display()));
+                f.write_all(line.as_bytes()).expect("write skip manifest");
+                eprintln!("SKIPPED (NOT exercised, reported ok by cargo): {name}; recorded in {}", path.display());
+                false
+            }
+            Err(e) => panic!("fixture creation failed: {e}"),
+        }
+    }
+
+    #[test]
+    fn made_accepts_a_created_fixture() {
+        assert!(made(Ok(())));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[should_panic(expected = "fixture creation failed")]
+    fn made_never_records_a_skip_on_linux() {
+        // EILSEQ on Linux is a fixture failure like any other: it panics, it is never a skip.
+        let _ = made(Err(std::io::Error::from_raw_os_error(92)));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[should_panic(expected = "fixture creation failed")]
+    fn made_never_skips_a_non_eilseq_failure() {
+        let _ = made(Err(std::io::Error::from_raw_os_error(2)));
+    }
     use super::*;
     use crate::scan::{scan, scan_with_events, ScanOptions, ScanProgress};
     use std::fs;
@@ -1060,8 +1111,11 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
         let dir_a = base.join(OsStr::from_bytes(b"root-\xff"));
         let dir_b = base.join(OsStr::from_bytes(b"root-\xfe"));
-        fs::create_dir_all(&dir_a).unwrap();
-        fs::create_dir_all(&dir_b).unwrap();
+        // APFS cannot hold these names at all: recorded NOT EXERCISED there; Linux still runs every assertion below.
+        if !made(fs::create_dir_all(&dir_a)) || !made(fs::create_dir_all(&dir_b)) {
+            let _ = fs::remove_dir_all(&base);
+            return;
+        }
         let root_a = dir_a.canonicalize().unwrap();
         let root_b = dir_b.canonicalize().unwrap();
         assert_ne!(root_a, root_b);
@@ -1088,8 +1142,11 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
         let raw = OsStr::from_bytes(b"root-\xff-\xfe");
         let dir = base.join(raw);
-        fs::create_dir_all(dir.join("sub")).unwrap();
-        fs::write(dir.join("sub/f"), vec![1u8; 1024]).unwrap();
+        // APFS cannot hold this name at all: recorded NOT EXERCISED there; Linux still runs every assertion below.
+        if !made(fs::create_dir_all(dir.join("sub"))) || !made(fs::write(dir.join("sub/f"), vec![1u8; 1024])) {
+            let _ = fs::remove_dir_all(&base);
+            return;
+        }
         let root = dir.canonicalize().unwrap();
         assert!(root.to_str().is_none(), "fixture must be non-UTF-8");
         let (sink, rx) = PreviewEvents::new(5, &root);
@@ -1107,6 +1164,35 @@ mod tests {
         assert!(s.is_some());
         let _ = fs::remove_dir_all(&base);
     }
+
+
+    #[test]
+    fn non_utf8_root_is_refused_not_scanned_lossily() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let base = std::env::temp_dir().join(format!("spz-events-utf8-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let raw = OsStr::from_bytes(b"root-\xff-\xfe");
+        let dir = base.join(raw);
+        // APFS cannot hold this name at all: recorded NOT EXERCISED there; Linux still runs every assertion below.
+        if !made(fs::create_dir_all(dir.join("sub"))) || !made(fs::write(dir.join("sub/f"), vec![1u8; 1024])) {
+            let _ = fs::remove_dir_all(&base);
+            return;
+        }
+        let root = dir.canonicalize().unwrap();
+        assert!(root.to_str().is_none(), "fixture must be non-UTF-8");
+        // The tree stores the root as text and removal/reveal/rescan build paths from it, so the
+        // scan refuses a non-UTF-8 root outright instead of building a lossy tree. Exact
+        // event-stream round-tripping is moot: no scan starts. The events machinery still binds
+        // and carries exact raw path bytes for every tree it does scan.
+        let progress = ScanProgress::default();
+        match scan(&root, &ScanOptions::default(), &progress) {
+            Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput),
+            Ok(_) => panic!("the app entry must refuse a non-UTF-8 scan root, not scan it lossily"),
+        }
+        let _ = fs::remove_dir_all(&base);
+    }
+
 
     #[test]
     fn sink_root_mismatch_is_an_error_not_wrong_events() {
@@ -1583,7 +1669,9 @@ mod tests {
         assert_eq!(s.root, root);
         assert_eq!(s.dirs_completed, 4);
         let root_total = s.largest.iter().find(|(p, _)| *p == root).map(|(_, sz)| *sz);
-        assert_eq!(root_total, Some(tree.size[0]));
+        // The sealed Tree moves sizes into the published table; the staging vec is empty after seal.
+        let tab = tree.table();
+        assert_eq!(root_total, Some(tab.sizes[0]));
         let _ = fs::remove_dir_all(&root);
     }
 }

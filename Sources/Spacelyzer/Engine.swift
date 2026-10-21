@@ -31,9 +31,175 @@ struct NodeInfo {
     var firstChild: UInt32
     var kind: NodeKind
     var category: FileCategory
+    /// Direct children shown when expanded: filtered snapshot count, nil outside an outline snapshot (use childCount).
+    var visibleChildren: Int? = nil
 }
 
 let noNode = UInt32.max
+
+/// Outline rows with their details, all from one engine table version. `version` is the engine's stamp, never a re-read.
+struct OutlineSnapshot {
+    var rows: [SpzRow]
+    var infos: [NodeInfo]
+    /// Size shown for each row: the filter's size when a filter is active, else the node size. Same snapshot as the rows.
+    var shown: [UInt64]
+    var version: UInt64
+    var rootSize: UInt64
+    var totalBytes: UInt64
+}
+struct DerivedSnapshot {
+    var ids: [UInt32]
+    /// Size of each id, from the same capture as the ids (filter size when filtered).
+    var sizes: [UInt64]
+    var kinds: [(category: FileCategory, bytes: UInt64, items: UInt64)]
+    var version: UInt64
+}
+
+/// The largest folders by cumulative size, from one table capture (unfiltered).
+struct FolderSnapshot: Sendable, Equatable {
+    var ids: [UInt32]
+    var sizes: [UInt64]
+    var version: UInt64
+}
+
+/// Engine status codes (spacelyzer.h). A non-ok status is never turned into an empty or zero value.
+enum EngineStatus: Int32, Error {
+    case ok = 0, stale, mutationFailed, invalid, busy, internalError
+    init(raw: Int32) { self = EngineStatus(rawValue: raw) ?? .internalError }
+}
+
+/// Why the scan skipped a location. Mirrors SkipReason in engine/src/tree.rs; an unknown
+/// raw value is never relabeled by the app (callers fail the read instead).
+enum SkippedReason: UInt8 {
+    case permissionDenied = 0, unreadable, separateVolume, userExcluded
+    var label: String {
+        switch self {
+        case .permissionDenied: "macOS did not allow access"
+        case .unreadable: "Could not be read"
+        case .separateVolume: "On another volume"
+        case .userExcluded: "Excluded by you"
+        }
+    }
+}
+
+/// One skipped location from one tree. `lossy` means the path text may not be the exact
+/// on-disk name (non-UTF-8 bytes); the app must say so rather than present it as exact.
+struct SkippedItem: Equatable {
+    var path: String
+    var reason: SkippedReason
+    var lossy: Bool
+}
+
+/// Why the walk never observed an entry for a requested exclusion. Mirrors
+/// UnobservedReason in engine/src/tree.rs; an unknown raw value is never relabeled
+/// by the app (callers fail the read instead). NOT proof the path is absent.
+enum UnobservedExclusionReason: UInt8 {
+    case notSeen = 0, insideSkippedSubtree, notMatchable
+    var label: String {
+        switch self {
+        case .notSeen: "Not seen - may be misspelled, outside the scan, or gone"
+        case .insideSkippedSubtree: "Inside a location that was not scanned - it may exist"
+        case .notMatchable: "Not a readable spelling - it can never match a scanned entry"
+        }
+    }
+}
+
+/// One requested exclusion the walk never observed, from one tree. The path is the
+/// engine's display text and may be lossy.
+struct UnobservedExclusion: Equatable {
+    var path: String
+    var reason: UnobservedExclusionReason
+}
+
+/// Summary of one duplicate-finder pass. Caps are REPORT-ONLY: a summary with
+/// `groupsTruncated`, `incomplete` or `budgetExhausted` is not "all duplicates" and must
+/// never drive removal. `duplicateAllocatedBytes` counts ALLOCATED bytes, never
+/// reclaimable space (removing one copy of a hard-linked set frees nothing, for example).
+struct DupSummary: Equatable {
+    var duplicateAllocatedBytes: UInt64
+    var groupsTotal: Int
+    var groupsListed: Int
+    var unreadable: Int
+    var changed: Int
+    var hardlinkAliases: Int
+    var cancelled: Bool
+    var incomplete: Bool
+    var budgetExhausted: Bool
+    var groupsTruncated: Bool
+    /// Any cap flag: the report is partial and must be labeled so.
+    var partial: Bool { incomplete || budgetExhausted || groupsTruncated }
+}
+
+/// One duplicate group from one report: `size` ALLOCATED bytes per member, `memberCount`
+/// copies in total, `paths` the listed members (a capped report lists fewer, never zero
+/// while members exist). `linked` means the members share one inode.
+struct DupGroup: Equatable {
+    var size: UInt64
+    var memberCount: Int
+    var linked: Bool
+    var paths: [String]
+    /// The group has more members than the report lists.
+    var listingCapped: Bool { memberCount > paths.count }
+}
+
+/// One frozen answer from one duplicate pass: summary and groups from one report on one
+/// table version.
+struct DupFindResult: Equatable {
+    var summary: DupSummary
+    var groups: [DupGroup]
+}
+
+/// Cancel/progress handle for one duplicate pass. The pass reads file contents and blocks
+/// its thread, so Task cancellation alone would leave it running: cancel() sets the
+/// engine's sticky flag and the pass returns early with its cancelled flag set. The C
+/// control is single use. Its raw handle may be cancelled or read from any thread but may
+/// be FREED only once every thread using it has stopped, so every raw call is serialized
+/// here and the free runs on the pass's own thread after spz_dup_find_status returns.
+final class DupScanControl: @unchecked Sendable {
+    private let lock = NSLock()
+    private var raw: OpaquePointer? = spz_dup_control_new()
+    /// The handle for spz_dup_find_status. Valid until freeAfterPass() runs on the pass thread.
+    var passPointer: OpaquePointer? { lock.lock(); defer { lock.unlock() }; return raw }
+    func cancel() { lock.lock(); if let p = raw { spz_dup_control_cancel(p) }; lock.unlock() }
+    func progress() -> SpzDupProgress { lock.lock(); defer { lock.unlock() }; return raw.map { spz_dup_control_progress($0) } ?? SpzDupProgress() }
+    /// Frees the raw handle. Call ONLY on the pass's thread after spz_dup_find_status has
+    /// returned (the engine forbids freeing while another thread may still use the handle).
+    func freeAfterPass() { lock.lock(); if let p = raw { spz_dup_control_free(p); raw = nil }; lock.unlock() }
+}
+
+/// Raw statvfs capacity of one filesystem. total-free is NOT "used by files": purgeable
+/// space, APFS snapshots and container sharing are not separated by statvfs, so none of
+/// these figures is a reclaimable-space number.
+struct VolumeInfo: Equatable {
+    var totalBytes: UInt64
+    var freeBytes: UInt64
+    /// Free minus what the filesystem reserves. What an unprivileged write can actually use.
+    var availableBytes: UInt64
+    var readOnly: Bool
+    /// A figure saturated at UINT64_MAX: not a real number, never show it as one.
+    var saturated: Bool
+}
+
+/// Why a volume-capacity read failed. The engine reports OS_ERROR with the raw errno so
+/// the app can show it instead of a guessed number.
+enum VolumeReadError: Error, Equatable {
+    case invalid, osError(Int32)
+}
+
+/// Capacity of the filesystem holding `path`, status-checked. Blocks the calling thread
+/// (statvfs can stall on a hung network mount) - never call on the main actor.
+func volumeInfoChecked(path: String) -> Result<VolumeInfo, VolumeReadError> {
+    var out = SpzVolume()
+    var st: Int32 = -1
+    spz_volume_info_status(path, &out, &st)
+    guard st == 0 else {
+        if st == 6 { return .failure(.osError(out.os_errno)) }
+        return .failure(.invalid)
+    }
+    return .success(VolumeInfo(totalBytes: out.total_bytes, freeBytes: out.free_bytes,
+                               availableBytes: out.available_bytes,
+                               readOnly: out.flags & 1 != 0, saturated: out.flags & 2 != 0))
+}
 
 /// CI-only timing log (SPZ_DEMO): appends "label: value" lines to /tmp/spz-timing.txt.
 enum Perf {
@@ -62,7 +228,9 @@ enum Perf {
 
 final class FilterResult: @unchecked Sendable {
     let ptr: OpaquePointer
-    init(_ p: OpaquePointer) { ptr = p }
+    /// Table version this result was computed on (stamped by the engine from the same capture as the data).
+    let version: UInt64
+    init(_ p: OpaquePointer) { ptr = p; version = spz_filter_version(p) }
     deinit { spz_filter_free(ptr) }
     var totalBytes: UInt64 { spz_filter_total_bytes(ptr) }
     var totalCount: UInt64 { spz_filter_total_count(ptr) }
@@ -132,7 +300,123 @@ final class Tree: @unchecked Sendable {
         return FilterResult(h!)
     }
 
-    func forget(_ id: UInt32) { spz_tree_forget(ptr, id) }
+    /// Version of the engine's published size table. Changes on every committed removal.
+    var version: UInt64 { spz_tree_version(ptr) }
+
+    /// Remove a subtree from the engine's numbers after the filesystem move succeeded. Runs a full table copy
+    /// (about 3 ms at 1M nodes, 30 ms at 5M), so call it from the commit lane, never from the main actor.
+    /// `.ok`, `.mutationFailed` (tree unchanged) or `.invalid`.
+    func forget(_ id: UInt32) -> EngineStatus { EngineStatus(raw: spz_tree_forget(ptr, id)) }
+
+    /// Status API: BUSY, STALE and INVALID come back as errors, never as an empty result.
+    func applyFilterChecked(text: String, kind: FileCategory?, minBytes: UInt64?, maxBytes: UInt64? = nil, modifiedFrom: Int64? = nil, ext: String = "") -> Result<FilterResult, EngineStatus> {
+        let f = SpzFilter(category_mask: kind.map { UInt32(1) << UInt32($0.rawValue) } ?? 0,
+                          has_min: minBytes == nil ? 0 : 1, has_max: maxBytes == nil ? 0 : 1,
+                          has_from: modifiedFrom == nil ? 0 : 1, has_to: 0,
+                          min_size: minBytes ?? 0, max_size: maxBytes ?? 0,
+                          modified_from: modifiedFrom ?? 0, modified_to: 0)
+        var status: Int32 = -1
+        let h = text.withCString { t in ext.withCString { e in spz_filter_apply_status(ptr, t, e, f, &status) } }
+        guard status == 0, let h else { return .failure(status == 0 ? .internalError : EngineStatus(raw: status)) }
+        return .success(FilterResult(h))
+    }
+
+    /// Is this filter result still computed on the tree's current table? `.ok` or `.stale` (recompute) or `.invalid`.
+    func status(of filter: FilterResult) -> EngineStatus { EngineStatus(raw: spz_filter_status(ptr, filter.ptr)) }
+
+    /// Status API layout. The filter result, if any, must be current; otherwise `.stale` (recompute the filter first).
+    func layoutChecked(root: UInt32, size: CGSize, filter: FilterResult? = nil) -> Result<TreemapLayout, EngineStatus> {
+        var status: Int32 = -1
+        let raw = spz_layout_new_status(ptr, root, Float(size.width), Float(size.height), filter?.ptr, &status)
+        guard status == 0, let raw else { return .failure(status == 0 ? .internalError : EngineStatus(raw: status)) }
+        let l = TreemapLayout(raw, size: size)
+        l.treeID = ObjectIdentifier(self)
+        return .success(l)
+    }
+
+    /// One node read from one engine snapshot. `expected` = a version the caller holds, or nil for any.
+    func nodeChecked(_ id: UInt32, expected: UInt64? = nil) -> Result<(info: NodeInfo, version: UInt64), EngineStatus> {
+        var n = SpzNode(size: 0, own_bytes: 0, parent: noNode, child_count: 0, first_child: noNode, kind: 0, category: 0)
+        var v: UInt64 = 0, st: Int32 = -1
+        spz_tree_node_status(ptr, id, &n, expected ?? UInt64.max, &v, &st)
+        guard st == 0 else { return .failure(EngineStatus(raw: st)) }
+        return .success((NodeInfo(size: n.size, ownBytes: n.own_bytes, parent: n.parent == noNode ? nil : n.parent,
+                                  childCount: Int(n.child_count), firstChild: n.first_child,
+                                  kind: NodeKind(rawValue: n.kind) ?? .file, category: FileCategory(rawValue: Int(n.category)) ?? .other), v))
+    }
+
+    /// One lstat comparing the live item at this node's path with the identity the scan recorded. Runs on the
+    /// caller's thread; call it off the main actor. Only `.same` allows an action, and even then the item can
+    /// change between the check and the action.
+    func checkIdentity(_ id: UInt32) -> IdentityVerdict { IdentityVerdict(engineCode: spz_tree_check_identity(ptr, id)) }
+
+    /// Rows, per-row details, shown sizes, root size and tree total from ONE engine capture and ONE table version.
+    /// A commit between the count call and the fill call returns STALE and the read restarts (bounded). Every status is
+    /// preserved: BUSY stays BUSY, INVALID stays INVALID, STALE with a filter means the filter result is old.
+    func outlineSnapshot(root: UInt32, expanded: Set<UInt32>, filter: FilterResult?, sort: OutlineSort) -> Result<OutlineSnapshot, EngineStatus> {
+        let ex = Array(expanded)
+        for _ in 0..<3 {
+            var v: UInt64 = 0, rs: UInt64 = 0, tot: UInt64 = 0, st: Int32 = -1
+            let n = Int(ex.withUnsafeBufferPointer { e in spz_outline_snapshot_status(ptr, root, e.baseAddress, UInt32(e.count), filter?.ptr, sort.rawValue, nil, nil, 0, UInt64.max, &v, &rs, &tot, &st) })
+            guard st == 0 else { return .failure(EngineStatus(raw: st)) }
+            var rows = [SpzRow](repeating: SpzRow(node: 0, depth: 0), count: n)
+            var raw = [SpzRowInfo](repeating: SpzRowInfo(node: SpzNode(size: 0, own_bytes: 0, parent: noNode, child_count: 0, first_child: noNode, kind: 0, category: 0), shown: 0, visible_children: 0), count: n)
+            var v2: UInt64 = 0, rs2: UInt64 = 0, tot2: UInt64 = 0, st2: Int32 = -1
+            let got = Int(ex.withUnsafeBufferPointer { e in rows.withUnsafeMutableBufferPointer { rb in raw.withUnsafeMutableBufferPointer { ib in
+                spz_outline_snapshot_status(ptr, root, e.baseAddress, UInt32(e.count), filter?.ptr, sort.rawValue, rb.baseAddress, ib.baseAddress, UInt32(n), v, &v2, &rs2, &tot2, &st2) } } })
+            if st2 == 1 && filter == nil { continue }          // a commit landed between count and fill: read again
+            guard st2 == 0 else { return .failure(EngineStatus(raw: st2)) }
+            guard got == n, v2 == v else { return .failure(.internalError) }
+            let infos = raw.map { r in NodeInfo(size: r.node.size, ownBytes: r.node.own_bytes, parent: r.node.parent == noNode ? nil : r.node.parent,
+                                              childCount: Int(r.node.child_count), firstChild: r.node.first_child,
+                                              kind: NodeKind(rawValue: r.node.kind) ?? .file, category: FileCategory(rawValue: Int(r.node.category)) ?? .other,
+                                              visibleChildren: Int(r.visible_children)) }
+            return .success(OutlineSnapshot(rows: rows, infos: infos, shown: raw.map { $0.shown }, version: v, rootSize: rs2, totalBytes: tot2))
+        }
+        return .failure(.stale)
+    }
+
+    /// Largest files and per-kind totals read at one table version.
+    func derivedSnapshot(filter: FilterResult?, count: Int) -> Result<DerivedSnapshot, EngineStatus> {
+        for _ in 0..<3 {
+            var ids = [UInt32](repeating: 0, count: count)
+            var sizes = [UInt64](repeating: 0, count: count)
+            var v: UInt64 = 0, st: Int32 = -1
+            let c = ids.withUnsafeMutableBufferPointer { b in sizes.withUnsafeMutableBufferPointer { sb in spz_largest_sized_status(ptr, filter?.ptr, UInt32(count), b.baseAddress, sb.baseAddress, UInt64.max, &v, &st) } }
+            guard st == 0 else { return .failure(EngineStatus(raw: st)) }
+            var out = [UInt64](repeating: 0, count: 22)
+            var v2: UInt64 = 0, st2: Int32 = -1
+            out.withUnsafeMutableBufferPointer { b in spz_category_totals_status(ptr, filter?.ptr, b.baseAddress, v, &v2, &st2) }
+            if st2 == 1 && filter == nil { continue }
+            guard st2 == 0 else { return .failure(EngineStatus(raw: st2)) }
+            let kinds = FileCategory.allCases.map { (category: $0, bytes: out[$0.rawValue * 2], items: out[$0.rawValue * 2 + 1]) }
+            return .success(DerivedSnapshot(ids: Array(ids.prefix(Int(c))), sizes: Array(sizes.prefix(Int(c))), kinds: kinds, version: v))
+        }
+        return .failure(.stale)
+    }
+
+    /// Largest folders (directories and packages, not the root, not removed ones), sizes from the same capture as the ids. Unfiltered only.
+    /// A non-ok status is returned as a failure, never as an empty list.
+    func largestFolders(count: Int) -> Result<FolderSnapshot, EngineStatus> {
+        var ids = [UInt32](repeating: 0, count: count)
+        var sizes = [UInt64](repeating: 0, count: count)
+        var v: UInt64 = 0, st: Int32 = -1
+        let c = ids.withUnsafeMutableBufferPointer { b in sizes.withUnsafeMutableBufferPointer { sb in spz_largest_dirs_status(ptr, UInt32(count), b.baseAddress, sb.baseAddress, UInt64.max, &v, &st) } }
+        guard st == 0 else { return .failure(EngineStatus(raw: st)) }
+        return .success(FolderSnapshot(ids: Array(ids.prefix(Int(c))), sizes: Array(sizes.prefix(Int(c))), version: v))
+    }
+
+    /// True when `node` is `ancestor` or lies inside its subtree. Parent links are never changed by a removal.
+    func isInside(_ node: UInt32, subtreeOf ancestor: UInt32) -> Bool {
+        var cur: UInt32? = node
+        var hops = 0
+        while let c = cur, UInt64(hops) <= nodeCount {
+            if c == ancestor { return true }
+            cur = info(c).parent
+            hops += 1
+        }
+        return false
+    }
 
     func children(_ id: UInt32) -> Range<UInt32> {
         let n = info(id)
@@ -161,6 +445,95 @@ final class Tree: @unchecked Sendable {
 
     var skipped: [(path: String, reason: Int)] {
         (0..<spz_tree_skipped_count(ptr)).map { (take(spz_tree_skipped_path(ptr, $0)), Int(spz_tree_skipped_reason(ptr, $0))) }
+    }
+
+    // UNCOMPILED/UNRUN until a Mac build. Status-checked skipped-list reads; the older
+    // spz_tree_skipped_path/reason pair above is kept for the footer count only.
+    /// Per-reason skipped counts (permissionDenied, unreadable, separateVolume, userExcluded).
+    /// A non-ok engine status is a failure, never four zeros.
+    func skippedCountsChecked() -> Result<(permissionDenied: Int, unreadable: Int, separateVolume: Int, userExcluded: Int), EngineStatus> {
+        var out = [UInt32](repeating: 0, count: 4)
+        var st: Int32 = -1
+        out.withUnsafeMutableBufferPointer { b in spz_tree_skipped_counts_status(ptr, b.baseAddress, &st) }
+        guard st == 0 else { return .failure(EngineStatus(raw: st)) }
+        return .success((Int(out[0]), Int(out[1]), Int(out[2]), Int(out[3])))
+    }
+
+    /// Every skipped location with its reason and lossy flag, each entry status-checked.
+    /// Any non-ok status or an unknown reason code fails the whole read: no partial list
+    /// is ever shown as the complete one.
+    func skippedItemsChecked() -> Result<[SkippedItem], EngineStatus> {
+        let n = spz_tree_skipped_count(ptr)
+        var items: [SkippedItem] = []
+        items.reserveCapacity(Int(n))
+        for i in 0..<n {
+            var reason: UInt8 = 0, lossy: UInt8 = 0, st: Int32 = -1
+            let s = spz_tree_skipped_item_status(ptr, i, &reason, &lossy, &st)
+            guard st == 0 else { return .failure(EngineStatus(raw: st)) }
+            guard let r = SkippedReason(rawValue: reason) else { return .failure(.internalError) }
+            items.append(SkippedItem(path: take(s), reason: r, lossy: lossy != 0))
+        }
+        return .success(items)
+    }
+
+    /// Requested exclusions the walk never observed an entry for, each entry status-checked.
+    /// This is NOT proof a path is absent (see UnobservedExclusionReason). Any non-ok status
+    /// or an unknown reason code fails the whole read: no partial list is shown as complete.
+    func unobservedExclusionsChecked() -> Result<[UnobservedExclusion], EngineStatus> {
+        var st: Int32 = -1
+        let n = spz_tree_unobserved_exclusion_count_status(ptr, &st)
+        guard st == 0 else { return .failure(EngineStatus(raw: st)) }
+        var items: [UnobservedExclusion] = []
+        items.reserveCapacity(Int(n))
+        for i in 0..<n {
+            var reason: UInt8 = 0
+            var ist: Int32 = -1
+            let s = spz_tree_unobserved_exclusion_status(ptr, i, &reason, &ist)
+            guard ist == 0 else { return .failure(EngineStatus(raw: ist)) }
+            guard let r = UnobservedExclusionReason(rawValue: reason) else { return .failure(.internalError) }
+            items.append(UnobservedExclusion(path: take(s), reason: r))
+        }
+        return .success(items)
+    }
+
+    /// Runs the duplicate finder ON THE CALLER'S THREAD (a blocking pass over file
+    /// contents; callers run it off-main). `expected` = a table version the caller holds,
+    /// nil for any. Caps are report-only: a capped result carries its partial flags and is
+    /// never "all duplicates". When a `control` is passed, this call frees it (on this
+    /// thread, after the pass returns); cancel it from any thread to end the pass early,
+    /// and its result then carries summary.cancelled. Any non-ok status, an unknown flags
+    /// bit, or a stale report fails the whole read.
+    func duplicatesChecked(minSize: UInt64 = 1, maxGroups: UInt32 = 0, maxMembers: UInt32 = 0, maxReadBytes: UInt64 = 0, control: DupScanControl? = nil, expected: UInt64? = nil) -> Result<DupFindResult, EngineStatus> {
+        defer { control?.freeAfterPass() }
+        var st: Int32 = -1
+        guard let r = spz_dup_find_status(ptr, minSize, maxGroups, maxMembers, maxReadBytes, control?.passPointer, expected ?? UInt64.max, &st), st == 0 else { return .failure(EngineStatus(raw: st)) }
+        defer { spz_dup_report_free(r) }
+        let rst = spz_dup_report_status(ptr, r)
+        guard rst == 0 else { return .failure(EngineStatus(raw: rst)) }
+        var sum = SpzDupSummary()
+        spz_dup_report_summary(r, &sum, &st)
+        guard st == 0 else { return .failure(EngineStatus(raw: st)) }
+        guard sum.flags & ~UInt32(0xF) == 0 else { return .failure(.internalError) }   // an unknown flag is never relabeled
+        let summary = DupSummary(duplicateAllocatedBytes: sum.duplicate_allocated_bytes,
+                                 groupsTotal: Int(sum.groups_total), groupsListed: Int(sum.groups_listed),
+                                 unreadable: Int(sum.unreadable), changed: Int(sum.changed),
+                                 hardlinkAliases: Int(sum.hardlink_aliases),
+                                 cancelled: sum.flags & 1 != 0, incomplete: sum.flags & 2 != 0,
+                                 budgetExhausted: sum.flags & 4 != 0, groupsTruncated: sum.flags & 8 != 0)
+        var groups: [DupGroup] = []
+        groups.reserveCapacity(summary.groupsListed)
+        for i in 0..<UInt32(summary.groupsListed) {
+            var g = SpzDupGroup()
+            var gst: Int32 = -1
+            spz_dup_report_group(r, i, &g, &gst)
+            guard gst == 0 else { return .failure(EngineStatus(raw: gst)) }
+            var ids = [UInt32](repeating: 0, count: Int(g.ids_listed))
+            var ist: Int32 = -1
+            let n = ids.withUnsafeMutableBufferPointer { b in spz_dup_report_ids(r, i, b.baseAddress, UInt32(b.count), &ist) }
+            guard ist == 0, n == g.ids_listed else { return .failure(EngineStatus(raw: ist)) }
+            groups.append(DupGroup(size: g.size, memberCount: Int(g.member_count), linked: g.linked != 0, paths: ids.map { path($0) }))
+        }
+        return .success(DupFindResult(summary: summary, groups: groups))
     }
 
     func layout(root: UInt32, size: CGSize, filter: FilterResult? = nil) -> TreemapLayout {
@@ -192,10 +565,13 @@ final class TreemapLayout: @unchecked Sendable {
     let rects: [TreemapRect]
     /// Identity of the tree these rects (and their node ids) belong to.
     var treeID: ObjectIdentifier?
+    /// Table version these rects were computed on (stamped by the engine from the same capture as the data).
+    let version: UInt64
 
     init(_ p: OpaquePointer?, size: CGSize) {
         ptr = p
         self.size = size
+        version = p.map { spz_layout_version($0) } ?? 0
         guard let p else { rects = []; return }
         let n = Int(spz_layout_count(p))
         let base = spz_layout_rects(p)
@@ -222,8 +598,16 @@ final class TreemapLayout: @unchecked Sendable {
 
 struct ScanSnapshot { var items: UInt64; var bytes: UInt64 }
 
+/// Sticky count of panics the engine caught at its FFI boundary. A legacy read that returns 0/empty after a caught panic
+/// looks like valid data, so the app compares this against a per-loaded-tree baseline before trusting or acting on it.
+enum EnginePanics { static var count: UInt64 { spz_engine_panic_count() } }
+
 final class ScanSession: @unchecked Sendable {
     private let handle: OpaquePointer
+    private let panicsAtStart = EnginePanics.count
+    /// The exact counter value this session validated against (read once, after the scan finished). The caller adopts THIS
+    /// value as its baseline; re-reading the global counter later could adopt a panic that happened after validation.
+    private(set) var validatedPanicCount: UInt64 = 0
     init?(root: String, excludes: [String]) {
         guard let h = spz_scan_start(root, excludes.joined(separator: "\n")) else { return nil }
         handle = h
@@ -240,6 +624,10 @@ final class ScanSession: @unchecked Sendable {
             if p.finished != 0 { break }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
+        // A panic caught anywhere while this scan ran means its result cannot be trusted: report it as a failed scan.
+        let now = EnginePanics.count
+        if now != panicsAtStart { if let t = spz_scan_take_tree(handle) { spz_tree_free(t) }; return nil }
+        validatedPanicCount = now
         guard let t = spz_scan_take_tree(handle) else { return nil }
         return Tree(t)
     }

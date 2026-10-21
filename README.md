@@ -2,36 +2,43 @@
 
 See what is using your disk. A native macOS disk-space analyzer with a SwiftUI interface and a Rust engine.
 
-![Earlier CI interface: outline and treemap showing a scan of Library](docs/images/overview.png)
-
-*October 1 CI capture of the earlier three-tab interface, not the latest feature branch. [Version and verification status](docs/verification/README.md).*
+![Outline and treemap showing a scan of Library](docs/images/overview.png)
 
 ## Explore before you remove
 
+![Kinds view grouping files by type with counts and allocated sizes](docs/images/readme-kinds.png)
+
 - Follow folders in the outline or compare their size in the treemap.
 - Switch to Kinds for a file-type breakdown, or Largest for the 200 largest matching files.
-- Combine name, extension, kind, size and modified-date filters across outline, treemap, Kinds and Largest. The feature-branch Folders list is unfiltered.
-- Review the full path before moving an item to Trash. Hidden, protected and pending-filter selections are refused; removal has undo.
+- Combine name, extension, kind, size and modified-date filters across outline, treemap, Kinds and Largest. The Folders list is unfiltered.
+
+![On-disk review popover: preview, sizes, and the read-only safety note](docs/images/readme-review.png)
+
+- Check a scanned item on disk before deciding: preview, full path, size, then Move to Trash with Undo.
+- Move several reviewed items at once, and put any of them back from the removal history.
+- Review duplicate groups and move extra copies to the Trash.
+- Export the Largest list as a CSV file (built, awaiting Mac verification).
+- Skip chosen locations with exclusions; the Not scanned list shows what was skipped and why.
 
 Sizes describe allocated disk space, with hard links counted once. Scans stay on your Mac; the app has no networking code.
 
-## Try the development build
+## Install
 
-Requires macOS 14 or later. [Development DMGs](https://github.com/k-electron-bots/spacelyzer-native/releases) are self-signed, not notarized. This is **not a release-ready app**. Current branch UI and test-only Swift compilation are unverified after CI128. Real-Mac, VoiceOver and actual IME testing remain open.
+Requires macOS 14 or later. [Development DMGs](https://github.com/k-electron-bots/spacelyzer-native/releases) are self-signed, not notarized. This is **not a release-ready app**. Keyboard focus verification is under repair; real-Mac, VoiceOver and actual IME testing remain open.
 
-[Install and permissions](docs/guide/install.md) explains first launch and Full Disk Access without weakening macOS security. [Take the visual tour](docs/guide/tour.md) to see the views, filters and safe-removal workflow.
+1. Download the DMG and open it.
+2. Drag Spacelyzer onto Applications.
+3. Open it once, then approve it in **System Settings > Privacy & Security > Open Anyway**.
+
+[Install and permissions](docs/guide/install.md) walks through each step with pictures, then [take the visual tour](docs/guide/tour.md).
 
 The images show a shared CI Mac, not a personal Mac. They illustrate the interface, not exhaustive validation or a speed comparison.
-
-## Work in progress, not a new release
-
-The `item-inspect-engine-stack` branch adds Folders, Largest CSV export and read-only Check on disk. These are source features, not a shipped or UI-verified update. [Branch feature guide](docs/guide/branch-features.md) explains their limits. CI128 built the production app and packaged a DMG, but failed test-only compilation before the UI ran; no artifact or new release was delivered.
 
 ## Find the right documentation
 
 | You want to... | Start here |
 |---|---|
-| Learn the app | [Visual tour](docs/guide/tour.md) · [Space, filters and Trash](docs/guide/space-and-safety.md) |
+| Learn the app | [Quick start](docs/guide/quick-start.md) · [Visual tour](docs/guide/tour.md) · [Space, filters and Trash](docs/guide/space-and-safety.md) |
 | Build or change it | [Development](docs/development/README.md) · [Architecture](docs/development/architecture.md) · [Engine CLI](docs/development/cli.md) |
 | Check what is actually verified | [Verification status](docs/verification/README.md) |
 | Understand priorities | [Roadmap](docs/ROADMAP.md) |

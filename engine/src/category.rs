@@ -51,8 +51,14 @@ impl Category {
         }
     }
 
-    /// Classify by file extension (case-insensitive). No filesystem access.
+    /// Classify by file name (case-insensitive extension, plus exact-name rules). No filesystem access.
     pub fn classify(name: &str) -> Category {
+        // Apple dyld shared caches are large extensionless databases: without this rule the
+        // biggest files on a developer Mac all land in Other. Exact prefixes, case-sensitive:
+        // the real files are Apple's lowercase names; anything in that namespace is their cache.
+        if name.starts_with("dyld_shared_cache") || name.starts_with("dyld_sim_shared_cache") {
+            return Category::Data;
+        }
         let ext = match name.rfind('.') {
             Some(i) if i > 0 && i + 1 < name.len() => &name[i + 1..],
             _ => return Category::Other,
@@ -90,5 +96,37 @@ impl Category {
             | "numbers" | "xls" | "xlsx" | "odt" | "epub" | "tex" => Category::Document,
             _ => Category::Other,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dyld_caches_are_data_including_suffixed_variants() {
+        assert_eq!(Category::classify("dyld_shared_cache_arm64e"), Category::Data);
+        assert_eq!(Category::classify("dyld_shared_cache_x86_64"), Category::Data);
+        assert_eq!(Category::classify("dyld_sim_shared_cache_arm64"), Category::Data);
+        assert_eq!(Category::classify("dyld_sim_shared_cache_arm64.01"), Category::Data);
+    }
+
+    #[test]
+    fn dyld_prefix_does_not_catch_lookalike_names() {
+        assert_eq!(Category::classify("dyld_notes.txt"), Category::Document);
+        assert_eq!(Category::classify("dyld_notes"), Category::Other);
+        assert_eq!(Category::classify("my_dyld_shared_cache_arm64"), Category::Other);
+        assert_eq!(Category::classify("DYLD_shared_cache_arm64"), Category::Other);
+        assert_eq!(Category::classify("dyld"), Category::Other);
+    }
+
+    #[test]
+    fn extension_table_still_classifies_known_types() {
+        assert_eq!(Category::classify("photo.HEIC"), Category::Image);
+        assert_eq!(Category::classify("main.swift"), Category::Code);
+        assert_eq!(Category::classify("libSystem.dylib"), Category::Application);
+        assert_eq!(Category::classify("store.plist"), Category::Data);
+        assert_eq!(Category::classify("archive.tar.gz"), Category::Archive);
+        assert_eq!(Category::classify("no_extension"), Category::Other);
     }
 }

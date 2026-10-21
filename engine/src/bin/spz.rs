@@ -1,6 +1,6 @@
 //! `spz scan <path>`   scan and print totals, timing, top-level breakdown
-//! `spz verify <path>` scan with both backends and compare totals (run this on a Mac)
-//! `spz bench <path> [runs]`  repeated scans, wall times
+//! `spz verify <path>` scan with both backends, compare totals, print per-backend wall times (run this on a Mac)
+//! `spz bench <path> [runs]`  repeated scans, wall times, peak RSS (process high-water mark)
 use spacelyzer_engine::*;
 use spacelyzer_engine::{category::Category, filter};
 use std::path::PathBuf;
@@ -15,6 +15,39 @@ fn human(b: u64) -> String {
         i += 1;
     }
     format!("{:.2} {}", v, u[i])
+}
+
+
+/// Peak resident set size of this process in MB (getrusage ru_maxrss: bytes on macOS, kilobytes on Linux).
+/// ru_maxrss is a high-water mark for the process, so a later run never prints less than an earlier one.
+#[cfg(unix)]
+fn peak_rss_mb() -> f64 {
+    let mut r: libc::rusage = unsafe { std::mem::zeroed() };
+    unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut r) };
+    #[cfg(target_os = "macos")]
+    {
+        r.ru_maxrss as f64 / 1_000_000.0
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        r.ru_maxrss as f64 / 1024.0
+    }
+}
+
+fn print_diff_detail(label: &str, diff: &verify_diff::PathDiff) {
+    let leaf = diff.leaf_most();
+    println!("{label}: {} paths differ ({} leaf-most):", diff.len(), leaf.len());
+    const MAX: usize = 10;
+    for e in leaf.iter().take(MAX) {
+        match e {
+            verify_diff::DiffEntry::OnlyInA { path, bytes } => println!("  only in first : {path} ({bytes} B)"),
+            verify_diff::DiffEntry::OnlyInB { path, bytes } => println!("  only in second: {path} ({bytes} B)"),
+            verify_diff::DiffEntry::SizeDiffers { path, a_bytes, b_bytes } => println!("  size differs  : {path} first={a_bytes} second={b_bytes}"),
+        }
+    }
+    if leaf.len() > MAX {
+        println!("  ... and {} more", leaf.len() - MAX);
+    }
 }
 
 fn main() {
@@ -40,16 +73,56 @@ fn main() {
             let rects = layout(&tree, 0, &LayoutOptions { width: 1600.0, height: 1000.0, ..Default::default() });
             println!("layout: {} rects in {:.3}ms", rects.len(), t1.elapsed().as_secs_f64() * 1000.0);
         }
-        "verify" => {
-            let p = ScanProgress::default();
-            let fast = scan(&path, &ScanOptions::default(), &p).expect("scan failed");
+        "verify" | "verify-cold" => {
+            // Correctness compare uses the first pair (unchanged semantics). Each backend is then
+            // scanned a second time so the printed times include a warm-cache run for both; the
+            // ratio uses the warm runs because the first default scan is systematically colder.
+            // `verify-cold` skips the warm re-runs: the CI bulk step gates on cold agreement only,
+            // and the warm timings live in a separate informational step so a slow shared runner
+            // cannot spend the binding step's timeout on non-gating measurements.
+            let cold_only = cmd == "verify-cold";
+            let t_fast = Instant::now();
+            let fast = scan(&path, &ScanOptions::default(), &ScanProgress::default()).expect("scan failed");
+            let dt_fast_cold = t_fast.elapsed();
+            let t_slow = Instant::now();
             let slow = scan(&path, &ScanOptions { force_portable: true, ..Default::default() }, &ScanProgress::default()).expect("scan failed");
-            println!("default : {} items {} bytes", fast.items, fast.size(0));
-            println!("portable: {} items {} bytes", slow.items, slow.size(0));
-            if fast.items == slow.items && fast.size(0) == slow.size(0) {
+            let dt_slow_cold = t_slow.elapsed();
+            let agree = fast.items == slow.items && fast.size(0) == slow.size(0);
+            let mut dt_fast_warm = dt_fast_cold;
+            let mut dt_slow_warm = dt_slow_cold;
+            if !cold_only {
+                let t_fast2 = Instant::now();
+                scan(&path, &ScanOptions::default(), &ScanProgress::default()).expect("scan failed");
+                dt_fast_warm = t_fast2.elapsed();
+                let t_slow2 = Instant::now();
+                scan(&path, &ScanOptions { force_portable: true, ..Default::default() }, &ScanProgress::default()).expect("scan failed");
+                dt_slow_warm = t_slow2.elapsed();
+            }
+            if cold_only {
+                println!("default : {} items {} bytes in {:.3}s (cold only)", fast.items, fast.size(0), dt_fast_cold.as_secs_f64());
+                println!("portable: {} items {} bytes in {:.3}s (cold only)", slow.items, slow.size(0), dt_slow_cold.as_secs_f64());
+            } else {
+                println!("default : {} items {} bytes in {:.3}s (warm: {:.3}s)", fast.items, fast.size(0), dt_fast_cold.as_secs_f64(), dt_fast_warm.as_secs_f64());
+                println!("portable: {} items {} bytes in {:.3}s (warm: {:.3}s)", slow.items, slow.size(0), dt_slow_cold.as_secs_f64(), dt_slow_warm.as_secs_f64());
+            }
+            if agree {
                 println!("OK backends agree");
+                if !cold_only && dt_fast_warm.as_secs_f64() > 0.0 {
+                    println!("portable/default warm-time ratio: {:.2}x", dt_slow_warm.as_secs_f64() / dt_fast_warm.as_secs_f64());
+                }
             } else {
                 println!("MISMATCH (live volume may have changed; rerun on a quiet folder)");
+                // One extra default-backend scan, then path-level diffs of both comparisons.
+                // A path that also differs default-vs-default changed between scans on one
+                // backend; a path that differs only against portable did not. Sizes are
+                // cumulative subtree bytes, so ancestors of a changed path differ too and
+                // the leaf-most view collapses them.
+                let recheck = scan(&path, &ScanOptions::default(), &ScanProgress::default()).expect("scan failed");
+                let d_portable = verify_diff::diff_maps(&verify_diff::tree_size_map(&fast), &verify_diff::tree_size_map(&slow));
+                let d_recheck = verify_diff::diff_maps(&verify_diff::tree_size_map(&fast), &verify_diff::tree_size_map(&recheck));
+                print_diff_detail("default-vs-portable", &d_portable);
+                print_diff_detail("default-vs-default recheck", &d_recheck);
+                println!("paths differing in both comparisons: {}", d_portable.overlap(&d_recheck));
                 std::process::exit(1);
             }
         }
@@ -58,7 +131,7 @@ fn main() {
             for i in 0..runs {
                 let t0 = Instant::now();
                 let tree = scan(&path, &ScanOptions::default(), &ScanProgress::default()).unwrap();
-                println!("run {}: {} items {:.3}s", i + 1, tree.items, t0.elapsed().as_secs_f64());
+                println!("run {}: {} items {:.3}s (peak rss {:.1} MB)", i + 1, tree.items, t0.elapsed().as_secs_f64(), peak_rss_mb());
             }
         }
         "filterbench" => {

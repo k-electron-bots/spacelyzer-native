@@ -7,6 +7,42 @@ on:
     tags: ['epic-*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      compile_only:
+        description: 'Compile check only: toolchain, universal engine, Swift build, signing import and the TEST-ONLY app (SPZ_CI_TESTS, plus SPZ_CI_PERF only when the perf input is also set); skips tests, packaging, captures and UI steps'
+        required: false
+        type: boolean
+        default: false
+      consolidated:
+        description: 'Consolidated run: also runs the ordering driver (model, engine-suite and mounted-view checks, one launch) and skips only the informational scan benchmark on macOS. All other steps and gates are unchanged.'
+        required: false
+        type: boolean
+        default: false
+      docs_only:
+        description: 'Render verification only (exclusive, combine with no other input): build, typecheck, package, reset, docs captures and their artifact. Every functional test/assert step is intentionally skipped and labeled; this run is render evidence, never a functional pass. No release path.'
+        required: false
+        type: boolean
+        default: false
+      perf:
+        description: 'Perf option (exclusive): builds the test-only app and runs ONLY the optional perf driver (cancel and full-scan milestones, informational, no thresholds); skips tests, packaging, captures and UI assertions. Not part of any other run.'
+        required: false
+        type: boolean
+        default: false
+      perf_in_run:
+        description: 'Also run the perf driver inside this run (after the UI assertions and the other optional steps), without skipping anything. Informational, no thresholds; adds a few minutes, so mind the 35-minute cap.'
+        required: false
+        type: boolean
+        default: false
+      perf_root:
+        description: 'Absolute folder the perf option scans (default /Applications). The item count is measured and reported, not assumed.'
+        required: false
+        type: string
+        default: '/Applications'
+      docs_2x:
+        description: 'Experimental: after the real 1x docs captures (unchanged), also write render-derived 2x PNGs from the TEST-ONLY app (NSView re-render, not a native Retina capture). Default off.'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -14,6 +50,8 @@ permissions:
 jobs:
   engine-linux:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
+    if: ${{ !inputs.compile_only && !inputs.perf && !inputs.docs_only }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -25,31 +63,33 @@ jobs:
         run: ./target/release/spz bench /usr 3
 
   macos:
+    # Never on pull_request: a PR event has no dispatch inputs (all defaults), starts the full
+    # macos pipeline including signing and packaging, and must not consume a Mac run outside the
+    # one-at-a-time owner-approved dispatch cadence. PRs get the engine-linux gate only.
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: macos-latest
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
+      - name: Validate a docs_only dispatch and label the run's evidence class
+        if: ${{ inputs.docs_only }}
+        run: |
+          echo "::notice title=docs-only-run::RENDER VERIFICATION ONLY. Build, typecheck, package, reset and docs captures run; every functional test/assert step (engine tests, failpoints, bulk agreement, benchmark, test-only build, DMG evidence, ordering, launch screenshot, UI assertions, perf) is intentionally skipped. This run is render evidence, never a functional pass; functional evidence stays pinned to the last full run at its own exact head."
+          bad=""
+          [ "${{ inputs.compile_only }}" = "true" ] && bad="$bad compile_only" || true
+          [ "${{ inputs.consolidated }}" = "true" ] && bad="$bad consolidated" || true
+          [ "${{ inputs.perf }}" = "true" ] && bad="$bad perf" || true
+          [ "${{ inputs.perf_in_run }}" = "true" ] && bad="$bad perf_in_run" || true
+          [ "${{ inputs.docs_2x }}" = "true" ] && bad="$bad docs_2x" || true
+          if [ -n "$bad" ]; then
+            echo "::error title=docs-only-run::docs_only is exclusive; do not combine it with:$bad"
+            exit 1
+          fi
+
       - name: Toolchain versions
         run: |
           sw_vers; xcodebuild -version; swift --version; rustc --version || true
           echo "::notice title=toolchain::$(sw_vers -productVersion) | $(xcodebuild -version | tr '\n' ' ') | sdk $(xcrun --show-sdk-version) | $(swift --version 2>&1 | head -1)"
-      - name: Rust engine tests (native macOS, includes getattrlistbulk backend)
-        run: |
-          rustup update stable --no-self-update
-          set -o pipefail
-          cargo test --release -p spacelyzer-engine -- --nocapture 2>&1 | tee /tmp/cargotest.log || {
-            grep -E -A3 "panicked|firmlink check" /tmp/cargotest.log | grep -v "^--" | sort -u | head -12 | while IFS= read -r l; do echo "::error::${l//%/%25}"; done
-            exit 1
-          }
-          grep -E "firmlink check" /tmp/cargotest.log | while IFS= read -r l; do echo "::notice::${l//%/%25}"; done
-      - name: Bulk backend vs portable backend on real macOS trees
-        run: |
-          cargo build --release -p spacelyzer-engine
-          for d in /Applications /usr/lib "$HOME/Library"; do
-            [ -d "$d" ] && ./target/release/spz verify "$d" || true
-          done
-          ./target/release/spz verify /Applications
-      - name: Scan benchmark (informational, shared runner)
-        run: ./target/release/spz bench /Applications 3
       - name: Build universal engine
         run: ./scripts/build-engine.sh
       - name: Build Swift app
@@ -59,7 +99,12 @@ jobs:
             grep -E "error:" /tmp/swiftbuild.log | sort -u | head -15 | while IFS= read -r l; do echo "::error::${l//%/%25}"; done
             exit 1
           }
+      - name: Typecheck the on-demand helper tools (the docs/demo steps compile them on demand; a type error must fail HERE, not in a scarce full run)
+        run: |
+          swiftc -typecheck scripts/docs-capture.swift
+          swiftc -typecheck scripts/ax-client.swift
       - name: Version
+        if: ${{ !inputs.compile_only }}
         id: ver
         run: echo "version=0.1.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
       - name: Import self-signed identity
@@ -70,13 +115,357 @@ jobs:
         run: |
           HASH="$(./scripts/sign-setup.sh | tail -1)"
           echo "hash=$HASH" >> "$GITHUB_OUTPUT"
+      - name: Build TEST-ONLY app with SPZ_CI_TESTS (never packaged or released; the packaged DMG is built without the flag)
+        id: testbuild
+        if: ${{ !inputs.docs_only }}
+        run: |
+          # Optional code (perf driver, 2x shot server) is compiled only when its option is requested, behind its own flag, so the
+          # default and consolidated test build contains exactly the code already built on a Mac. If requested optional code fails
+          # to compile, this step fails hard right here - it runs before every expensive check, so a broken optional compile stops
+          # the run in its first minutes instead of burning through checks to a red gate.
+          DEFS=""
+          if [ "${{ inputs.perf }}" = "true" ] || [ "${{ inputs.perf_in_run }}" = "true" ]; then DEFS="$DEFS SPZ_CI_PERF"; fi
+          if [ "${{ inputs.docs_2x }}" = "true" ]; then DEFS="$DEFS SPZ_CI_SHOTS"; fi
+          if [ -n "$DEFS" ]; then
+            if SPZ_TEST_EXTRA_DEFINES="$DEFS" bash ./scripts/build-test-app.sh dist-test "${{ steps.sign.outputs.hash }}"; then
+              echo "optional_build=ok" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            echo "optional_build=failed" >> "$GITHUB_OUTPUT"
+            echo "::error title=optional-code::the test build with optional code ($DEFS) failed to compile"
+            exit 1
+          fi
+          bash ./scripts/build-test-app.sh dist-test "${{ steps.sign.outputs.hash }}"
+      - name: Rust engine tests (native macOS, includes getattrlistbulk backend)
+        if: ${{ !inputs.compile_only && !inputs.perf && !inputs.docs_only }}
+        id: rust
+        continue-on-error: ${{ inputs.consolidated }}
+        run: |
+          rustup update stable --no-self-update
+          set -o pipefail
+          # APFS refuses non-UTF-8 names (EILSEQ). The test helper turns ONLY that error into a recorded skip when this opt-in is set
+          # (any other fixture error still panics). cargo prints such a skipped test as ok, so the manifest below is the record of what did not run.
+          export SPZ_ALLOW_PLATFORM_SKIP=1
+          export SPZ_SKIP_MANIFEST="$RUNNER_TEMP/spz-skip-manifest.txt"
+          : > "$SPZ_SKIP_MANIFEST"
+          # --no-fail-fast: one failing binary must not hide the results of the binaries after it.
+          status=0
+          cargo test --release -p spacelyzer-engine --no-fail-fast -- --nocapture 2>&1 | tee /tmp/cargotest.log || status=$?
+          if [ "$status" -ne 0 ]; then
+            grep -E -A3 "panicked|firmlink check" /tmp/cargotest.log | grep -v "^--" | sort -u | head -12 | while IFS= read -r l; do echo "::error::${l//%/%25}"; done || true
+          fi
+          { grep -E "firmlink check" /tmp/cargotest.log || true; } | while IFS= read -r l; do echo "::notice::${l//%/%25}"; done
+          # Accounting: skipped tests are reported ok by cargo, so subtract the manifest names from the raw total.
+          raw_passed=$(awk '/^test result:/ {for (i = 2; i <= NF; i++) if ($i == "passed;") n += $(i-1)} END {print n + 0}' /tmp/cargotest.log)
+          raw_failed=$(awk '/^test result:/ {for (i = 2; i <= NF; i++) if ($i == "failed;") n += $(i-1)} END {print n + 0}' /tmp/cargotest.log)
+          skipped=$(grep -c . "$SPZ_SKIP_MANIFEST" || true)
+          exercised=$((raw_passed - skipped))
+          [ "$exercised" -lt 0 ] && exercised=0
+          if [ "$status" -eq 0 ]; then note=""; else note=" (APPROXIMATE and possibly incomplete: the run failed or aborted, so cargo summaries may be missing; the manifest below is the authoritative list of unexercised names)"; fi
+          echo "::notice title=engine-tests::raw passed=$raw_passed failed=$raw_failed; NOT EXERCISED (platform skips, counted as passed by cargo)=$skipped; exercised passes=$exercised$note; cargo exit=$status"
+          if [ "$skipped" -gt 0 ]; then
+            echo "Tests NOT exercised on this runner (from $SPZ_SKIP_MANIFEST):"
+            cat "$SPZ_SKIP_MANIFEST"
+            echo "::warning title=not-exercised::$(tr '\n' ';' < "$SPZ_SKIP_MANIFEST" | sed 's/%/%25/g')"
+          fi
+          exit "$status"
+      - name: Failpoint panic-injection tests (size-table writer)
+        if: ${{ !inputs.compile_only && !inputs.perf && !inputs.docs_only }}
+        id: failpoints
+        continue-on-error: ${{ inputs.consolidated }}
+        run: cargo test --release -p spacelyzer-engine --features failpoints --test dupes_abi
+      - name: Bulk backend vs portable backend on real macOS trees
+        if: ${{ !inputs.compile_only && !inputs.perf && !inputs.docs_only }}
+        id: bulk
+        continue-on-error: ${{ inputs.consolidated }}
+        timeout-minutes: 6
+        run: |
+          cargo build --release -p spacelyzer-engine
+          # Contract. Cold agreement only; warm re-run timings are not executed in this workflow (the full spz verify keeps them for a deliberate opt-in) so a slow shared runner cannot spend this binding step's timeout on non-gating measurements. BINDING (any failure fails this step, every attempted probe still runs and is reported): a deterministic fixture tree built here
+          # (nothing else writes to it), /Applications and /usr/lib (read-only system trees that agreed in the observed run). A missing binding root, a
+          # MISMATCH, and any other nonzero exit (scan error, panic) are all failures. INFORMATIONAL (reported as a warning with the full diff, never
+          # silent, never a gate): $HOME/Library. The observed run showed a backend MISMATCH there from one transient journal file that appeared between the two
+          # scans and was absent again in the recheck, so equality of a live, written-to tree cannot be a deterministic gate. No retries.
+          SPZ=./target/release/spz
+          OUT="$RUNNER_TEMP/bulk-verify"; mkdir -p "$OUT"; SUMMARY="$OUT/summary.txt"; : > "$SUMMARY"
+          failures=0
+          probe() {
+            label="$1"; mode="$2"; path="$3"; log="$OUT/$label.txt"
+            if [ ! -d "$path" ]; then
+              echo "ABSENT $mode $label $path (not compared)" >> "$SUMMARY"
+              if [ "$mode" = binding ]; then echo "::error title=bulk-verify::binding root absent, not compared: $path"; failures=$((failures + 1));
+              else echo "::warning title=bulk-verify::informational root absent, not compared: $path"; fi
+              return 0
+            fi
+            rc=0; "$SPZ" verify-cold "$path" > "$log" 2>&1 || rc=$?
+            cat "$log"
+            if [ "$rc" -eq 0 ]; then echo "AGREE $mode $label $path" >> "$SUMMARY"; return 0; fi
+            if [ "$rc" -eq 1 ]; then kind=MISMATCH; else kind="ERROR(exit $rc)"; fi
+            echo "$kind $mode $label $path" >> "$SUMMARY"
+            if [ "$mode" = binding ]; then echo "::error title=bulk-verify::$kind on binding root $path (full output above)"; failures=$((failures + 1));
+            else echo "::warning title=bulk-verify::$kind on informational root $path (live tree; full output above)"; fi
+            return 0
+          }
+          F="$RUNNER_TEMP/bulk-fixture"; rm -rf "$F"; mkdir -p "$F/a/b/c" "$F/empty" "$F/with space"
+          # BSD head rejects `-c 0` (GNU allows it), so create the empty file with a shell redirect instead of head.
+          for n in 0 1 4095 4096 4097 1048576; do if [ "$n" -gt 0 ]; then head -c "$n" /dev/zero > "$F/a/f$n.bin"; else : > "$F/a/f$n.bin"; fi; done
+          i=0; while [ "$i" -lt 300 ]; do head -c 100 /dev/zero > "$F/a/b/small$i.bin"; i=$((i + 1)); done
+          ln "$F/a/f4097.bin" "$F/a/b/c/hardlink.bin"; ln -s "$F/a/f1.bin" "$F/a/link"; head -c 5000 /dev/zero > "$F/with space/x y.bin"
+          probe fixture binding "$F"
+          probe applications binding /Applications
+          probe usr-lib binding /usr/lib
+          probe home-library informational "$HOME/Library"
+          echo "bulk verify summary:"; cat "$SUMMARY"
+          { echo "### bulk backend vs portable"; echo '```'; cat "$SUMMARY"; echo '```'; } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          if [ "$failures" -ne 0 ]; then echo "::error title=bulk-verify::$failures binding probe(s) failed"; exit 1; fi
+      - name: Scan benchmark (informational, shared runner)
+        if: ${{ !inputs.compile_only && !inputs.consolidated && !inputs.perf && !inputs.docs_only }}
+        run: ./target/release/spz bench /Applications 3
       - name: Package signed DMG
+        if: ${{ !inputs.compile_only && !inputs.perf }}
+        id: dmg
+        continue-on-error: ${{ inputs.consolidated }}
         run: ./scripts/package-dmg.sh "${{ steps.ver.outputs.version }}" "${{ steps.sign.outputs.hash }}"
-      - name: Launch app and screenshot (informational)
+      - name: Capture DMG install window and app icon (evidence only; artifacts, no publish)
+        if: ${{ !inputs.compile_only && !inputs.perf && !inputs.docs_only }}
         continue-on-error: true
         run: |
+          D="$(ls dist/*.dmg | head -1)"
+          MOUNT="/Volumes/Spacelyzer ${{ steps.ver.outputs.version }}"
+          hdiutil attach "$D"
+          test -f "$MOUNT/.background/background.png"
+          test -f "$MOUNT/.background/background@2x.png"
+          open "$MOUNT"
+          sleep 4
+          osascript -e 'tell application "Finder" to activate'
+          sleep 2
+          screencapture -x dist/screenshot-dmg-window.png
+          test -s dist/screenshot-dmg-window.png
+          hdiutil detach "$MOUNT" -force || echo "warning: dmg detach needed -force"
+          mkdir -p /tmp/iconctx && cp -R dist/Spacelyzer.app /tmp/iconctx/
+          open /tmp/iconctx
+          sleep 3
+          osascript <<'FINDEREOF'
+          tell application "Finder"
+            activate
+            tell front window
+              set current view to icon view
+              set toolbar visible to false
+              set icon size of icon view options of it to 128
+            end tell
+          end tell
+          FINDEREOF
+          sleep 2
+          screencapture -x dist/screenshot-app-icon-finder.png
+          test -s dist/screenshot-app-icon-finder.png
+      - uses: actions/upload-artifact@v4
+        # Early, separate upload of the packaged-DMG evidence: a later step timeout or the job cap must not be able
+        # to lose the signed DMG, its sha256 and the install-window/icon captures that the render gate inspects.
+        if: ${{ always() && !inputs.compile_only && !inputs.perf && !inputs.docs_only }}
+        with:
+          name: Spacelyzer-${{ steps.ver.outputs.version }}-dmg-evidence
+          path: |
+            dist/*.dmg
+            dist/*.sha256
+            dist/screenshot-dmg-window.png
+            dist/screenshot-app-icon-finder.png
+      - uses: actions/upload-artifact@v4
+        # docs_only retention: the packaged DMG + its sha256 upload as their own artifact right after packaging,
+        # because a docs_only run skips the normal dmg-evidence/main uploads and this DMG is the release-asset
+        # candidate - the runner-local file must never be lost to a later failure or the job cap. Gated on a
+        # successful package step; carries no screenshots, so the render evidence class stays separate.
+        if: ${{ always() && !inputs.compile_only && !inputs.perf && inputs.docs_only && steps.dmg.outcome == 'success' }}
+        with:
+          name: Spacelyzer-${{ steps.ver.outputs.version }}-dmg
+          path: |
+            dist/*.dmg
+            dist/*.sha256
+      - name: Reset persisted app state (guarantees a first-launch state for the docs captures and the demo below; runs before any app launch in this job)
+        if: ${{ !inputs.compile_only && !inputs.perf }}
+        id: reset
+        continue-on-error: true
+        timeout-minutes: 2
+        run: |
+          set -u
+          DOM=com.k-electron.spacelyzer-native
+          EV=dist/docs-reset-evidence.txt
+          mkdir -p dist; : > "$EV"
+          fail() { echo "::error title=docs-reset::$1"; echo "RESET FAILED: $1" >> "$EV"; cat "$EV"; exit 1; }
+          # 1. Stop every Spacelyzer process BEFORE touching defaults, so a running app cannot write cached state back.
+          pkill -TERM -x Spacelyzer || true
+          for _ in $(seq 1 10); do pgrep -x Spacelyzer >/dev/null || break; sleep 1; done
+          if pgrep -x Spacelyzer >/dev/null; then pkill -KILL -x Spacelyzer || true; for _ in $(seq 1 5); do pgrep -x Spacelyzer >/dev/null || break; sleep 1; done; fi
+          pgrep -x Spacelyzer >/dev/null && fail "a Spacelyzer process survived SIGKILL: $(pgrep -lx Spacelyzer | tr '\n' ' ')"
+          echo "no Spacelyzer process running" >> "$EV"
+          # 2. Evidence of what the demo left behind.
+          { echo "--- defaults before reset"; { defaults read "$DOM" 2>&1 | head -40 || true; }; echo "--- plist before reset"; { ls -l "$HOME/Library/Preferences/$DOM.plist" 2>&1 || true; }; echo "--- saved state before reset"; { ls -la "$HOME/Library/Saved Application State/$DOM.savedState" 2>&1 | head -10 || true; }; } >> "$EV"
+          # 3. Remove state, then prove it is gone. A failed delete or an unreadable result counts as not clean.
+          defaults delete "$DOM" >> "$EV" 2>&1 || echo "defaults delete returned nonzero (accepted only if the domain is verified absent below)" >> "$EV"
+          rm -f "$HOME/Library/Preferences/$DOM.plist" || fail "could not remove the preferences plist"
+          rm -rf "$HOME/Library/Saved Application State/$DOM.savedState" || fail "could not remove saved window state"
+          killall cfprefsd 2>/dev/null || true
+          sleep 2
+          # `OUT=$(cmd); RC=$?` would exit the whole step under bash -e when cmd fails, which is exactly the expected "domain absent" case.
+          OUT=$(defaults read "$DOM" 2>&1) && RC=0 || RC=$?
+          { echo "--- defaults after reset (rc=$RC)"; echo "$OUT" | head -5; } >> "$EV"
+          if [ "$RC" -eq 0 ]; then fail "defaults domain still readable after reset"; fi
+          echo "$OUT" | grep -q "does not exist" || fail "defaults read failed for a reason other than the domain being absent: $(echo "$OUT" | head -2)"
+          [ ! -e "$HOME/Library/Preferences/$DOM.plist" ] || fail "preferences plist still present"
+          [ ! -e "$HOME/Library/Saved Application State/$DOM.savedState" ] || fail "saved window state still present"
+          echo "RESET VERIFIED: no process, domain absent, plist absent, saved state absent" >> "$EV"
+          cat "$EV"
+      - name: Docs captures of a purpose-built sample tree (informational; real window-only captures, no mocks)
+        id: docs
+        if: ${{ !inputs.compile_only && !inputs.perf && steps.reset.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 8
+        run: |
+          # Real app, real scan of a friendly sample tree, window-only captures (screencapture -l, no shadow),
+          # driven by ordinary accessibility presses. Output names start with screenshot-docs- so the
+          # artifact upload below includes them. The runner display is small, so the window is the minimum
+          # size the app allows (960x600); captures are at the display's native scale.
+          set +e
+          bash scripts/make-docs-fixture.sh "$HOME/Sample"
+          swiftc scripts/docs-capture.swift -o /tmp/spz-docs-capture
+          cap() {   # cap <pid> <name>
+            wid=$(/tmp/spz-docs-capture "$1" windowid) || { echo "no window for $2"; return 1; }
+            screencapture -x -o -l "$wid" "dist/screenshot-docs-$2.png" || echo "capture failed: $2"
+          }
+          launch() {   # launch <extra open args...>; sets PID
+            pkill Spacelyzer; sleep 2
+            open -n dist/Spacelyzer.app --env SPZ_WINDOW_SIZE=960x600 "$@"
+            sleep 6
+            PID=$(pgrep -n -f "dist/Spacelyzer.app/Contents/MacOS/Spacelyzer")
+            echo "launched pid=$PID"
+          }
+          launch --env SPZ_AUTOSCAN="$HOME/Sample"
+          sleep 12
+          cap "$PID" overview
+          /tmp/spz-docs-capture "$PID" press Kinds && sleep 2 && cap "$PID" kinds
+          /tmp/spz-docs-capture "$PID" press Largest && sleep 2 && cap "$PID" largest
+          # The review opener is the SelectionBar button whose accessibility label is "Check selected item on disk, read only"
+          # (SelectionBar in TreemapView.swift; pressing the visible title "Check on disk" finds nothing - run 39602481035).
+          # The review popover is a separate window, so capture the full screen rather than the main window id.
+          /tmp/spz-docs-capture "$PID" select 0 && sleep 1 && /tmp/spz-docs-capture "$PID" press "Check selected item on disk, read only" && sleep 3 && screencapture -x "dist/screenshot-docs-review.png" || echo "capture failed: review"
+          /tmp/spz-docs-capture "$PID" escape; sleep 1
+          /tmp/spz-docs-capture "$PID" press Folders && sleep 2 && cap "$PID" folders
+          /tmp/spz-docs-capture "$PID" press Largest && sleep 1
+          /tmp/spz-docs-capture "$PID" type pdf && sleep 2 && cap "$PID" filtered-largest
+          /tmp/spz-docs-capture "$PID" type zzz && sleep 2 && cap "$PID" no-matches
+          # Scanning-in-progress (quickstart-scanning.png): launch the packaged app against /Library (a
+          # multi-minute scan on the runner) and poll the app's REAL scanning placeholder from the start - a fixed
+          # delay can miss a fast scan entirely, so the FIRST match of "Scanning" in the AX tree (TreemapView
+          # "Scanning. ... so far." / ContentView "Scanning · items · bytes") triggers the capture promptly. Every
+          # AX query is wall-bounded at 5s (a traversal element cap is not a time bound for blocking AX calls) and
+          # the whole observation is bounded at 30 tries; the /Library scan is stopped on EVERY exit path so it
+          # cannot overlap the flows below. One launch, no relaunch cycling.
+          scan_cleanup() { pkill Spacelyzer; sleep 2; }
+          pkill Spacelyzer; sleep 2
+          open -n dist/Spacelyzer.app --env SPZ_WINDOW_SIZE=960x600 --env SPZ_AUTOSCAN=/Library
+          PID=""; for _ in $(seq 1 10); do PID=$(pgrep -n -f "dist/Spacelyzer.app/Contents/MacOS/Spacelyzer"); [ -n "$PID" ] && break; sleep 1; done
+          [ -n "$PID" ] || { echo "::error title=docs-captures::packaged app did not launch for the scanning capture"; scan_cleanup; exit 1; }
+          scanning_seen=""
+          for _ in $(seq 1 30); do
+            if python3 -c $'import subprocess,sys\ntry:\n sys.exit(subprocess.run(sys.argv[1:], timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode)\nexcept subprocess.TimeoutExpired:\n sys.exit(124)' /tmp/spz-docs-capture "$PID" hastext "Scanning"; then scanning_seen=1; break; fi
+            sleep 1
+          done
+          if [ -z "$scanning_seen" ]; then echo "::error title=docs-captures::scanning state never observed in the AX tree within 30 bounded probes"; scan_cleanup; exit 1; fi
+          cap "$PID" scanning || { echo "::error title=docs-captures::scanning capture failed"; scan_cleanup; exit 1; }
+          scan_cleanup
+          launch --env SPZ_AUTOSCAN="$HOME/Sample" --env SPZ_DEMO_APPEARANCE=dark
+          sleep 12
+          cap "$PID" overview-dark
+          launch
+          sleep 2
+          cap "$PID" welcome
+          launch --env SPZ_DEMO_APPEARANCE=dark
+          sleep 2
+          cap "$PID" welcome-dark
+          launch --env SPZ_DEMO_FDA_REFUSED=1 --env SPZ_AUTOSCAN="$HOME/Sample"
+          sleep 12
+          cap "$PID" fda-banner
+          pkill Spacelyzer; sleep 2
+          ls -l dist/screenshot-docs-*.png || echo "no docs captures"
+          # The step above runs under set +e so one failed press does not lose the later captures; the outcome must still say whether
+          # every expected capture exists. Without this, 0 of 11 captures was a successful step and a green gate.
+          missing=""
+          for n in overview kinds largest review folders filtered-largest no-matches scanning overview-dark welcome welcome-dark fda-banner; do
+            [ -s "dist/screenshot-docs-$n.png" ] || missing="$missing $n"
+          done
+          if [ -n "$missing" ]; then echo "::error title=docs-captures::missing docs captures:$missing"; exit 1; fi
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && !inputs.compile_only && !inputs.perf }}
+        with:
+          name: Spacelyzer-${{ steps.ver.outputs.version }}-docs
+          path: |
+            dist/screenshot-docs-*.png
+            dist/docs-reset-evidence.txt
+      - name: Ordering driver, one launch (consolidated option only; fails the build if any required check is missing, duplicated or failing)
+        if: ${{ !inputs.compile_only && !inputs.perf && inputs.consolidated && !inputs.docs_only }}
+        id: ordering
+        continue-on-error: true
+        timeout-minutes: 7
+        run: |
+          set +e
+          mkdir -p dist/ordering
+          N=$(python3 scripts/check-ordering-manifest.py | sed -n 's/^OK \([0-9]*\) required == \([0-9]*\) declared$/\1/p')
+          [ -n "$N" ] || { echo "::error title=ordering::could not read the required-check count"; exit 1; }
+          W=$(mktemp -d); RES="$W/res"; FIX="$W/fix"; mkdir -p "$RES" "$FIX/d"
+          head -c 200000 /dev/zero > "$FIX/a.bin"; head -c 100000 /dev/zero > "$FIX/d/b.bin"
+          APP="$W/app/Spacelyzer.app"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp dist-test/Spacelyzer.app/Contents/MacOS/Spacelyzer "$APP/Contents/MacOS/Spacelyzer"
+          sed -e "s/__VERSION__/0.0.0-ordering/g" -e "s|com.k-electron.spacelyzer-native|com.k-electron.spacelyzer-native.ordering.$$|" Resources/Info.plist > "$APP/Contents/Info.plist"
+          codesign --force --deep --sign - --entitlements Resources/Spacelyzer.entitlements "$APP" && codesign --verify --deep --strict "$APP" || { echo "::error title=ordering::codesign failed"; exit 1; }
+          pkill Spacelyzer; sleep 2
+          open -n "$APP" --stdout "$W/stdout.log" --stderr "$W/stderr.log" \
+            --env SPZ_AUTOSCAN="$FIX" --env SPZ_DEMO=1 --env SPZ_CHECKS=ordering --env SPZ_RESULT_DIR="$RES"
+          for _ in $(seq 1 330); do [ -s "$RES/result.txt" ] && break; sleep 1; done
+          pkill -f "$APP/Contents/MacOS/Spacelyzer"; sleep 1; pkill -9 -f "$APP/Contents/MacOS/Spacelyzer"
+          cp "$RES"/* dist/ordering/ 2>/dev/null; cp "$W/stderr.log" dist/ordering/stderr.log 2>/dev/null
+          head -c 20000 "$RES/result.txt" 2>/dev/null
+          [ "$(head -1 "$RES/result.txt" 2>/dev/null)" = "PASS $N required checks, each exactly once" ] || { echo "::error title=ordering::$(head -3 "$RES/result.txt" 2>/dev/null | tr '\n' ';')"; exit 1; }
+          ! grep -q '^FAIL' "$RES/assertions.txt" || exit 1
+          echo "::notice title=ordering::PASS $N required checks, each exactly once"
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && !inputs.compile_only && !inputs.perf && inputs.consolidated && !inputs.docs_only }}
+        with:
+          name: Spacelyzer-${{ steps.ver.outputs.version }}-ordering
+          path: |
+            dist/ordering/
+      - name: Launch app and screenshot (informational)
+        if: ${{ !inputs.compile_only && !inputs.perf && !inputs.docs_only }}
+        continue-on-error: true
+        run: |
+          # First-launch window, no autoscan: the welcome screen the demo run never shows.
+          open -n dist/Spacelyzer.app
+          sleep 6
+          screencapture -x dist/screenshot-welcome.png || true
+          pkill Spacelyzer || true
+          sleep 2
+          # Welcome at several window sizes in both appearances, plus the FDA banner state
+          # (SPZ_DEMO_FDA_REFUSED forces a probe refusal; inert without the env).
+          for size in 960x600 1280x800 1600x1000; do
+            open -n dist/Spacelyzer.app --env SPZ_WINDOW_SIZE=$size
+            sleep 7
+            screencapture -x "dist/screenshot-welcome-$size.png" || true
+            pkill Spacelyzer || true
+            sleep 2
+            open -n dist/Spacelyzer.app --env SPZ_WINDOW_SIZE=$size --env SPZ_DEMO_APPEARANCE=dark
+            sleep 7
+            screencapture -x "dist/screenshot-welcome-$size-dark.png" || true
+            pkill Spacelyzer || true
+            sleep 2
+          done
+          open -n dist/Spacelyzer.app --env SPZ_WINDOW_SIZE=1280x800 --env SPZ_DEMO_FDA_REFUSED=1
+          sleep 7
+          screencapture -x dist/screenshot-fda-banner.png || true
+          pkill Spacelyzer || true
+          sleep 2
           open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Library
-          sleep 8
+          sleep 1.5
+          screencapture -x dist/screenshot-scanning-progress-a.png || true
+          sleep 1.5
+          screencapture -x dist/screenshot-scanning-progress-b.png || true
+          sleep 5
           screencapture -x dist/screenshot-scanning.png || true
           sleep 35
           screencapture -x dist/screenshot.png || true
@@ -87,8 +476,8 @@ jobs:
           swiftc scripts/ax-client.swift -o /tmp/spz-ax-client
           rm -rf /tmp/spz-chronology
           rm -f /tmp/spz-interaction-envelope.txt /tmp/spz-footer-ax-status.txt /tmp/spz-footer-ax-result.txt /tmp/spz-footer-ax-expected.txt /tmp/spz-footer-ax-ready /tmp/spz-footer-ax-ack /tmp/spz-footer-ax-client.txt /tmp/spz-cold-click-subprocess-end.txt /tmp/spz-sample.txt /tmp/spz-cold-click-sample.txt /tmp/spz-cold-click-sample-command.txt /tmp/spz-cold-click-sample-status.txt /tmp/spz-cold-click-ready /tmp/spz-cold-click-ack /tmp/spz-demo-ready-* /tmp/spz-demo-ack-* /tmp/spz-demo-*.png /tmp/spz-demo-step /tmp/spz-demo-finished /tmp/spz-geom.txt /tmp/spz-timing.txt /tmp/spz-assertions.txt
-          open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Library --env SPZ_DEMO=1
-          for step in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 23 24 19 25 20 21 22 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48; do
+          open -n dist-test/Spacelyzer.app --env SPZ_AUTOSCAN=/Library --env SPZ_DEMO=1
+          for step in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 23 24 19 25 20 21 22 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81; do
             for i in $(seq 1 240); do
               if [ -f /tmp/spz-footer-ax-ready ] && [ ! -f /tmp/spz-footer-ax-ack ]; then
                 target_pid=$(cat /tmp/spz-footer-ax-ready)
@@ -159,18 +548,20 @@ jobs:
             echo "::notice title=crash::$c"
           done
       - name: UI assertions (fail the build on any failure)
+        if: ${{ !inputs.compile_only && !inputs.perf && !inputs.docs_only }}
         id: asserts
         continue-on-error: true
         run: |
           cp /tmp/spz-assertions.txt dist/ui-assertions.txt 2>/dev/null || true
           # Ordinary log lines survive artifact-service failure and annotation truncation.
           echo 'Critical focus/reset evidence (strict assertions remain below):'
-          grep -E '^(before-resign|after-direct-resign|after-fixture-key-window|before-activation|activation-wait-seconds=|reload-after-responder-wait|tab-chain |rest-chain-|native-tab |boundary-sim |boundary-setup |boundary-native |boundary-hidden |interaction-clock |interaction-stage |interaction-sample |footer-constrained |footer-ax |treemap-mounted |treemap-tree-swap |treemap-filter |treemap-unmount |sample launched |sample completed |sample missing:|sample failed/missing report:|same-value-fixture-start |before-same-value-clear |check FAIL|app still running at end|APP NOT RUNNING|DEMO .*TIMEOUT)' /tmp/spz-timing.txt 2>/dev/null || true
+          grep -E '^(before-resign|after-direct-resign|after-fixture-key-window|before-activation|activation-wait-seconds=|reload-after-responder-wait|tab-chain |rest-chain-|native-tab |window-size |demo-ax |boundary-sim |boundary-setup |boundary-native |boundary-hidden |interaction-clock |interaction-stage |interaction-sample |footer-constrained |footer-ax |treemap-mounted |treemap-tree-swap |treemap-filter |treemap-unmount |sample launched |sample completed |sample missing:|sample failed/missing report:|same-value-fixture-start |before-same-value-clear |check FAIL|app still running at end|APP NOT RUNNING|DEMO .*TIMEOUT)' /tmp/spz-timing.txt 2>/dev/null || true
           cat /tmp/spz-assertions.txt || true
-          expected=91
+          # Count of ^PASS/^FAIL lines the demo emits at this head; run 37959435404 emitted 126 (121 PASS, 5 FAIL before this fix). Change only with the name-by-name list in the PR that changes it. The batch-removal planning slice adds 5: batch-removal-single-copy-of-group-approved, batch-removal-all-copies-keeps-one-deterministically, batch-removal-unknown-path-refused, batch-removal-non-group-item-approved, batch-removal-out-of-date-model-refuses-all. The multi-select slice adds 6: multi-select-toggle-adds-and-removes-membership, multi-select-focus-follows-toggle-and-removal, multi-select-range-covers-row-order-slice, multi-select-range-without-anchor-anchors-on-click, multi-select-hidden-members-excluded-from-batch-candidates, multi-select-clear-resets-set-and-focus. The outline-sync slice adds 5: outline-sync-added-row-becomes-focus, outline-sync-removal-of-other-keeps-focus, outline-sync-removal-moves-focus-to-last-row-order-member, outline-sync-empty-clears-focus, multi-select-set-normalizes-to-row-order. The batch-quicklook slice adds 5: quicklook-batch-payload-row-order-and-focus, quicklook-batch-payload-focus-outside-falls-back-to-first, quicklook-batch-refuses-empty-and-relative-before-panel, quicklook-batch-show-presents-items-with-clamped-focus-synchronously, shift-click-range-focus-matches-table-path. The batch-execution slice adds 5: batch-execution-moves-each-item-through-per-item-path, batch-execution-failure-skips-and-reports-rest-complete, batch-execution-identity-refusal-skips-item, preview-targets-hidden-set-previews-nothing, preview-targets-empty-set-falls-back-to-focus. The batch-undo slice adds 5: batch-undo-restores-whole-batch-in-one-pass, batch-undo-collision-keeps-that-item-in-history, group-removal-plan-keeps-one-copy-deterministically, group-removal-executes-through-same-per-item-path, single-removal-clears-batch-undo-hint. The mid-batch consistency slice adds 2: batch-execution-poison-mid-batch-refuses-remaining-items, batch-execution-out-of-date-mid-batch-refuses-remaining-items. The outline readable-name slice adds 1: outline-names-keep-readable-width-at-min-window. The ux-polish-7 sweep adds 14 always-emitted plus one failure-only: batch7-rescan-progress-captured, batch7-size-applied-960x600, batch7-size-applied-1280x800, batch7-size-applied-1600x1000, batch7-outline-names-readable-960x600, batch7-outline-names-readable-1280x800, batch7-outline-names-readable-1600x1000, batch7-kinds-folders-row-zero-bytes, batch7-removal-alert-restored-light, batch7-removal-alert-restored-dark, batch7-zero-area-fixture-ready-960, batch7-no-match-fixture-ready-1280-dark, batch7-unreadable-dir-listed-in-not-scanned, batch7-other-volume-listed-in-not-scanned, and batch7-not-scanned-sheet-opened (failure-only in ux-polish-7). The ux-polish-8 fix-forward makes batch7-not-scanned-sheet-opened always-emitting: 174 -> 175. The ux-polish-12 slice adds 1: footer-voiceover-action-name-clean: 175 -> 176. The mounted-selection repair stack adds 2: multi-select-focus-from-outside-set-replaces-set, single-removal-drops-removed-id-from-multi-selection: 176 -> 178 (run 39602481035 emitted 178 PASS, 0 FAIL).
+          expected=178
           if grep -q 'APP NOT RUNNING' /tmp/spz-timing.txt 2>/dev/null; then echo "::error title=ui-assertions::app was not running at the end of the demo (crash or exit)"; exit 1; fi
           if grep -q 'DEMO .*TIMEOUT' /tmp/spz-timing.txt 2>/dev/null; then echo "::error title=ui-assertions::$(grep 'DEMO .*TIMEOUT' /tmp/spz-timing.txt)"; exit 1; fi
-          for step in $(seq 1 48); do [ -s "dist/screenshot-demo-$step.png" ] || { echo "::error title=ui-assertions::missing screenshot step $step"; exit 1; }; done
+          for step in $(seq 1 81); do [ -s "dist/screenshot-demo-$step.png" ] || { echo "::error title=ui-assertions::missing screenshot step $step"; exit 1; }; done
           n=$(grep -c '^PASS\|^FAIL' /tmp/spz-assertions.txt 2>/dev/null || echo 0)
           if grep -q '^FAIL' /tmp/spz-assertions.txt 2>/dev/null || [ "$n" -ne "$expected" ]; then
             echo "::error title=ui-assertions::expected $expected results, got $n; $(tr '\n' ';' < /tmp/spz-assertions.txt 2>/dev/null)"
@@ -178,12 +569,14 @@ jobs:
           fi
           echo "::notice title=ui-assertions::all $n UI assertions passed: $(cut -d' ' -f2 /tmp/spz-assertions.txt | tr '\n' ' ')"
       - uses: actions/upload-artifact@v4
+        if: ${{ always() && !inputs.compile_only && !inputs.docs_only }}
         with:
           name: Spacelyzer-${{ steps.ver.outputs.version }}
           path: |
             dist/*.dmg
             dist/*.sha256
             dist/screenshot*.png
+            dist/screenshot-docs-2x-render-*.txt
             dist/ui-assertions.txt
             dist/main-thread-sample.txt
             dist/crash-report.ips
@@ -194,6 +587,50 @@ jobs:
             dist/footer-ax-expected.txt
             dist/footer-ax-result.txt
             dist/footer-ax-status.txt
+            dist/ordering/
+            dist/perf/
+      - name: Docs captures, experimental render-derived 2x (option only; test-only app; real 1x captures above are unchanged)
+        if: ${{ !inputs.compile_only && !inputs.perf && !inputs.docs_only && inputs.docs_2x && steps.reset.outcome == 'success' && steps.testbuild.outputs.optional_build != 'failed' }}
+        continue-on-error: true
+        timeout-minutes: 6
+        run: |
+          set +e
+          [ -d "$HOME/Sample" ] || bash scripts/make-docs-fixture.sh "$HOME/Sample"
+          bash scripts/docs-capture-2x.sh dist-test/Spacelyzer.app "$HOME/Sample"
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && !inputs.compile_only && !inputs.perf && !inputs.docs_only && inputs.docs_2x }}
+        with:
+          name: Spacelyzer-${{ steps.ver.outputs.version }}-docs-2x
+          path: |
+            dist/screenshot-docs-2x-render-*.png
+            dist/screenshot-docs-2x-render-*.txt
+      - name: Perf driver (perf option only; informational, no thresholds; incomplete or missing milestones fail the build)
+        if: ${{ !inputs.compile_only && !inputs.docs_only && (inputs.perf || inputs.perf_in_run) && steps.testbuild.outputs.optional_build != 'failed' }}
+        id: perf
+        continue-on-error: true
+        timeout-minutes: 8
+        run: |
+          set +e
+          mkdir -p dist/perf
+          W=$(mktemp -d); RES="$W/res"; mkdir -p "$RES"
+          APP="$W/app/Spacelyzer.app"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp dist-test/Spacelyzer.app/Contents/MacOS/Spacelyzer "$APP/Contents/MacOS/Spacelyzer"
+          sed -e "s/__VERSION__/0.0.0-perf/g" -e "s|com.k-electron.spacelyzer-native|com.k-electron.spacelyzer-native.perf.$$|" Resources/Info.plist > "$APP/Contents/Info.plist"
+          codesign --force --deep --sign - --entitlements Resources/Spacelyzer.entitlements "$APP" && codesign --verify --deep --strict "$APP" || { echo "::error title=perf::codesign failed"; exit 1; }
+          pkill Spacelyzer; sleep 2
+          open -n "$APP" --stdout "$W/stdout.log" --stderr "$W/stderr.log" \
+            --env SPZ_DEMO=1 --env SPZ_CHECKS=perf --env SPZ_RESULT_DIR="$RES" --env SPZ_PERF_ROOT="${{ inputs.perf_root }}"
+          for _ in $(seq 1 930); do [ -s "$RES/result.txt" ] && break; sleep 1; done
+          pkill -f "$APP/Contents/MacOS/Spacelyzer"; sleep 1; pkill -9 -f "$APP/Contents/MacOS/Spacelyzer"
+          cp "$RES"/* dist/perf/ 2>/dev/null; cp "$W/stderr.log" dist/perf/stderr.log 2>/dev/null
+          cat "$RES/perf.txt" 2>/dev/null; cat "$RES/result.txt" 2>/dev/null
+          [ "$(head -1 "$RES/result.txt" 2>/dev/null)" = "PERF-COMPLETE" ] || { echo "::error title=perf::$(tr '\n' ';' < "$RES/result.txt" 2>/dev/null | head -c 600)"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && !inputs.compile_only && !inputs.docs_only && (inputs.perf || inputs.perf_in_run) }}
+        with:
+          name: Spacelyzer-${{ steps.ver.outputs.version }}-perf
+          path: |
+            dist/perf/
       - name: Publish release (epic tags only)
         if: startsWith(github.ref, 'refs/tags/epic-')
         env:
@@ -202,6 +639,34 @@ jobs:
           V=v${{ steps.ver.outputs.version }}
           gh release create "$V" dist/*.dmg dist/*.sha256 dist/screenshot*.png dist/ui-assertions.txt $(ls dist/main-thread-sample.txt 2>/dev/null || true) --title "Spacelyzer $V" --prerelease \
             --notes "UI assertions: ${{ steps.asserts.outcome }}. Self-signed development build (not notarized). Not Apple-verified: after the first blocked open, use System Settings > Privacy & Security > Open Anyway. Screenshots attached are from the CI runner, not a real Mac. Built from ${{ github.sha }}."
-      - name: Fail the build if UI assertions failed (after artifacts and release are published)
-        if: always() && steps.asserts.outcome != 'success'
-        run: exit 1
+      - name: Fail the build if any required evidence failed or was lost (after artifacts and release are published)
+        if: ${{ always() && !inputs.compile_only && !inputs.docs_only && (steps.testbuild.outputs.optional_build == 'failed' || (inputs.perf && steps.perf.outcome != 'success') || (!inputs.perf && (steps.reset.outcome != 'success' || steps.docs.outcome != 'success' || steps.asserts.outcome != 'success' || (inputs.perf_in_run && steps.perf.outcome != 'success') || (inputs.consolidated && (steps.ordering.outcome != 'success' || steps.rust.outcome != 'success' || steps.failpoints.outcome != 'success' || steps.bulk.outcome != 'success' || steps.dmg.outcome != 'success'))))) }}
+        run: |
+          # Name the failing evidence, not just exit 1: run 39602481035 ended red and a bare exit 1 hid WHICH of the
+          # continue-on-error outcomes tripped the gate, which let one cause (the stale pin) look like the only one.
+          bad=""
+          add() { [ "$2" = success ] || bad="$bad $1=$2"; }
+          if [ "${{ inputs.perf }}" = true ]; then
+            add perf "${{ steps.perf.outcome }}"
+          else
+            add reset "${{ steps.reset.outcome }}"; add docs "${{ steps.docs.outcome }}"; add asserts "${{ steps.asserts.outcome }}"
+            [ "${{ inputs.perf_in_run }}" = true ] && add perf "${{ steps.perf.outcome }}"
+            if [ "${{ inputs.consolidated }}" = true ]; then
+              add ordering "${{ steps.ordering.outcome }}"; add rust "${{ steps.rust.outcome }}"; add failpoints "${{ steps.failpoints.outcome }}"; add bulk "${{ steps.bulk.outcome }}"; add dmg "${{ steps.dmg.outcome }}"
+            fi
+          fi
+          [ "${{ steps.testbuild.outputs.optional_build }}" = failed ] && bad="$bad testbuild(optional_build)=failed"
+          echo "::error title=evidence-gate::failed or lost evidence:$bad"
+          exit 1
+      - name: docs_only render-evidence gate (fails when the reset or the docs captures did not succeed; never a functional pass)
+        if: ${{ always() && inputs.docs_only && (steps.reset.outcome != 'success' || steps.docs.outcome != 'success') }}
+        run: |
+          echo "::error title=docs-only-gate::render evidence incomplete: reset=${{ steps.reset.outcome }} docs=${{ steps.docs.outcome }}"
+          exit 1
+
+      - name: Stop any app left running (also after a step timeout)
+        if: ${{ always() && !inputs.compile_only }}
+        continue-on-error: true
+        run: |
+          pkill Spacelyzer || true
+          hdiutil info | grep -q "/Volumes/Spacelyzer" && hdiutil detach "/Volumes/Spacelyzer ${{ steps.ver.outputs.version }}" -force || true

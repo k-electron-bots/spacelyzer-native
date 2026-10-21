@@ -73,7 +73,14 @@ fn contains_ci(hay: &str, needle_lower: &str) -> bool {
 }
 
 pub fn apply(tree: &Tree, f: &Filter) -> FilterResult {
+    apply_in(tree, &tree.table(), f)
+}
+
+/// Filter against a table the caller already captured, so the result and its version stamp share one snapshot.
+pub fn apply_in(tree: &Tree, tab: &crate::tree::SizeTable, f: &Filter) -> FilterResult {
     let n = tree.len();
+    let sizes_in = &tab.sizes;
+    let dead = tab.dead_mask(tree);   // removed nodes and everything below them never match
     let text = f.text.to_lowercase();
     let ext = f.extension.trim_start_matches('.').to_lowercase();
     let min = f.min_size.unwrap_or(0);
@@ -88,8 +95,11 @@ pub fn apply(tree: &Tree, f: &Filter) -> FilterResult {
             if kind == Kind::Directory as u8 {
                 return (0, 0);
             }
+            if dead.as_ref().map_or(false, |d| d[i]) {
+                return (0, 0);
+            }
             // A package or file counts by its own bytes; a package is one item.
-            let size = tree.own_bytes(i as NodeId);
+            let size = tree.own_bytes_in(sizes_in, i as NodeId);
             if size < min || size > max {
                 return (0, 0);
             }
