@@ -130,12 +130,18 @@ struct DuplicatesReviewView: View {
             Text("Duplicates").font(.headline)
             Text("Same content in more than one copy. Allocated bytes are not reclaimable space. Copies stored with different allocation (sparse, compressed, some clones) can be missed - a recall limit, never a false duplicate.")
                 .font(.caption).foregroundStyle(.secondary)
+                // Presented surface: the safety qualifier must wrap in full, never ellipsize (run-39683697776 popover lesson).
+                .fixedSize(horizontal: false, vertical: true)
             if model.readFailed {
                 Text("The duplicates could not be read from the engine. The scan itself is unchanged; rescan to try again.")
                     .font(.caption).foregroundStyle(.red)
+                    // Presented surface: the safety qualifier must wrap in full, never ellipsize (run-39683697776 popover lesson).
+                    .fixedSize(horizontal: false, vertical: true)
             } else if model.cancelled {
                 Text("The read was canceled before it finished, so there is no answer to show.")
                     .font(.caption).foregroundStyle(.secondary)
+                    // Presented surface: the safety qualifier must wrap in full, never ellipsize (run-39683697776 popover lesson).
+                    .fixedSize(horizontal: false, vertical: true)
             } else if let r = model.result {
                 if r.groups.isEmpty {
                     Text("No duplicate files found.").font(.caption).foregroundStyle(.secondary)
@@ -166,6 +172,8 @@ struct DuplicatesReviewView: View {
     private var partialNote: some View {
         Text("Partial: the read hit a cap before every group was found, so this is not all duplicates.")
             .font(.caption2).foregroundStyle(.orange)
+            // Presented surface: the safety qualifier must wrap in full, never ellipsize (run-39683697776 popover lesson).
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     @ViewBuilder private func summary(_ r: DupFindResult) -> some View {
@@ -179,6 +187,8 @@ struct DuplicatesReviewView: View {
         if r.summary.hardlinkAliases > 0 {
             Text("\(r.summary.hardlinkAliases) hard-linked: those copies share one inode, removing one frees nothing")
                 .font(.caption2).foregroundStyle(.secondary)
+                // Presented surface: the safety qualifier must wrap in full, never ellipsize (run-39683697776 popover lesson).
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

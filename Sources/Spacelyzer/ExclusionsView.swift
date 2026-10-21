@@ -94,6 +94,8 @@ struct ExclusionsView: View {
             Text("Exclusions").font(.headline)
             Text("Scans skip these locations. Changes apply when you rescan; the numbers on screen do not change from editing here.")
                 .font(.caption).foregroundStyle(.secondary)
+                // Presented surface: the safety qualifier must wrap in full, never ellipsize (run-39683697776 popover lesson).
+                .fixedSize(horizontal: false, vertical: true)
             HStack {
                 TextField("Path to skip, e.g. /Users/you/Videos", text: $draft)
                     .textFieldStyle(.roundedBorder)
@@ -103,6 +105,8 @@ struct ExclusionsView: View {
             if exclusions.isEmpty {
                 Text("No exclusions. Every location the scan can read is counted.")
                     .font(.caption).foregroundStyle(.secondary)
+                    // Presented surface: the safety qualifier must wrap in full, never ellipsize (run-39683697776 popover lesson).
+                    .fixedSize(horizontal: false, vertical: true)
             } else {
                 List {
                     ForEach(exclusions, id: \.self) { path in
@@ -133,9 +137,13 @@ struct ExclusionsView: View {
             Text("Asked to skip, but never seen").font(.subheadline)
             Text("The scan never observed an entry at these paths. That is not proof they are absent.")
                 .font(.caption).foregroundStyle(.secondary)
+                // Presented surface: the safety qualifier must wrap in full, never ellipsize (run-39683697776 popover lesson).
+                .fixedSize(horizontal: false, vertical: true)
             if model.readFailed {
                 Text("The report could not be read from the engine. The exclusions still apply; rescan to try again.")
                     .font(.caption).foregroundStyle(.red)
+                    // Presented surface: the safety qualifier must wrap in full, never ellipsize (run-39683697776 popover lesson).
+                    .fixedSize(horizontal: false, vertical: true)
             } else if let list = model.unobserved {
                 if list.isEmpty {
                     Text("Every exclusion matched something the scan saw.")
