@@ -58,6 +58,10 @@ jobs:
         run: ./target/release/spz bench /usr 3
 
   macos:
+    # Never on pull_request: a PR event has no dispatch inputs (all defaults), starts the full
+    # macos pipeline including signing and packaging, and must not consume a Mac run outside the
+    # one-at-a-time owner-approved dispatch cadence. PRs get the engine-linux gate only.
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: macos-latest
     timeout-minutes: 35
     steps:
