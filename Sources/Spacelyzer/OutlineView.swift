@@ -130,8 +130,11 @@ struct OutlineView: View {
 
     var body: some View {
         if let tree = model.tree {
-            let total = max(1, model.activeFilter?.size(model.displayedRoot) ?? tree.info(model.displayedRoot).size)
-            OutlineTable(model: model, tree: tree, total: total, revision: model.outlineRevision, selected: model.selected)
+            #if SPZ_CI_TESTS
+            let _: Void = SelDiag.noteBody(model.selected)
+            #endif
+            let total = max(1, model.outlineRootSize)   // same publication and table version as the rows
+            OutlineTable(model: model, tree: tree, total: total, revision: model.outlineRevision, selected: model.selected, selectionRevision: SelectionRevisionSwitch.value(model.selectionRevision), poisoned: model.enginePoisoned)
                 .overlay {
                     if model.activeFilter != nil && model.outlineRows.isEmpty {
                         ContentUnavailableView("No matches", systemImage: "line.3.horizontal.decrease.circle",
@@ -227,6 +230,7 @@ private final class OutlineCell: NSTableCellView {
     /// Direct item count for folders; hidden when the sidebar is too narrow to keep names readable.
     let count = NSTextField(labelWithString: "")
     fileprivate let bar = ShareBarView()
+    fileprivate var barSuppressed = false
     var depth = 0
     var hasChildren = false
     var onToggle: (() -> Void)?
@@ -279,21 +283,64 @@ private final class OutlineCell: NSTableCellView {
     override func layout() {
         super.layout()
         let h = bounds.height, w = bounds.width
-        // Indent is capped so deep rows keep a readable name in a narrow sidebar.
-        let x0 = 8 + CGFloat(min(depth, 8)) * 10
+        // Narrow sidebars degrade chrome before they degrade the name: counts hide below 400,
+        // the size bar hides below 320, and deep indents flatten below 460, so the name keeps
+        // at least a 48pt budget (below that, middle truncation renders a bare ellipsis) at
+        // every width: with count, bar, and 8-deep indent all shown, 460pt is the smallest
+        // width that still leaves 48pt for the deepest row's name.
+        let indentCap = w >= 460 ? 8 : 4
+        let x0 = 8 + CGFloat(min(depth, indentCap)) * 10
         chevron.frame = NSRect(x: x0, y: (h - 14) / 2, width: 14, height: 14)
         chevron.isHidden = !hasChildren
         icon.frame = NSRect(x: x0 + 18, y: (h - 16) / 2, width: 16, height: 16)
+        let showBar = w >= 320
+        bar.isHidden = barSuppressed || !showBar   // layout runs after configure and must not re-show a bar the poison state hid
         bar.frame = NSRect(x: w - 8 - 44, y: (h - 6) / 2, width: 44, height: 6)
         let sizeW: CGFloat = 70
-        size.frame = NSRect(x: bar.frame.minX - 8 - sizeW, y: (h - 16) / 2, width: sizeW, height: 16)
+        let sizeRight = showBar ? bar.frame.minX : w - 8
+        size.frame = NSRect(x: sizeRight - (showBar ? 8 : 0) - sizeW, y: (h - 16) / 2, width: sizeW, height: 16)
         let showCount = w >= 400 && !count.stringValue.isEmpty
         count.isHidden = !showCount
         let countW: CGFloat = 84
         count.frame = NSRect(x: size.frame.minX - 6 - countW, y: (h - 14) / 2, width: countW, height: 14)
         let nx = x0 + 40
         let nameRight = showCount ? count.frame.minX : size.frame.minX
-        name.frame = NSRect(x: nx, y: (h - 16) / 2, width: max(0, nameRight - 8 - nx), height: 16)
+        let nameW = max(0, nameRight - 8 - nx)
+        name.frame = NSRect(x: nx, y: (h - 16) / 2, width: nameW, height: 16)
+        // Middle truncation earns its keep only with room for both ends; below that keep the head.
+        name.lineBreakMode = nameW >= 64 ? .byTruncatingMiddle : .byTruncatingTail
+    }
+}
+
+/// Test-binary-only switch: lets CI run the SAME binary with the poison repaint disabled, to show the poison checks fail without it.
+/// In the shipped build this is constant true.
+private enum PoisonReloadSwitch {
+    static var enabled: Bool {
+        #if SPZ_CI_TESTS
+        return ProcessInfo.processInfo.environment["SPZ_CI_DISABLE_POISON_RELOAD"] == nil
+        #else
+        return true
+        #endif
+    }
+}
+
+#if SPZ_CI_TESTS
+/// Test-binary-only counters for the selection diagnostic. Not compiled into the shipped build.
+enum SelDiag {
+    static var body = 0, bodySel: UInt32? = nil, update = 0, updateSel: UInt32? = nil
+    static func noteBody(_ s: UInt32?) { body += 1; bodySel = s }
+    static var summary: String { "bodyEvals=\(body) lastBodySelected=\(String(describing: bodySel)) updateNSViewCalls=\(update) lastUpdateSelected=\(String(describing: updateSel))" }
+}
+#endif
+
+/// Test-binary-only switch: the same CI binary can run with the selection revision input frozen, to measure the no-remedy baseline. Shipped build: passthrough.
+private enum SelectionRevisionSwitch {
+    static func value(_ r: Int) -> Int {
+        #if SPZ_CI_TESTS
+        return ProcessInfo.processInfo.environment["SPZ_CI_DISABLE_SELECTION_REVISION"] == nil ? r : 0
+        #else
+        return r
+        #endif
     }
 }
 
@@ -303,6 +350,8 @@ private struct OutlineTable: NSViewRepresentable {
     let total: UInt64
     let revision: Int
     let selected: UInt32?
+    let selectionRevision: Int   // only part of the diffed value; updateNSView does not read it
+    let poisoned: Bool   // a latched engine panic must repaint visible cells, not wait for the next row publication
 
     func makeCoordinator() -> Coordinator { Coordinator(model) }
 
@@ -315,7 +364,7 @@ private struct OutlineTable: NSViewRepresentable {
         table.rowHeight = OutlineView.rowHeight
         table.style = .inset
         table.usesAutomaticRowHeights = false
-        table.allowsMultipleSelection = false
+        table.allowsMultipleSelection = true   // batch-removal epic slice 3: cmd toggles, shift ranges; clicks fold into the model via OutlineSelectionSync
         table.allowsEmptySelection = true
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         table.dataSource = context.coordinator
@@ -344,12 +393,17 @@ private struct OutlineTable: NSViewRepresentable {
         InteractionTrace.record("outline-update-enter")
         defer { InteractionTrace.record("outline-update-exit") }
         let c = context.coordinator
+        #if SPZ_CI_TESTS
+        SelDiag.update += 1; SelDiag.updateSel = selected
+        #endif
         c.tree = tree
         model.outlineKeyView = c.table
         model.connectOutlineFocusLoop()
         c.total = total
-        if c.shownRevision != revision {
+        let poisonReload: Bool = PoisonReloadSwitch.enabled && c.shownPoisoned != poisoned
+        if c.shownRevision != revision || poisonReload {
             c.shownRevision = revision
+            c.shownPoisoned = poisoned
             let tReload = Perf.now()
             c.table?.reloadData()
             Perf.timingLog("outline-reloadData rows=\(model.outlineRows.count) reload_ms=\(Perf.ms(since: tReload)) at_ns=\(tReload)")
@@ -371,42 +425,57 @@ private struct OutlineTable: NSViewRepresentable {
         var tree: Tree?
         var total: UInt64 = 1
         var shownRevision = -1
+        var shownPoisoned = false
         private var suppress = false
+        #if SPZ_CI_TESTS
+        /// Test-binary-only counters, read back through the table's accessibility help by the mounted-outline check.
+        var syncCalls = 0, delegateCalls = 0, lastSync = "none", lastCallback = "none"
+        func publishDiag() { table?.setAccessibilityHelp("syncCalls=\(syncCalls) delegateCalls=\(delegateCalls) suppress=\(suppress) last=\(lastSync) cb=\(lastCallback)") }
+        #endif
         init(_ m: AppModel) { model = m }
 
         func numberOfRows(in tableView: NSTableView) -> Int { model.outlineRows.count }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-            guard let tree, row < model.outlineRows.count else { return nil }
+            guard let tree, row < model.outlineRows.count, row < model.outlineInfos.count, row < model.outlineShown.count else { return nil }
             let id = NSUserInterfaceItemIdentifier("cell")
             let cell = (tableView.makeView(withIdentifier: id, owner: nil) as? OutlineCell) ?? { let c = OutlineCell(frame: .zero); c.identifier = id; return c }()
             let r = model.outlineRows[row]
-            let info = tree.info(r.node)
-            let shown = model.activeFilter?.size(r.node) ?? info.size
+            let info = model.outlineInfos[row]   // published with the rows, never read live from the engine
+            let shown = row < model.outlineShown.count ? model.outlineShown[row] : info.size   // same snapshot as the row, no live filter read
             let isDir = info.kind == .directory
             let expanded = model.expanded.contains(r.node)
+            // A caught engine panic: every number derived from the engine is untrustworthy, so show none (no size, count, bar, chevron).
+            let poisoned = model.enginePoisoned
             cell.depth = Int(r.depth)
-            cell.hasChildren = isDir && info.childCount > 0
+            cell.hasChildren = !poisoned && isDir && info.childCount > 0
             cell.chevron.image = NSImage(systemSymbolName: expanded ? "chevron.down" : "chevron.right", accessibilityDescription: expanded ? "Collapse" : "Expand")?
                 .withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
             cell.icon.image = NSImage(systemSymbolName: Self.icon(info), accessibilityDescription: nil)
             cell.icon.contentTintColor = isDir ? .controlAccentColor : .secondaryLabelColor
-            let nm = tree.name(r.node)
+            // A caught engine panic makes the legacy name/path reads untrustworthy (they fall back to blank): show it, not a blank.
+            let nm = poisoned ? "Unavailable" : tree.name(r.node)
             cell.name.stringValue = nm
-            let path = tree.path(r.node)
+            let path = poisoned ? "" : tree.path(r.node)
             cell.name.toolTip = path
             cell.toolTip = path
             cell.contrastOverride = Perf.on ? model.demoIncreaseContrast : nil
-            cell.size.stringValue = formatBytes(shown)
-            cell.count.stringValue = isDir ? "\(info.childCount.formatted()) item\(info.childCount == 1 ? "" : "s")" : ""
-            cell.bar.fraction = Double(shown) / Double(max(1, total))
+            cell.size.stringValue = poisoned ? "\u{2014}" : formatBytes(shown)
+            // Shown "V of T items" only when a filter hides some children (same snapshot as the rows); T is the structural live count that also drives the chevron.
+            let visibleKids: Int = info.visibleChildren ?? info.childCount
+            let countText: String = visibleKids == info.childCount ? "\(info.childCount.formatted()) item\(info.childCount == 1 ? "" : "s")"
+                                                                   : "\(visibleKids.formatted()) of \(info.childCount.formatted()) item\(info.childCount == 1 ? "" : "s")"
+            cell.count.stringValue = (!poisoned && isDir) ? countText : ""
+            cell.bar.fraction = poisoned ? 0 : Double(shown) / Double(max(1, total))
+            cell.barSuppressed = poisoned
+            cell.bar.isHidden = poisoned
             let node = r.node
             cell.onToggle = { [weak self] in self?.model.toggle(node) }
             cell.chevron.setAccessibilityLabel("\(expanded ? "Collapse" : "Expand") \(nm)")
             cell.chevron.setAccessibilityHelp("Show or hide this folder's children")
             cell.bar.setAccessibilityElement(false)
             cell.icon.setAccessibilityElement(false)
-            cell.setAccessibilityLabel("\(nm), \(isDir ? "folder" : "item"), \(formatBytes(shown))\(isDir ? ", \(info.childCount) items" : "")")
+            cell.setAccessibilityLabel(poisoned ? "Unavailable, engine error, rescan needed" : "\(nm), \(isDir ? "folder" : "item"), \(formatBytes(shown))\(isDir ? (visibleKids == info.childCount ? ", \(info.childCount) items" : ", \(visibleKids) of \(info.childCount) items match filter") : "")")
             cell.setAccessibilityValue(cell.hasChildren ? (expanded ? "expanded" : "collapsed") : nil)
             cell.needsLayout = true
             return cell
@@ -424,37 +493,90 @@ private struct OutlineTable: NSViewRepresentable {
         func tableViewSelectionDidChange(_ notification: Notification) {
             InteractionTrace.record("native-selection-callback-enter")
             defer { InteractionTrace.record("native-selection-callback-exit") }
+            #if SPZ_CI_TESTS
+            delegateCalls += 1
+            lastCallback = "selIdxAtEntry=\(table.map { Array($0.selectedRowIndexes).sorted() } ?? []) suppressAtEntry=\(suppress)"
+            publishDiag()
+            #endif
             guard !suppress, let t = table else { return }
-            let r = t.selectedRow
-            let node: UInt32? = r >= 0 && r < model.outlineRows.count ? model.outlineRows[r].node : nil
-            if model.selected != node { InteractionTrace.record("model-selection-assign-begin"); model.selected = node; InteractionTrace.record("model-selection-assign-end") }
+            let rows: [UInt32] = t.selectedRowIndexes.compactMap { $0 >= 0 && $0 < model.outlineRows.count ? model.outlineRows[$0].node : nil }
+            let r = OutlineSelectionSync.reconcile(previous: model.selectedSet, current: rows, previousFocus: model.selected)
+            InteractionTrace.record("model-selection-assign-begin")
+            if model.selectedSet != r.set { model.selectedSet = r.set }
+            if model.selected != r.focus { model.selected = r.focus }
+            InteractionTrace.record("model-selection-assign-end")
         }
 
-        /// Model -> table. O(1): dictionary lookup, then AppKit scrolls straight to the row.
+        /// Model -> table. O(set size): dictionary lookups, then AppKit scrolls straight to the focus row.
+        /// The SelDiag string keeps its exact single-selection format (focus node + focus row) so the
+        /// mounted-outline check's parsing is unchanged.
         func syncSelection(_ node: UInt32?) {
             guard let t = table else { return }
             let idx = node.flatMap { model.outlineIndex[$0] }
-            if let idx {
-                if t.selectedRow != idx {
+            #if SPZ_CI_TESTS
+            syncCalls += 1
+            var branch = "noop"
+            let selIdxBefore = Array(t.selectedRowIndexes).sorted()
+            lastSync = "node=\(String(describing: node)) idx=\(String(describing: idx)) selectedRowBefore=\(t.selectedRow)"
+            defer { lastSync += " after=\(t.selectedRow) selIdx=\(selIdxBefore)->\(Array(t.selectedRowIndexes).sorted()) branch=\(branch) rows=\(t.numberOfRows)/\(model.outlineRows.count) tid=\(ObjectIdentifier(t).hashValue)"; publishDiag() }
+            #endif
+            let target = OutlineSelectionSync.syncTarget(set: model.selectedSet, focusRow: idx, rowIndex: model.outlineIndex)   // focus may sit outside the set during transitions
+            if !target.isEmpty {
+                let focusRowChanged = idx != nil && t.selectedRow != idx
+                if t.selectedRowIndexes != target {
                     suppress = true
-                    t.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
+                    t.selectRowIndexes(target, byExtendingSelection: false)
                     suppress = false
-                    t.scrollRowToVisible(idx)
+                    #if SPZ_CI_TESTS
+                    branch = "select"
+                    #endif
+                    if let idx { t.scrollRowToVisible(idx) }
+                } else if focusRowChanged, let idx {
+                    #if SPZ_CI_TESTS
+                    branch = "scroll"
+                    #endif
+                    t.scrollRowToVisible(idx)   // same set, focus moved within it (e.g. reconcile after removal)
                 }
             } else if t.selectedRow >= 0 {
                 suppress = true; t.deselectAll(nil); suppress = false
+                #if SPZ_CI_TESTS
+                branch = "deselect"
+                #endif
             }
         }
 
         func key(_ code: UInt16) -> Bool {
-            guard let tree, let s = model.selected else { return false }
-            let info = tree.info(s)
+            // Node kind and child count come from the published outline snapshot (same capture as the rows), not a live read.
+            guard !model.navigationBlocked, let s = model.selected, let idx = model.outlineIndex[s], idx < model.outlineInfos.count else { return false }
+            let info = model.outlineInfos[idx]
             let isDir = info.kind == .directory && info.childCount > 0
             switch code {
             case 124: if isDir && !model.expanded.contains(s) { model.toggle(s) }; return isDir      // right
             case 123: if isDir && model.expanded.contains(s) { model.toggle(s) }; return isDir       // left
             case 36, 76: model.drill(into: s); return true                                           // return, enter
+            case 49: return model.previewSelection()                                                 // space: Quick Look
             default: return false
+            }
+        }
+
+        /// Path is only trustworthy while the row's node belongs to the model's current tree. Read only; never touches the disk.
+        func copyPathDecision(_ node: UInt32) -> CopyPathPolicy.Decision {
+            let live: String? = {
+                guard let t = tree, model.tree === t, UInt64(node) < t.nodeCount else { return nil }
+                return t.path(node)
+            }()
+            return CopyPathPolicy.decide(path: live, enginePoisoned: model.enginePoisoned)
+        }
+        /// Decides again at click time; a refusal never touches the clipboard (same policy as the selection bar).
+        func copyScannedPath(_ node: UInt32) {
+            let live: String? = {
+                guard let t = tree, model.tree === t, UInt64(node) < t.nodeCount else { return nil }
+                return t.path(node)
+            }()
+            CopyPathPolicy.perform(path: live, enginePoisoned: model.enginePoisoned) { p in
+                let pb = NSPasteboard.general
+                pb.clearContents()
+                pb.setString(p, forType: .string)
             }
         }
 
@@ -469,7 +591,14 @@ private struct OutlineTable: NSViewRepresentable {
             let m = NSMenu()
             let a = BlockItem(title: "Show in Finder") { [weak self] in self?.model.reveal(node) }
             let b = BlockItem(title: "Move to Trash…") { [weak self] in self?.model.proposeRemoval(of: node) }
-            m.addItem(a); m.addItem(b)
+            let c = BlockItem(title: "Check on disk") { [weak self] in self?.model.proposeReview(of: node) }
+            let cp = BlockItem(title: "Copy Scanned Path") { [weak self] in self?.copyScannedPath(node) }
+            if copyPathDecision(node).isRefused { cp.isEnabled = false }
+            m.addItem(a); m.addItem(cp); m.addItem(c); m.addItem(b)
+            if model.selectedSet.count >= 2 && model.selectedSet.contains(node) {
+                let d = BlockItem(title: "Move \(model.batchCandidateIDs.count) Selected to Trash…") { [weak self] in self?.model.proposeBatchRemoval() }
+                m.addItem(d)
+            }
             return m
         }
     }
@@ -562,6 +691,18 @@ struct ShareBar: View {
         guard let table, let window = table.window, !window.isKeyWindow, table.selectedRow >= 0,
               let cell = table.view(atColumn: 0, row: table.selectedRow, makeIfNecessary: false) as? OutlineCell else { return false }
         return cell.backgroundStyle != .emphasized && cell.count.textColor == .labelColor
+    }
+    /// Every visible named row keeps at least 48pt for its name: below that AppKit middle-truncation renders a bare ellipsis.
+    static var nameWidthsAboveBudget: Bool {
+        guard let table else { return false }
+        let range = table.rows(in: table.visibleRect)
+        guard range.location != NSNotFound else { return false }
+        let cells = (range.location..<min(table.numberOfRows, NSMaxRange(range))).compactMap {
+            table.view(atColumn: 0, row: $0, makeIfNecessary: false) as? OutlineCell
+        }.filter { !$0.name.stringValue.isEmpty }
+        guard !cells.isEmpty else { return false }
+        cells.forEach { $0.layoutSubtreeIfNeeded() }
+        return cells.allSatisfy { $0.name.frame.width >= 48 }
     }
     static var hasVisibleDeepRow: Bool {
         guard let table else { return false }

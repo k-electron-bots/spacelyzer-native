@@ -3,7 +3,7 @@
 # or if any package comes from somewhere other than the crates.io registry.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-allowed="crossbeam-deque crossbeam-epoch crossbeam-utils either libc rayon rayon-core spacelyzer-engine"
+allowed="arc-swap crossbeam-deque crossbeam-epoch crossbeam-utils either libc rayon rayon-core rustversion spacelyzer-engine"
 lock=Cargo.lock
 bad=0
 for n in $(awk '/^name = /{gsub(/"/,"",$3); print $3}' "$lock"); do

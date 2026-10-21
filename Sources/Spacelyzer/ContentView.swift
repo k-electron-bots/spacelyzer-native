@@ -7,6 +7,12 @@ struct ContentView: View {
     @Environment(\.demoReduceMotion) private var demoReduceMotion
     private var reduceMotion: Bool { demoReduceMotion ?? systemReduceMotion }
 
+    // Windows opened from the toolbar below; the states live on this view so the buttons
+    // and their sheets stay in one struct.
+    @State private var showExclusions = false
+    @State private var showDuplicates = false
+    @State private var showRemovalHistory = false
+
     var body: some View {
         @Bindable var model = model
         Group {
@@ -16,7 +22,7 @@ struct ContentView: View {
                 NavigationSplitView {
                     OutlineView()
                         .safeAreaInset(edge: .top, spacing: 0) { FilterBar() }
-                        .navigationSplitViewColumnWidth(min: 280, ideal: 340, max: 700)
+                        .navigationSplitViewColumnWidth(min: 300, ideal: 380, max: 700)
                         .padding(.bottom, StatusBar.height)
                 } detail: {
                     TrailingPane()
@@ -29,6 +35,7 @@ struct ContentView: View {
             }
         }
         .transaction { if reduceMotion { $0.animation = nil } }
+        .safeAreaInset(edge: .top, spacing: 0) { FullDiskAccessBanner() }
         .safeAreaInset(edge: .bottom, spacing: 0) { StatusBar() }
         .toolbar {
             ToolbarItemGroup {
@@ -39,17 +46,47 @@ struct ContentView: View {
                     Button("Choose Folder…") { model.chooseFolder() }
                     Button("Startup Disk") { model.scanStartupVolume() }
                     Button("Home Folder") { model.scanHome() }
+                    Button("Exclusions…") { showExclusions = true }
+                    Button("Duplicates…") { showDuplicates = true }
+                        .disabled(model.tree == nil)
                 } label: { Label("Scan", systemImage: "externaldrive") }
                 if model.scanning {
                     Button { model.cancel() } label: { Label("Stop", systemImage: "stop.circle") }
                         .accessibilityLabel("Stop scan").help("Stop the current scan")
                 }
             }
+            ToolbarItem {
+                Button { model.exportLargestCSV() } label: { Label("Export CSV", systemImage: "square.and.arrow.up") }
+                    .disabled(model.tab != .largest || model.largestExportBlockedReason != nil)
+                    .help(model.tab != .largest ? "Open the Largest tab to export its list as CSV" : (model.largestExportBlockedReason ?? "Export the Largest list as CSV (read only, as the scan recorded it)"))
+                    .accessibilityLabel("Export the Largest list as CSV")
+            }
+            ToolbarItem {
+                Button { if let s = model.selected { model.proposeReview(of: s) } } label: { Label("Check on disk", systemImage: "doc.text.magnifyingglass") }
+                    .disabled(model.selected == nil || model.selected == 0 || model.tree == nil)
+                    .help("Compare the selected item with what the scan recorded (read only)")
+                    .accessibilityLabel("Check the selected item on disk")
+                    .popover(isPresented: Binding(get: { model.reviewItem != nil }, set: { if !$0 { model.reviewItem = nil } })) {
+                        if let id = model.reviewItem, let t = model.tree {
+                            ItemReviewPopover(model: model, tree: t, id: id, dismiss: { model.reviewItem = nil })
+                        }
+                    }
+            }
+            ToolbarItem {
+                Button { showRemovalHistory = true } label: { Label("Removed", systemImage: "arrow.uturn.backward.circle") }
+                    .disabled(model.lastRemoved.isEmpty)
+                    .help("Items moved to the Trash this session, each with its own Put Back")
+                    .accessibilityLabel("Removal history")
+                    .popover(isPresented: $showRemovalHistory) {
+                        RemovalHistoryPopover(model: model)
+                    }
+            }
             ToolbarItem(placement: .principal) {
                 Picker("View", selection: $model.tab) {
                     Text("Treemap").tag(TrailingTab.treemap)
                     Text("Kinds").tag(TrailingTab.kinds)
                     Text("Largest").tag(TrailingTab.largest)
+                    Text("Folders").tag(TrailingTab.folders)
                 }.pickerStyle(.segmented)
             }
         }
@@ -58,13 +95,36 @@ struct ContentView: View {
             Button("Cancel", role: .cancel) { model.pendingRemoval = nil }
         } message: {
             if let id = model.pendingRemoval, let t = model.tree {
-                Text("\(t.path(id))\n\(formatBytes(t.info(id).size)). You can put it back right after.")
+                if let snap = model.nodeSnapshot(id) {
+                    Text("\(snap.path)\n\(formatBytes(snap.info.size)). You can put it back right after.")
+                } else {
+                    Text("\(t.path(id))\nThe size is updating. You can put it back right after.")
+                }
             }
         }
-        .alert("Spacelyzer", isPresented: Binding(get: { model.removalMessage != nil }, set: { if !$0 { model.removalMessage = nil } })) {
-            if !model.lastRemoved.isEmpty { Button("Undo") { model.undoRemoval() } }
+        .alert("Move items to Trash?", isPresented: Binding(get: { model.pendingBatchRemoval != nil }, set: { if !$0 { model.pendingBatchRemoval = nil } })) {
+            Button("Move \(model.pendingBatchRemoval?.items.count ?? 0) items to Trash", role: .destructive) { model.confirmBatchRemoval() }
+            Button("Cancel", role: .cancel) { model.pendingBatchRemoval = nil }
+        } message: {
+            if let b = model.pendingBatchRemoval { Text(batchRemovalAlertText(b)) }
+        }
+        .alert(model.removalAlertTitle, isPresented: Binding(get: { model.removalMessage != nil }, set: { if !$0 { model.removalMessage = nil } })) {
+            // OK is the default (Return) and cancels (Escape): after a removal the expected next action
+            // is to dismiss. Undo stays a plain secondary button with no keyboard shortcut.
+            if let n = model.lastBatchCount, n >= 2, model.lastRemoved.count >= n { Button("Undo \(n) items") { model.undoBatchRemoval() } } else if !model.lastRemoved.isEmpty { Button("Undo") { model.undoRemoval() } }
             Button("OK", role: .cancel) {}
+                .keyboardShortcut(.defaultAction)
         } message: { Text(model.removalMessage ?? "") }
+        .alert("Export", isPresented: Binding(get: { model.exportMessage != nil }, set: { if !$0 { model.exportMessage = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(model.exportMessage ?? "") }
+        .sheet(isPresented: $showExclusions) {
+            ExclusionsView(exclusions: $model.exclusions, tree: model.tree)
+        }
+        .sheet(isPresented: $showDuplicates) {
+            // Captured at presentation: the review reads one frozen pass from this tree.
+            if let t = model.tree { DuplicatesReviewView(tree: t) }
+        }
         .background(GeometryReader { geometry in
             Color.clear.onChange(of: geometry.size, initial: true) { _, size in
                 if Perf.on { DemoRootLayout.size = size }
@@ -77,8 +137,8 @@ struct WelcomeView: View {
     @Environment(AppModel.self) private var model
     var body: some View {
         VStack(spacing: 14) {
-            Image(systemName: "chart.pie").font(.system(size: 54)).foregroundStyle(.secondary)
-            Text("See what is using your disk").font(.title2.bold())
+            Image(systemName: "square.grid.2x2").font(.system(size: 54)).foregroundStyle(.secondary)
+            Text("See what's using your disk").font(.title2.bold())
             Text("Everything stays on this Mac. Spacelyzer has no networking code.")
                 .foregroundStyle(.secondary)
             HStack {
@@ -86,7 +146,7 @@ struct WelcomeView: View {
                 Button("Scan Home Folder") { model.scanHome() }
                 Button("Choose Folder…") { model.chooseFolder() }
             }
-            Text("Full Disk Access may improve access after relaunch; some protected locations remain unreadable.")
+            Text("Full Disk Access can include more protected locations after a relaunch. Some stay unreadable.")
                 .font(.caption).foregroundStyle(.tertiary)
             if let e = model.error { Text(e).foregroundStyle(.red) }
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -98,6 +158,7 @@ struct StatusBar: View {
     /// Measured on CI: NavigationSplitView columns extend to the window bottom (frame bottom = 612 = window height), under this bar.
     static let height: CGFloat = 26
     @Environment(AppModel.self) private var model
+    @State private var showSkipped = false
     private var unreadable: Int { Perf.on ? (model.demoFooterUnreadable ?? model.tree?.skippedCount ?? 0) : (model.tree?.skippedCount ?? 0) }
     private var partial: Bool { Perf.on ? (model.demoFooterPartial ?? model.tree?.wasCancelled ?? false) : (model.tree?.wasCancelled ?? false) }
     var body: some View {
@@ -111,11 +172,32 @@ struct StatusBar: View {
                 summary(compact: true).fixedSize(horizontal: true, vertical: false)
             }
             .accessibilityElement(children: .combine)
-            .help(fullDetails).accessibilityLabel(fullDetails)
+            // The details announce once, from the invisible carrier below; this group gets a short label.
+            .help(fullDetails).accessibilityLabel("Scan summary")
+            // One authored action for VoiceOver. The raw button below is accessibility-hidden: combined
+            // into this element it surfaced as a generated custom action whose name leaked a debug
+            // description, which is what VoiceOver read aloud (run 38993434887). DemoAX and the copy
+            // gate pin this authored name.
+            .accessibilityAction(named: "Show locations not scanned") { showSkipped = true }
+            // External footer gate carrier: the combined summary bridges as AXButton, a role the client
+            // contract excludes. A bare Text outside the merged node (this background is applied after
+            // .combine) bridges accessibilityLabel into AXValue and .help into AXHelp (run 37971834595
+            // client log: the "Scanned folder: ..." rootPath node, index 5, carries both in this same
+            // bar), so the exact details land as AXHelp+AXValue on one AXStaticText node. Its frame
+            // matches the summary area, which already shows the fullDetails tooltip. opacity(0) drops
+            // the carrier from the AX tree entirely (run 37971834595 client log: no carrier node,
+            // visited=6 unchanged), so it uses a clear foreground instead, intended to keep the AX
+            // node while painting nothing.
+            .background(Text(fullDetails).accessibilityLabel(fullDetails).help(fullDetails).foregroundStyle(.clear))
             .layoutPriority(1)
         }
         .font(.caption).lineLimit(1).padding(.horizontal, 10)
         .frame(height: Self.height).background(.bar)
+        .sheet(isPresented: $showSkipped) {
+            // Captured at presentation: the skipped list is fixed when the scan ends, so
+            // this tree's list stays consistent even if a newer scan starts underneath.
+            if let t = model.tree { SkippedListView(tree: t) }
+        }
         .onAppear { if Perf.on { demoDetailsCaptured?(fullDetails) } }
     }
     @ViewBuilder private func summary(compact: Bool) -> some View {
@@ -123,19 +205,26 @@ struct StatusBar: View {
             if model.scanning {
                 Text("Scanning · \(itemCount(model.progress.items)) · \(formatBytes(model.progress.bytes))")
             } else if let t = model.tree {
-                Text("\(formatBytes(t.info(0).size)) in \(itemCount(UInt64(t.nodeCount - 1)))")
+                Text("\((model.publishedTotalBytes.map(formatBytes) ?? "…")) in \(itemCount(UInt64(t.nodeCount - 1)))")
                 if partial { Text(compact ? "Partial" : "Stopped early, partial").foregroundStyle(.orange) }
                 if let f = model.activeFilter {
                     Text("Filter: \(formatBytes(f.totalBytes)) · \(fileCount(UInt64(f.totalCount)))").foregroundStyle(.blue)
                 }
                 if unreadable > 0 {
-                    Text("\(locationCount(unreadable)) \(compact ? "unreadable" : "not readable")").foregroundStyle(.orange)
+                    Button("\(locationCount(unreadable)) \(compact ? "unreadable" : "not readable")") { showSkipped = true }
+                        .buttonStyle(.plain).foregroundStyle(.orange)
+                        .underline()
+                        .help("Show the locations that were not scanned")
+                        // Sighted users keep the real button; VoiceOver gets the authored action on the
+                        // combined element above, never this button's generated action name.
+                        .accessibilityHidden(true)
                 }
+                VolumeHeaderView(rootPath: model.rootPath)
             }
             if !compact {
                 if model.scanning { Text("\(String(format: "%.1f", model.elapsed))s").foregroundStyle(.secondary) }
                 else if let elapsed = model.lastScanSeconds { Text("Scanned in \(String(format: "%.2f", elapsed))s").foregroundStyle(.secondary) }
-                if model.activeFilter != nil { Text("Filter \(String(format: "%.1f", model.filterMillis))ms").foregroundStyle(.secondary) }
+                if Perf.on, model.activeFilter != nil { Text("Filter \(String(format: "%.1f", model.filterMillis))ms").foregroundStyle(.secondary) }
             }
         }
     }
@@ -144,10 +233,10 @@ struct StatusBar: View {
         if model.scanning {
             parts.append("Scanning: \(itemCount(model.progress.items)), \(formatBytes(model.progress.bytes)), \(String(format: "%.1f", model.elapsed)) seconds")
         } else if let t = model.tree {
-            parts.append("\(formatBytes(t.info(0).size)) in \(itemCount(UInt64(t.nodeCount - 1)))")
+            parts.append("\((model.publishedTotalBytes.map(formatBytes) ?? "…")) in \(itemCount(UInt64(t.nodeCount - 1)))")
             if partial { parts.append("Stopped early, partial accounting") }
             if let elapsed = model.lastScanSeconds { parts.append("Scanned in \(String(format: "%.2f", elapsed)) seconds") }
-            if let f = model.activeFilter { parts.append("Filter: \(formatBytes(f.totalBytes)), \(fileCount(UInt64(f.totalCount))), \(String(format: "%.1f", model.filterMillis)) milliseconds") }
+            if let f = model.activeFilter { parts.append("Filter: \(formatBytes(f.totalBytes)), \(fileCount(UInt64(f.totalCount)))" + (Perf.on ? ", \(String(format: "%.1f", model.filterMillis)) milliseconds" : "")) }
             if unreadable > 0 { parts.append("\(locationCount(unreadable)) not readable") }
         }
         return parts.joined(separator: "\n")
@@ -183,7 +272,7 @@ struct FilterBar: View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
             NameFilterField(model: model)
-            TextField("ext", text: $model.filterExt).textFieldStyle(.plain).frame(width: 38)
+            TextField("extension", text: $model.filterExt).textFieldStyle(.roundedBorder).frame(width: 70)
                 .help("File extension, for example pdf or mp4")
                 .accessibilityLabel("Extension filter")
             if !model.filterText.isEmpty {
@@ -344,4 +433,17 @@ private struct NameFilterField: NSViewRepresentable {
 private final class AttachedNameField: NSTextField {
     var onAttachment: (() -> Void)?
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); onAttachment?() }
+}
+
+/// Confirmation body for a proposed batch: the approved paths (first dozen, then a count), the
+/// refused ones with their reasons, and the undo note. Facts only; nothing moves until confirmed.
+private func batchRemovalAlertText(_ b: AppModel.PendingBatchRemoval) -> String {
+    var paths = b.items.prefix(12).map { $0.path }
+    if b.items.count > 12 { paths.append("… and \(b.items.count - 12) more") }
+    var text = paths.joined(separator: "\n")
+    if !b.refused.isEmpty {
+        text += "\n\nNot included: " + b.refused.prefix(3).map { "\($0.path) (\($0.reason))" }.joined(separator: "; ")
+        if b.refused.count > 3 { text += "; …" }
+    }
+    return text + "\n\nYou can put items back right after."
 }

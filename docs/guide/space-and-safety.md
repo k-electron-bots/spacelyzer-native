@@ -4,11 +4,19 @@
 Sizes are allocated bytes, rounded by filesystem blocks, rather than logical file lengths. Hard-linked files count once. Unreadable locations and canceled/partial scans limit coverage. Totals are not yet a full volume-accounting model: purgeable space, APFS snapshots and clone accounting remain open work.
 
 ## Combine filters
-Name, extension, kind, minimum/maximum size and modified-date windows combine across outline, treemap, Kinds and Largest. The branch-only Folders list is explicitly unfiltered; do not use a name filter as evidence that a folder total contains only matching files. Clear all filters resets them. The footer reports matching counts and bytes. A selected item can remain selected after it falls outside the filter, but cannot be removed in that state.
+Name, extension, kind, minimum/maximum size and modified-date windows combine across outline, treemap, Kinds and Largest. Clear all filters resets them. The footer reports matching counts and bytes. A selected item can remain selected after it falls outside the filter, but cannot be removed in that state.
 
 Zero-byte matching files are still matches. They remain in count-based lists even when there is no treemap area to draw.
+
+## Review before removing
+Check on disk shows an item as it is right now: preview, full path and size, refreshed from the filesystem rather than from the scan. The results can change between the scan and the review; the review says so when they do.
 
 ## Move to Trash
 Review the full-path confirmation. Protected paths, selections outside the filter and selections awaiting a filter result are refused. Undo is available for removal. Do not treat this as permission to remove an unfamiliar system file.
 
-Batch removal and removal history remain roadmap work. Read-only item details exist on the feature branch, not as a newly verified release: see [Check on disk, Folders and CSV](branch-features.md). Checking identity now does not make a later removal safe. The [verification page](../verification/README.md) separates mocked policy checks, a narrow disposable CI remove/undo pass, and still-open real-hardware/failure behavior.
+Batch removal moves several reviewed items in one pass, with one undo for the batch. The removal history lists everything removed this session, newest first, each with its own Put Back. A restore returns the item to its original location; rescan to refresh the numbers afterward.
+
+The [verification page](../verification/README.md) separates mocked policy checks, a narrow disposable CI remove/undo pass, and still-open real-hardware/failure behavior. Batch removal, removal history and the on-disk review are built and awaiting the same Mac verification.
+
+## Export the Largest list
+On the Largest tab, **Export CSV** saves the list as it was recorded at scan time to a file you choose. It reads nothing from the disk and changes no file other than that one. Columns are rank, size in bytes, path and a note. A path that cannot be written exactly (a name macOS stored in a form the scan could not represent) or that starts with a spreadsheet formula character is left blank with a note, never altered. The file is UTF-8 without a byte order mark; Excel may misread non-ASCII names when it opens the file directly, so import it with UTF-8 selected. The button is unavailable while the list is updating, out of date or empty, and nothing is written if the results change while the save panel is open. Export is built but not yet compiled or run on a Mac, and has not been tried in Excel.

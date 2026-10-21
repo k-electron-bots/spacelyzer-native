@@ -3,14 +3,18 @@
 //! this crate through the C ABI in `ffi`.
 
 pub mod category;
+pub mod dupes;
 pub mod events;
 pub mod filter;
+pub mod inspect;
 pub mod outline;
 pub mod ffi;
 pub mod layout;
 pub mod preview;
 pub mod scan;
 pub mod tree;
+pub mod verify_diff;
+pub mod volume;
 
 pub use category::Category;
 pub use filter::{apply as apply_filter, Filter, FilterResult};
@@ -21,5 +25,7 @@ pub use preview::{drive, DriveOutcome, PreviewDriver, Publication};
 pub use scan::{scan, scan_with_events, ScanOptions, ScanProgress};
 pub use tree::{Kind, NodeId, Tree};
 
+#[cfg(any(target_os = "macos", test))]
+pub(crate) mod bulk_record;
 #[cfg(target_os = "macos")]
 pub(crate) mod scan_macos;

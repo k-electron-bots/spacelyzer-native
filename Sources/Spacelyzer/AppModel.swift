@@ -8,9 +8,10 @@ enum TreemapColoring: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-enum TrailingTab: Hashable { case treemap, kinds, largest }
+enum TrailingTab: Hashable { case treemap, kinds, largest, folders }
 
-struct RemovedItem { var original: URL; var trashed: URL; var size: UInt64 }
+/// One journaled removal. The id keys per-item restore from the removal history; a restored record is forgotten.
+struct RemovedItem: Identifiable { var id = UUID(); var original: URL; var trashed: URL; var size: UInt64 }
 
 @MainActor @Observable
 final class AppModel {
@@ -78,7 +79,95 @@ final class AppModel {
     var error: String?
 
     var displayedRoot: UInt32 = 0
-    var selected: UInt32?
+    /// Bumped on every real selection change (table or model). It is an input of the outline table so SwiftUI cannot skip a table sync when
+    /// coalesced changes end on the value last rendered while the table sits elsewhere. A hypothesis-driven remedy, see the CI selection variant.
+    var selectionRevision = 0
+    var selected: UInt32? { didSet {
+        if selected != oldValue { selectionRevision &+= 1; retryDone("node") }
+        // A focus set from outside the multi-selection (treemap click, drill) replaces it: the set must contain its focus.
+        if let s = selected, !selectedSet.isEmpty, !selectedSet.contains(s) { selectedSet = [s] }
+    } }   // a retry for the old selection must not outlive it
+
+    /// Ordered multi-selection for batch operations (batch-removal epic, slice 2). `selected` stays the
+    /// focus item and drives every existing single-selection behavior; `selectedSet` is the batch input.
+    /// Invariant: a non-empty set contains the focus. View wiring (NSTableView multiple selection) is a
+    /// later slice; nothing existing calls these yet.
+    var selectedSet: [UInt32] = [] { didSet { if selectedSet != oldValue { selectionRevision &+= 1 } } }
+
+    /// Plain click: one item, focused; any multi-selection collapses.
+    func selectOnly(_ id: UInt32) {
+        if selected != id { selected = id }
+        if selectedSet != [id] { selectedSet = [id] }
+    }
+
+    /// Cmd-click: toggles membership. Adding focuses the new member; removing the focused member moves
+    /// focus to the last remaining member in outline row order, or nil when the set empties.
+    func selectToggle(_ id: UInt32) {
+        if let at = selectedSet.firstIndex(of: id) {
+            selectedSet.remove(at: at)
+            let focus = selectedSet.last
+            if selected != focus { selected = focus }
+        } else {
+            selectedSet.append(id)
+            if selected != id { selected = id }
+        }
+        normalizeSelectionOrder()
+    }
+
+    /// Keeps the set in outline row order (members the index does not know keep their relative order at
+    /// the end), so the table-driven sync and the programmatic API agree on order and on which member is
+    /// "last" for focus fallback and Quick Look cycling.
+    private func normalizeSelectionOrder() {
+        // Explicit offset tiebreak: sorted(by:) is not stable, so unknown members order by entry order.
+        let ordered = selectedSet.enumerated().sorted { x, y in
+            switch (outlineIndex[x.element], outlineIndex[y.element]) {
+            case let (ia?, ib?): return ia < ib
+            case (_?, nil): return true
+            case (nil, _?): return false
+            case (nil, nil): return x.offset < y.offset
+            }
+        }.map { $0.element }
+        if ordered != selectedSet { selectedSet = ordered }
+    }
+
+    /// Shift-click: replaces the set with the outline-row slice between the anchor (the current focus,
+    /// else the clicked row itself) and the clicked row, in row order. The focus comes from the SAME
+    /// reconcile the table path uses, so the programmatic and click-driven paths agree (slice-4 fix:
+    /// an upward range used to focus the clicked row here while the table focused the last added row
+    /// in row order). A click on a row the outline index does not know leaves the selection unchanged.
+    func selectRange(to id: UInt32) {
+        guard let to = outlineIndex[id] else { return }
+        let from = selected.flatMap { outlineIndex[$0] } ?? to
+        let slice = outlineRows[min(from, to)...max(from, to)].map { $0.node }
+        let r = OutlineSelectionSync.reconcile(previous: selectedSet, current: slice, previousFocus: selected)
+        if selectedSet != r.set { selectedSet = r.set }
+        if selected != r.focus { selected = r.focus }
+    }   // slice is already in row order; reconcile keeps it so
+
+    /// Escape / new scan: empties the set and the focus.
+    func clearSelectionSet() {
+        if !selectedSet.isEmpty { selectedSet = [] }
+        if selected != nil { selected = nil }
+    }
+
+    /// Batch input: the set members still visible in the current outline. Filter-hidden members stay
+    /// selected (they reappear when the filter clears) but are never handed to a batch operation.
+    var batchCandidateIDs: [UInt32] { selectedSet.filter { outlineIndex[$0] != nil } }
+
+    /// Spacebar / batch Quick Look (slice 4; target rule fixed in slice 5): a single selection
+    /// previews exactly like the per-item Preview button (one path); a multi set previews all VISIBLE
+    /// members in row order, opening on the focus item. A non-empty but fully filter-hidden set
+    /// previews NOTHING - a hidden item is never handed to the panel. Read-only: it presents the
+    /// panel and nothing else. Returns false when there is nothing to preview.
+    @discardableResult
+    func previewSelection() -> Bool {
+        guard let tree else { return false }
+        let ids = Self.previewTargets(set: selectedSet, visibleCandidates: batchCandidateIDs, focus: selected)
+        let paths = ids.map { tree.path($0) }.filter { !$0.isEmpty }
+        let focusPath = selected.map { tree.path($0) }
+        guard let p = QuickLookController.payload(memberPaths: paths, focusPath: focusPath) else { return false }
+        return QuickLookController.show(paths: p.paths, focus: p.focus)
+    }
     var expanded: Set<UInt32> = []
     private var editorOrigin = false
     var externalFilterTextRevision: UInt64 = 0
@@ -121,7 +210,8 @@ final class AppModel {
     func clearFilters() { filterResetRevision &+= 1; filterText = ""; filterKind = nil; filterMinMB = 0; filterMaxMB = 0; filterModifiedDays = 0; filterExt = "" }
 
     /// Filtering runs in Rust off the main thread, debounced; the UI keeps the last result until the new one lands.
-    func scheduleFilter() {
+    func scheduleFilter(immediate: Bool = false) {
+        if !immediate { retryDone("filter") }
         filterTask?.cancel()
         filterGeneration &+= 1
         let generation = filterGeneration, barrier = beforePublish, completed = afterPublish
@@ -133,17 +223,47 @@ final class AppModel {
         let ext = filterExt.trimmingCharacters(in: .whitespaces)
         let active = filterIsActive
         filterTask = Task.detached(priority: .userInitiated) { [weak self] in
-            try? await Task.sleep(nanoseconds: 150_000_000)
+            if !immediate { try? await Task.sleep(nanoseconds: 150_000_000) }
             if Task.isCancelled { return }
             let t0 = DispatchTime.now().uptimeNanoseconds
-            let r = active ? tree.applyFilter(text: text, kind: kind, minBytes: minB, maxBytes: maxB, modifiedFrom: from, ext: ext) : nil
+            var r: FilterResult? = nil
+            var failure: EngineStatus? = nil
+            if active {
+                switch tree.applyFilterChecked(text: text, kind: kind, minBytes: minB, maxBytes: maxB, modifiedFrom: from, ext: ext) {
+                case .success(let f): r = f
+                case .failure(let st): failure = st
+                }
+            }
             let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
             if Task.isCancelled { return }
+            if let failure {
+                // BUSY (admission) or any other status: keep the previous result, never publish an empty one.
+                await MainActor.run { [weak self] in
+                    guard let self, self.filterGeneration == generation, self.tree === tree else { return }
+                    if failure == .busy {
+                        // Pending stays true (visible), retries are bounded and keyed; the retry re-reads the current filter inputs.
+                        self.retryBusy("filter", inputs: self.filterInputKey) { [weak self] in self?.scheduleFilter(immediate: true) }
+                    } else {
+                        self.filterPending = false
+                        self.markOutOfDate("The filter could not run (\(failure)). The list may be out of date. Rescan, or try again.")
+                    }
+                }
+                return
+            }
             let publication = UUID()
+            let rFinal = r   // frozen copy: the main-actor closure must not capture the mutable var
             await barrier?("filter", generation, publication)
-            await MainActor.run {
-                guard let self, !Task.isCancelled, self.filterGeneration == generation, self.tree === tree else { return }
-                self.activeFilter = r
+            await MainActor.run { [weak self] in
+                guard let self, !Task.isCancelled, self.filterGeneration == generation, self.tree === tree,
+                      (rFinal == nil || rFinal!.version == tree.version) else {
+                    // computed on a table that a commit has since replaced: a newer filter run is queued by that commit
+                    if let self, self.filterGeneration == generation, self.tree === tree { self.scheduleFilter(immediate: true) }
+                    return
+                }
+                if self.enginePoisoned { self.markPoisoned(); return }   // a caught panic makes this publication untrustworthy
+                self.retryDone("filter")
+                self.acceptedFilterVersions.append(rFinal?.version ?? 0); if self.acceptedFilterVersions.count > 64 { self.acceptedFilterVersions.removeFirst() }
+                self.activeFilter = rFinal
                 self.filterPending = false
                 self.filterMillis = ms
                 self.filterRevision += 1
@@ -155,30 +275,80 @@ final class AppModel {
     }
     /// Largest-files and per-kind lists are computed in Rust off the main thread, never inside a view body.
     var largestIDs: [UInt32] = []
+    /// Largest folders (Folders tab). Loaded only while that tab is shown, from one engine capture. Rows exist ONLY in `.ready`; every other
+    /// state has no rows, so nothing old can be shown or selected while a load is pending, failed, or after a change.
+    enum FolderLoad: Equatable { case idle, loading, ready, failed(String) }
+    var folderLoad: FolderLoad = .idle
+    var folderIDs: [UInt32] = []
+    var folderSizes: [UInt64] = []
+    var folderVersion: UInt64?
+    @ObservationIgnored var folderTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var folderGeneration: UInt64 = 0
+    /// Test seam: how the list is read. Production reads the engine.
+    @ObservationIgnored var folderLoader: @Sendable (Tree, Int) async -> Result<FolderSnapshot, EngineStatus> = { t, n in t.largestFolders(count: n) }
+    static let folderCount = 200
+    static let folderMaxAttempts = 3
+    /// Result words for the CSV export. Separate from `removalMessage`, which belongs to Trash (and its Undo button).
+    var exportMessage: String?
+    @ObservationIgnored var exportTask: Task<Void, Never>?
+    /// Last export outcome, kept for tests and logs.
+    @ObservationIgnored var lastExportOutcome: LargestExport.Outcome?
+    /// Sizes for largestIDs, same engine capture (the Largest list never reads sizes live).
+    var largestSizes: [UInt64] = []
     var kindRows: [KindRow] = []
     private var derivedTask: Task<Void, Never>?
     func refreshDerived() {
         derivedTask?.cancel()
         derivedGeneration &+= 1
         let generation = derivedGeneration, barrier = beforePublish, completed = afterPublish
-        guard let tree else { largestIDs = []; kindRows = []; return }
+        guard let tree else { largestIDs = []; largestSizes = []; kindRows = []; return }
         let flt = activeFilter
         derivedTask = Task.detached(priority: .userInitiated) { [weak self] in
             let t0 = Perf.now()
-            let ids = tree.largestFiles(200, filter: flt)
-            let kinds = tree.categoryTotals(filter: flt).filter { $0.items > 0 }.sorted { $0.bytes > $1.bytes }.map { KindRow(category: $0.category, bytes: $0.bytes, items: $0.items) }
+            let result = tree.derivedSnapshot(filter: flt, count: 200)
             if Task.isCancelled { return }
-            Perf.log("derived largest=\(ids.count) kinds=\(kinds.count) filtered=\(flt != nil) rust_ms=\(String(format: "%.2f", Perf.ms(since: t0)))")
+            guard case .success(let snap) = result else {
+                await MainActor.run { [weak self] in
+                    guard let self, self.derivedGeneration == generation, self.tree === tree else { return }
+                    self.handleReadFailure(result.failureStatus, key: "derived", inputs: self.derivedInputKey) { [weak self] in self?.refreshDerived() }
+                }
+                return
+            }
+            Perf.log("derived largest=\(snap.ids.count) kinds=\(snap.kinds.count) filtered=\(flt != nil) rust_ms=\(String(format: "%.2f", Perf.ms(since: t0)))")
             let publication = UUID()
             await barrier?("derived", generation, publication)
-            await MainActor.run {
+            await MainActor.run { [weak self] in
+                // Full key: tree identity, generation, and the table version the data was read at (the engine's stamp).
                 guard let self, !Task.isCancelled, self.derivedGeneration == generation, self.tree === tree else { return }
-                self.largestIDs = ids; self.kindRows = kinds
+                // The table moved while this read ran: the result is dropped, but never silently. Bounded keyed retry (ends in the explicit out-of-date state).
+                if snap.version != tree.version { self.retryBusy("derived", inputs: self.derivedInputKey) { [weak self] in self?.refreshDerived() }; return }
+                guard flt == nil || flt!.version == snap.version else { return }
+                if self.enginePoisoned { self.markPoisoned(); return }   // a caught panic makes this publication untrustworthy
+                self.retryDone("derived")
+                self.derivedVersion = snap.version
+                self.largestIDs = snap.ids; self.largestSizes = snap.sizes
+                self.kindRows = snap.kinds.filter { $0.items > 0 }.sorted { $0.bytes > $1.bytes }.map { KindRow(category: $0.category, bytes: $0.bytes, items: $0.items) }
+                self.surfaceCheck()
             }
             await completed?("derived", generation, publication)
         }
     }
     var outlineRows: [SpzRow] = []
+    /// Node details for each row, same index and same table version as outlineRows.
+    var outlineInfos: [NodeInfo] = []
+    /// Size shown per row (filter size or node size), from the same snapshot as the rows. Cells never read the filter live.
+    var outlineShown: [UInt64] = []
+    var outlineRootSize: UInt64 = 0
+    /// nil until an outline has been published for the current tree (the footer shows a placeholder, never an old total).
+    var publishedTotalBytes: UInt64?
+    /// Table versions of each published surface. Actions unlock only when every live surface is at the required version.
+    var outlineVersion: UInt64?
+    var derivedVersion: UInt64?
+    var layoutVersion: UInt64?
+    /// Bumped to ask the treemap view to relayout (bounded BUSY retry); the view observes it, no escaping view copy.
+    var layoutRetryToken = 0
+    /// Versions of filter results that were accepted for publication (recent 64). Lets tests prove an old result was never accepted.
+    var acceptedFilterVersions: [UInt64] = []
     /// node -> row index, built off the main thread with the rows so selection lookups are O(1).
     var outlineIndex: [UInt32: Int] = [:]
     /// Bumps whenever outlineRows is replaced, so the table reloads exactly once per change.
@@ -192,24 +362,40 @@ final class AppModel {
         outlineTask?.cancel()
         outlineGeneration &+= 1
         let generation = outlineGeneration, barrier = beforePublish, completed = afterPublish
-        guard let tree else { outlineRows = []; outlineIndex = [:]; outlineRevision += 1; return }
+        guard let tree else { outlineRows = []; outlineInfos = []; outlineShown = []; outlineIndex = [:]; outlineRevision += 1; outlineRootSize = 0; publishedTotalBytes = nil; return }
         let root = displayedRoot, ex = expanded, flt = activeFilter, sort = outlineSort
         outlineTask?.cancel()
         let tStart = Perf.now()
         outlineTask = Task.detached(priority: .userInitiated) { [weak self] in
             let t0 = DispatchTime.now().uptimeNanoseconds
-            let rows = tree.outlineRows(root: root, expanded: ex, filter: flt, sort: sort)
+            let result = tree.outlineSnapshot(root: root, expanded: ex, filter: flt, sort: sort)
             let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
-            var index = [UInt32: Int](minimumCapacity: rows.count)
-            for (i, r) in rows.enumerated() { index[r.node] = i }
             if Task.isCancelled { return }
+            guard case .success(let snap) = result else {
+                await MainActor.run { [weak self] in
+                    guard let self, self.outlineGeneration == generation, self.tree === tree else { return }
+                    self.handleReadFailure(result.failureStatus, key: "outline", inputs: self.outlineInputKey) { [weak self] in self?.refreshOutline() }
+                }
+                return
+            }
+            var index = [UInt32: Int](minimumCapacity: snap.rows.count)
+            for (i, r) in snap.rows.enumerated() { index[r.node] = i }
             let publication = UUID()
+            let indexFinal = index   // frozen copy: the main-actor closure must not capture the mutable var
             await barrier?("outline", generation, publication)
-            await MainActor.run {
-                guard let self, !Task.isCancelled, self.outlineGeneration == generation, self.tree === tree else { return }
-                self.outlineRows = rows; self.outlineIndex = index; self.outlineRevision += 1; self.outlineMillis = ms
+            await MainActor.run { [weak self] in
+                // Full key: tree identity, generation, table version of the read, and the filter's own version.
+                guard let self, !Task.isCancelled, self.outlineGeneration == generation, self.tree === tree, snap.version == tree.version, flt == nil || flt!.version == snap.version else { return }
+                if self.enginePoisoned { self.markPoisoned(); return }   // a caught panic makes this publication untrustworthy
+                self.retryDone("outline")
+                // Rows, per-row details, root size and total are published in ONE main-actor turn from ONE table version,
+                // so cells never mix rows from one version with sizes from another.
+                self.outlineRows = snap.rows; self.outlineInfos = snap.infos; self.outlineShown = snap.shown; self.outlineRootSize = snap.rootSize
+                self.publishedTotalBytes = snap.totalBytes; self.outlineVersion = snap.version
+                self.outlineIndex = indexFinal; self.outlineRevision += 1; self.outlineMillis = ms
+                self.surfaceCheck()
                 let publishNs = Perf.now()
-                Perf.timingLog("outline-published rows=\(rows.count) rust_ms=\(ms) refresh_to_publish_ms=\(Perf.ms(since: tStart)) at_ns=\(publishNs)")
+                Perf.timingLog("outline-published rows=\(snap.rows.count) rust_ms=\(ms) refresh_to_publish_ms=\(Perf.ms(since: tStart)) at_ns=\(publishNs)")
             }
             await completed?("outline", generation, publication)
         }
@@ -240,9 +426,10 @@ final class AppModel {
         refreshOutline()
     }
     var coloring: TreemapColoring = .folder
-    var tab: TrailingTab = .treemap
-    var revision = 0   // bumps when the tree changes, so views refresh
-    var exclusions: [String] = []
+    var tab: TrailingTab = .treemap { didSet { surfaceCheck() } }
+    var revision = 0 { didSet { invalidateFolders() } }   // bumps when the tree changes, so views refresh; the Folders rows are dropped at once
+    /// Persisted in UserDefaults; handed to the engine at scan start, so edits apply when you rescan.
+    var exclusions: [String] = UserDefaults.standard.stringArray(forKey: "exclusions") ?? [] { didSet { UserDefaults.standard.set(exclusions, forKey: "exclusions") } }
 
     var pendingRemoval: UInt32?
     /// Seam for the Trash operation so tests can assert it was or wasn't reached without touching any file.
@@ -251,8 +438,185 @@ final class AppModel {
         try FileManager.default.trashItem(at: url, resultingItemURL: &out)
         return out! as URL
     }
+    /// Seam for the pre-Trash identity revalidation, so checks can force any verdict without touching a file.
+    /// The real check is one lstat comparing the item now at the path with the identity the scan recorded.
+    var identityCheck: (Tree, UInt32) -> IdentityVerdict = { tree, id in tree.checkIdentity(id) }
+    /// Seam for the restore (undo) move, so checks can force outcomes without touching any file.
+    var restoreItem: (URL, URL) throws -> Void = { from, to in try FileManager.default.moveItem(at: from, to: to) }
+    /// Seam for the pre-restore collision probe, so checks can force a collision without creating a file.
+    var restoreCollisionProbe: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
     var lastRemoved: [RemovedItem] = []
+    /// True while a Trash move or undo runs off the main actor; repeat requests are refused meanwhile.
+    var removalInFlight = false
+    var removalTask: Task<Void, Never>?
     var removalMessage: String?
+    /// What the latest removal alert reports. Set at the same site as the message, never derived from its
+    /// text: a zero-move batch still reads "Moved 0 of N", and a failed move can leave the original gone.
+    enum RemovalReportKind { case moved, putBack, notMoved, uncertain }
+    private(set) var removalReportKind: RemovalReportKind = .notMoved
+    /// Situation title for the removal alert. Never the app name.
+    var removalAlertTitle: String {
+        switch removalReportKind {
+        case .moved: return "Moved to Trash"
+        case .putBack: return "Put Back"
+        case .uncertain: return "Removal Result"
+        case .notMoved: return "Not Moved"
+        }
+    }
+    /// Every removal message goes through here so the title always matches the outcome the site knows.
+    /// A nil message clears the alert, same as a direct nil assignment did before.
+    private func reportRemoval(_ message: String?, _ kind: RemovalReportKind) {
+        removalReportKind = kind
+        removalMessage = message
+    }
+    /// The node whose read-only identity check popover is open; nil when closed. Opening it moves nothing.
+    var reviewItem: UInt32?
+
+    // MARK: coherence state (filesystem vs engine numbers)
+    /// Counts every filesystem change this app made (successful Trash move, successful undo). A scan that started
+    /// before a change and finishes after it cannot be trusted to include it.
+    var fsEpoch = 0
+    /// Reserved BEFORE the Trash move is attempted, cleared when its engine commit has been published or has failed.
+    var mutationPending = false
+    /// Removals whose filesystem move finished but whose engine commit has not been published yet.
+    var commitsInFlight = 0
+    /// The on-screen numbers may not match the disk. Persistent until a scan that provably started after the last change lands.
+    var viewOutOfDate = false
+    var outOfDateReason: String?
+    /// Table version every surface (outline, derived lists, and the layout while the treemap tab is shown) must reach after
+    /// a commit before rows can be trusted again. nil when no commit is waiting on surfaces.
+    var requiredVersion: UInt64?
+    /// Rows on screen belong to the previous publication, or a change is in flight: navigation AND removal are paused.
+    var rowsPending: Bool { mutationPending || commitsInFlight > 0 || requiredVersion != nil }
+    /// Removal and undo need fresh numbers as well: also blocked while the view is out of date (until a rescan).
+    /// Panic baseline for the loaded tree, taken when a scan completes without any caught panic. Any later change is sticky
+    /// (never re-adopted) until the next fully successful rescan or a restart.
+    @ObservationIgnored var panicBaseline: UInt64 = EnginePanics.count
+    /// Injectable so tests can drive the counter; production reads the engine's sticky counter.
+    @ObservationIgnored var panicCounter: () -> UInt64 = { EnginePanics.count }
+    /// Observable latch set the first time a publication or action sees the counter move; views re-render on it.
+    var poisoned = false
+    var enginePoisoned: Bool { poisoned || panicCounter() != panicBaseline }
+    var destructiveBlocked: Bool { rowsPending || viewOutOfDate || enginePoisoned }
+    /// Drill and reveal act on shown rows. An out-of-date but self-consistent old tree may still be navigated.
+    var navigationBlocked: Bool { rowsPending || enginePoisoned }
+    var coherenceNotice: String? {
+        if rowsPending { return "Updating after a change. Opening folders and removing items are paused for a moment." }
+        if enginePoisoned { return "The engine reported an internal error, so numbers on screen may be wrong. Removal is disabled until you rescan." }
+        if viewOutOfDate { return (outOfDateReason ?? "The numbers on screen may be out of date.") + " Removal is disabled until you rescan." }
+        return nil
+    }
+    /// Idle observability: a bounded 1 s check while a tree is loaded, so a panic caught outside any publication still
+    /// reaches the UI. Cancelled on tree replace and deinit; interval is a MainActor wake, not a tight poll.
+    @ObservationIgnored private var poisonWatch: Task<Void, Never>?
+    func startPoisonWatch() {
+        poisonWatch?.cancel()
+        poisonWatch = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard let self, self.tree != nil else { return }
+                if !self.poisoned && self.enginePoisoned { self.markPoisoned() }
+            }
+        }
+    }
+    func markPoisoned() { poisoned = true; filterPending = false; folderTask?.cancel(); folderGeneration &+= 1; folderIDs = []; folderSizes = []; folderVersion = nil; folderLoad = .failed("The engine reported an internal error. Rescan to continue."); markOutOfDate("The engine reported an internal error, so the numbers may be wrong. Rescan to continue.") }
+    func markOutOfDate(_ reason: String) { viewOutOfDate = true; outOfDateReason = reason; requiredVersion = nil }
+    /// Called after each surface publishes. Clears the pending requirement only when ALL live surfaces are current.
+    func surfaceCheck() {
+        guard let r = requiredVersion else { return }
+        let layoutOK = tab != .treemap || layoutVersion == r || layoutNotRenderableVersion == r
+        if outlineVersion == r, derivedVersion == r, layoutOK { requiredVersion = nil; pendingTimeout?.cancel(); pendingTimeout = nil } else {
+            // Deadline restarts only on the FIRST time a surface reaches r for this requirement; repeated publishes of an
+            // already-current surface or tab changes do not reset it, so the bounded forced-refresh stage persists.
+            var fresh = false
+            if outlineVersion == r, progressedSurfaces.insert("outline").inserted { fresh = true }
+            if derivedVersion == r, progressedSurfaces.insert("derived").inserted { fresh = true }
+            if layoutVersion == r, progressedSurfaces.insert("layout").inserted { fresh = true }
+            if fresh { startPendingTimeout() }
+        }
+    }
+    /// The treemap reported (keyed by table version) that it cannot render (no tree, size <= 1, or view removed), so it
+    /// does not hold the actions. Cleared when a layout publishes or a new tree arrives.
+    var layoutNotRenderableVersion: UInt64?
+    func layoutNotRenderable() { layoutNotRenderableVersion = tree?.version; surfaceCheck() }
+    /// True when the treemap tab is showing but its layout is not at the current table version (needs an explicit relayout).
+    var layoutNeedsRelayout: Bool { tab == .treemap && tree != nil && layoutVersion != tree?.version }
+    private var pendingTimeout: Task<Void, Never>?
+    private var progressedSurfaces: Set<String> = []
+    /// Deadline step (nanoseconds); a var so a test can shorten it. The 10 s default is an unvalidated guess.
+    var pendingStepNanos: UInt64 = 10_000_000_000
+    /// Bounded wait: if a required surface never lands, surface an explicit error instead of blocking actions forever.
+    func startPendingTimeout() {
+        pendingTimeout?.cancel()
+        pendingTimeout = Task { @MainActor [weak self] in
+            // Deadline restarts on every surface publication (see surfaceCheck). On expiry: one forced refresh and one
+            // extension, then an explicit error. The 10 s values are unvalidated guesses, not measured.
+            for stage in 0..<2 {
+                guard let step = self?.pendingStepNanos else { return }
+                try? await Task.sleep(nanoseconds: step)
+                guard !Task.isCancelled, let self, self.requiredVersion != nil else { return }
+                if stage == 0 { self.refreshOutline(); if self.filterIsActive { self.scheduleFilter(immediate: true) }; self.layoutRetryToken &+= 1 }
+            }
+            guard let self, !Task.isCancelled, self.requiredVersion != nil else { return }
+            self.markOutOfDate("The view did not finish updating after a change. Rescan to continue.")
+        }
+    }
+    func layoutPublished(_ version: UInt64) { layoutVersion = version; layoutNotRenderableVersion = nil; surfaceCheck() }
+
+    var filterInputKey: Int {
+        var h = Hasher(); h.combine(filterText); h.combine(filterKind?.rawValue); h.combine(filterMinMB); h.combine(filterMaxMB)
+        h.combine(filterModifiedDays); h.combine(filterExt); h.combine(tree.map(ObjectIdentifier.init)); h.combine(tree?.version); return h.finalize()
+    }
+    var derivedInputKey: Int { var h = Hasher(); h.combine(activeFilter.map(ObjectIdentifier.init)); h.combine(tree.map(ObjectIdentifier.init)); h.combine(tree?.version); return h.finalize() }
+    var outlineInputKey: Int {
+        var h = Hasher(); h.combine(displayedRoot); h.combine(expanded); h.combine(activeFilter.map(ObjectIdentifier.init))
+        h.combine(outlineSort.rawValue); h.combine(tree.map(ObjectIdentifier.init)); h.combine(tree?.version); return h.finalize()
+    }
+    /// Key for the layout retry: the treemap inputs (root, size, filter, tree), supplied by the view.
+    func layoutInputKey(root: UInt32, size: CGSize) -> Int {
+        var h = Hasher(); h.combine(root); h.combine(size.width); h.combine(size.height); h.combine(activeFilter.map(ObjectIdentifier.init)); h.combine(tree.map(ObjectIdentifier.init)); h.combine(tree?.version); return h.finalize()
+    }
+
+    // MARK: bounded, keyed retry for BUSY (one slot per key; the action re-reads CURRENT inputs, never captured old ones)
+    @ObservationIgnored private var retryTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var retryAttempts: [String: Int] = [:]
+    @ObservationIgnored private var retryGeneration: [String: Int] = [:]
+    /// One slot per key. `inputs` identifies WHAT is being retried (a hash of the current inputs, not a request counter that
+    /// every retry bumps): new inputs reset the attempt count, the same inputs keep counting toward the bound.
+    func retryBusy(_ key: String, inputs generation: Int, _ action: @escaping @MainActor () -> Void) {
+        let sameInputs = retryGeneration[key] == generation   // captured BEFORE the reset below
+        if !sameInputs { retryAttempts[key] = nil; retryGeneration[key] = generation }
+        // Same inputs and a retry already waiting: repeated calls (a view re-reading several times, several callers) must not
+        // consume attempts or restart the timer; only a retry that actually FIRED counts toward the bound.
+        if retryTasks[key] != nil, sameInputs { return }
+        let n = (retryAttempts[key] ?? 0) + 1
+        retryTasks[key]?.cancel()
+        // Presentation-only reads (the selected node's details) must not escalate to a global out-of-date state: after the
+        // bounded fast retries they keep a persistent "Updating" placeholder and retry slowly, forever cheap (one capture / 2 s).
+        if key == "node" && n > 5 {
+            retryAttempts[key] = 5
+            retryTasks[key] = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                if Task.isCancelled { return }
+                self?.retryTasks[key] = nil
+                action()
+            }
+            return
+        }
+        guard n <= 5 else {
+            retryAttempts[key] = nil; retryTasks[key] = nil
+            markOutOfDate("The engine stayed busy and the list could not be refreshed. Rescan, or try again.")
+            return
+        }
+        retryAttempts[key] = n
+        retryTasks[key] = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(100_000_000 * n))
+            if Task.isCancelled { return }
+            self?.retryTasks[key] = nil
+            action()
+        }
+    }
+    func retryDone(_ key: String) { retryAttempts[key] = nil; retryTasks[key]?.cancel(); retryTasks[key] = nil }
 
     private var session: ScanSession?
 
@@ -274,6 +638,8 @@ final class AppModel {
         scanning = true
         error = nil
         rootPath = path
+        // A scan that overlaps a filesystem change cannot prove it includes that change.
+        let epochAtStart = fsEpoch, mutatingAtStart = mutationPending || commitsInFlight > 0
         progress = ScanSnapshot(items: 0, bytes: 0)
         let start = Date()
         guard let s = ScanSession(root: path, excludes: exclusions) else {
@@ -307,9 +673,19 @@ final class AppModel {
                 // Node ids are only valid for one tree: drop every id-keyed cache in the same main-actor turn
                 // so no view can index the new tree with ids from the old one.
                 filterTask?.cancel(); derivedTask?.cancel(); outlineTask?.cancel()
-                outlineRows = []; outlineIndex = [:]; outlineRevision += 1; expanded = []; largestIDs = []; kindRows = []; activeFilter = nil
+                outlineRows = []; outlineInfos = []; outlineShown = []; outlineIndex = [:]; outlineRevision += 1; expanded = []; largestIDs = []; largestSizes = []; kindRows = []; activeFilter = nil
+                outlineRootSize = 0; publishedTotalBytes = nil; outlineVersion = nil; derivedVersion = nil; layoutVersion = nil; layoutNotRenderableVersion = nil; requiredVersion = nil
                 pendingRemoval = nil
+                invalidateFolders()
+                exportTask?.cancel()   // an export prepared for the old tree must not write
+                if fsEpoch != epochAtStart || mutatingAtStart || mutationPending || commitsInFlight > 0 {
+                    markOutOfDate("Files were moved while this scan ran, so it may not match the disk. Rescan.")
+                } else { viewOutOfDate = false; outOfDateReason = nil }
                 tree = t
+                panicBaseline = s.validatedPanicCount   // exactly the value ScanSession validated, not a fresh read
+                poisoned = false
+                startPoisonWatch()
+                nodeCache = nil
                 displayedRoot = 0
                 selected = nil
                 revision += 1
@@ -322,10 +698,76 @@ final class AppModel {
         }
     }
 
+    /// Drops every Folders row and any load in flight at once (tree changed, replaced, or a removal bumped `revision`).
+    func invalidateFolders() {
+        folderTask?.cancel(); folderTask = nil
+        folderGeneration &+= 1
+        folderIDs = []; folderSizes = []; folderVersion = nil
+        folderLoad = .idle
+    }
+
+    /// What the Largest and Kinds lists show right now.
+    /// `.ready`: current publication. `.retained(why)`: ONLY a pending filter edit on an otherwise current table: the last coherent
+    /// publication stays visible, dimmed, selection disabled (no spinner flash per keystroke). `.updating(why)`: the table moved, a
+    /// removal/commit is settling, or nothing is published yet: rows, counts and bars are WITHHELD (a removed
+    /// item is never shown as live). `.unavailable`: engine poisoned OR the view is marked out of date (its reason is shown, no spinner; recovery is Rescan, which retryDerived cannot clear): nothing at all.
+    enum DerivedPresentation: Equatable { case ready, retained(String), updating(String), unavailable(String) }
+    var derivedPresentation: DerivedPresentation {
+        if enginePoisoned { return .unavailable("The engine reported an internal error. Rescan to continue.") }
+        guard let tree else { return .updating("Updating…") }
+        if viewOutOfDate { return .unavailable(outOfDateReason ?? "The results may be out of date. Rescan to refresh.") }   // a terminal state, never a spinner
+        if rowsPending { return .updating("Updating after a change…") }
+        guard let v = derivedVersion, v == tree.version else { return .updating("Updating…") }
+        if filterPending { return .retained("Updating the filter…") }
+        if let f = activeFilter, f.version != tree.version { return .retained("Updating the filter…") }
+        return .ready
+    }
+    /// Explicit user retry for a derived list stuck in `.updating` (a publication that never arrived). Resets the bounded retry state.
+    var canRescan: Bool { !rootPath.isEmpty && !scanning }
+    func rescan() { if canRescan { scan(rootPath) } }
+    func retryDerived() { retryDone("derived"); refreshDerived() }
+
+    func refreshFolders() { startFolderLoad(attempt: 0) }
+
+    /// Reads the largest folders off the main actor and publishes only if the generation, the tree and the table version still match.
+    /// A version mismatch retries at most `folderMaxAttempts` times with a short backoff, shown as loading, then ends as a failure.
+    private func startFolderLoad(attempt: Int) {
+        folderTask?.cancel()
+        folderGeneration &+= 1
+        let generation = folderGeneration
+        folderIDs = []; folderSizes = []; folderVersion = nil
+        guard let tree else { folderLoad = .idle; return }
+        if enginePoisoned { folderLoad = .failed("The engine reported an internal error. Rescan to continue."); return }
+        folderLoad = .loading
+        let loader = folderLoader
+        folderTask = Task.detached(priority: .userInitiated) { [weak self] in
+            if attempt > 0 { try? await Task.sleep(nanoseconds: UInt64(attempt) * 50_000_000) }
+            if Task.isCancelled { return }
+            let result = await loader(tree, AppModel.folderCount)
+            if Task.isCancelled { return }
+            await MainActor.run { [weak self] in self?.applyFolderResult(result, tree: tree, generation: generation, attempt: attempt) }
+        }
+    }
+
+    /// The only place rows are published. Ignores an answer for another generation or tree, and a version that is not the tree's now.
+    func applyFolderResult(_ result: Result<FolderSnapshot, EngineStatus>, tree: Tree, generation: UInt64, attempt: Int) {
+        guard folderGeneration == generation, self.tree === tree else { return }
+        if enginePoisoned { folderIDs = []; folderSizes = []; folderVersion = nil; folderLoad = .failed("The engine reported an internal error. Rescan to continue."); return }
+        switch result {
+        case .success(let snap) where snap.version == tree.version:
+            folderIDs = snap.ids; folderSizes = snap.sizes; folderVersion = snap.version; folderLoad = .ready
+        case .success:
+            if attempt + 1 < Self.folderMaxAttempts { startFolderLoad(attempt: attempt + 1) }
+            else { folderIDs = []; folderSizes = []; folderVersion = nil; folderLoad = .failed("The results kept changing while loading. Try again.") }
+        case .failure:
+            folderIDs = []; folderSizes = []; folderVersion = nil; folderLoad = .failed("The folder list could not be read. Rescan to refresh.")
+        }
+    }
+
     func cancel() { session?.cancel() }
 
     func drill(into id: UInt32) {
-        guard let tree else { return }
+        guard let tree, !navigationBlocked else { return }
         let n = tree.info(id)
         guard n.kind == .directory, n.childCount > 0 else { return }
         displayedRoot = id
@@ -341,25 +783,77 @@ final class AppModel {
 
     // MARK: Removal (always to the Trash, always after confirmation, always undoable)
 
-    /// True when a filter is active and this item is outside it (hidden from every view).
+    /// True ONLY when the published filter is current and the item is genuinely outside it (hidden from every view).
     func isOutsideFilter(_ id: UInt32) -> Bool {
-        guard let f = activeFilter else { return false }
+        guard let f = activeFilter, filterUntrustedReason == nil else { return false }
         return f.count(id) == 0
+    }
+    /// Why the active filter cannot be used to judge an item right now (nil when it can, or when no filter is active).
+    /// Not "outside the filter": a stale filter version or a caught engine panic is a different, accurate refusal.
+    var filterUntrustedReason: String? {
+        guard let f = activeFilter else { return nil }
+        if enginePoisoned { return "The engine reported an internal error, so the filter result cannot be trusted. Rescan to continue." }
+        if f.version != tree?.version { return "The filter result is out of date and is being recomputed. Nothing was moved; try again in a moment." }
+        return nil
     }
 
     /// Why removal is unavailable right now, or nil when it is allowed.
+    /// One node's details from ONE engine capture at the current table version, with its name and path. nil while rows are
+    /// pending or the engine answers STALE/BUSY/INVALID: callers show a placeholder, never an old or zero size.
+    struct NodeSnapshot { let id: UInt32; let version: UInt64; let info: NodeInfo; let name: String; let path: String }
+    @ObservationIgnored private var nodeCache: NodeSnapshot?
+    @ObservationIgnored private var nodeCacheTree: ObjectIdentifier?
+    /// Test seam: replaces the engine read for the selected-node snapshot (nil in the app).
+    @ObservationIgnored var nodeCheckedOverride: ((Tree, UInt32) -> Result<(info: NodeInfo, version: UInt64), EngineStatus>)?
+    func retryPending(_ key: String) -> Bool { retryTasks[key] != nil }
+    /// Views read this so a bounded retry re-renders them (a view body must not mutate state itself).
+    var nodeRetryToken = 0
+    func nodeSnapshot(_ id: UInt32) -> NodeSnapshot? {
+        guard let tree, !rowsPending, !enginePoisoned, UInt64(id) < tree.nodeCount else { return nil }
+        _ = nodeRetryToken
+        switch nodeCheckedOverride?(tree, id) ?? tree.nodeChecked(id) {
+        case .success(let r):
+            let snap = NodeSnapshot(id: id, version: r.version, info: r.info, name: tree.name(id), path: tree.path(id))
+            nodeCache = snap; nodeCacheTree = ObjectIdentifier(tree)
+            retryDone("node")
+            return snap
+        case .failure(let st):
+            // BUSY: reuse the last validated snapshot of THIS node only if it is still at the current table version, and
+            // retry (bounded, keyed by node and version) so the view re-renders; STALE/INVALID: nothing is shown as a number.
+            let cached = (nodeCacheTree == ObjectIdentifier(tree) && nodeCache?.id == id && nodeCache?.version == tree.version) ? nodeCache : nil
+            if st == .busy || st == .stale {
+                let key = nodeRetryKey(id, tree)
+                Task { @MainActor [weak self] in self?.retryBusy("node", inputs: key) { [weak self] in self?.nodeRetryToken &+= 1 } }
+            }
+            return cached
+        }
+    }
+    private func nodeRetryKey(_ id: UInt32, _ tree: Tree) -> Int { var h = Hasher(); h.combine(id); h.combine(ObjectIdentifier(tree)); h.combine(tree.version); return h.finalize() }
+
     func removalBlockedReason(_ id: UInt32) -> String? {
+        if destructiveBlocked { return coherenceNotice ?? "Please wait for the previous change to finish." }
         if filterPending { return "The filter is still updating." }
+        if let r = filterUntrustedReason { return r }
         if isOutsideFilter(id) { return "This item is outside the current filter. Clear the filter or select it again." }
         return nil
     }
 
     func proposeRemoval(of id: UInt32) {
         guard id != 0 else { return }
+        if destructiveBlocked { reportRemoval(coherenceNotice ?? "Please wait for the previous change to finish.", .notMoved); return }
         // A selection the filter has hidden must not be removable from here: clear the filter or reselect first.
-        if filterPending { removalMessage = "The filter is still updating, so the list may be out of date. Try again in a moment."; return }
-        if isOutsideFilter(id) { removalMessage = "That item is outside the current filter. Clear the filter or select it again to move it to the Trash."; return }
+        if removalInFlight { reportRemoval("Another removal is still in progress.", .notMoved); return }
+        if filterPending { reportRemoval("The filter is still updating, so the list may be out of date. Try again in a moment.", .notMoved); return }
+        if let r = filterUntrustedReason { reportRemoval(r, .notMoved); return }
+        if isOutsideFilter(id) { reportRemoval("That item is outside the current filter. Clear the filter or select it again to move it to the Trash.", .notMoved); return }
         pendingRemoval = id
+    }
+
+    /// Opens the read-only identity check for one item. Refused for the root, a non-node id or no tree;
+    /// the popover itself handles staleness, cancellation and dismissal. It moves nothing.
+    func proposeReview(of id: UInt32) {
+        guard let tree, id != 0, UInt64(id) < tree.nodeCount else { return }
+        reviewItem = id
     }
 
     /// Paths that must never be removed, whatever the user selects.
@@ -370,52 +864,405 @@ final class AppModel {
         return false
     }
 
+    /// Result of the filesystem half of a removal. Carries only Sendable values so it can cross from the background task.
+    enum RemovalOutcome: Sendable {
+        case moved(URL)
+        case failed(String, originalStillExists: Bool)
+        /// Identity revalidation refused the move: the item at the path is not confirmed as the scanned item.
+        case refused(String)
+    }
+    enum UndoOutcome: Sendable {
+        case restored
+        case collision
+        case failed(String)
+    }
+    /// `trashItem` is a plain closure so tests can mock it; it is only ever called from one background task at a time
+    /// (removalInFlight serializes), which is the invariant this wrapper relies on.
+    private struct SerialOperation: @unchecked Sendable { let run: (URL) throws -> URL }
+    private struct SerialIdentity: @unchecked Sendable { let run: (Tree, UInt32) -> IdentityVerdict }
+    private struct SerialRestore: @unchecked Sendable { let run: (URL, URL) throws -> Void }
+    private struct SerialProbe: @unchecked Sendable { let run: (String) -> Bool }
+
     func confirmRemoval() {
         guard let tree, let id = pendingRemoval else { return }
         pendingRemoval = nil
-        if filterPending { removalMessage = "The filter is still updating, so nothing was moved. Select the item again in a moment."; return }
-        if isOutsideFilter(id) { removalMessage = "The filter changed and this item is no longer shown, so nothing was moved. Select it again to remove it."; return }
+        if removalInFlight { reportRemoval("Another removal is still in progress.", .notMoved); return }
+        if filterPending { reportRemoval("The filter is still updating, so nothing was moved. Select the item again in a moment.", .notMoved); return }
+        if let r = filterUntrustedReason { reportRemoval(r, .notMoved); return }
+        if isOutsideFilter(id) { reportRemoval("The filter changed and this item is no longer shown, so nothing was moved. Select it again to remove it.", .notMoved); return }
         let path = tree.path(id)
         if isProtected(path) {
-            removalMessage = "\(path) is protected and cannot be removed from here."
+            reportRemoval("\(path) is protected and cannot be removed from here.", .notMoved)
             return
         }
+        if destructiveBlocked { reportRemoval(coherenceNotice ?? "Please wait for the previous change to finish.", .notMoved); return }
         let url = URL(fileURLWithPath: path)
-        let size = tree.info(id).size
-        do {
-            let trashed = try trashItem(url)
-            lastRemoved = [RemovedItem(original: url, trashed: trashed, size: size)]
-            tree.forget(id)
-            if selected == id { selected = nil }
-            revision += 1
-            refreshOutline()
-            refreshDerived()
-            removalMessage = "Moved \(url.lastPathComponent) to the Trash."
-        } catch {
-            removalMessage = "Could not move it to the Trash: \(error.localizedDescription)"
+        // The recorded size comes from one engine capture; if the engine cannot answer now, nothing is moved.
+        guard let snap = nodeSnapshot(id) else { reportRemoval("Sizes are still updating, so nothing was moved. Try again in a moment.", .notMoved); return }
+        let size = snap.info.size
+        mutationPending = true      // reserved before the write, so no scan or undo can slip in between
+        removalInFlight = true
+        lastBatchCount = nil        // the journal tail is no longer a batch
+        let op = SerialOperation(run: trashItem)
+        let check = SerialIdentity(run: identityCheck)
+        // 1. The filesystem move runs OFF the main actor (it can take seconds on a slow volume). The tree is not touched
+        // until the outcome is back on the main actor; mutationPending/removalInFlight stay set for the whole window.
+        removalTask = Task { [weak self] in
+            let outcome: RemovalOutcome = await Task.detached(priority: .userInitiated) {
+                // Identity revalidation immediately before the move: one lstat against the scanned identity.
+                // This narrows the window between scan and Trash; it cannot close it - the item can still
+                // change between this check and the move. Any verdict but .same refuses and moves nothing.
+                let verdict = check.run(tree, id)
+                guard verdict.allowsProceeding else { return .refused(verdict.message) }
+                do { return .moved(try op.run(url)) }
+                catch { return .failed(error.localizedDescription, originalStillExists: FileManager.default.fileExists(atPath: url.path)) }
+            }.value
+            self?.finishRemoval(outcome, id: id, url: url, size: size, tree: tree)
         }
     }
 
-    func undoRemoval() {
-        for item in lastRemoved {
-            do {
-                try FileManager.default.moveItem(at: item.trashed, to: item.original)
-                removalMessage = "Put \(item.original.lastPathComponent) back. Rescan to refresh sizes."
-            } catch {
-                removalMessage = "Could not put it back: \(error.localizedDescription)"
+    // MARK: batch removal (guarded batch-removal epic, slice 5)
+
+    /// A proposed batch awaiting confirmation: the approved items in selection row order plus the
+    /// items the planner refused, each with its reason. Presented in the confirmation alert.
+    struct PendingBatchRemoval {
+        var items: [(path: String, id: UInt32)]
+        var refused: [(path: String, reason: String)]
+    }
+    var pendingBatchRemoval: PendingBatchRemoval?
+    /// How many journal entries the last batch moved (2 or more), so the message alert can offer a
+    /// single batch-undo. Display hint only: the journal is the real state. Cleared when a single
+    /// removal lands and when a batch undo is started.
+    var lastBatchCount: Int?
+
+    /// Which selection a preview acts on: the visible set members in row order; an EMPTY set falls
+    /// back to the focus alone; a non-empty but fully filter-hidden set previews NOTHING (a hidden
+    /// item is never handed to the panel). Pure so checks drive it without a tree.
+    static func previewTargets(set: [UInt32], visibleCandidates: [UInt32], focus: UInt32?) -> [UInt32] {
+        if !set.isEmpty { return visibleCandidates }
+        return focus.map { [$0] } ?? []
+    }
+
+    /// Proposes moving the whole visible selection to the Trash. Planning runs through the slice-1
+    /// planner with no duplicate-group context (the outline selection is not the duplicates review),
+    /// so every candidate faces exactly the gates it would face removed one by one. Execution calls
+    /// the SAME per-item identity-checked Trash path once per item: the batch adds no deletion path.
+    func proposeBatchRemoval() {
+        guard let tree else { return }
+        if destructiveBlocked { reportRemoval(coherenceNotice ?? "Please wait for the previous change to finish.", .notMoved); return }
+        if removalInFlight { reportRemoval("Another removal is still in progress.", .notMoved); return }
+        if filterPending { reportRemoval("The filter is still updating, so the list may be out of date. Try again in a moment.", .notMoved); return }
+        if let r = filterUntrustedReason { reportRemoval(r, .notMoved); return }
+        let ids = batchCandidateIDs
+        guard ids.count >= 2 else { reportRemoval("Select at least two items to move them together.", .notMoved); return }
+        let p = BatchRemoval.plan(ids.map { tree.path($0) }, groups: [], in: self)
+        guard !p.approved.isEmpty else {
+            let reasons = p.refused.prefix(3).map { "\($0.path): \($0.reason)" }.joined(separator: "; ")
+            reportRemoval("Nothing in the selection can be moved to the Trash. \(reasons)", .notMoved)
+            return
+        }
+        pendingBatchRemoval = PendingBatchRemoval(items: p.approved, refused: p.refused)
+    }
+
+    /// Duplicates-review whole-set action (slice 6): plans the group's listed members through the
+    /// slice-1 planner WITH the group attached, so the batch keep-one rule applies (the copy whose
+    /// path sorts first is always kept). Execution is the same per-item identity-checked Trash path.
+    func proposeGroupRemoval(_ groupPaths: [String]) {
+        guard tree != nil else { return }
+        if destructiveBlocked { reportRemoval(coherenceNotice ?? "Please wait for the previous change to finish.", .notMoved); return }
+        if removalInFlight { reportRemoval("Another removal is still in progress.", .notMoved); return }
+        if filterPending { reportRemoval("The filter is still updating, so the list may be out of date. Try again in a moment.", .notMoved); return }
+        if let r = filterUntrustedReason { reportRemoval(r, .notMoved); return }
+        guard groupPaths.count >= 2 else { return }
+        let p = BatchRemoval.plan(groupPaths, groups: [groupPaths], in: self)
+        guard !p.approved.isEmpty else {
+            let reasons = p.refused.prefix(3).map { "\($0.path): \($0.reason)" }.joined(separator: "; ")
+            reportRemoval("Nothing in this group can be moved to the Trash. \(reasons)", .notMoved)
+            return
+        }
+        pendingBatchRemoval = PendingBatchRemoval(items: p.approved, refused: p.refused)
+    }
+
+    /// Runs the proposed batch: one item at a time, each through the same identity revalidation,
+    /// Trash move and journaling as confirmRemoval. A refused or failed item is skipped and
+    /// reported; it never stops the rest of the batch. Nothing moves before this is called.
+    func confirmBatchRemoval() {
+        guard let tree, let batch = pendingBatchRemoval else { return }
+        pendingBatchRemoval = nil
+        if removalInFlight { reportRemoval("Another removal is still in progress.", .notMoved); return }
+        if filterPending { reportRemoval("The filter is still updating, so nothing was moved. Try again in a moment.", .notMoved); return }
+        if let r = filterUntrustedReason { reportRemoval(r, .notMoved); return }
+        if destructiveBlocked { reportRemoval(coherenceNotice ?? "Please wait for the previous change to finish.", .notMoved); return }
+        let op = SerialOperation(run: trashItem)
+        let check = SerialIdentity(run: identityCheck)
+        removalTask = Task { [weak self] in
+            await self?.runBatchRemoval(batch.items, tree: tree, op: op, check: check)
+        }
+    }
+
+    private func runBatchRemoval(_ items: [(path: String, id: UInt32)], tree: Tree, op: SerialOperation, check: SerialIdentity) async {
+        var moved = 0
+        var skipped: [String] = []
+        let journalMark = lastRemoved.count
+        for item in items {
+            if Task.isCancelled { skipped.append("The batch was canceled before \(item.path)."); break }
+            await waitForRemovalQuiescence()
+            if Task.isCancelled { skipped.append("The batch was canceled before \(item.path)."); break }
+            // Plan-to-execution drift: the id must still name the planned path in the same tree.
+            let path = tree.path(item.id)
+            if path != item.path { skipped.append("\(item.path): the results changed; skipped."); continue }
+            // Mid-batch consistency with the removal-disabled policy enforced at entry
+            // (destructiveBlocked): a poison latch or an out-of-date marking landing after this
+            // batch started refuses each remaining item loudly; the batch still completes and
+            // reports the skips. Deliberately NOT destructiveBlocked: rowsPending/requiredVersion
+            // are true mid-batch by design, and rechecking them refused every item after the
+            // first (run 38410069921).
+            if enginePoisoned { skipped.append("\(path): the engine reported an internal error; skipped."); continue }
+            if viewOutOfDate { skipped.append("\(path): the results changed; skipped."); continue }
+            if isProtected(path) { skipped.append("\(path) is protected and cannot be removed from here."); continue }
+            if isOutsideFilter(item.id) { skipped.append("\(path): outside the current filter; skipped."); continue }
+            // The recorded size comes from one engine capture; if the engine cannot answer now, this item is skipped.
+            // Read it straight from the engine: nodeSnapshot is view-facing and refuses while a previous
+            // batch item's commit is still publishing (requiredVersion stays set until surfaces land), which
+            // skipped every item after the first (run 38410069921). The id->path revalidation above already
+            // pins this item's identity in this tree.
+            let size: UInt64
+            switch nodeCheckedOverride?(tree, item.id) ?? tree.nodeChecked(item.id) {
+            case .success(let r):
+                size = r.info.size
+            case .failure(let status):
+                skipped.append("\(path): sizes could not be verified (\(status)); skipped."); continue
+            }
+            let url = URL(fileURLWithPath: path)
+            mutationPending = true      // reserved before the write, per item, exactly like the single path
+            removalInFlight = true
+            // 1. The filesystem move runs OFF the main actor, with the same pre-move identity
+            // revalidation as the single path. Any verdict but .same refuses and moves nothing.
+            let outcome: RemovalOutcome = await Task.detached(priority: .userInitiated) {
+                let verdict = check.run(tree, item.id)
+                guard verdict.allowsProceeding else { return .refused(verdict.message) }
+                do { return .moved(try op.run(url)) }
+                catch { return .failed(error.localizedDescription, originalStillExists: FileManager.default.fileExists(atPath: url.path)) }
+            }.value
+            switch outcome {
+            case .moved: moved += 1
+            case .refused(let r): skipped.append("\(path): \(r)")
+            case .failed(let r, _): skipped.append("\(path): \(r)")
+            }
+            // 2. Same bookkeeping as the single path: journal first, then the engine commit.
+            finishRemoval(outcome, id: item.id, url: url, size: size, tree: tree)
+        }
+        await waitForRemovalQuiescence()
+        // Stamp the batch-undo hint only when the journal tail is still exactly this batch: a per-item
+        // undo or a newer removal during the quiescence wait must not leave a stale hint.
+        lastBatchCount = (moved >= 2 && lastRemoved.count - journalMark == moved) ? moved : nil
+        // Summary: facts and counts only.
+        var summary = "Moved \(moved) of \(items.count) items to the Trash."
+        if !skipped.isEmpty {
+            summary += " Skipped \(skipped.count): " + skipped.prefix(3).joined(separator: "; ")
+            if skipped.count > 3 { summary += "; …" }
+        }
+        reportRemoval(summary, moved > 0 ? .moved : .notMoved)
+    }
+
+    /// Waits until no removal or engine commit is in flight, so each batch item starts from the
+    /// same quiescent state the single-item path requires. Returns early on cancellation.
+    private func waitForRemovalQuiescence() async {
+        while removalInFlight || commitsInFlight > 0 {
+            if Task.isCancelled { return }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+    }
+
+    private func finishRemoval(_ outcome: RemovalOutcome, id: UInt32, url: URL, size: UInt64, tree removedFrom: Tree) {
+        removalInFlight = false
+        switch outcome {
+        case .refused(let reason):
+            // Nothing was moved; the verdict's own message says so and asks for a rescan.
+            mutationPending = commitsInFlight > 0
+            reportRemoval(reason, .notMoved)
+        case .failed(let reason, let stillExists):
+            mutationPending = commitsInFlight > 0
+            reportRemoval(stillExists
+                ? "Could not move it to the Trash: \(reason)"
+                : "The Trash move reported an error (\(reason)) but \(url.lastPathComponent) is no longer at its original location. Rescan to refresh.", stillExists ? .notMoved : .uncertain)
+            if !stillExists { fsEpoch += 1; markOutOfDate("\(url.lastPathComponent) may have been moved even though the Trash reported an error. Rescan.") }
+        case .moved(let trashed):
+            // 2. Filesystem outcome journaled first (the real event), then the engine commit on the serial lane.
+            fsEpoch += 1
+            // Journaled, newest last: the removal history shows every entry and restores any one of them.
+            lastRemoved.append(RemovedItem(original: url, trashed: trashed, size: size))
+            guard tree === removedFrom else {
+                // A rescan replaced the tree while the move was running. Its node ids are gone; do not forget on the new one.
+                mutationPending = commitsInFlight > 0
+                markOutOfDate("\(url.lastPathComponent) was moved to the Trash while a scan was replacing the results, so they may still include it. Rescan.")
+                reportRemoval("Moved \(url.lastPathComponent) to the Trash. The folder was rescanned meanwhile, so sizes may be out of date. Rescan to refresh.", .moved)
+                return
+            }
+            commitsInFlight += 1
+            let name = url.lastPathComponent
+            Task { [weak self] in
+                if let hook = self?.beforeCommit { await hook() }     // test seam: park between the FS move and the commit
+                let status: EngineStatus
+                if let o = self?.commitOverride { status = await o(removedFrom, id) } else { status = await Self.commitLane.forget(removedFrom, id) }
+                await MainActor.run { self?.finishCommit(tree: removedFrom, removed: id, status: status, name: name) }
             }
         }
-        lastRemoved = []
+    }
+
+    /// Serial lane for engine mutations. Ordering does not rely on actor FIFO: confirmRemoval admits one removal at a
+    /// time (commitsInFlight/mutationPending), and the engine's single writer mutex serializes the rest.
+    static let commitLane = CommitLane()
+    /// Test seams only (nil in the app).
+    var beforeCommit: (() async -> Void)?
+    var commitOverride: ((Tree, UInt32) async -> EngineStatus)?
+
+    /// Publishes one removal on the main actor. Ordered after the filesystem outcome; every outcome is reported.
+    /// One place for non-OK read statuses: BUSY is retried (bounded, keyed); STALE with a filter means the filter is old and
+    /// is recomputed; anything else marks the view out of date. Nothing is shown as empty.
+    private func handleReadFailure(_ status: EngineStatus?, key: String, inputs: Int, retry: @escaping @MainActor () -> Void) {
+        switch status {
+        case .busy: retryBusy(key, inputs: inputs, retry)
+        case .stale:
+            if !filterPending { if filterIsActive { scheduleFilter(immediate: true) } else { retryBusy(key, inputs: inputs, retry) } }
+        default: markOutOfDate("The list could not be refreshed (\(status.map { "\($0)" } ?? "unknown")). Rescan.")
+        }
+    }
+
+    private func finishCommit(tree: Tree, removed id: UInt32, status: EngineStatus, name: String) {
+        commitsInFlight = max(0, commitsInFlight - 1)
+        mutationPending = commitsInFlight > 0
+        // The tree was replaced while the commit ran. The filesystem change is real and not necessarily in the new
+        // tree (the scan may have read the folder before the move). Mark it explicitly instead of dropping the outcome.
+        guard self.tree === tree else {
+            markOutOfDate("\(name) was moved to the Trash while a scan was replacing the results, so they may still include it. Rescan.")
+            reportRemoval("Moved \(name) to the Trash. The new results may not reflect it. Rescan to refresh.", .moved)
+            return
+        }
+        switch status {
+        case .ok:
+            // Clear every id-keyed piece of state inside the removed subtree in the same turn as the new numbers.
+            if let s = selected, tree.isInside(s, subtreeOf: id) { selected = nil }
+            // The multi-selection is id-keyed state too: a removed node must not linger in it (it would count as selected).
+            if selectedSet.contains(where: { tree.isInside($0, subtreeOf: id) }) { selectedSet = selectedSet.filter { !tree.isInside($0, subtreeOf: id) } }
+            expanded = expanded.filter { !tree.isInside($0, subtreeOf: id) }
+            if tree.isInside(displayedRoot, subtreeOf: id) { displayedRoot = tree.info(id).parent ?? 0 }
+            revision += 1
+            // Rows and the layout on screen are the PREVIOUS publication until the recomputed ones land (no old row is
+            // erased early), so actions that read them stay disabled until every surface reaches requiredVersion.
+            requiredVersion = tree.version; layoutNotRenderableVersion = nil; progressedSurfaces = []; startPendingTimeout()   // comparison target only; surfaces carry the engine's own stamps
+            if filterIsActive {
+                // The active filter result belongs to the old table (STALE). Recompute without the typing debounce;
+                // its landing refreshes outline, derived lists and layout.
+                filterPending = true
+                scheduleFilter(immediate: true)
+            } else {
+                refreshOutline()
+                refreshDerived()
+            }
+            reportRemoval("Moved \(name) to the Trash.", .moved)
+        case .mutationFailed, .invalid, .internalError, .stale, .busy:
+            // The file is in the Trash, but the numbers on screen could not be updated. Say so; never report success.
+            markOutOfDate("\(name) is in the Trash but the numbers on screen could not be updated (\(status)). Rescan to refresh.")
+            reportRemoval("Moved \(name) to the Trash, but the numbers on screen could not be updated (\(status)). Rescan to refresh. You can still put it back.", .moved)
+        }
+    }
+
+    /// Test/driver helper: waits for the removal task AND the engine commit it enqueues (bounded, 5 s). Returns false when
+    /// a commit never settled; the caller must treat that as a failure, never as "settled".
+    @discardableResult
+    func settleRemoval() async -> Bool {
+        await removalTask?.value
+        for _ in 0..<500 where commitsInFlight > 0 { try? await Task.sleep(nanoseconds: 10_000_000) }
+        let ok = commitsInFlight == 0
+        #if SPZ_CI_TESTS
+        if !ok { Check.expect("removal-commit-never-settled", false, "commitsInFlight=\(commitsInFlight) mutationPending=\(mutationPending)") }
+        #endif
+        return ok
+    }
+
+    /// Undo from the removal alert restores the LATEST journaled removal. A restore is a filesystem change too: it is
+    /// refused while a removal or commit is mid-flight, and afterwards the view is persistently out of date - the
+    /// engine cannot add a subtree back, only a rescan can.
+    func undoRemoval() {
+        if removalInFlight || mutationPending || commitsInFlight > 0 || requiredVersion != nil { reportRemoval("The previous change is still being applied. Try again in a moment.", .notMoved); return }
+        guard let item = lastRemoved.last else { return }
+        runRestore([item])
+    }
+
+    /// Batch undo (slice 6): restores every item the last batch moved, in one restore pass through
+    /// the same seams as the per-item undo. Offered once per batch: the journal is the real state,
+    /// and any item that stays behind (collision/failure) remains individually restorable.
+    func undoBatchRemoval() {
+        if removalInFlight || mutationPending || commitsInFlight > 0 || requiredVersion != nil { reportRemoval("The previous change is still being applied. Try again in a moment.", .notMoved); return }
+        guard let n = lastBatchCount, n >= 2, lastRemoved.count >= n else { return }
+        lastBatchCount = nil
+        runRestore(Array(lastRemoved.suffix(n)))
+    }
+
+    /// Per-item restore from the removal history: the same gates as undoRemoval, but only the named record moves.
+    /// An unknown id is a no-op (the record may already have been restored or never journaled).
+    func restoreRemoved(id: UUID) {
+        if removalInFlight || mutationPending || commitsInFlight > 0 || requiredVersion != nil { reportRemoval("The previous change is still being applied. Try again in a moment.", .notMoved); return }
+        guard let item = lastRemoved.first(where: { $0.id == id }) else { return }
+        runRestore([item])
+    }
+
+    /// One restore pass over journaled records, off the main actor and through the injected seams, so checks can force
+    /// any outcome without touching a file. The default seams are the previous direct FileManager calls, unchanged.
+    private func runRestore(_ items: [RemovedItem]) {
+        mutationPending = true
+        removalInFlight = true
+        let restore = SerialRestore(run: restoreItem)
+        let probe = SerialProbe(run: restoreCollisionProbe)
+        removalTask = Task { [weak self] in
+            let outcomes: [UndoOutcome] = await Task.detached(priority: .userInitiated) {
+                items.map { item in
+                    if probe.run(item.original.path) { return UndoOutcome.collision }
+                    do { try restore.run(item.trashed, item.original); return .restored }
+                    catch { return .failed(error.localizedDescription) }
+                }
+            }.value
+            self?.finishUndo(items, outcomes)
+        }
+    }
+
+    private func finishUndo(_ items: [RemovedItem], _ outcomes: [UndoOutcome]) {
+        removalInFlight = false
+        mutationPending = commitsInFlight > 0
+        var restored: Set<UUID> = []
+        var message: String?
+        var failureNote: String?
+        for (item, outcome) in zip(items, outcomes) {
+            switch outcome {
+            case .restored:
+                restored.insert(item.id)
+                fsEpoch += 1
+                markOutOfDate("Restored on disk. Rescan to bring it back.")
+                message = message ?? "Put \(item.original.lastPathComponent) back. Restored on disk. Rescan to bring it back."
+            case .collision: failureNote = "Could not put it back: something already exists at \(item.original.path)."; message = failureNote
+            case .failed(let reason): failureNote = "Could not put it back: \(reason)"; message = failureNote
+            }
+        }
+        if restored.count >= 2 {
+            // Batch restore: name the count, not one item's name; a collision/failure still gets said.
+            message = "Put \(restored.count) items back. Restored on disk. Rescan to bring them back." + (failureNote.map { " \($0)" } ?? "")
+        }
+        // Only successful restores are forgotten. A per-item pass touches one record; every other
+        // journaled record (and this pass's collided/failed ones) stays in the history.
+        lastRemoved = lastRemoved.filter { !restored.contains($0.id) }
+        reportRemoval(message, restored.isEmpty ? .notMoved : .putBack)
     }
 
     func reveal(_ id: UInt32) {
-        guard let tree else { return }
+        guard let tree, !navigationBlocked else { return }
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: tree.path(id))])
     }
 }
 
 func formatBytes(_ b: UInt64) -> String {
-    ByteCountFormatter.string(fromByteCount: Int64(b), countStyle: .file)
+    if b == 0 { return "0 KB" }   // ByteCountFormatter spells zero as "Zero KB"; a numeral scans faster in a size column.
+    return ByteCountFormatter.string(fromByteCount: Int64(b), countStyle: .file)
 }
 
 
@@ -424,4 +1271,11 @@ struct KindRow: Identifiable, Sendable {
     var bytes: UInt64
     var items: UInt64
     var id: FileCategory { category }
+}
+
+/// Serializes engine mutations off the main actor. A removal's filesystem move happens before it is enqueued.
+extension Result { var failureStatus: EngineStatus? { if case .failure(let e) = self { return e as? EngineStatus } else { return nil } } }
+
+actor CommitLane {
+    func forget(_ tree: Tree, _ id: UInt32) -> EngineStatus { tree.forget(id) }
 }
