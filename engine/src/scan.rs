@@ -17,7 +17,14 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Default)]
 pub struct ScanOptions {
-    /// Absolute paths whose subtrees are skipped entirely.
+    /// Absolute paths whose subtrees are skipped entirely. Matching is textual against the walked paths, which
+    /// start from the CANONICAL root, so a request is first rebased onto that basis: the scan root's own spelling
+    /// resolves to the canonical root, and a symlinked ANCESTOR above the root (macOS /var -> /private/var,
+    /// firmlinks, a user-made alias of the root itself) resolves the same way. Only a root-equivalent prefix - one
+    /// whose canonical form IS the canonical root - is ever rewritten; the rest of the request is carried verbatim
+    /// and no resolution below the root is ever APPLIED: a request spelled through a symlink ENTRY inside the tree
+    /// names no scanned entry and excludes nothing (no silent broadening onto the entry's target). Requests that match nothing are reported in
+    /// `Tree::unobserved_exclusions` with the request's original text.
     pub exclude: Vec<PathBuf>,
     /// Follow into other mounted volumes. Default false.
     pub cross_devices: bool,
@@ -155,11 +162,12 @@ const WALK_STACK_BYTES: usize = 64 << 20;
 pub fn scan(root: &Path, opts: &ScanOptions, progress: &ScanProgress) -> std::io::Result<Tree> {
     // Fail closed: every path the tree builds is root + node names, and the root is stored as text. A root that is not valid UTF-8 would be stored lossily
     // and every later removal/reveal path would point somewhere else (or nowhere).
+    let given = root;
     let root = &root.canonicalize()?;
     if root.to_str().is_none() {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "scan root path is not valid UTF-8"));
     }
-    scan_inner(root, opts, progress, None, #[cfg(test)] None)
+    scan_inner(root, opts, progress, None, #[cfg(test)] None, given)
 }
 
 /// `scan` plus progressive preview events. Events are best-effort extras bound to the sink's
@@ -178,7 +186,7 @@ pub fn scan_with_events(
     progress: &ScanProgress,
     events: &PreviewEvents,
 ) -> std::io::Result<Tree> {
-    scan_inner(root, opts, progress, Some(events), #[cfg(test)] None)
+    scan_inner(root, opts, progress, Some(events), #[cfg(test)] None, root)
 }
 
 /// Test-only: like `scan_with_events` with a mid-walk hook installed, so tests can
@@ -191,7 +199,7 @@ pub(crate) fn scan_with_events_hook(
     events: &PreviewEvents,
     hook: &(dyn Fn(&Path) + Sync),
 ) -> std::io::Result<Tree> {
-    scan_inner(root, opts, progress, Some(events), Some(hook))
+    scan_inner(root, opts, progress, Some(events), Some(hook), root)
 }
 
 fn scan_inner(
@@ -200,8 +208,15 @@ fn scan_inner(
     progress: &ScanProgress,
     events: Option<&PreviewEvents>,
     #[cfg(test)] mid_walk_hook: Option<&(dyn Fn(&Path) + Sync)>,
+    root_given: &Path,
 ) -> std::io::Result<Tree> {
     let root = root.canonicalize()?;
+    // Rebase the exclusion requests onto the walk basis (see ScanOptions::exclude). The walk starts from the
+    // canonical root and matches exclusions textually; without this, a request spelled through the caller's own
+    // (legitimate) symlinked spelling of the root - macOS /var -> /private/var is the standing case - would
+    // match nothing and the subtree the user asked to skip would stay in the tree. `excl_display` below keeps
+    // the original request text, so an unmatched request is reported the way the caller wrote it.
+    let rebased_exclude = rebase_exclusions(root_given, &root, &opts.exclude);
     if let Some(ev) = events {
         if !ev.root_matches(&root) {
             return Err(std::io::Error::new(
@@ -232,8 +247,7 @@ fn scan_inner(
         skipped: Mutex::new(Vec::new()),
         excl_hit: opts.exclude.iter().map(|_| AtomicBool::new(false)).collect(),
         excl_display: opts.exclude.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
-        exclude: opts
-            .exclude
+        exclude: rebased_exclude
             .iter()
             // An exclusion that is not valid UTF-8 can only name a non-UTF-8 entry, which the walk already leaves out, so it is never matchable (None); a lossy
             // form could overmatch a real U+FFFD-named sibling. It stays in the list so it is REPORTED as unmatched rather than silently vanishing.
@@ -292,6 +306,70 @@ fn intern_dev(devs: &Mutex<Vec<u64>>, last: &mut (u64, u8), dev: u64) -> u8 {
 
 /// parent text -> [(entry name, exclusion index)]. An exclusion "P/N" matches exactly the entry named N inside the directory whose text is P, which is the same
 /// string equality as comparing dir.join(name) with the whole exclusion, without building a path per scanned entry. The root directory "/" is keyed as "".
+/// Rebase exclusion requests onto the canonical-root basis the walk matches against. A request that IS the root
+/// or sits under it, spelled the way the caller spelled the root (macOS /var/... while the canonical root is
+/// /private/var/...), is rewritten onto the canonical root textually. The rewrite stops at the root-equivalent
+/// prefix - no symlink resolution below the root is ever applied - so a request through a symlink ENTRY inside
+/// the tree still names nothing (its target must NOT be excluded in its place - no silent broadening). A request spelled some other way entirely gets one
+/// chance through `rebase_through_root`. Non-UTF-8 requests are returned unchanged (the Ctx maps them to
+/// unmatchable None, reported NotMatchable).
+fn rebase_exclusions(root_given: &Path, root_canonical: &Path, exclude: &[PathBuf]) -> Vec<PathBuf> {
+    let given = root_given.to_string_lossy().trim_end_matches('/').to_string();
+    let can_full = root_canonical.to_string_lossy().into_owned();
+    // Join basis with NO trailing separator of its own: the canonical root "/" trims to "", so joining
+    // "<can>/<rest>" yields "/Library", never "//Library" (a double separator matches no walked path and would
+    // silently drop the exclusion - run 39668574065: firmlink test scanned all of /System, "dir nodes: 3").
+    let can = can_full.trim_end_matches('/');
+    exclude
+        .iter()
+        .map(|p| {
+            let Some(raw) = p.to_str() else { return p.clone() };
+            let trimmed = raw.trim_end_matches('/');
+            if trimmed == given {
+                // The root itself: keep the canonical root's exact spelling ("/" stays "/").
+                PathBuf::from(&can_full)
+            } else if let Some(rest) = trimmed.strip_prefix(&format!("{given}/")) {
+                PathBuf::from(format!("{can}/{rest}"))
+            } else {
+                PathBuf::from(rebase_through_root(trimmed, &can_full))
+            }
+        })
+        .collect()
+}
+
+/// A request spelled differently from the scan root can still name a directory inside the scanned tree through
+/// a symlinked ANCESTOR above the root (macOS /var -> /private/var, a firmlink, an alias of the root's parent).
+/// Candidate prefixes are canonicalized while searching, but the rewrite applies ONLY to the longest
+/// root-equivalent prefix (one whose canonical form is exactly the canonical root); every component after it is
+/// carried verbatim and no deeper resolution is ever applied - applying one could silently broaden the request
+/// onto the target of a symlink that is a scanned ENTRY inside the tree. Anything that never reaches the root is
+/// returned unchanged, as before.
+fn rebase_through_root(e: &str, root_can: &str) -> String {
+    let mut best: Option<usize> = None; // byte length of the longest prefix whose canonical form is the root
+    for (i, ch) in e.char_indices() {
+        if ch != '/' || i == 0 {
+            continue;
+        }
+        if let Ok(c) = std::fs::canonicalize(&e[..i]) {
+            if c.to_string_lossy() == root_can {
+                best = Some(i);
+            }
+        }
+    }
+    if best.is_none() {
+        if let Ok(c) = std::fs::canonicalize(e) {
+            if c.to_string_lossy() == root_can {
+                return root_can.to_string();
+            }
+        }
+    }
+    match best {
+        // Same single-separator rule: root_can "/" + rest "/sub" must yield "/sub", never "//sub".
+        Some(i) => format!("{}{}", root_can.trim_end_matches('/'), &e[i..]),
+        None => e.to_string(),
+    }
+}
+
 fn build_exclusion_index(ex: &[Option<String>]) -> std::collections::HashMap<String, Vec<(Box<str>, usize)>> {
     let mut m: std::collections::HashMap<String, Vec<(Box<str>, usize)>> = Default::default();
     for (i, x) in ex.iter().enumerate() {
@@ -811,3 +889,121 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 }
+
+#[cfg(test)]
+mod exclusion_rebase_tests {
+    //! Path-boundary battery for the exclusion rebase. The pinned contracts: single separators ALWAYS (a doubled
+    //! "/" matches no walked path and silently drops the exclusion - run 39668574065, firmlink "dir nodes: 3");
+    //! only a root-equivalent prefix is ever rewritten; below-root components are carried verbatim (no broadening
+    //! onto a symlinked entry's target); non-UTF-8 requests pass through untouched for the NotMatchable mapping.
+    use super::*;
+    use std::path::PathBuf;
+
+    fn rebased(root_given: &str, root_canonical: &str, exclusions: &[&str]) -> Vec<String> {
+        let ex: Vec<PathBuf> = exclusions.iter().map(PathBuf::from).collect();
+        rebase_exclusions(Path::new(root_given), Path::new(root_canonical), &ex)
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn sandbox(tag: &str) -> PathBuf {
+        let base = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("spz-rebase-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        base
+    }
+
+    #[test]
+    fn root_slash_never_produces_double_slash_exclusions() {
+        // The run-39668574065 repro: exclusions under "/" must keep their exact walked-path spelling.
+        assert_eq!(
+            rebased("/", "/", &["/System/Applications", "/Library", "/System"]),
+            vec!["/System/Applications", "/Library", "/System"]
+        );
+    }
+
+    #[test]
+    fn exact_root_exclusion_keeps_the_canonical_spelling() {
+        assert_eq!(rebased("/", "/", &["/"]), vec!["/"]);
+        assert_eq!(rebased("/var/", "/private/var", &["/var"]), vec!["/private/var"]);
+    }
+
+    #[test]
+    fn trailing_separators_are_ignored_on_root_and_exclusion() {
+        assert_eq!(rebased("/var", "/private/var", &["/var/log/"]), vec!["/private/var/log"]);
+        assert_eq!(rebased("/var/", "/private/var", &["/var/log"]), vec!["/private/var/log"]);
+    }
+
+    #[test]
+    fn identity_root_spelling_is_preserved_verbatim() {
+        assert_eq!(rebased("/tmp/xyz", "/tmp/xyz", &["/tmp/xyz/a/b"]), vec!["/tmp/xyz/a/b"]);
+        // An absolute path under "/" is already on the canonical basis: unchanged, still single-slash.
+        assert_eq!(rebased("/", "/", &["/nonexistent-xyz/deep"]), vec!["/nonexistent-xyz/deep"]);
+    }
+
+    #[test]
+    fn exclusion_spelled_through_a_symlinked_ancestor_of_the_root_is_honored() {
+        let base = sandbox("alias");
+        let real = base.join("real");
+        std::fs::create_dir_all(real.join("sub")).unwrap();
+        std::os::unix::fs::symlink(&real, base.join("alias")).unwrap();
+        let root_can = real.canonicalize().unwrap().to_string_lossy().into_owned();
+        let ex = base.join("alias").join("sub").to_string_lossy().into_owned();
+        assert_eq!(
+            rebased(&base.join("other-given").to_string_lossy(), &root_can, &[&ex]),
+            vec![format!("{root_can}/sub")]
+        );
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn below_root_symlink_entry_is_never_resolved_onto_its_target() {
+        let base = sandbox("entry");
+        let real = base.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::create_dir_all(base.join("other")).unwrap();
+        std::fs::write(base.join("other").join("f"), b"x").unwrap();
+        std::os::unix::fs::symlink(base.join("other"), real.join("entry")).unwrap();
+        let root = real.to_string_lossy().into_owned();
+        let ex = format!("{root}/entry/f");
+        // The walk lists `entry` as a symlink ENTRY; no scanned entry is named `entry/f`; the text must
+        // come back with `entry` unresolved (no broadening onto base/other/f).
+        assert_eq!(rebased(&root, &root, &[&ex]), vec![ex]);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn root_equivalent_alias_of_slash_rebases_with_a_single_separator() {
+        let base = sandbox("loop");
+        std::os::unix::fs::symlink("/", base.join("loop")).unwrap();
+        let ex = base.join("loop").join("sub").to_string_lossy().into_owned();
+        // Direct rebase_through_root contract: "<alias>/sub" with canonical root "/" -> "/sub", never "//sub".
+        assert_eq!(rebase_through_root(&ex, "/"), "/sub");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn nonexistent_spellings_off_the_root_basis_come_back_unchanged() {
+        let base = sandbox("nx");
+        let real = base.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let root = real.to_string_lossy().into_owned();
+        let ex = base.join("never-existed").join("deep").to_string_lossy().into_owned();
+        assert_eq!(rebased(&root, &root, &[&ex]), vec![ex]);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn non_utf8_exclusions_pass_through_byte_identical() {
+        use std::os::unix::ffi::OsStrExt;
+        let raw = std::ffi::OsStr::from_bytes(b"/var/bad\xff");
+        let ex = vec![PathBuf::from(raw)];
+        let out = rebase_exclusions(Path::new("/var"), Path::new("/private/var"), &ex);
+        assert_eq!(out[0].as_os_str().as_bytes(), b"/var/bad\xff");
+    }
+}
+
