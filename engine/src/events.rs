@@ -1081,6 +1081,35 @@ mod tests {
     }
 
     #[test]
+    fn non_utf8_root_round_trips_exactly() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let base = std::env::temp_dir().join(format!("spz-events-utf8-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let raw = OsStr::from_bytes(b"root-\xff-\xfe");
+        let dir = base.join(raw);
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub/f"), vec![1u8; 1024]).unwrap();
+        let root = dir.canonicalize().unwrap();
+        assert!(root.to_str().is_none(), "fixture must be non-UTF-8");
+        let (sink, rx) = PreviewEvents::new(5, &root);
+        let progress = ScanProgress::default();
+        scan_with_events(&root, &ScanOptions::default(), &progress, &sink).unwrap();
+        let mut events = Vec::new();
+        while let Some(e) = rx.recv_timeout(Duration::from_millis(500)) {
+            events.push(e);
+        }
+        assert!(events.iter().all(|e| e.root == root), "raw root bytes preserved");
+        assert!(sink.root_matches(&root));
+        // The collector's raw-path binding accepts the same bytes.
+        let mut c = PreviewCollector::new(5, &root, 5);
+        let s = c.push(&events[0], Instant::now());
+        assert!(s.is_some());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+
+    #[test]
     fn non_utf8_root_is_refused_not_scanned_lossily() {
         use std::ffi::OsStr;
         use std::os::unix::ffi::OsStrExt;
@@ -1096,14 +1125,14 @@ mod tests {
         // scan refuses a non-UTF-8 root outright instead of building a lossy tree. Exact
         // event-stream round-tripping is moot: no scan starts. The events machinery still binds
         // and carries exact raw path bytes for every tree it does scan.
-        let (sink, _rx) = PreviewEvents::new(5, &root);
         let progress = ScanProgress::default();
-        match scan_with_events(&root, &ScanOptions::default(), &progress, &sink) {
+        match scan(&root, &ScanOptions::default(), &progress) {
             Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput),
-            Ok(_) => panic!("a non-UTF-8 scan root must be refused, not scanned lossily"),
+            Ok(_) => panic!("the app entry must refuse a non-UTF-8 scan root, not scan it lossily"),
         }
         let _ = fs::remove_dir_all(&base);
     }
+
 
     #[test]
     fn sink_root_mismatch_is_an_error_not_wrong_events() {
