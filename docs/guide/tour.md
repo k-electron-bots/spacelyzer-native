@@ -1,6 +1,6 @@
 # Visual tour
 
-These images were captured at 1024x768 on a shared GitHub CI Mac. Their file names, counts and times are example scan results, not expected values for your Mac. They show an earlier interface checkpoint; acceptance of newer behavior is tracked separately in [verification](../verification/README.md).
+These images were captured on a shared GitHub CI Mac (CI run 39602481035, October 2026) and show the current interface. Their file names, counts and times are example scan results, not expected values for your Mac. Acceptance of behavior is tracked separately in [verification](../verification/README.md).
 
 ## Follow folders or compare areas
 ![Outline beside the treemap](../images/overview.png)
@@ -15,9 +15,9 @@ The treemap uses area for allocated size. Choose folder, kind or depth coloring.
 Kinds groups matching files by type. This helps distinguish, for example, code from archives without leaving the selected scan.
 
 ## Find large files within a filter
-![Largest view filtered by lib, with hidden selection warning](../images/filtered-largest.png)
+![Largest view filtered by pdf, with hidden selection warning](../images/filtered-largest.png)
 
-Largest lists the 200 largest matching files and their paths. The header identifies the cap. A name filter of `lib` changes every view. The orange selection warning means the selected item is outside the filter; Move to Trash stays unavailable until you clear the filter or select a matching item.
+Largest lists the 200 largest matching files and their paths. The header identifies the cap. A name filter of `pdf` changes every view. The orange selection warning means the selected item is outside the filter; Move to Trash stays unavailable until you clear the filter or select a matching item.
 
 ## Understand an empty view
 ![No matches in the outline and treemap](../images/no-matches.png)

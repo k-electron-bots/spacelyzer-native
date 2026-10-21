@@ -6,9 +6,14 @@ See what is using your disk. A native macOS disk-space analyzer with a SwiftUI i
 
 ## Explore before you remove
 
+![Kinds view grouping files by type with counts and allocated sizes](docs/images/readme-kinds.png)
+
 - Follow folders in the outline or compare their size in the treemap.
 - Switch to Kinds for a file-type breakdown, or Largest for the 200 largest matching files.
 - Combine name, extension, kind, size and modified-date filters across every view.
+
+<!-- CAPTURE PENDING: the on-disk review capture is the one missing docs capture from run 39602481035 (10 of 11 landed; the capture flow was repaired in PR126 but has not produced a capture on Mac yet). Add docs/images/readme-review.png from a future verified CI capture; no stand-in. -->
+
 - Check a scanned item on disk before deciding: preview, full path, size, then Move to Trash with Undo.
 - Move several reviewed items at once, and put any of them back from the removal history.
 - Review duplicate groups and move extra copies to the Trash.
@@ -17,11 +22,15 @@ See what is using your disk. A native macOS disk-space analyzer with a SwiftUI i
 
 Sizes describe allocated disk space, with hard links counted once. Scans stay on your Mac; the app has no networking code.
 
-## Try the development build
+## Install
 
 Requires macOS 14 or later. [Development DMGs](https://github.com/k-electron-bots/spacelyzer-native/releases) are self-signed, not notarized. This is **not a release-ready app**. Keyboard focus verification is under repair; real-Mac, VoiceOver and actual IME testing remain open.
 
-[Install and permissions](docs/guide/install.md) explains first launch and Full Disk Access without weakening macOS security. [Take the visual tour](docs/guide/tour.md) to see the views, filters and safe-removal workflow.
+1. Download the DMG and open it.
+2. Drag Spacelyzer onto Applications.
+3. Open it once, then approve it in **System Settings > Privacy & Security > Open Anyway**.
+
+[Install and permissions](docs/guide/install.md) walks through each step with pictures, then [take the visual tour](docs/guide/tour.md).
 
 The images show a shared CI Mac, not a personal Mac. They illustrate the interface, not exhaustive validation or a speed comparison.
 
@@ -29,7 +38,7 @@ The images show a shared CI Mac, not a personal Mac. They illustrate the interfa
 
 | You want to... | Start here |
 |---|---|
-| Learn the app | [Visual tour](docs/guide/tour.md) · [Space, filters and Trash](docs/guide/space-and-safety.md) |
+| Learn the app | [Quick start](docs/guide/quick-start.md) · [Visual tour](docs/guide/tour.md) · [Space, filters and Trash](docs/guide/space-and-safety.md) |
 | Build or change it | [Development](docs/development/README.md) · [Architecture](docs/development/architecture.md) · [Engine CLI](docs/development/cli.md) |
 | Check what is actually verified | [Verification status](docs/verification/README.md) |
 | Understand priorities | [Roadmap](docs/ROADMAP.md) |
