@@ -575,10 +575,28 @@ def docs_only_cases():
     prev = ''
     for st in steps:
         if str(st.get('uses', '')).startswith('actions/upload-artifact'):
-            keep = prev.startswith('Docs captures of a purpose-built')
-            check(f'docs_only: the upload after [{prev[:45]}] {"runs" if keep else "is skipped"}', runs_docs_only(st) is keep)
+            aname = str(st.get('with', {}).get('name', ''))
+            keep = aname.endswith('-docs') or (aname.endswith('-dmg') and not aname.endswith('-dmg-evidence'))
+            check(f'docs_only: the upload [{aname[:52]}] after [{prev[:40]}] {"runs" if keep else "is skipped"}', runs_docs_only(st) is keep)
         else:
             prev = st.get('name', '') or prev
+
+    du = [st for st in steps if str(st.get('uses', '')).startswith('actions/upload-artifact')
+          and str(st.get('with', {}).get('name', '')).endswith('-dmg')
+          and not str(st.get('with', {}).get('name', '')).endswith('-dmg-evidence')]
+    check('docs_only retains its own DMG artifact upload (the packaged DMG is never runner-local only)', len(du) == 1)
+    if du:
+        cond = str(du[0].get('if', ''))
+        check('docs_only DMG upload is gated on docs_only and a successful package step',
+              'inputs.docs_only' in cond and "steps.dmg.outcome == 'success'" in cond and 'always()' in cond)
+        paths = str(du[0].get('with', {}).get('path', ''))
+        check('docs_only DMG upload carries the DMG and its sha256, no screenshot evidence',
+              'dist/*.dmg' in paths and 'dist/*.sha256' in paths and 'screenshot' not in paths)
+        check('docs_only DMG upload is version-scoped', 'steps.ver.outputs.version' in str(du[0].get('with', {}).get('name', '')))
+        names_u = [st.get('name', '') or str(st.get('uses', '')) for st in steps]
+        di = [i for i, st in enumerate(steps) if st is du[0]][0]
+        check('docs_only DMG upload sits before the reset step (early retention, like the dmg-evidence upload)',
+              any(n.startswith('Reset persisted app state') for n in names_u[di + 1:]) and not any(n.startswith('Reset persisted app state') for n in names_u[:di]))
 
     v = step(doc, 'macos', 'Validate a docs_only dispatch')
     check('validation step runs only in docs_only mode', str(v.get('if', '')).strip() == '${{ inputs.docs_only }}')
