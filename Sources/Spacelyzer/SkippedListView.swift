@@ -76,9 +76,13 @@ struct SkippedListView: View {
             Text("Not scanned").font(.headline)
             Text("These locations were not scanned, so they are not in the totals.")
                 .font(.caption).foregroundStyle(.secondary)
+                // Presented surface: the safety qualifier must wrap in full, never ellipsize (run-39683697776 popover lesson).
+                .fixedSize(horizontal: false, vertical: true)
             if list.readFailed {
                 Text("The list could not be read from the engine. The scan itself is unchanged; rescan to try again.")
                     .font(.caption).foregroundStyle(.red)
+                    // Presented surface: the safety qualifier must wrap in full, never ellipsize (run-39683697776 popover lesson).
+                    .fixedSize(horizontal: false, vertical: true)
             } else if let items = list.items {
                 if items.isEmpty {
                     Text("Nothing was skipped.").font(.caption).foregroundStyle(.secondary)
@@ -118,9 +122,13 @@ struct SkippedListView: View {
         case .success(let c):
             Text("\(itemCount) skipped: \(c.permissionDenied) not allowed, \(c.unreadable) unreadable, \(c.separateVolume) on another volume, \(c.userExcluded) excluded")
                 .font(.caption).foregroundStyle(.secondary)
+                // Presented surface: the safety qualifier must wrap in full, never ellipsize (run-39683697776 popover lesson).
+                .fixedSize(horizontal: false, vertical: true)
         case .failure(let e):
             Text("The per-reason counts could not be read (engine status \(e.rawValue)). The list below is complete on its own status-checked reads.")
                 .font(.caption2).foregroundStyle(.orange)
+                // Presented surface: the safety qualifier must wrap in full, never ellipsize (run-39683697776 popover lesson).
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

@@ -180,7 +180,7 @@ def gate_cases():
     py = re.sub(r'!(?!=)', ' not ', py)
     py = re.sub(r'inputs\.(\w+)', r"I['\1']", py); py = re.sub(r'steps\.(\w+)\.outcome', r"O['\1']", py); py = re.sub(r'steps\.(\w+)\.outputs\.(\w+)', r"U['\1.\2']", py)
     def gate(I=None, O=None, U=None):
-        base_I = dict(compile_only=False, perf=False, perf_in_run=False, consolidated=True); base_I.update(I or {})
+        base_I = dict(compile_only=False, perf=False, perf_in_run=False, consolidated=True, docs_only=False); base_I.update(I or {})
         base_O = {k: 'success' for k in ['reset', 'docs', 'asserts', 'perf', 'ordering', 'rust', 'failpoints', 'bulk', 'dmg']}; base_O.update(O or {})
         base_U = {'testbuild.optional_build': ''}; base_U.update(U or {})
         return bool(eval(py, {}, {'I': base_I, 'O': base_O, 'U': base_U}))
@@ -191,6 +191,7 @@ def gate_cases():
     check('gate runs when testbuild optional_build == failed', gate(U={'testbuild.optional_build': 'failed'}) is True)
     check('gate runs when docs missing because reset failed (docs skipped, reset failure)', gate(O={'reset': 'failure', 'docs': 'skipped'}) is True)
     check('gate does NOT run for compile_only', gate(I={'compile_only': True}, O={'docs': 'failure'}) is False)
+    check('docs_only mode: the functional gate does NOT run even when reset and docs failed (the render-evidence gate owns docs_only)', gate(I={'docs_only': True}, O={'reset': 'failure', 'docs': 'failure'}) is False)
     # perf option is exclusive: every other evidence step is skipped by design and must not trip the gate; only perf matters.
     check('perf-exclusive: perf success, other steps skipped -> gate does NOT run', gate(I={'perf': True}, O={'reset': 'skipped', 'docs': 'skipped', 'asserts': 'skipped', 'ordering': 'skipped', 'rust': 'skipped', 'bulk': 'skipped', 'dmg': 'skipped'}) is False)
     for bad in ('failure', 'skipped', 'cancelled'):
@@ -241,8 +242,8 @@ def gate_cases():
     ups = [i for i, s in enumerate(doc['jobs']['macos']['steps']) if str(s.get('uses', '')).startswith('actions/upload-artifact')]
     tail = [n[:60] for n in names[gi+1:]]
     check('final gate follows every artifact upload', all(i < gi for i in ups), f'gate idx {gi}, uploads {ups}')
-    check('only the cleanup step may follow the gate',
-          all(t.startswith('Stop any app left running') for t in tail), repr(tail))
+    check('only the docs_only render gate and the cleanup step may follow the gate',
+          all(t.startswith('Stop any app left running') or t.startswith('docs_only render-evidence gate') for t in tail), repr(tail))
     # No informational warm-timing tail in this candidate: an optional step after the gate could still eat the
     # completion/artifact-finalization margin and turn a passed gate into a cancelled headline on a slow runner.
 
@@ -292,19 +293,20 @@ def perf_cases():
     py = expr.replace('&&', ' and ').replace('||', ' or ')
     py = re.sub(r'!(?!=)', ' not ', py); py = re.sub(r'inputs\.(\w+)', r"I['\1']", py); py = re.sub(r'steps\.(\w+)\.outputs\.(\w+)', r"U['\1.\2']", py)
     def runs(I=None, U=None):
-        b = dict(compile_only=False, perf=False, perf_in_run=False); b.update(I or {}); u = {'testbuild.optional_build': ''}; u.update(U or {})
+        b = dict(compile_only=False, perf=False, perf_in_run=False, docs_only=False); b.update(I or {}); u = {'testbuild.optional_build': ''}; u.update(U or {})
         return bool(eval(py, {}, {'I': b, 'U': u}))
     check('perf step runs for perf (exclusive)', runs(I={'perf': True}) is True)
     check('perf step runs for perf_in_run', runs(I={'perf_in_run': True}) is True)
     check('perf step does NOT run when neither is set', runs() is False)
     check('perf step does NOT run for compile_only', runs(I={'perf': True, 'compile_only': True}) is False)
+    check('perf step does NOT run for docs_only', runs(I={'perf': True, 'docs_only': True}) is False)
     check('perf step does NOT run when the optional test build failed', runs(I={'perf': True}, U={'testbuild.optional_build': 'failed'}) is False)
     # perf-exclusive skips every required evidence step
     skipped = [s.get('id') or s.get('name', '')[:40] for s in doc['jobs']['macos']['steps'] if s.get('id') in ('reset', 'docs', 'asserts', 'ordering', 'rust', 'bulk', 'dmg')]
     for s_ in doc['jobs']['macos']['steps']:
         if s_.get('id') in ('reset', 'docs', 'asserts', 'ordering', 'rust', 'bulk', 'dmg'):
             e2 = re.sub(r'steps\.(\w+)\.outputs\.(\w+)', r"U['\1.\2']", re.sub(r'steps\.(\w+)\.outcome', r"O['\1']", re.sub(r'inputs\.(\w+)', r"I['\1']", s_['if'].strip()[3:-2].strip().replace('&&', ' and ').replace('||', ' or ')))).replace('!', ' not ').replace(' not =', '!=') if 'if' in s_ else 'True'
-            I = dict(compile_only=False, perf=True, perf_in_run=False, consolidated=True, docs_2x=False)
+            I = dict(compile_only=False, perf=True, perf_in_run=False, consolidated=True, docs_2x=False, docs_only=False)
             ok = bool(eval(e2.replace('always()', 'True'), {}, {'I': I, 'O': {k: 'success' for k in ('reset', 'docs', 'asserts')}, 'U': {'testbuild.optional_build': ''}})) if 'if' in s_ else True
             check(f'perf-exclusive: step {s_.get("id")} is skipped', ok is False)
 
@@ -490,7 +492,126 @@ def dmg_label_plate_case():
         mid = lum(w, ch, buf, 320*sc, 340*sc, 247*sc, 287*sc)
         check(f'{path}: body between the plates stays navy (lum {mid:.2f} < 0.45)', mid < 0.45, f'{mid:.3f}')
 
-asserts_cases(); ordering_cases(); gate_cases(); perf_cases(); demo_cases(); rust_cases(); testbuild_cases(); bulk_cases(); dmg_label_plate_case(); bulk_bsd_head_case(); docs_review_flow_case(); sheet_line_case()
+
+def safety_text_cases():
+    """Run 39683697776's review-popover capture: a bare Text ellipsized the safety qualifier at the popover's fixed
+    width (ItemReview.swift:265 hid "It does not make a later removal safe."). Presented surfaces (the popover, the
+    sheets) can ideal-width-size their content, so a container width is NOT a wrapping guarantee; every prose Text
+    there carries .fixedSize(horizontal: false, vertical: true). Static pins, Linux-only: they prove the modifier is
+    present, never that the render wraps - only the real-app capture proves that."""
+    FILES = ['ItemReview.swift', 'ExclusionsView.swift', 'DuplicatesReviewView.swift', 'SkippedListView.swift', 'RemovalHistoryView.swift']
+    REQUIRED = {
+      'ItemReview.swift': ['Read only. This compares', 'The results changed while this was being checked', 'Now at this path'],
+      'ExclusionsView.swift': ['Scans skip these locations', 'No exclusions. Every location', 'The scan never observed', 'The report could not be read'],
+      'DuplicatesReviewView.swift': ['Same content in more than one copy', 'The duplicates could not be read', 'The read was canceled', 'Partial: the read hit a cap', 'hard-linked: those copies'],
+      'SkippedListView.swift': ['These locations were not scanned', 'The list could not be read', 'skipped:', 'The per-reason counts could not be read'],
+    }
+    for fn, needles in REQUIRED.items():
+        src = open(REPO + '/Sources/Spacelyzer/' + fn).read()
+        for needle in needles:
+            ok = False
+            for m in re.finditer(re.escape(needle), src):
+                start = src.rfind('Text(', 0, m.start())
+                if start == -1: continue
+                chain = src[start:start + 600]
+                if '.fixedSize(horizontal: false, vertical: true)' in chain:
+                    ok = True; break
+            check(f'{fn}: "{needle[:44]}" wraps in full (fixedSize present)', ok)
+    # Guard: no NEW bare long-prose Text in the presented-surface files. Exemptions: live progress/summary data lines
+    # (no hidden qualifier; single-line status) and Texts with their own deliberate lineLimit/truncationMode (paths).
+    EXEMPT = ['Examined ', ' groups \u00b7 ', ' unreadable \u00b7 ']
+    for fn in FILES:
+        lines = open(REPO + '/Sources/Spacelyzer/' + fn).read().splitlines()
+        for i, ln in enumerate(lines):
+            m = re.search(r'Text\("([^"]{50,})"', ln)
+            if not m: continue
+            chain = '\n'.join(lines[i:i + 6])
+            has_wrap = '.fixedSize(horizontal: false, vertical: true)' in chain
+            has_intentional = 'lineLimit' in chain or 'truncationMode' in chain
+            exempt = any(x in ln for x in EXEMPT)
+            check(f'{fn}:{i + 1} no bare long-prose Text in a presented surface', has_wrap or has_intentional or exempt, ln.strip()[:80])
+
+def docs_only_cases():
+    """The docs_only dispatch mode is render verification only: it keeps exactly the build/typecheck/package/reset/
+    docs/artifact/cleanup steps, skips every functional step with explicit labeling, never reaches a release, and
+    fails closed through its own render-evidence gate - a docs_only run never masquerades as a functional pass."""
+    doc = load(CI)
+    on = doc.get('on', doc.get(True))
+    inp = on['workflow_dispatch']['inputs'].get('docs_only', {})
+    check('docs_only input: boolean, default false', inp.get('type') == 'boolean' and inp.get('default') is False)
+    check('docs_only description: render evidence, never a functional pass, no release path',
+          'never a functional pass' in inp.get('description', '') and 'No release path' in inp.get('description', ''))
+    if not inp:
+        check('docs_only input exists (remaining docs_only checks skipped without it)', False)
+        return
+    check('engine-linux job skips docs_only', '!inputs.docs_only' in str(doc['jobs']['engine-linux'].get('if', '')))
+
+    steps = doc['jobs']['macos']['steps']
+    def tr(expr, I, O, U):
+        py = str(expr).strip()
+        if py.startswith('${{'): py = py[3:-2].strip()
+        py = py.replace('&&', ' and ').replace('||', ' or ').replace('always()', 'True')
+        py = re.sub(r'!(?!=)', ' not ', py)
+        py = re.sub(r'inputs\.(\w+)', r"I['\1']", py)
+        py = re.sub(r'steps\.(\w+)\.outcome', r"O['\1']", py)
+        py = re.sub(r'steps\.(\w+)\.outputs\.(\w+)', r"U['\1.\2']", py)
+        return bool(eval(py, {}, {'I': I, 'O': O, 'U': U}))
+    ALL_I = dict(compile_only=False, consolidated=False, perf=False, perf_in_run=False, docs_2x=False, docs_only=True)
+    ALL_O = {k: 'success' for k in ['reset', 'docs', 'asserts', 'perf', 'ordering', 'rust', 'failpoints', 'bulk', 'dmg', 'testbuild']}
+    ALL_U = {'testbuild.optional_build': ''}
+    def runs_docs_only(st):
+        if 'if' not in st: return True
+        return tr(st['if'], ALL_I, ALL_O, ALL_U)
+    SKIP = ['Build TEST-ONLY app', 'Rust engine tests', 'Failpoint panic-injection', 'Bulk backend vs portable',
+            'Scan benchmark', 'Capture DMG install window', 'Ordering driver', 'Launch app and screenshot',
+            'UI assertions', 'Docs captures, experimental', 'Perf driver', 'Fail the build if any required evidence']
+    KEEP = ['Build universal engine', 'Build Swift app', 'Typecheck the on-demand helper tools', 'Version',
+            'Import self-signed identity', 'Package signed DMG', 'Reset persisted app state',
+            'Docs captures of a purpose-built', 'Stop any app left running']
+    for frag in SKIP:
+        check(f'docs_only skips [{frag}]', runs_docs_only(step(doc, 'macos', frag)) is False)
+    for frag in KEEP:
+        check(f'docs_only keeps [{frag}]', runs_docs_only(step(doc, 'macos', frag)) is True)
+    prev = ''
+    for st in steps:
+        if str(st.get('uses', '')).startswith('actions/upload-artifact'):
+            keep = prev.startswith('Docs captures of a purpose-built')
+            check(f'docs_only: the upload after [{prev[:45]}] {"runs" if keep else "is skipped"}', runs_docs_only(st) is keep)
+        else:
+            prev = st.get('name', '') or prev
+
+    v = step(doc, 'macos', 'Validate a docs_only dispatch')
+    check('validation step runs only in docs_only mode', str(v.get('if', '')).strip() == '${{ inputs.docs_only }}')
+    check('validation step labels the evidence class (render verification, never a functional pass)', 'RENDER VERIFICATION ONLY' in v['run'] and 'never a functional pass' in v['run'])
+    def render_v(I):
+        return re.sub(r'\$\{\{ inputs\.(\w+) \}\}', lambda m: I.get(m.group(1), 'false'), v['run'])
+    w = workdir(); rc, out = run_step(render_v({}), w, '-eo pipefail'); shutil.rmtree(w)
+    check('validation passes for docs_only alone and prints the evidence-class notice', rc == 0 and 'RENDER VERIFICATION ONLY' in out, f'rc={rc} {out[-150:]}')
+    for combo in ['compile_only', 'consolidated', 'perf', 'perf_in_run', 'docs_2x']:
+        w = workdir(); rc, out = run_step(render_v({combo: 'true'}), w, '-eo pipefail'); shutil.rmtree(w)
+        check(f'validation rejects docs_only + {combo}', rc == 1 and combo in out, f'rc={rc} {out[-150:]}')
+
+    g = step(doc, 'macos', 'docs_only render-evidence gate')
+    def grate(I, O):
+        return tr(g['if'], {**ALL_I, **I}, {**ALL_O, **O}, ALL_U)
+    check('render gate runs when reset failed', grate({}, {'reset': 'failure'}) is True)
+    check('render gate runs when docs failed', grate({}, {'docs': 'failure'}) is True)
+    check('render gate runs when docs was skipped (lost evidence)', grate({}, {'docs': 'skipped'}) is True)
+    check('render gate does NOT run when reset and docs succeeded', grate({}, {}) is False)
+    check('render gate never runs outside docs_only', grate({'docs_only': False}, {'reset': 'failure'}) is False)
+    def render_g(O):
+        def sub(m):
+            mo = re.fullmatch(r'\$\{\{ steps\.(\w+)\.outcome \}\}', m.group(0))
+            if mo: return O.get(mo.group(1), 'success')
+            raise AssertionError(m.group(0))
+        return re.sub(r'\$\{\{[^}]+\}\}', sub, g['run'])
+    w = workdir(); rc, out = run_step(render_g({'reset': 'failure', 'docs': 'skipped'}), w, '-eo pipefail'); shutil.rmtree(w)
+    check('render gate body names the failing outcomes', rc == 1 and 'reset=failure' in out and 'docs=skipped' in out, f'rc={rc} {out[-150:]}')
+    names = [st.get('name', '') or str(st.get('uses', '')) for st in steps]
+    gi = [i for i, n in enumerate(names) if n.startswith('docs_only render-evidence gate')][0]
+    check('render gate sits immediately before the cleanup step', names[gi + 1].startswith('Stop any app left running'))
+
+asserts_cases(); ordering_cases(); gate_cases(); perf_cases(); demo_cases(); rust_cases(); testbuild_cases(); bulk_cases(); dmg_label_plate_case(); bulk_bsd_head_case(); docs_review_flow_case(); sheet_line_case(); safety_text_cases(); docs_only_cases()
 typecheck_case(); docs_cases(CI, 'head', True)
 if base_ci: docs_cases(base_ci, 'base', False)
 timing()
