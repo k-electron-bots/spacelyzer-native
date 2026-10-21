@@ -73,10 +73,14 @@ fn main() {
             let rects = layout(&tree, 0, &LayoutOptions { width: 1600.0, height: 1000.0, ..Default::default() });
             println!("layout: {} rects in {:.3}ms", rects.len(), t1.elapsed().as_secs_f64() * 1000.0);
         }
-        "verify" => {
+        "verify" | "verify-cold" => {
             // Correctness compare uses the first pair (unchanged semantics). Each backend is then
             // scanned a second time so the printed times include a warm-cache run for both; the
             // ratio uses the warm runs because the first default scan is systematically colder.
+            // `verify-cold` skips the warm re-runs: the CI bulk step gates on cold agreement only,
+            // and the warm timings live in a separate informational step so a slow shared runner
+            // cannot spend the binding step's timeout on non-gating measurements.
+            let cold_only = cmd == "verify-cold";
             let t_fast = Instant::now();
             let fast = scan(&path, &ScanOptions::default(), &ScanProgress::default()).expect("scan failed");
             let dt_fast_cold = t_fast.elapsed();
@@ -84,17 +88,26 @@ fn main() {
             let slow = scan(&path, &ScanOptions { force_portable: true, ..Default::default() }, &ScanProgress::default()).expect("scan failed");
             let dt_slow_cold = t_slow.elapsed();
             let agree = fast.items == slow.items && fast.size(0) == slow.size(0);
-            let t_fast2 = Instant::now();
-            scan(&path, &ScanOptions::default(), &ScanProgress::default()).expect("scan failed");
-            let dt_fast_warm = t_fast2.elapsed();
-            let t_slow2 = Instant::now();
-            scan(&path, &ScanOptions { force_portable: true, ..Default::default() }, &ScanProgress::default()).expect("scan failed");
-            let dt_slow_warm = t_slow2.elapsed();
-            println!("default : {} items {} bytes in {:.3}s (warm: {:.3}s)", fast.items, fast.size(0), dt_fast_cold.as_secs_f64(), dt_fast_warm.as_secs_f64());
-            println!("portable: {} items {} bytes in {:.3}s (warm: {:.3}s)", slow.items, slow.size(0), dt_slow_cold.as_secs_f64(), dt_slow_warm.as_secs_f64());
+            let mut dt_fast_warm = dt_fast_cold;
+            let mut dt_slow_warm = dt_slow_cold;
+            if !cold_only {
+                let t_fast2 = Instant::now();
+                scan(&path, &ScanOptions::default(), &ScanProgress::default()).expect("scan failed");
+                dt_fast_warm = t_fast2.elapsed();
+                let t_slow2 = Instant::now();
+                scan(&path, &ScanOptions { force_portable: true, ..Default::default() }, &ScanProgress::default()).expect("scan failed");
+                dt_slow_warm = t_slow2.elapsed();
+            }
+            if cold_only {
+                println!("default : {} items {} bytes in {:.3}s (cold only)", fast.items, fast.size(0), dt_fast_cold.as_secs_f64());
+                println!("portable: {} items {} bytes in {:.3}s (cold only)", slow.items, slow.size(0), dt_slow_cold.as_secs_f64());
+            } else {
+                println!("default : {} items {} bytes in {:.3}s (warm: {:.3}s)", fast.items, fast.size(0), dt_fast_cold.as_secs_f64(), dt_fast_warm.as_secs_f64());
+                println!("portable: {} items {} bytes in {:.3}s (warm: {:.3}s)", slow.items, slow.size(0), dt_slow_cold.as_secs_f64(), dt_slow_warm.as_secs_f64());
+            }
             if agree {
                 println!("OK backends agree");
-                if dt_fast_warm.as_secs_f64() > 0.0 {
+                if !cold_only && dt_fast_warm.as_secs_f64() > 0.0 {
                     println!("portable/default warm-time ratio: {:.2}x", dt_slow_warm.as_secs_f64() / dt_fast_warm.as_secs_f64());
                 }
             } else {

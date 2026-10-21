@@ -11,6 +11,7 @@ import Darwin
 //   docs-capture <pid> type <text>       focus "Filter by name" and type <text>
 //   docs-capture <pid> select <index>    select the row at <index> of the first table
 //   docs-capture <pid> escape            press Escape
+//   docs-capture <pid> hastext <text>    exit 0 only if <text> appears in some element's title/description/value/label
 // Exit 1 when a control is not found. Never touches the Trash or any real file.
 let args = CommandLine.arguments
 guard args.count >= 3, let pid = Int32(args[1]) else { FileHandle.standardError.write(Data("usage\n".utf8)); exit(2) }
@@ -80,6 +81,14 @@ case "select":
     guard let table = descendants().first(where: { string($0, "AXRole") == "AXTable" || string($0, "AXRole") == "AXOutline" }),
           let rows = read(table, "AXRows") as? [AXUIElement], index < rows.count else { print("no row \(args[3])"); exit(1) }
     guard AXUIElementSetAttributeValue(rows[index], "AXSelected" as CFString, kCFBooleanTrue) == .success else { print("select failed"); exit(1) }
+case "hastext":
+    guard args.count == 4 else { exit(2) }
+    let needle = args[3]
+    let hit = descendants().contains { element in
+        string(element, "AXTitle").contains(needle) || string(element, "AXDescription").contains(needle) ||
+        string(element, "AXValue").contains(needle) || string(element, "AXLabel").contains(needle)
+    }
+    if !hit { print("text not present: \(needle)"); exit(1) }
 case "escape":
     NSRunningApplication(processIdentifier: pid)?.activate()
     usleep(300_000)
