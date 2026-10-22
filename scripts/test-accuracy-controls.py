@@ -25,13 +25,15 @@ try:
     open(f'{root}/{nfc}', 'w').write('c'); open(f'{root}/{nfd}', 'w').write('d')
     if len([x for x in os.listdir(root) if unicodedata.normalize('NFC', x) == nfc]) == 2: print('probe: NFC and NFD names distinct')
     else: print('NOT-RUN: NFC/NFD collapse (normalizing fs)'); notrun.append('nfc')
-    try: open(os.fsencode(root) + b'/bad\xff', 'wb').write(b'n'); nonutf = True
-    except OSError: print('NOT-RUN: fs refuses non-UTF-8 names'); notrun.append('nonutf8'); nonutf = False
+    nonutf = True
+    try:
+        for nm in (b'bad\xff', b'bad\xfe', b'bad\xff\xff'): open(os.fsencode(root) + b'/' + nm, 'wb').write(b'n')
+    except OSError as e: print(f'NOT-RUN: fs refuses non-UTF-8 names (errno {e.errno}, {os.strerror(e.errno)}; macOS APFS gives EILSEQ 92) - the lossy-SKIP cases below did not execute'); notrun.append('nonutf8'); nonutf = False
     unread = 0
     if os.getuid() != 0:
         os.mkdir(root + '/noperm'); open(root + '/noperm/h', 'w').write('z'); os.chmod(root + '/noperm', 0); unread = 1
     else: print('NOT-RUN: root user, chmod 000 not enforceable'); notrun.append('unreadable')
-    exp_skips = unread + (1 if nonutf else 0)
+    exp_skips = unread + (3 if nonutf else 0)
     def pn(tamper=None):
         cmd = SPZ if tamper is None else [sys.executable, H + '/tamper-dump.py', 'dump']
         if tamper: os.environ['SPZ_REAL'] = SPZ; os.environ['TAMPER'] = tamper
@@ -44,9 +46,20 @@ try:
     for t, want in [('file_bytes', 1), ('dir_bytes', 1), ('drop_file', 1), ('extra_node', 1), ('kind_swap', 1)]:
         r = pn(t); ck(f'tamper {t} caught by node diff', r['diff_count'] >= want, r['diff_count'])
     r = pn('drop_skip'); ck('tamper drop_skip caught by skip accounting', exp_skips == 0 or len(r['skips']) != r['expected_skips'], r['skips'])
+    if nonutf:
+        r = pn(); ck('three distinct invalid names stay THREE skips (not collapsed) and ambiguity is declared', len([p for _, p in r['skips'] if '\ufffd' in p]) == 3 and r['lossy_ambiguous'] is True, r['skips'])
+        r = pn('drop_one_skip'); ck('dropping ONE lossy skip is caught (multiset)', r['diff_count'] >= 1 and any(d[0] == 'lossy_skip_multiset' for d in r['diffs']), r['diffs'])
     r = pn('extra_skip'); ck('tamper extra_skip caught by skip accounting', len(r['skips']) != r['expected_skips'], r['skips'])
     r = pn('mutate'); ck('tree changed during engine run is flagged DRIFT (inconclusive), not an engine diff', r['drift'], r)
     os.unlink(root + '/drift_new')
+    # totals gate: a fake spz that mutates the tree while running must give DRIFT (rc 4), a faithful run AGREE (0), a wrong total DISAGREE (1), a tiny cap INCOMPLETE (3)
+    def totals(fake_body, *extra):
+        f = tempfile.mktemp(suffix='.sh'); open(f, 'w').write('#!/bin/sh\n' + fake_body); os.chmod(f, 0o755)
+        r = subprocess.run([sys.executable, H + '/independent-size-oracle.py', root, '--spz', f, *extra], capture_output=True, text=True); os.unlink(f); return r.returncode
+    ck('totals AGREE rc0 on the real engine', subprocess.run([sys.executable, H + '/independent-size-oracle.py', root, '--spz', SPZ], capture_output=True).returncode == 0)
+    ck('totals DRIFT rc4 when the tree changes during the engine run', totals(f'echo late > "{root}/drift2"; exec "{SPZ}" verify-cold "$2"') == 4); os.unlink(root + '/drift2')
+    ck('totals DISAGREE rc1 on a wrong engine total', totals('echo "default : 1 items 1 bytes in 0.0s (cold only)"') == 1)
+    ck('totals INCOMPLETE rc3 under an item cap, nothing claimed', totals('exit 0', '--max-items', '3') == 3)
     # dump faithfulness: backslash, literal \n, tab, newline names come back as exactly the oracle's paths (diff_count 0 above already proves it); invalid UTF-8 is listed, not in tree
     if nonutf:
         d = subprocess.run([SPZ, 'dump', root], capture_output=True, text=True).stdout

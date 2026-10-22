@@ -8,7 +8,9 @@ Unreadable directories/entries are listed, never silently dropped. Output is JSO
 items+allocated, exit 1 on disagreement. Exact comparison is only meaningful on a QUIET tree; --tolerate-bytes/--tolerate-items allow stated drift."""
 import argparse, json, os, subprocess, sys, re
 
-def walk(root, nodes=None):
+class Capped(Exception): pass
+
+def walk(root, nodes=None, max_items=None, deadline=None):
     items = alloc = logical = symlinks = extra_links = 0
     seen = set(); unreadable = []; nonutf8 = []; stack = [root]; dirs = 0
     while stack:
@@ -21,6 +23,8 @@ def walk(root, nodes=None):
             try: os.fsencode(e.name).decode('utf-8')
             except UnicodeDecodeError: nonutf8.append(e.path); continue   # documented engine rule: not in the tree or any total, listed as skipped (lossy)
             items += 1
+            if max_items is not None and items > max_items: raise Capped(f'items>{max_items}')
+            if deadline is not None and (items & 1023) == 0 and __import__('time').monotonic() > deadline: raise Capped('time')
             try: st = e.stat(follow_symlinks=False)
             except OSError as er:
                 unreadable.append([e.path, er.errno]); continue
@@ -34,7 +38,7 @@ def walk(root, nodes=None):
                 seen.add((st.st_dev, st.st_ino))
             alloc += st.st_blocks * 512
     return dict(root=root, items=items, dirs=dirs, allocated_bytes=alloc, logical_bytes=logical, symlinks=symlinks,
-                extra_hardlink_entries=extra_links, unreadable=unreadable, nonutf8_names=len(nonutf8))
+                extra_hardlink_entries=extra_links, unreadable=unreadable, nonutf8_names=len(nonutf8), nonutf8_raw_hex=sorted(os.fsencode(x).hex() for x in nonutf8), nonutf8_lossy=sorted(os.fsencode(x).decode('utf-8', 'replace') for x in nonutf8), lossy_ambiguous=len(set(os.fsencode(x).decode('utf-8', 'replace') for x in nonutf8)) < len(nonutf8))
 
 def unesc(t):
     o = []; i = 0
@@ -72,26 +76,38 @@ def per_node(root, binp, has_hardlinks):
         if want[p][0] == 'Directory':
             if not has_hardlinks and eng[p][1] != cum.get(p, 0): diffs.append(['dir_size', p, cum.get(p, 0), eng[p][1]])
         elif not has_hardlinks and eng[p][1] != nodes[p][1]: diffs.append(['file_size', p, nodes[p][1], eng[p][1]])
+    lossy_got = sorted(p for _, p in skips if '\ufffd' in p)
+    if lossy_got != pre['nonutf8_lossy']: diffs.append(['lossy_skip_multiset', pre['nonutf8_lossy'][:3], lossy_got[:3]])   # compares as a multiset: raw names may be indistinguishable after lossy rendering, counts are not
     post_nodes = {}; post = walk(root, post_nodes)
     drift = post_nodes != nodes or post['items'] != pre['items'] or post['allocated_bytes'] != pre['allocated_bytes']   # tree changed while the engine ran: result is INCONCLUSIVE, not an engine fault
-    return dict(nodes=len(want), diffs=diffs[:20], diff_count=len(diffs), skips=skips, drift=drift, expected_skips=len(pre['unreadable']) + pre['nonutf8_names'])
+    return dict(nodes=len(want), diffs=diffs[:20], diff_count=len(diffs), skips=skips, drift=drift, expected_skips=len(pre['unreadable']) + pre['nonutf8_names'], lossy_ambiguous=pre['lossy_ambiguous'])
 
-def spz_line(binp, root):
-    r = subprocess.run([binp, 'verify-cold', root], capture_output=True, text=True)
+def spz_line(binp, root, timeout=None):
+    r = subprocess.run([binp, 'verify-cold', root], capture_output=True, text=True, timeout=timeout)
     m = re.search(r'^default : (\d+) items (\d+) bytes', r.stdout, re.M)
     if not m: return None, r.returncode, r.stdout + r.stderr
     return (int(m.group(1)), int(m.group(2))), r.returncode, r.stdout
 
 def main():
+    import time
     ap = argparse.ArgumentParser(); ap.add_argument('root'); ap.add_argument('--spz'); ap.add_argument('--tolerate-bytes', type=int, default=0); ap.add_argument('--tolerate-items', type=int, default=0)
-    a = ap.parse_args(); root = os.path.realpath(a.root)
-    o = walk(root)
+    ap.add_argument('--max-items', type=int); ap.add_argument('--max-seconds', type=float)
+    a = ap.parse_args(); root = os.path.realpath(a.root); dl = None if a.max_seconds is None else time.monotonic() + a.max_seconds
+    try: o = walk(root, max_items=a.max_items, deadline=dl)
+    except Capped as c:
+        print(json.dumps(dict(root=root, verdict='INCOMPLETE', reason=f'oracle cap reached ({c}); no comparison made, nothing is claimed'), indent=1)); return 3
     if a.spz:
-        got, rc, out = spz_line(a.spz, root)
+        left = None if dl is None else max(1.0, dl - time.monotonic())
+        try: got, rc, out = spz_line(a.spz, root, left)
+        except subprocess.TimeoutExpired:
+            print(json.dumps(dict(root=root, verdict='INCOMPLETE', reason='engine timed out under the time cap; no comparison made'), indent=1)); return 3
+        try: o2 = walk(root, max_items=a.max_items)
+        except Capped: o2 = None
         o['spz'] = None if got is None else dict(items=got[0], allocated_bytes=got[1], exit=rc)
+        drift = o2 is None or o2['items'] != o['items'] or o2['allocated_bytes'] != o['allocated_bytes']   # oracle's own before/after differ: the tree moved
         ok = got is not None and abs(got[0] - o['items']) <= a.tolerate_items and abs(got[1] - o['allocated_bytes']) <= a.tolerate_bytes
-        o['verdict'] = 'AGREE' if ok else 'DISAGREE'
+        o['verdict'] = 'AGREE' if ok and not drift else ('DRIFT' if drift else 'DISAGREE')   # DRIFT = inconclusive, never blamed on the engine
         if got: o['delta'] = dict(items=got[0] - o['items'], allocated_bytes=got[1] - o['allocated_bytes'])
-        print(json.dumps(o, indent=1)); return 0 if ok else 1
+        print(json.dumps(o, indent=1)); return {'AGREE': 0, 'DISAGREE': 1, 'DRIFT': 4}[o['verdict']]
     print(json.dumps(o, indent=1)); return 0
 if __name__ == '__main__': sys.exit(main())
