@@ -37,6 +37,13 @@ cp valid.a target/ci-checks/release/libspacelyzer_engine.a
     (w/'valid.a').write_bytes(good)
     r=subprocess.run(['bash','scripts/build-ci-engine.sh'],cwd=w,env=dict(env,SPZ_LLVM_NM=str(w/'absent')),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     assert r.returncode!=0 and b'cannot inspect CI engine symbols' in r.stdout+r.stderr
+    # llvm-nm line-format contract for the CI symbols: addressed and addressless `T` lines both count; U or lowercase t do not.
+    def fixed(text):
+        f=w/'fixednm.sh';f.write_text('#!/bin/sh\ncat <<EOF2\n'+text+'\nEOF2\n');f.chmod(0o755);return str(f)
+    names=['spz_ci_scan_start_parked','spz_ci_scan_gate_state','spz_ci_scan_gate_release']
+    for fmt,code in [('0000000000000000 T _%s',0),('---------------- T _%s',0),('T _%s',0),('T %s',0),('                 U _%s',1),('0000 t _%s',1)]:
+        r=subprocess.run(['bash','scripts/build-ci-engine.sh'],cwd=w,env=dict(env,SPZ_LLVM_NM=fixed('\n'.join(fmt%n for n in names))),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        assert (r.returncode==0)==(code==0),(fmt,r.returncode,r.stdout,r.stderr)
     print('PASS actual shell: isolated paths, shipping unchanged, CI symbol definitions, build failure propagation')
 pkg=(repo/'Package.swift').read_text();test=(repo/'scripts/build-test-app.sh').read_text()
 assert 'ciEngine ? ["-Lbuild/ci-lib", "-lspacelyzer_ci"] : ["-Lbuild/lib", "-lspacelyzer_engine"]' in pkg

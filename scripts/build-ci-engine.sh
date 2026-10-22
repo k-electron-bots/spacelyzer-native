@@ -20,6 +20,6 @@ symdir=build/ci-lib/symbols; rm -rf "$symdir"
 bash scripts/dump-symbols.sh "$ci" "$symdir" || { echo "cannot inspect CI engine symbols: $ci"; exit 1; }
 for f in "$symdir"/*.txt; do
   for symbol in spz_ci_scan_start_parked spz_ci_scan_gate_state spz_ci_scan_gate_release; do
-    grep -E "[[:space:]]T[[:space:]]_?$symbol$" "$f" >/dev/null || { echo "missing CI symbol definition $symbol in slice $(basename "$f" .txt)"; exit 1; }
+    grep -E "(^|[[:space:]])T[[:space:]]+_?$symbol$" "$f" >/dev/null || { echo "missing CI symbol definition $symbol in slice $(basename "$f" .txt)"; exit 1; }
   done
 done
