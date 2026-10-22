@@ -158,7 +158,7 @@ jobs:
           SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
         run: |
           set -o pipefail
-          swift build -c release --arch arm64 --arch x86_64 2>&1 | tail -5
+          bash scripts/shipping-swift.sh -c release --arch arm64 --arch x86_64 2>&1 | tail -5
           echo "compile-candidate=PASS" | tee measure-out/compile-candidate.txt
           HASH="$(./scripts/sign-setup.sh | tail -1)"
           echo "signhash=$HASH" >> "$GITHUB_ENV"

@@ -258,7 +258,7 @@ jobs:
       - name: Build Swift app
         run: |
           set -o pipefail
-          swift build -c release --arch arm64 --arch x86_64 2>&1 | tee /tmp/swiftbuild.log || {
+          bash scripts/shipping-swift.sh -c release --arch arm64 --arch x86_64 2>&1 | tee /tmp/swiftbuild.log || {
             grep -E "error:" /tmp/swiftbuild.log | sort -u | head -15 | while IFS= read -r l; do echo "::error::${l//%/%25}"; done
             exit 1
           }

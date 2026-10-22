@@ -10,10 +10,7 @@ shipping_before=$(shasum -a 256 build/lib/libspacelyzer_engine.a | awk '{print $
 bash scripts/build-ci-engine.sh
 shipping_after=$(shasum -a 256 build/lib/libspacelyzer_engine.a | awk '{print $1}')
 [ "$shipping_before" = "$shipping_after" ] || { echo "shipping engine bytes changed"; exit 1; }
-nm -g build/lib/libspacelyzer_engine.a > build/ci-lib/shipping-symbols.txt 2>/dev/null
-if grep -E '[[:space:]]T[[:space:]]_?spz_ci_scan_' build/ci-lib/shipping-symbols.txt >/dev/null; then
-  echo "CI rendezvous leaked into shipping library"; exit 1
-fi
+bash scripts/check-no-ci-symbols.sh build/lib/libspacelyzer_engine.a
 export SPZ_CI_ENGINE=1
 # Optional extra compile flags (space-separated names, e.g. "SPZ_CI_PERF SPZ_CI_SHOTS"). Empty by default: the ordinary test build is unchanged.
 EXTRA=(); for d in ${SPZ_TEST_EXTRA_DEFINES:-}; do EXTRA+=(-Xswiftc "-D$d"); done
