@@ -44,10 +44,10 @@ need(case1(True, 300, None, True, True, 80_000), 'case1: the real happy state PA
 
 # case 2: immediate cancel returns promptly; tree nil or flagged cancelled
 def case2(imm_ms, has_tree, cancelled):
-    return imm_ms < 10_000 and (not has_tree or cancelled)
+    return imm_ms < 10_000 and has_tree and cancelled
 need(not case2(11_000, False, False), 'case2: return beyond the bound FAILS (hang risk)')
 need(not case2(50, True, False), 'case2: unflagged tree after pre-set cancel FAILS')
-need(case2(50, False, False), 'case2: prompt nil return PASSES')
+need(not case2(50, False, False), 'case2: prompt nil failure REFUSED')
 need(case2(50, True, True), 'case2: prompt cancelled-flagged tree PASSES')
 
 # case 3: rescan after cancel is exact, complete and unflagged
