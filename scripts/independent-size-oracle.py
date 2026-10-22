@@ -83,14 +83,16 @@ def per_node(root, binp, has_hardlinks, backend='default', deadline=None):
                 cum[d] = cum.get(d, 0) + sz
                 if d == root: break
                 d = os.path.dirname(d)
-    r = run_bounded(([binp, 'dump', root] if isinstance(binp, str) else binp + [root]) + (['portable'] if backend == 'portable' and isinstance(binp, str) else []), None if deadline is None else max(1.0, deadline - time.monotonic()))
+    r = run_bounded(([binp, 'dump', root] if isinstance(binp, str) else binp + [root]) + [backend], None if deadline is None else max(1.0, deadline - time.monotonic()))
     eng = {}; skips = []; diffs = []
     if r.returncode != 0: diffs.append(['dump_exit', r.returncode, r.stderr[-200:]])
     for line in r.stdout.splitlines():
         a = line.split('\t')
         if len(a) != 3: diffs.append(['dump_unparseable', line[:80]]); continue
         if a[0] == 'SKIP': skips.append((a[1], unesc(a[2]))); continue
-        eng[unesc(a[2])] = (a[0], int(a[1]))
+        pth = unesc(a[2])
+        if pth in eng: diffs.append(['dump_duplicate_path', pth, eng[pth], (a[0], a[1])])   # never silently overwrite
+        eng[pth] = (a[0], int(a[1]))
     want = {root: ('Directory', None)}; want.update({p: (k, None) for p, (k, _) in nodes.items()})
     for p in sorted(set(want) | set(eng)):
         if p not in eng: diffs.append(['only_oracle', p]); continue
