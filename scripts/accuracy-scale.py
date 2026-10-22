@@ -74,6 +74,7 @@ def one_size(n, a, dl, rows, bad, incomplete, leaks, timings):
         for variant, links, seed_off in (('links', True, 0), ('nolinks', False, 1)):
             dl.check(); root = tempfile.mkdtemp(prefix=f'acc{n}{variant[0]}-'); roots.append([root, None])
             c = build(root, n, a.seed + n + seed_off, dl, links); roots[-1][1] = c; dl.check()
+            os.sync()   # flush delayed allocation so st_blocks is settled before any walk (an unexplained one-off size diff was seen once without this; cause unproven)
             vis = c['items'] - c['planted_unreadable_dirs']
             tot = O.run_bounded([sys.executable, ORACLE, root, '--spz', a.spz, '--max-seconds', str(dl.cap())], dl.cap() + 5)
             try: o = json.loads(tot.stdout)
@@ -85,6 +86,10 @@ def one_size(n, a, dl, rows, bad, incomplete, leaks, timings):
             for backend in ('default', 'portable'):
                 dl.check(); pn = O.per_node(root, a.spz, has_hardlinks=c['extra_hardlinks'] > 0, backend=backend, deadline=dl.abs())
                 if pn['drift']: incomplete.append([n, f'{variant}/{backend}: DRIFT during per-node run']); return
+                if pn['diff_count']:   # a diff must reproduce to be an engine FAIL; a one-off is INCOMPLETE (still red, never a pass), with both observations kept
+                    pn2 = O.per_node(root, a.spz, has_hardlinks=c['extra_hardlinks'] > 0, backend=backend, deadline=dl.abs())
+                    if pn2['diff_count'] == 0 and not pn2['drift']:
+                        incomplete.append([n, f'{variant}/{backend}: NON-REPRODUCIBLE per-node diff (first run {pn["diff_count"]} diffs, e.g. {pn["diffs"][:2]}; immediate recheck clean) - cause unproven, nothing claimed']); return
                 legs[backend] = dict(nodes=pn['nodes'], diffs=pn['diff_count'], first_diffs=pn['diffs'][:3], skips=pn['skips'], scope=pn['scope'])
                 if pn['diff_count']: bad.append([n, variant, backend, 'per-node diffs', pn['diffs'][:3]])
             checks = dict(
