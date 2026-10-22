@@ -102,3 +102,17 @@ if sys.platform!='darwin':
         r=subprocess.run([sys.executable,str(p),'--app','/not/app','--work',str(w),'--job-deadline-epoch','0'],capture_output=True,text=True,env=dict(os.environ,RUNNER_TEMP=str(rt)))
         assert r.returncode!=0 and (w/'segment-verdict.txt').read_text().startswith('NOT-RUN'),(r.returncode,r.stderr)
         print('PASS early precondition failure leaves a NOT-RUN verdict artifact and stays red')
+# admission guard: the extended budget never bypasses any fail-closed check
+def adm(**kw):
+    d=dict(budget_seconds=1000,max_budget_seconds=1200,artifact_reserve_seconds=120,teardown_seconds=190,job_deadline_epoch=10000.0)
+    d.update(kw); return m.admission(types.SimpleNamespace(**d),10000.0-1400,'darwin')   # 1400 s left: 1400-120-190=1090 available
+assert adm() is None
+assert adm(budget_seconds=1100)[0]=='INCOMPLETE'                 # more than the deadline can hold
+assert adm(teardown_seconds=300)[0]=='INCOMPLETE'                # teardown is counted
+assert adm(budget_seconds=1300)[0] in ('INCOMPLETE','FAIL')
+assert adm(budget_seconds=1000,max_budget_seconds=900)[0]=='FAIL'  # above the stated max
+assert adm(max_budget_seconds=1501)[0]=='FAIL' and adm(max_budget_seconds=419)[0]=='FAIL'
+assert adm(artifact_reserve_seconds=119)[0]=='FAIL' and adm(teardown_seconds=-1)[0]=='FAIL' and adm(budget_seconds=239)[0]=='FAIL'
+assert m.admission(types.SimpleNamespace(budget_seconds=360,max_budget_seconds=420,artifact_reserve_seconds=120,teardown_seconds=0,job_deadline_epoch=9e9),0,'linux')[0]=='NOT-RUN'
+assert adm(budget_seconds=360,max_budget_seconds=420) is None  # the default consolidated shape is unchanged
+print('PASS admission guard: extended budget keeps platform/reserve/teardown/deadline/ceiling checks fail-closed')
