@@ -15,7 +15,9 @@ try:
     open(root + '/a/b/c/deep', 'wb').write(b'y' * 9000)
     with open(root + '/a/sparse', 'wb') as f: f.truncate(1 << 30)
     os.symlink('missing', root + '/dangling'); os.symlink('..', root + '/loop'); os.symlink(root + '/a', root + '/abs')
-    os.mkfifo(root + '/fifo'); s = socket.socket(socket.AF_UNIX); s.bind(root + '/sock')
+    os.mkfifo(root + '/fifo')
+    try: s = socket.socket(socket.AF_UNIX); s.bind(root + '/sock')
+    except OSError as e: print(f'NOT-RUN: unix socket bind failed ({e}); path too long or unsupported'); notrun.append('socket')
     open(root + '/back\\slash', 'w').write('1'); open(root + '/lit\\n', 'w').write('2'); open(root + '/tab\tname', 'w').write('3'); open(root + '/new\nline', 'w').write('4')
     # capability probes: case folding and normalization
     a, b = root + '/Case.txt', root + '/case.txt'; open(a, 'w').write('A'); open(b, 'w').write('B')
