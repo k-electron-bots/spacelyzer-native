@@ -45,6 +45,15 @@ try:
     ck('baseline skipped accounting equals oracle expectation', len(r['skips']) == exp_skips == r['expected_skips'], (r['skips'], exp_skips))
     ck('baseline no drift', not r['drift'])
     ck('expected and engine skip (reason, path) lists are retained outside the capped diffs', r['expected_skip_reasons'] == r['got_skip_reasons'] and len(r['expected_skip_reasons']) == exp_skips, (r['expected_skip_reasons'], r['got_skip_reasons']))
+    if os.geteuid() != 0:
+        sk = os.path.realpath(tempfile.mkdtemp(prefix='accskip-'))
+        try:
+            for i in range(60): d_ = f'{sk}/u{i:02d}'; os.mkdir(d_); open(d_ + '/x', 'w').write('1'); os.chmod(d_, 0)
+            rs = O.per_node(sk, SPZ, has_hardlinks=False, backend='default')
+            ck('60 skips: cap, totals, kept and dropped counts explicit; internal comparison uncapped (0 diffs)', rs['skip_list_cap'] == 50 and rs['expected_skips_total'] == rs['got_skips_total'] == 60 and rs['expected_skips_kept'] == rs['got_skips_kept'] == 50 and rs['expected_skips_dropped'] == rs['got_skips_dropped'] == 10 and rs['diff_count'] == 0, {k: rs[k] for k in rs if 'skip' in k and 'reasons' not in k} | {'diffs': rs['diffs'][:2]})
+        finally:
+            for i in range(60): os.chmod(f'{sk}/u{i:02d}', 0o755)
+            shutil.rmtree(sk, ignore_errors=True)
     # ROOT ALIAS (macOS: tempfile roots under /var/folders are reached through the /var -> /private/var symlink; the engine reports the canonical root).
     # The oracle must resolve the root ONCE, up front, for both its walk and the engine dump. Only the root is resolved; nothing below it is followed.
     alias = root + '-alias'
