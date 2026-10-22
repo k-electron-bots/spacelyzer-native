@@ -241,9 +241,14 @@ jobs:
       - name: Anchor hard35min job clock before checkout and builds
         run: |
           echo "SPZ_JOB_DEADLINE_EPOCH=$(( $(date +%s) + 2100 ))" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+      - name: Prepare diagnostics dir and shared compile work deadline (after checkout, which cleans the workspace)
+        run: |
           # Diagnostic collection dir (compile_only uploads it; scripts/dump-symbols.sh copies every symbol dump here, also on failure).
           mkdir -p "$GITHUB_WORKSPACE/diag-out"; echo "SPZ_DIAG_DIR=$GITHUB_WORKSPACE/diag-out" >> "$GITHUB_ENV"
-      - uses: actions/checkout@v4
+          # compile_only: ONE shared deadline for all compile work = the 35-min job clock (anchored before checkout, so checkout and
+          # setup count) minus a 360 s reserve for the collect (2 min) + upload (3 min) step timeouts and 60 s of margin.
+          if [ "${{ inputs.compile_only }}" = "true" ]; then echo "SPZ_COMPILE_DEADLINE_EPOCH=$(( SPZ_JOB_DEADLINE_EPOCH - 360 ))" >> "$GITHUB_ENV"; fi
       - name: Validate exclusive technical-hardening input
         if: ${{ inputs.technical_hardening }}
         run: |
@@ -285,13 +290,14 @@ jobs:
       - name: Build universal engine
         id: engine
         run: |
-          set -o pipefail
-          ./scripts/build-engine.sh 2>&1 | tee "$SPZ_DIAG_DIR/engine-build.log"
+          set -o pipefail; mkdir -p "$SPZ_DIAG_DIR"
+          python3 scripts/run-with-deadline.py ./scripts/build-engine.sh 2>&1 | tee "$SPZ_DIAG_DIR/engine-build.log"
       - name: Build Swift app
         id: swiftapp
         run: |
           set -o pipefail
-          bash scripts/shipping-swift.sh -c release --arch arm64 --arch x86_64 2>&1 | tee /tmp/swiftbuild.log "$SPZ_DIAG_DIR/swift-build.log" || {
+          mkdir -p "$SPZ_DIAG_DIR"
+          python3 scripts/run-with-deadline.py bash scripts/shipping-swift.sh -c release --arch arm64 --arch x86_64 2>&1 | tee /tmp/swiftbuild.log "$SPZ_DIAG_DIR/swift-build.log" || {
             grep -E "error:" /tmp/swiftbuild.log | sort -u | head -15 | while IFS= read -r l; do echo "::error::${l//%/%25}"; done
             exit 1
           }
@@ -299,8 +305,8 @@ jobs:
         # Independent of the engine archive: still runs after an earlier build failure (job stays red), but not after cancel/timeout.
         if: ${{ !cancelled() }}
         run: |
-          swiftc -typecheck scripts/docs-capture.swift
-          swiftc -typecheck scripts/ax-client.swift
+          python3 scripts/run-with-deadline.py swiftc -typecheck scripts/docs-capture.swift
+          python3 scripts/run-with-deadline.py swiftc -typecheck scripts/ax-client.swift
       - name: Version
         if: ${{ !inputs.compile_only }}
         id: ver
@@ -332,15 +338,15 @@ jobs:
           if [ "${{ inputs.perf }}" = "true" ] || [ "${{ inputs.perf_in_run }}" = "true" ]; then DEFS="$DEFS SPZ_CI_PERF"; fi
           if [ "${{ inputs.docs_2x }}" = "true" ]; then DEFS="$DEFS SPZ_CI_SHOTS"; fi
           if [ -n "$DEFS" ]; then
-            if SPZ_TEST_EXTRA_DEFINES="$DEFS" bash ./scripts/build-test-app.sh dist-test "${{ steps.sign.outputs.hash }}"; then
+            if SPZ_TEST_EXTRA_DEFINES="$DEFS" python3 scripts/run-with-deadline.py bash ./scripts/build-test-app.sh dist-test "${{ steps.sign.outputs.hash }}"; then
               echo "optional_build=ok" >> "$GITHUB_OUTPUT"; exit 0
             fi
             echo "optional_build=failed" >> "$GITHUB_OUTPUT"
             echo "::error title=optional-code::the test build with optional code ($DEFS) failed to compile"
             exit 1
           fi
-          set -o pipefail
-          bash ./scripts/build-test-app.sh dist-test "${{ steps.sign.outputs.hash }}" 2>&1 | tee "$SPZ_DIAG_DIR/test-build.log"
+          set -o pipefail; mkdir -p "$SPZ_DIAG_DIR"
+          python3 scripts/run-with-deadline.py bash ./scripts/build-test-app.sh dist-test "${{ steps.sign.outputs.hash }}" 2>&1 | tee "$SPZ_DIAG_DIR/test-build.log"
       - name: Rust engine tests (native macOS, includes getattrlistbulk backend)
         if: ${{ !inputs.compile_only && !inputs.perf && !inputs.docs_only }}
         id: rust
