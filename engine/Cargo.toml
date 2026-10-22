@@ -19,6 +19,8 @@ libc = "0.2"
 rayon = "1.10"
 
 [features]
+# Test-only bounded cancellation rendezvous; absent from shipping builds.
+ci-checks = []
 # Test-only panic injection into the size-table writer. Never enabled in release builds.
 failpoints = []
 

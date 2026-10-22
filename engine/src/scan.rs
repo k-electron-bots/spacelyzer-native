@@ -35,8 +35,44 @@ pub struct ScanOptions {
 }
 
 /// Shared, lock-free progress. Poll from any thread while `scan` runs.
+/// CI-only rendezvous reached before the real walk cancellation check. Per-session, no globals.
+/// 0 armed, 1 parked, 2 released, 3 expired. Expiry resumes the real walk and is never a pass.
+#[cfg(feature = "ci-checks")]
+pub struct CiScanGate {
+    target: u64,
+    visited: AtomicU64,
+    state: std::sync::atomic::AtomicU8,
+}
+#[cfg(feature = "ci-checks")]
+impl CiScanGate {
+    pub fn new(target: u64) -> Self {
+        Self { target: target.max(1), visited: AtomicU64::new(0), state: std::sync::atomic::AtomicU8::new(0) }
+    }
+    pub fn state(&self) -> u8 { self.state.load(Ordering::Acquire) }
+    pub fn release(&self) {
+        let _ = self.state.fetch_update(Ordering::AcqRel, Ordering::Acquire, |s| {
+            if s <= 1 { Some(2) } else { None } // expiry is sticky, never laundered as released
+        });
+    }
+    fn rendezvous(&self) {
+        if self.visited.fetch_add(1, Ordering::Relaxed) + 1 != self.target { return; }
+        // Release-before-arrival is respected, never overwritten by a late arrival.
+        if self.state.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).is_err() { return; }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while self.state() == 1 {
+            if std::time::Instant::now() >= deadline {
+                let _ = self.state.compare_exchange(1, 3, Ordering::AcqRel, Ordering::Acquire);
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct ScanProgress {
+    #[cfg(feature = "ci-checks")]
+    pub ci_gate: Option<Arc<CiScanGate>>,
     pub items: AtomicU64,
     pub bytes: AtomicU64,
     pub cancel: AtomicBool,
@@ -407,6 +443,8 @@ fn walk(dir: &Path, ctx: &Ctx) -> (DirNode, bool, bool) {
         h(dir);
     }
     ctx.progress.note_dir();
+    #[cfg(feature = "ci-checks")]
+    if let Some(gate) = &ctx.progress.ci_gate { gate.rendezvous(); }
     if ctx.progress.cancel.load(Ordering::Relaxed) {
         return (DirNode { ents: vec![], total: 0 }, false, true);
     }

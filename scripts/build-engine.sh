@@ -1,6 +1,7 @@
 #!/bin/bash
 # Build the Rust engine as a universal (arm64 + x86_64) static library into build/lib.
 set -euo pipefail
+unset SPZ_CI_ENGINE
 cd "$(dirname "$0")/.."
 mkdir -p build/lib
 if [[ "$(uname)" == "Darwin" ]]; then
