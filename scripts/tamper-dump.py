@@ -2,7 +2,10 @@
 """Test double for `spz`: runs the real `spz dump ROOT` (SPZ_REAL) and applies ONE tamper named by TAMPER, so controls prove the comparison catches it."""
 import os, subprocess, sys
 real, root, mode = os.environ['SPZ_REAL'], sys.argv[2], os.environ['TAMPER']
-lines = subprocess.run([real, 'dump', root], capture_output=True, text=True).stdout.splitlines()
+backend = sys.argv[3] if len(sys.argv) > 3 else 'default'   # forwarded to the real engine so a portable leg is actually the portable leg
+if mode == 'need_portable' and backend != 'portable': sys.exit(9)
+if mode == 'sleep': import time; time.sleep(30)
+lines = subprocess.run([real, 'dump', root, backend], capture_output=True, text=True).stdout.splitlines()
 def pick(kind, skip=1):
     n = 0
     for i, l in enumerate(lines):
@@ -23,6 +26,8 @@ elif mode == 'reason_swap':
     k = [i for i, l in enumerate(lines) if l.startswith('SKIP')]
     if k: a = lines[k[0]].split('\t'); a[1] = 'SeparateVolume'; lines[k[0]] = '\t'.join(a)
 elif mode == 'dump_fail': print('\n'.join(lines)); sys.exit(3)
+elif mode == 'dup_path':
+    i = pick('File'); a = lines[i].split('\t'); a[1] = str(int(a[1]) + 512); lines.append('\t'.join(a))
 elif mode == 'mutate': open(root + '/drift_new', 'w').write('late')
 elif mode == 'none': pass
 print('\n'.join(lines))

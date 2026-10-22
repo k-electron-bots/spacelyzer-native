@@ -34,10 +34,10 @@ try:
         os.mkdir(root + '/noperm'); open(root + '/noperm/h', 'w').write('z'); os.chmod(root + '/noperm', 0); unread = 1
     else: print('NOT-RUN: root user, chmod 000 not enforceable'); notrun.append('unreadable')
     exp_skips = unread + (3 if nonutf else 0)
-    def pn(tamper=None):
+    def pn(tamper=None, backend='default', deadline=None):
         cmd = SPZ if tamper is None else [sys.executable, H + '/tamper-dump.py', 'dump']
         if tamper: os.environ['SPZ_REAL'] = SPZ; os.environ['TAMPER'] = tamper
-        return O.per_node(root, cmd, has_hardlinks=False)
+        return O.per_node(root, cmd, has_hardlinks=False, backend=backend, deadline=deadline)
     r = pn()
     ck('baseline real engine: 0 per-node diffs', r['diff_count'] == 0, r['diffs'][:3])
     ck('baseline skipped accounting equals oracle expectation', len(r['skips']) == exp_skips == r['expected_skips'], (r['skips'], exp_skips))
@@ -49,6 +49,27 @@ try:
     if nonutf:
         r = pn(); ck('three distinct invalid names stay THREE skips (not collapsed) and ambiguity is declared', len([p for _, p in r['skips'] if '\ufffd' in p]) == 3 and r['lossy_ambiguous'] is True, r['skips'])
         r = pn('drop_one_skip'); ck('dropping ONE lossy skip is caught (multiset)', r['diff_count'] >= 1 and any(d[0] == 'lossy_skip_multiset' for d in r['diffs']), r['diffs'])
+    r = pn('need_portable', 'portable'); ck('portable leg: the backend flag reaches the engine through the list-form wrapper', not any(d[0] == 'dump_exit' for d in r['diffs']) and r['backend'] == 'portable', r['diffs'])
+    r = pn('need_portable', 'default'); ck('default leg does NOT carry the portable flag (control is not vacuous)', any(d[0] == 'dump_exit' for d in r['diffs']), r['diffs'])
+    r = subprocess.run([SPZ, 'dump', root, 'bogus'], capture_output=True, text=True); ck('invalid backend arg is refused by spz (exit 2), not silently the default', r.returncode == 2 and not r.stdout, (r.returncode, r.stdout[:50]))
+    r = pn('dup_path'); ck('duplicate path in dump is a diff, not a silent overwrite', any(d[0] == 'dump_duplicate_path' for d in r['diffs']), r['diffs'])
+    import time
+    t = time.monotonic()
+    try: pn('sleep', deadline=time.monotonic() + 2); ck('sleeping dump under a 2s absolute deadline times out', False, 'returned')
+    except subprocess.TimeoutExpired: ck('sleeping dump under a 2s absolute deadline times out (process group killed)', time.monotonic() - t < 6, time.monotonic() - t)
+    t = time.monotonic()
+    try: pn('sleep', deadline=time.monotonic() - 5); ck('expired deadline: pre-walk cap/timeout, sleeping dump not run for 30s', False, 'returned')
+    except (O.Capped, subprocess.TimeoutExpired): ck('expired deadline stops the work immediately (cap or 1s floor timeout), not a fresh budget', time.monotonic() - t < 6, time.monotonic() - t)
+    # post-run walk hits the cap: per_node must RAISE Capped (INCOMPLETE upstream), never report DRIFT or a pass
+    real_walk, calls = O.walk, [0]
+    def walk2(*a, **k):
+        calls[0] += 1
+        if calls[0] == 2: raise O.Capped('time')
+        return real_walk(*a, **k)
+    O.walk = walk2
+    try: pn(); ck('post-walk cap raises Capped (INCOMPLETE), not mislabeled DRIFT', False, 'returned')
+    except O.Capped: ck('post-walk cap raises Capped (INCOMPLETE), not mislabeled DRIFT', True)
+    finally: O.walk = real_walk
     r = pn('reason_swap'); ck('tamper skip REASON (right path, wrong reason) is caught', r['diff_count'] >= 1 and any(d[0] == 'skip_reason_or_path' for d in r['diffs']), r['diffs'])
     r = pn('dump_fail'); ck('nonzero dump exit is a diff (fail closed)', any(d[0] == 'dump_exit' for d in r['diffs']), r['diffs'])
     r = pn('extra_skip'); ck('tamper extra_skip caught by skip accounting', len(r['skips']) != r['expected_skips'], r['skips'])
