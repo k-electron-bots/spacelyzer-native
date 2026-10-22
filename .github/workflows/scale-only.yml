@@ -187,9 +187,9 @@ jobs:
       - name: Prepare diagnostics dir and shared work deadline (after checkout, which cleans the workspace)
         run: |
           mkdir -p "$GITHUB_WORKSPACE/diag-out"; echo "SPZ_DIAG_DIR=$GITHUB_WORKSPACE/diag-out" >> "$GITHUB_ENV"
-          # Budget (seconds from the anchor): scale segment 1000 + artifact reserve 120 + post-step teardown 190 (measured in run
-          # 39843869589) + 90 margin = 1400 held back. Build and gate work must finish by JOB-1400 or it is killed (a timeout is a failure).
-          echo "SPZ_COMPILE_DEADLINE_EPOCH=$(( SPZ_JOB_DEADLINE_EPOCH - 1400 ))" >> "$GITHUB_ENV"
+          # Budget (seconds from the anchor): scale segment 1000 + artifact reserve 120 + post-step teardown 200 (measured 191 s = 3m11s in run
+          # 39843869589) + 90 margin = 1410 held back. Build and gate work must finish by JOB-1410 or it is killed (a timeout is a failure).
+          echo "SPZ_COMPILE_DEADLINE_EPOCH=$(( SPZ_JOB_DEADLINE_EPOCH - 1410 ))" >> "$GITHUB_ENV"
       - name: Toolchain versions
         run: |
           sw_vers; xcodebuild -version; swift --version; rustc --version || true
@@ -217,7 +217,7 @@ jobs:
         continue-on-error: true
         timeout-minutes: 19
         run: |
-          python3 scripts/run-scale-check.py --app dist-test/Spacelyzer.app --work "$RUNNER_TEMP/spz-scale" --budget-seconds 1000 --max-budget-seconds 1200 --teardown-seconds 190 --job-deadline-epoch "$SPZ_JOB_DEADLINE_EPOCH" --artifact-reserve-seconds 120
+          python3 scripts/run-scale-check.py --app dist-test/Spacelyzer.app --work "$RUNNER_TEMP/spz-scale" --budget-seconds 1000 --max-budget-seconds 1200 --teardown-seconds 200 --job-deadline-epoch "$SPZ_JOB_DEADLINE_EPOCH" --artifact-reserve-seconds 120
       - uses: actions/upload-artifact@v4
         if: ${{ always() }}
         id: scale_artifact
