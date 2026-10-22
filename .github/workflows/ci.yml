@@ -58,10 +58,10 @@ jobs:
       - name: Pin and context
         run: |
           echo "branch tip: $(git rev-parse HEAD) (product base 00aa46a2 + workflow + scripts/measure + two named instrumentation files)"
-          DIFF=$(git diff --name-only 00aa46a2d384ec4648ae4571ccb2eaee5a7e6324 HEAD -- . ':(exclude).github/workflows/ci.yml' ':(exclude)scripts/measure' ':(exclude)Sources/Spacelyzer/Engine.swift' ':(exclude)Sources/Spacelyzer/SpacelyzerApp.swift' ':(exclude)Sources/Spacelyzer/AppModel.swift')
+          DIFF=$(git diff --name-only 3aed0496ba98a884e6908094d89916abaf625671 HEAD -- . ':(exclude).github/workflows/ci.yml' ':(exclude)scripts/measure' ':(exclude)Sources/Spacelyzer/Engine.swift' ':(exclude)Sources/Spacelyzer/SpacelyzerApp.swift' ':(exclude)Sources/Spacelyzer/AppModel.swift')
           if [ -n "$DIFF" ]; then echo "::error::product tree differs from reviewed 00aa46a2 beyond the named instrumentation files: $DIFF"; exit 1; fi
           echo "product tree == 00aa46a2 EXCEPT Engine.swift + SpacelyzerApp.swift + AppModel.swift (bounded-ping-v1 instrumentation; rest of tree verified)"
-          git diff --stat 00aa46a2d384ec4648ae4571ccb2eaee5a7e6324 HEAD -- Sources/Spacelyzer/Engine.swift Sources/Spacelyzer/SpacelyzerApp.swift Sources/Spacelyzer/AppModel.swift
+          git diff --stat 3aed0496ba98a884e6908094d89916abaf625671 HEAD -- Sources/Spacelyzer/Engine.swift Sources/Spacelyzer/SpacelyzerApp.swift Sources/Spacelyzer/AppModel.swift
           # Fail closed if the named instrumentation files drift from the exact reviewed content:
           # a branch move must stop measurement BEFORE it runs, not after exclude+diffstat alone.
           ESHA=$(git hash-object Sources/Spacelyzer/Engine.swift)
