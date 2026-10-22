@@ -134,7 +134,8 @@ fn main() {
         "dump" => {
             // Developer accuracy aid: one tab-separated line per node (kind, cumulative bytes, escaped path), then one SKIP line per skipped entry.
             // Consumed by scripts/independent-size-oracle.py --dump; the node set and sizes are exactly what the app's tree holds.
-            let tree = scan(&path, &ScanOptions::default(), &ScanProgress::default()).expect("scan failed");
+            let portable = a.get(3).map(|x| x == "portable").unwrap_or(false); // default leg = the app's backend (getattrlistbulk on macOS); "portable" forces readdir+lstat
+            let tree = scan(&path, &ScanOptions { force_portable: portable, ..Default::default() }, &ScanProgress::default()).expect("scan failed");
             for id in 0..tree.len() as u32 {
                 println!("{:?}\t{}\t{}", tree.kind(id), tree.size(id), esc(&tree.path(id)));
             }

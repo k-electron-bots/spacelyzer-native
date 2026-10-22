@@ -38,7 +38,7 @@ def walk(root, nodes=None, max_items=None, deadline=None):
                 seen.add((st.st_dev, st.st_ino))
             alloc += st.st_blocks * 512
     return dict(root=root, items=items, dirs=dirs, allocated_bytes=alloc, logical_bytes=logical, symlinks=symlinks,
-                extra_hardlink_entries=extra_links, unreadable=unreadable, nonutf8_names=len(nonutf8), nonutf8_raw_hex=sorted(os.fsencode(x).hex() for x in nonutf8), nonutf8_lossy=sorted(os.fsencode(x).decode('utf-8', 'replace') for x in nonutf8), lossy_ambiguous=len(set(os.fsencode(x).decode('utf-8', 'replace') for x in nonutf8)) < len(nonutf8))
+                extra_hardlink_entries=extra_links, unreadable=unreadable, nonutf8_names=len(nonutf8), nonutf8_paths=list(nonutf8), nonutf8_raw_hex=sorted(os.fsencode(x).hex() for x in nonutf8), nonutf8_lossy=sorted(os.fsencode(x).decode('utf-8', 'replace') for x in nonutf8), lossy_ambiguous=len(set(os.fsencode(x).decode('utf-8', 'replace') for x in nonutf8)) < len(nonutf8))
 
 def unesc(t):
     o = []; i = 0
@@ -48,10 +48,11 @@ def unesc(t):
         else: o.append(c); i += 1
     return ''.join(o)
 
-def per_node(root, binp, has_hardlinks):
+def per_node(root, binp, has_hardlinks, backend='default'):
     """Per-node comparison. nodes: path -> [kind, own allocated]; cumulative directory sizes are rolled up here, independently of the engine.
-    Cross-directory hard links make per-directory attribution walk-order dependent (engine docs say so), so with hard links only the node SET, kinds,
-    file sizes' multiset and the root total are compared; without them every node's cumulative size must match exactly."""
+    Cross-directory hard links make per-directory attribution walk-order dependent (engine docs say so), so WITH hard links only the node SET and KINDS are
+    compared here (sizes are NOT asserted per node; the root total is asserted by the totals step). WITHOUT hard links every file size and every directory's
+    cumulative size must match exactly. Fails closed: a nonzero dump exit, unparseable dump line or skip-reason mismatch is a diff."""
     nodes = {}; pre = walk(root, nodes)
     cum = {}
     for p, (k, sz) in nodes.items():
@@ -61,14 +62,15 @@ def per_node(root, binp, has_hardlinks):
                 cum[d] = cum.get(d, 0) + sz
                 if d == root: break
                 d = os.path.dirname(d)
-    r = subprocess.run([binp, 'dump', root] if isinstance(binp, str) else binp + [root], capture_output=True, text=True)
-    eng = {}; skips = []
+    r = subprocess.run(([binp, 'dump', root] if isinstance(binp, str) else binp + [root]) + (['portable'] if backend == 'portable' and isinstance(binp, str) else []), capture_output=True, text=True)
+    eng = {}; skips = []; diffs = []
+    if r.returncode != 0: diffs.append(['dump_exit', r.returncode, r.stderr[-200:]])
     for line in r.stdout.splitlines():
         a = line.split('\t')
+        if len(a) != 3: diffs.append(['dump_unparseable', line[:80]]); continue
         if a[0] == 'SKIP': skips.append((a[1], unesc(a[2]))); continue
         eng[unesc(a[2])] = (a[0], int(a[1]))
     want = {root: ('Directory', None)}; want.update({p: (k, None) for p, (k, _) in nodes.items()})
-    diffs = []
     for p in sorted(set(want) | set(eng)):
         if p not in eng: diffs.append(['only_oracle', p]); continue
         if p not in want: diffs.append(['only_engine', p]); continue
@@ -76,16 +78,21 @@ def per_node(root, binp, has_hardlinks):
         if want[p][0] == 'Directory':
             if not has_hardlinks and eng[p][1] != cum.get(p, 0): diffs.append(['dir_size', p, cum.get(p, 0), eng[p][1]])
         elif not has_hardlinks and eng[p][1] != nodes[p][1]: diffs.append(['file_size', p, nodes[p][1], eng[p][1]])
+    exp_reasons = sorted([['PermissionDenied' if err == 13 else 'Unreadable', path] for path, err in pre['unreadable']] + [['Unreadable', os.fsencode(x).decode('utf-8', 'replace')] for x in pre['nonutf8_paths']])
+    got_reasons = sorted([[rs, pth] for rs, pth in skips])
+    if exp_reasons != got_reasons: diffs.append(['skip_reason_or_path', exp_reasons[:3], got_reasons[:3]])   # exact (reason, path) multiset, not only a count
     lossy_got = sorted(p for _, p in skips if '\ufffd' in p)
     if lossy_got != pre['nonutf8_lossy']: diffs.append(['lossy_skip_multiset', pre['nonutf8_lossy'][:3], lossy_got[:3]])   # compares as a multiset: raw names may be indistinguishable after lossy rendering, counts are not
     post_nodes = {}; post = walk(root, post_nodes)
     drift = post_nodes != nodes or post['items'] != pre['items'] or post['allocated_bytes'] != pre['allocated_bytes']   # tree changed while the engine ran: result is INCONCLUSIVE, not an engine fault
-    return dict(nodes=len(want), diffs=diffs[:20], diff_count=len(diffs), skips=skips, drift=drift, expected_skips=len(pre['unreadable']) + pre['nonutf8_names'], lossy_ambiguous=pre['lossy_ambiguous'])
+    return dict(backend=backend, scope=('path set + kinds + non-link file sizes NOT asserted; root total only' if has_hardlinks else 'full: path set, kinds, every file size, every directory cumulative size'), nodes=len(want), diffs=diffs[:20], diff_count=len(diffs), skips=skips, drift=drift, expected_skips=len(pre['unreadable']) + pre['nonutf8_names'], lossy_ambiguous=pre['lossy_ambiguous'])
 
 def spz_line(binp, root, timeout=None):
     r = subprocess.run([binp, 'verify-cold', root], capture_output=True, text=True, timeout=timeout)
     m = re.search(r'^default : (\d+) items (\d+) bytes', r.stdout, re.M)
     if not m: return None, r.returncode, r.stdout + r.stderr
+    mp = re.search(r'^portable: (\d+) items (\d+) bytes', r.stdout, re.M)
+    spz_line.portable = (int(mp.group(1)), int(mp.group(2))) if mp else None
     return (int(m.group(1)), int(m.group(2))), r.returncode, r.stdout
 
 def main():
@@ -104,8 +111,11 @@ def main():
         try: o2 = walk(root, max_items=a.max_items)
         except Capped: o2 = None
         o['spz'] = None if got is None else dict(items=got[0], allocated_bytes=got[1], exit=rc)
+        pl = getattr(spz_line, 'portable', None)
+        o['spz_portable_leg'] = None if pl is None else dict(items=pl[0], allocated_bytes=pl[1], agrees_with_oracle=(abs(pl[0] - o['items']) <= a.tolerate_items and abs(pl[1] - o['allocated_bytes']) <= a.tolerate_bytes))
         drift = o2 is None or o2['items'] != o['items'] or o2['allocated_bytes'] != o['allocated_bytes']   # oracle's own before/after differ: the tree moved
-        ok = got is not None and abs(got[0] - o['items']) <= a.tolerate_items and abs(got[1] - o['allocated_bytes']) <= a.tolerate_bytes
+        pl_ok = pl is not None and abs(pl[0] - o['items']) <= a.tolerate_items and abs(pl[1] - o['allocated_bytes']) <= a.tolerate_bytes
+        ok = rc == 0 and pl_ok and got is not None and abs(got[0] - o['items']) <= a.tolerate_items and abs(got[1] - o['allocated_bytes']) <= a.tolerate_bytes
         o['verdict'] = 'AGREE' if ok and not drift else ('DRIFT' if drift else 'DISAGREE')   # DRIFT = inconclusive, never blamed on the engine
         if got: o['delta'] = dict(items=got[0] - o['items'], allocated_bytes=got[1] - o['allocated_bytes'])
         print(json.dumps(o, indent=1)); return {'AGREE': 0, 'DISAGREE': 1, 'DRIFT': 4}[o['verdict']]

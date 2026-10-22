@@ -49,6 +49,8 @@ try:
     if nonutf:
         r = pn(); ck('three distinct invalid names stay THREE skips (not collapsed) and ambiguity is declared', len([p for _, p in r['skips'] if '\ufffd' in p]) == 3 and r['lossy_ambiguous'] is True, r['skips'])
         r = pn('drop_one_skip'); ck('dropping ONE lossy skip is caught (multiset)', r['diff_count'] >= 1 and any(d[0] == 'lossy_skip_multiset' for d in r['diffs']), r['diffs'])
+    r = pn('reason_swap'); ck('tamper skip REASON (right path, wrong reason) is caught', r['diff_count'] >= 1 and any(d[0] == 'skip_reason_or_path' for d in r['diffs']), r['diffs'])
+    r = pn('dump_fail'); ck('nonzero dump exit is a diff (fail closed)', any(d[0] == 'dump_exit' for d in r['diffs']), r['diffs'])
     r = pn('extra_skip'); ck('tamper extra_skip caught by skip accounting', len(r['skips']) != r['expected_skips'], r['skips'])
     r = pn('mutate'); ck('tree changed during engine run is flagged DRIFT (inconclusive), not an engine diff', r['drift'], r)
     os.unlink(root + '/drift_new')
