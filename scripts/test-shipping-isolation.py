@@ -4,8 +4,8 @@ import os,pathlib,shutil,subprocess,tempfile
 repo=pathlib.Path(__file__).resolve().parent.parent
 with tempfile.TemporaryDirectory(prefix='shipping-env-') as td:
  w=pathlib.Path(td);(w/'scripts').mkdir();(w/'bin').mkdir();(w/'build/lib').mkdir(parents=True);(w/'normal').mkdir()
- for s in ['shipping-swift.sh','check-no-ci-symbols.sh']:shutil.copy(repo/'scripts'/s,w/'scripts')
- for label,source in [('clean','void spz_scan_start(void){}'),('dirty','void spz_ci_scan_start_parked(void){}')]:
+ for s in ['shipping-swift.sh','check-no-ci-symbols.sh','defined-symbols.py']:shutil.copy(repo/'scripts'/s,w/'scripts')
+ for label,source in [('clean','void spz_scan_start(void){}'),('dirty','void spz_scan_start(void){}\nvoid spz_ci_scan_start_parked(void){}')]:
   (w/f'{label}.c').write_text(source)
   subprocess.run(['cc','-c',str(w/f'{label}.c'),'-o',str(w/f'{label}.o')],check=True)
  shutil.copy(w/'clean.o',w/'build/lib/libspacelyzer_engine.a');shutil.copy(w/'clean.o',w/'normal/Spacelyzer')

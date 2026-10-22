@@ -6,7 +6,7 @@ import os, pathlib, shutil, subprocess, tempfile
 repo=pathlib.Path(__file__).resolve().parent.parent
 with tempfile.TemporaryDirectory(prefix='spz-isolation-') as td:
     w=pathlib.Path(td);(w/'scripts').mkdir();(w/'bin').mkdir();(w/'build/lib').mkdir(parents=True)
-    shutil.copy(repo/'scripts/build-ci-engine.sh',w/'scripts')
+    shutil.copy(repo/'scripts/build-ci-engine.sh',w/'scripts');shutil.copy(repo/'scripts/defined-symbols.py',w/'scripts')
     (w/'build/lib/libspacelyzer_engine.a').write_bytes(b'untouched-shipping-sentinel')
     src=w/'symbols.c';src.write_text('void spz_ci_scan_start_parked(void){}\nvoid spz_ci_scan_gate_state(void){}\nvoid spz_ci_scan_gate_release(void){}\n')
     subprocess.run(['cc','-c',str(src),'-o',str(w/'symbols.o')],check=True)
