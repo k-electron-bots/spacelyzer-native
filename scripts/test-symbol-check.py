@@ -123,3 +123,23 @@ with tempfile.TemporaryDirectory(prefix='sym-check-') as td:
   print('PASS real rustc aarch64+x86_64 apple-darwin shipping staticlibs (cross-compiled on Linux; fat wrapper built by this test); missing-slice fails')
  else: print('SKIP real rustc Apple archives (set SPZ_REAL_APPLE_ARCHIVES to a dir with aarch64.a x86_64.a)')
  print('PASS old script fails when Apple nm fails; LLVM-nm per-slice check passes clean thin/fat/30k-symbol tables and fails closed on defined/referenced CI symbol, undefined-only control, truncated member, slice lacking control or dirty, missing slice, empty, garbage, absent file, missing/failing/silent llvm-nm')
+
+# SPZ_DIAG_DIR: dumps are copied for diagnostics on success AND on failure; unset or unwritable never changes the verdict.
+def _diag():
+    w=pathlib.Path(tempfile.mkdtemp()); good=w/'good.o'
+    stub=w/'nm.sh'
+    def mk(body):
+        stub.write_text('#!/bin/sh\n'+body+'\n'); stub.chmod(0o755)
+    for label,body,want in (('ok','echo "---------------- T _spz_scan_start"',0),('nm-fails','echo boom >&2; exit 3',1)):
+        mk(body); good.write_bytes(b'x'); d=w/('diag-'+label)
+        r=subprocess.run(['bash',str(repo/'scripts/dump-symbols.sh'),str(good),str(w/('o-'+label))],env=dict(os.environ,SPZ_LLVM_NM=str(stub),SPZ_EXPECT_ARCHS='',SPZ_DIAG_DIR=str(d)),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        assert r.returncode==want,(label,r.returncode,r.stderr)
+        files=[p.name for p in d.rglob('*') if p.is_file()]
+        assert any(f.endswith('.err') for f in files) and (label!='ok' or 'thin.txt' in files),(label,files)
+    r=subprocess.run(['bash',str(repo/'scripts/dump-symbols.sh'),str(good),str(w/'o-bad')],env=dict(os.environ,SPZ_LLVM_NM=str(stub),SPZ_EXPECT_ARCHS='',SPZ_DIAG_DIR='/proc/nope/x'),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    assert r.returncode==1  # unwritable diag dir does not turn a failure into a pass (nm still fails)
+    mk('echo "---------------- T _spz_scan_start"')
+    r=subprocess.run(['bash',str(repo/'scripts/dump-symbols.sh'),str(good),str(w/'o-ok2')],env=dict(os.environ,SPZ_LLVM_NM=str(stub),SPZ_EXPECT_ARCHS='',SPZ_DIAG_DIR='/proc/nope/x'),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    assert r.returncode==0,r.stderr  # unwritable diag dir does not break a good dump
+    print('PASS SPZ_DIAG_DIR copies dumps on success and failure; unwritable dir changes no verdict')
+_diag()

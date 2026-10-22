@@ -94,6 +94,7 @@ def subst(body, w):
 
 def run_step(body, w, shellopts, env=None):
     e = dict(os.environ); e.update({'HOME': w + '/home', 'PATH': w + '/bin:' + os.environ['PATH'], 'STUB_CAPBIN': w + '/capbin', 'RUNNER_TEMP': w + '/tmp', 'TMPDIR': w + '/tmp'})
+    e.setdefault('SPZ_DIAG_DIR', w + '/diag'); os.makedirs(w + '/diag', exist_ok=True)
     e.update(env or {})
     p = subprocess.run(['bash'] + shellopts.split() + ['-c', body], cwd=w, env=e, capture_output=True, text=True, timeout=120)
     return p.returncode, p.stdout + p.stderr
@@ -107,7 +108,7 @@ def typecheck_case():
     doc = load(CI); st = step(doc, 'macos', 'Typecheck the on-demand helper tools')
     check('typecheck step typechecks BOTH on-demand helpers', 'swiftc -typecheck scripts/docs-capture.swift' in st['run'] and 'swiftc -typecheck scripts/ax-client.swift' in st['run'])
     check('typecheck step has no continue-on-error (a type error fails the build)', 'continue-on-error' not in st)
-    check('typecheck step has no if: (covered by compile_only and full runs alike)', 'if' not in st)
+    check('typecheck step runs after earlier failure but not after cancel (!cancelled())', st.get('if','').strip() == '${{ !cancelled() }}')
     for opts in ('-e', '-eo pipefail'):
         w = workdir(); rc, out = run_step(st['run'], w, opts, {'STUB_SWIFTC': 'fail'})
         check(f'typecheck step [{opts}] failing swiftc fails the step', rc != 0, f'rc={rc}')
@@ -172,6 +173,53 @@ def ordering_cases():
             w = workdir(); os.makedirs(w + '/dist-test/Spacelyzer.app/Contents/MacOS'); open(w + '/dist-test/Spacelyzer.app/Contents/MacOS/Spacelyzer', 'w').write('x')
             env = dict(env, STUB_N=n); rc, out = run_step(body, w, opts, env)
             check(f'ordering step [{opts}] {name}: {"fails" if want_fail else "passes"}', (rc != 0) == want_fail, f'rc={rc} {out[-250:]}'); shutil.rmtree(w)
+
+def compile_only_matrix_cases():
+    """Evaluates the REAL if: expressions of the compile_only consolidation over step-outcome matrices (Linux, not Mac evidence)."""
+    doc = load(CI); steps = doc['jobs']['macos']['steps']
+    def ev(st, compile_only, O, cancelled=False, success=None, docs_only=False, th=False):
+        e = st['if'].strip()[3:-2].strip()
+        py = e.replace('&&', ' and ').replace('||', ' or ')
+        py = re.sub(r'!cancelled\(\)', 'CAN_NOT', py); py = re.sub(r'success\(\)', 'SUCC', py)
+        py = re.sub(r'!(?!=)', ' not ', py)
+        py = re.sub(r'inputs\.(\w+)', r"I['\1']", py); py = re.sub(r'steps\.(\w+)\.outcome', r"O['\1']", py)
+        I = dict(compile_only=compile_only, docs_only=docs_only, technical_hardening=th)
+        if success is None: success = all(v == 'success' for v in O.values()) and not cancelled
+        return bool(eval(py, {}, {'I': I, 'O': O, 'CAN_NOT': not cancelled, 'SUCC': success}))
+    sign = step(doc, 'macos', 'Import self-signed'); tb = step(doc, 'macos', 'testbuild'); tc = step(doc, 'macos', 'Typecheck the on-demand')
+    col = step(doc, 'macos', 'Collect compile diagnostics'); up = step(doc, 'macos', 'Upload compile diagnostics')
+    OK = dict(engine='success', swiftapp='success', sign='success', testbuild='success')
+    eng_fail = dict(OK, engine='failure', swiftapp='skipped', sign='skipped', testbuild='skipped')
+    swift_fail = dict(OK, swiftapp='failure')
+    for nm, st in (('typecheck', tc), ('collect', col), ('upload', up)):
+        pass
+    check('compile_only: typecheck runs after engine failure', ev(tc, True, eng_fail))
+    check('compile_only: typecheck skipped on cancel/timeout', not ev(tc, True, eng_fail, cancelled=True))
+    check('compile_only: sign runs after swift failure (independent)', ev(sign, True, swift_fail))
+    check('compile_only: sign skipped on cancel', not ev(sign, True, swift_fail, cancelled=True))
+    check('compile_only: testbuild runs after swift-app failure when engine+sign ok', ev(tb, True, swift_fail))
+    check('compile_only: testbuild NOT run when engine failed (no stale/unverified archive)', not ev(tb, True, eng_fail))
+    check('compile_only: testbuild NOT run when sign failed', not ev(tb, True, dict(OK, sign='failure')))
+    check('compile_only: testbuild NOT run when sign skipped', not ev(tb, True, dict(OK, sign='skipped')))
+    check('compile_only: testbuild NOT run on cancel', not ev(tb, True, OK, cancelled=True))
+    check('compile_only: testbuild runs on all-success', ev(tb, True, OK))
+    check('docs_only: testbuild never runs', not ev(tb, True, OK, docs_only=True) and not ev(tb, False, OK, docs_only=True))
+    check('technical: sign skipped', not ev(sign, False, OK, th=True))
+    # other modes keep fail-fast: engine failure => later steps skipped (success() false)
+    check('non-compile_only: sign/testbuild stay fail-fast after a failure', not ev(sign, False, swift_fail) and not ev(tb, False, swift_fail))
+    check('non-compile_only: sign/testbuild run when prior ok', ev(sign, False, OK) and ev(tb, False, OK))
+    check('diagnostics collect/upload run after failure, not on cancel, only compile_only',
+          ev(col, True, eng_fail) and ev(up, True, eng_fail) and not ev(col, True, eng_fail, cancelled=True) and not ev(up, True, OK, cancelled=True) and not ev(col, False, OK) and not ev(up, False, OK))
+    check('diagnostics steps are continue-on-error and bounded (cannot mask or hang)', col.get('continue-on-error') is True and up.get('continue-on-error') is True and col.get('timeout-minutes') and up.get('timeout-minutes'))
+    check('engine/swift/test-build steps are NOT continue-on-error (job stays red)', all('continue-on-error' not in x for x in (step(doc,'macos','engine'), step(doc,'macos','swiftapp'), tb, sign, tc)))
+    ts = step(doc, 'macos', 'Record tool state')
+    check('tool-state step installs nothing (no rustup component add) and is non-fatal', 'component add' not in ts['run'] and ts.get('continue-on-error') is True)
+    # diagnostic collection with missing files, real shell body, preserves success of the step
+    w = workdir(); os.makedirs(w + '/ws', exist_ok=True)
+    body = col['run'].replace('${{ steps.engine.outcome }}', 'failure').replace('${{ steps.swiftapp.outcome }}', 'skipped').replace('${{ steps.sign.outcome }}', 'skipped').replace('${{ steps.testbuild.outcome }}', 'skipped')
+    rc, out = run_step(body, w, '-e', {'GITHUB_WORKSPACE': w + '/ws', 'SPZ_DIAG_DIR': w + '/ws/diag-out'})
+    check('diagnostic collection with every file missing exits 0 and writes a summary', rc == 0 and os.path.exists(w + '/ws/diag-out/summary.txt'), f'rc={rc} {out[-300:]}')
+    shutil.rmtree(w)
 
 def gate_cases():
     doc = load(CI); st = [s for s in doc['jobs']['macos']['steps'] if s.get('name', '').startswith('Fail the build')][0]
@@ -550,7 +598,7 @@ def docs_only_cases():
     def tr(expr, I, O, U):
         py = str(expr).strip()
         if py.startswith('${{'): py = py[3:-2].strip()
-        py = py.replace('&&', ' and ').replace('||', ' or ').replace('always()', 'True')
+        py = py.replace('&&', ' and ').replace('||', ' or ').replace('always()', 'True').replace('!cancelled()', 'True').replace('success()', 'True')
         py = re.sub(r'!(?!=)', ' not ', py)
         py = re.sub(r'inputs\.(\w+)', r"I['\1']", py)
         py = re.sub(r'steps\.(\w+)\.outcome', r"O['\1']", py)
@@ -630,7 +678,7 @@ def docs_only_cases():
     check('render gate sits immediately before the cleanup step', names[gi + 1].startswith('Stop any app left running'))
 
 asserts_cases(); ordering_cases(); gate_cases(); perf_cases(); demo_cases(); rust_cases(); testbuild_cases(); bulk_cases(); dmg_label_plate_case(); bulk_bsd_head_case(); docs_review_flow_case(); sheet_line_case(); safety_text_cases(); docs_only_cases()
-typecheck_case(); docs_cases(CI, 'head', True)
+typecheck_case(); compile_only_matrix_cases(); docs_cases(CI, 'head', True)
 if base_ci: docs_cases(base_ci, 'base', False)
 timing()
 print(f'\n{ran} checks, {len(fails)} failed'); sys.exit(1 if fails else 0)

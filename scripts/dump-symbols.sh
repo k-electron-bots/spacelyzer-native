@@ -27,6 +27,10 @@ NM=$(find_nm) || { echo "dump-symbols: llvm-nm unavailable (rustup component llv
 archs="${SPZ_EXPECT_ARCHS-}"
 if [ -z "${SPZ_EXPECT_ARCHS+x}" ] && [ "$(uname)" = Darwin ]; then archs="arm64 x86_64"; fi
 mkdir -p "$out"
+# Optional diagnostics: SPZ_DIAG_DIR gets a copy of every dump (and .err) even when this script fails. Best effort only.
+if [ -n "${SPZ_DIAG_DIR:-}" ]; then
+  trap 'dd="$SPZ_DIAG_DIR/symbols/$(basename "$file")-$$"; mkdir -p "$dd" 2>/dev/null && cp "$out"/* "$dd"/ 2>/dev/null || true' EXIT
+fi
 dump() { # label, extra args...
   local label="$1"; shift
   if ! "$NM" -g "$@" "$file" > "$out/$label.txt" 2> "$out/$label.err"; then
