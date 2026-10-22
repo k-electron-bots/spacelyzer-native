@@ -28,6 +28,7 @@ elif mode == 'reason_swap':
 elif mode == 'dump_fail': print('\n'.join(lines)); sys.exit(3)
 elif mode == 'dup_path':
     i = pick('File'); a = lines[i].split('\t'); a[1] = str(int(a[1]) + 512); lines.append('\t'.join(a))
+elif mode == 'ghosts': lines += [f'File\t0\t{root}/ghost{i}' for i in range(int(os.environ.get('SPZ_GHOSTS', '6000')))]
 elif mode == 'mutate': open(root + '/drift_new', 'w').write('late')
 elif mode == 'none': pass
 print('\n'.join(lines))

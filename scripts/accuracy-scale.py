@@ -85,7 +85,7 @@ def one_size(n, a, dl, rows, bad, incomplete, leaks, timings):
             for backend in ('default', 'portable'):
                 dl.check(); pn = O.per_node(root, a.spz, has_hardlinks=c['extra_hardlinks'] > 0, backend=backend, deadline=dl.abs())
                 if pn['drift']: incomplete.append([n, f'{variant}/{backend}: DRIFT during per-node run']); return
-                if pn['diff_count'] and a.evidence_dir:   # keep the FIRST failure in full before any recheck: raw engine dump, oracle per-node data, every diff, leaf stats
+                if pn['diff_count'] and a.evidence_dir:   # BOUNDED retention of the first failure before any recheck: complete raw engine dump and oracle maps, diffs capped at diff_cap and leaf stats at leaf_stat_cap (explicit kept/dropped counts in per_node)
                     os.makedirs(a.evidence_dir, exist_ok=True)
                     ev = dict(size=n, variant=variant, backend=backend, platform=platform.platform(), spz_sha256=__import__('hashlib').sha256(open(a.spz, 'rb').read()).hexdigest(), root=root,
                               elapsed_since_start=round(time.monotonic() - dl.t0, 1), per_node={k: v for k, v in pn.items()})

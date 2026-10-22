@@ -54,6 +54,8 @@ try:
     r = pn('need_portable', 'portable'); ck('portable leg: the backend flag reaches the engine through the list-form wrapper', not any(d[0] == 'dump_exit' for d in r['diffs']) and r['backend'] == 'portable', r['diffs'])
     r = pn('need_portable', 'default'); ck('default leg does NOT carry the portable flag (control is not vacuous)', any(d[0] == 'dump_exit' for d in r['diffs']), r['diffs'])
     r = subprocess.run([SPZ, 'dump', root, 'bogus'], capture_output=True, text=True); ck('invalid backend arg is refused by spz (exit 2), not silently the default', r.returncode == 2 and not r.stdout, (r.returncode, r.stdout[:50]))
+    os.environ['SPZ_GHOSTS'] = '6000'; r = pn('ghosts'); del os.environ['SPZ_GHOSTS']
+    ck('6000 diffs: cap and truncation are explicit (total 6000 or more, kept 5000, dropped counted, leaf stats capped at 50 with dropped count)', r['diffs_total'] >= 6000 and r['diffs_kept'] == 5000 and r['diffs_dropped'] == r['diffs_total'] - 5000 and len(r['all_diffs']) == 5000 and r['leaf_stat_cap'] == 50 and r['leaf_stat_kept'] <= 50 and r['leaf_stat_kept'] + r['leaf_stat_missing_path'] + r['leaf_stat_dropped_by_cap'] <= r['leaf_stat_candidates'] and r['leaf_stat_dropped_by_cap'] > 0, {k: r[k] for k in r if k.startswith(('diffs_', 'leaf_stat_'))})
     r = pn('dup_path'); ck('duplicate path in dump is a diff, not a silent overwrite', any(d[0] == 'dump_duplicate_path' for d in r['diffs']), r['diffs'])
     import time
     t = time.monotonic()

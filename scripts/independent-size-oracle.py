@@ -110,13 +110,15 @@ def per_node(root, binp, has_hardlinks, backend='default', deadline=None):
     if lossy_got != pre['nonutf8_lossy']: diffs.append(['lossy_skip_multiset', pre['nonutf8_lossy'][:3], lossy_got[:3]])   # compares as a multiset: raw names may be indistinguishable after lossy rendering, counts are not
     post_nodes = {}; post = walk(root, post_nodes, deadline=deadline)
     drift = post_nodes != nodes or post['items'] != pre['items'] or post['allocated_bytes'] != pre['allocated_bytes']   # tree changed while the engine ran: result is INCONCLUSIVE, not an engine fault
-    leaf = {}
-    for d_ in diffs[:50]:
+    LEAF_CAP, DIFF_CAP = 50, 5000
+    leaf = {}; leaf_candidates = [d_ for d_ in diffs if len(d_) > 1 and isinstance(d_[1], str)]; leaf_missing = 0
+    for d_ in diffs[:LEAF_CAP]:
         pth = d_[1] if len(d_) > 1 and isinstance(d_[1], str) else None
         if pth and os.path.lexists(pth):
             try: st_ = os.lstat(pth); leaf[pth] = dict(blocks=st_.st_blocks, size=st_.st_size, nlink=st_.st_nlink, mtime_ns=st_.st_mtime_ns, ctime_ns=st_.st_ctime_ns, ino=st_.st_ino)
             except OSError as e_: leaf[pth] = dict(error=e_.errno)
-    return dict(backend=backend, dump_seconds=dump_seconds, dump_sha256=hashlib.sha256(r.stdout.encode()).hexdigest(), raw_dump=(r.stdout if diffs else None), all_diffs=diffs[:5000], leaf_stat_after=leaf, oracle_nodes=(nodes if diffs else None), oracle_cum_dirs=(cum if diffs else None), scope=('path set + kinds + non-link file sizes NOT asserted; root total only' if has_hardlinks else 'full: path set, kinds, every file size, every directory cumulative size'), nodes=len(want), diffs=diffs[:20], diff_count=len(diffs), skips=skips, drift=drift, expected_skips=len(pre['unreadable']) + pre['nonutf8_names'], lossy_ambiguous=pre['lossy_ambiguous'])
+        elif pth: leaf_missing += 1   # path no longer exists (or only the engine listed it): no stat possible
+    return dict(backend=backend, dump_seconds=dump_seconds, dump_sha256=hashlib.sha256(r.stdout.encode()).hexdigest(), raw_dump=(r.stdout if diffs else None), all_diffs=diffs[:DIFF_CAP], diffs_total=len(diffs), diffs_kept=min(len(diffs), DIFF_CAP), diffs_dropped=max(0, len(diffs) - DIFF_CAP), diff_cap=DIFF_CAP, leaf_stat_cap=LEAF_CAP, leaf_stat_candidates=len(leaf_candidates), leaf_stat_kept=len(leaf), leaf_stat_missing_path=leaf_missing, leaf_stat_dropped_by_cap=max(0, len(leaf_candidates) - LEAF_CAP), leaf_stat_after=leaf, oracle_nodes=(nodes if diffs else None), oracle_cum_dirs=(cum if diffs else None), scope=('path set + kinds + non-link file sizes NOT asserted; root total only' if has_hardlinks else 'full: path set, kinds, every file size, every directory cumulative size'), nodes=len(want), diffs=diffs[:20], diff_count=len(diffs), skips=skips, drift=drift, expected_skips=len(pre['unreadable']) + pre['nonutf8_names'], lossy_ambiguous=pre['lossy_ambiguous'])
 
 def spz_line(binp, root, timeout=None):
     r = run_bounded([binp, 'verify-cold', root], timeout)
