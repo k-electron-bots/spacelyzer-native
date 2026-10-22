@@ -2,6 +2,12 @@
 """Single bounded Mac scale segment. Not called by CI, not permission to run.
 Uses the existing prebuilt test app. Writes its own verdict only after the app's exact
 result, assertion set, PNG and metrics exist. No repeated attempt and no user-file deletion.
+Measurement semantics (intentional, do not change silently): the generator makes SPARSE files (ftruncate, zero allocated
+bytes). The 'materialize' phase then writes ONE real byte at offset 0 of the 1-byte filter target
+(expansion-1000000/f0000000.dat), keeping its size (1) and restoring its mtime, so the app's filter sees a file with allocated
+bytes. This step does not exist in the 78d2345 runner. 'verify' checks the inventory only: relative path, kind, size and mtime
+for every entry (spec hash), not file content; the one written byte therefore passes verify by design. The scale result is a
+measurement over a sparse tree plus that single materialized file, not over 1M fully-allocated files.
 Artifacts are retained below runner temp. The generated fixture is removed under the same segment deadline.
 """
 import argparse, os, pathlib, signal, subprocess, sys, time
@@ -60,8 +66,8 @@ def segment(a, app, w, generator, *, profile='expansion-1m', target_rel='expansi
         except BaseException:
             phases.append((name,'not-completed',time.monotonic()-t)); raise
         phases.append((name,'ok',time.monotonic()-t))
-    def sigterm(_s,_f): raise Cancelled('cancelled by SIGTERM')
-    signal.signal(signal.SIGTERM, sigterm)
+    def on_signal(s,_f): raise Cancelled('cancelled by '+signal.Signals(s).name)
+    signal.signal(signal.SIGTERM, on_signal); signal.signal(signal.SIGINT, on_signal)
     try:
         phase('generate', lambda: run([sys.executable,generator,'generate',str(fixture),'--profile',profile],left(210),log=w/'generator.log'))
         # Sparse fixtures otherwise have zero allocated bytes. Materialize the exact

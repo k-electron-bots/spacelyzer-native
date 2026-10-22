@@ -103,6 +103,7 @@ def generate(root, profile):
         nonlocal cur_parent, cur_fd
         if parent != cur_parent:
             if cur_fd >= 0: os.close(cur_fd)
+            cur_fd, cur_parent = -1, None   # closed: a failing open below must not leave a stale fd for the cleanup to close again
             cur_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW); cur_parent = parent
         return cur_fd
     try:

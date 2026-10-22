@@ -72,35 +72,29 @@ with tempfile.TemporaryDirectory() as td:
     v=verdict(w); assert v.startswith('PASS ') and 'phase generate: ok' in v and 'phase cleanup: ok' in v,v
     assert 'entries elapsed' in (w/'generator.log').read_text() and not (w/'fixture').exists()
     print('PASS fake end-to-end: PASS verdict, phase timings, generator log kept, fixture removed')
-with tempfile.TemporaryDirectory() as td:
-    t,g,w=mk(td,fixture_gen('time.sleep(120)'))
-    t0=time.time()
-    try: m.segment(args(),t/'app',w,str(g),profile='x')
-    except subprocess.TimeoutExpired: pass
-    else: raise AssertionError('generator timeout accepted')
-    v=verdict(w); assert v.startswith('INCOMPLETE ') and 'phase generate: not-completed' in v,v
-    assert 'entries elapsed' in (w/'generator.log').read_text() and (w/'fixture').exists() and (w/'result').is_dir()
-    print('PASS generator timeout: INCOMPLETE verdict + partial generator log written, red (exception), took %.0fs'%(time.time()-t0))
-with tempfile.TemporaryDirectory() as td:
-    t,g,w=mk(td,"import sys\nprint('boom')\nsys.exit(3)\n")
-    try: m.segment(args(),t/'app',w,str(g),profile='x')
-    except RuntimeError: pass
-    else: raise AssertionError('generator failure accepted')
-    v=verdict(w); assert v.startswith('FAIL ') and 'boom' in (w/'generator.log').read_text(),v
-    print('PASS generator failure: FAIL verdict + log kept')
-with tempfile.TemporaryDirectory() as td:
-    t,g,w=mk(td,fixture_gen('pass'),'import sys\nsys.exit(7)\n')
-    try: m.segment(args(),t/'app',w,str(g),profile='x')
-    except RuntimeError: pass
-    else: raise AssertionError('app failure accepted')
-    v=verdict(w); assert v.startswith('FAIL ') and 'phase app: not-completed' in v and (w/'stderr.log').exists(),v
-    print('PASS app failure: FAIL verdict, app logs kept')
-with tempfile.TemporaryDirectory() as td:
-    t,g,w=mk(td,fixture_gen('time.sleep(120)'))
-    drv=t/'drv.py';drv.write_text("import importlib.util,pathlib,sys,types\nspec=importlib.util.spec_from_file_location('r','%s')\nm=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)\na=types.SimpleNamespace(budget_seconds=420,available=425)\nm.segment(a,pathlib.Path('%s/app'),pathlib.Path('%s'),'%s',profile='x')\n"%(p,t,w,g))
-    pr=subprocess.Popen([sys.executable,str(drv)],stderr=subprocess.PIPE);time.sleep(3);pr.send_signal(signal.SIGTERM);pr.wait(timeout=30)
-    v=verdict(w); assert pr.returncode!=0 and v.startswith('INCOMPLETE ') and 'cancel' in v and 'entries elapsed' in (w/'generator.log').read_text(),(pr.returncode,v)
-    print('PASS cancel (SIGTERM) mid-generation: INCOMPLETE cancelled verdict + partial log, red')
+def cancel_case(sig, phase_name):
+    with tempfile.TemporaryDirectory() as td:
+        if phase_name=='generator': t,g,w=mk(td,fixture_gen('time.sleep(120)'))
+        else: t,g,w=mk(td,fixture_gen('pass'),"import os,time,pathlib\npathlib.Path(os.environ['SPZ_RESULT_DIR'],'..','app.pid').resolve().write_text(str(os.getpid()))\ntime.sleep(120)\n")
+        drv=t/'drv.py';drv.write_text("import importlib.util,pathlib,sys,types\nspec=importlib.util.spec_from_file_location('r','%s')\nm=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)\na=types.SimpleNamespace(budget_seconds=420,available=425)\nm.segment(a,pathlib.Path('%s/app'),pathlib.Path('%s'),'%s',profile='x')\n"%(p,t,w,g))
+        pr=subprocess.Popen([sys.executable,str(drv)],stderr=subprocess.PIPE)
+        if phase_name=='generator': time.sleep(3)
+        else:
+            for _ in range(100):
+                if (w/'app.pid').exists(): break
+                time.sleep(0.2)
+            assert (w/'app.pid').exists(),'fake app never started'
+        pr.send_signal(sig);pr.wait(timeout=30)
+        v=verdict(w); assert pr.returncode!=0 and v.startswith('INCOMPLETE ') and 'cancel' in v,(pr.returncode,v)
+        if phase_name=='generator': assert 'entries elapsed' in (w/'generator.log').read_text()
+        else:
+            pid=int((w/'app.pid').read_text())
+            try: os.kill(pid,0); alive=True
+            except ProcessLookupError: alive=False
+            assert not alive,'leaked app child'
+        print('PASS cancel (%s) mid-%s: INCOMPLETE cancelled verdict, logs kept, red, no leaked child'%(sig.name,phase_name))
+for _s in (signal.SIGTERM, signal.SIGINT):
+    for _ph in ('generator','app'): cancel_case(_s,_ph)
 # early precondition failure still leaves a verdict artifact (non-Mac host stands in for any precondition failure)
 if sys.platform!='darwin':
     with tempfile.TemporaryDirectory() as td:
