@@ -44,6 +44,7 @@ try:
     ck('baseline real engine: 0 per-node diffs', r['diff_count'] == 0, r['diffs'][:3])
     ck('baseline skipped accounting equals oracle expectation', len(r['skips']) == exp_skips == r['expected_skips'], (r['skips'], exp_skips))
     ck('baseline no drift', not r['drift'])
+    ck('expected and engine skip (reason, path) lists are retained outside the capped diffs', r['expected_skip_reasons'] == r['got_skip_reasons'] and len(r['expected_skip_reasons']) == exp_skips, (r['expected_skip_reasons'], r['got_skip_reasons']))
     # ROOT ALIAS (macOS: tempfile roots under /var/folders are reached through the /var -> /private/var symlink; the engine reports the canonical root).
     # The oracle must resolve the root ONCE, up front, for both its walk and the engine dump. Only the root is resolved; nothing below it is followed.
     alias = root + '-alias'
