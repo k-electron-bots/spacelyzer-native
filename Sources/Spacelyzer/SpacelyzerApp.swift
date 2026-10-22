@@ -63,6 +63,7 @@ struct SpacelyzerApp: App {
                             // CI-only handshake: the runner owns screen-capture permission.
                             // State cannot advance until that exact state was captured (or failed).
                             let ready = "/tmp/spz-demo-ready-\(n)", ack = "/tmp/spz-demo-ack-\(n)"
+                            try? (DemoInput.stateLine(step: n, alertShown: model.removalMessage != nil) + "\n").write(toFile: "/tmp/spz-demo-state-\(n)", atomically: true, encoding: .utf8)
                             try? "\(n)".write(toFile: "/tmp/spz-demo-step", atomically: true, encoding: .utf8)
                             try? Data().write(to: URL(fileURLWithPath: ready))
                             let deadline = Date().addingTimeInterval(30)
@@ -929,6 +930,8 @@ struct SpacelyzerApp: App {
                                     mark(stepNumber); stepNumber += 1
                                     _ = await PublicationRegression.settleSurfaces(model)
                                     model.undoRemoval(); await model.settleRemoval()
+                                    model.removalMessage = nil   // dismiss the alert so the next window resize targets the main window
+                                    try? await Task.sleep(nanoseconds: 500_000_000)
                                     Check.expect("batch7-removal-alert-restored-\(dark ? "dark" : "light")", FileManager.default.fileExists(atPath: victim7), "undo restored the fixture after the alert capture")
                                 } else {
                                     Check.expect("batch7-removal-alert-restored-\(dark ? "dark" : "light")", false, "fixture node not found")
@@ -1305,7 +1308,22 @@ struct SpacelyzerApp: App {
         for w in NSApp.windows where w.isVisible { if let c = w.contentView?.superview ?? w.contentView { walk(c) } }
         return out
     }
-    static var window: NSWindow? { NSApp.keyWindow ?? NSApp.windows.first { $0.isVisible } }
+    /// The app's main window. A sheet or alert (an attached sheet is its own NSWindow, and it is the key window while
+    /// shown) must never be returned: resizing it was the cause hypothesized for demo shots 72-81 (a stretched alert
+    /// over a blank window). Falls back to the old lookup only when no non-sheet window is visible.
+    static var window: NSWindow? {
+        let main = NSApp.windows.first { $0.isVisible && !$0.isSheet && !($0 is NSPanel) && $0.canBecomeMain }
+        return main ?? NSApp.keyWindow ?? NSApp.windows.first { $0.isVisible }
+    }
+    /// One line of observable state per demo step, written before the capture handshake so a capture can be checked
+    /// against what the window really was (not just that a PNG exists).
+    static func stateLine(step: Int, alertShown: Bool) -> String {
+        let w = window
+        let sz = w?.contentView?.frame.size ?? .zero
+        let sheet = w?.attachedSheet != nil
+        let key = NSApp.keyWindow
+        return "step=\(step) main=\(w != nil) w=\(Int(sz.width)) h=\(Int(sz.height)) sheet=\(sheet) keyIsSheet=\(key?.isSheet ?? false) alertModel=\(alertShown) appearance=\(NSApp.effectiveAppearance.name.rawValue)"
+    }
     static func click(fromTop y: CGFloat, x: CGFloat) {
         guard let w = window else { Perf.log("kbd: no window"); return }
         let p = NSPoint(x: x, y: w.frame.height - y)
