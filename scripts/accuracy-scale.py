@@ -35,9 +35,12 @@ def oracle(root, spz=None):
     r = subprocess.run(cmd, capture_output=True, text=True)
     return json.loads(r.stdout), r.returncode
 def main():
-    ap = argparse.ArgumentParser(); ap.add_argument('--spz', required=True); ap.add_argument('--sizes', default='1000,10000,100000'); ap.add_argument('--seed', type=int, default=7)
-    a = ap.parse_args(); bad = []; rows = []
+    ap = argparse.ArgumentParser(); ap.add_argument('--spz', required=True); ap.add_argument('--sizes', default='1000,10000,100000'); ap.add_argument('--seed', type=int, default=7); ap.add_argument('--deadline-seconds', type=float, default=600); ap.add_argument('--out')
+    a = ap.parse_args(); bad = []; rows = []; import time, platform; t00 = time.monotonic(); incomplete = []; timings = {}
     for n in map(int, a.sizes.split(',')):
+        left = a.deadline_seconds - (time.monotonic() - t00)
+        if left < 0: incomplete.append(n); print(f'INCOMPLETE size {n}: deadline {a.deadline_seconds}s reached, not run (no claim)', file=sys.stderr); continue
+        t0 = time.monotonic()
         need = n * 12_000 * 3   # measured about 7.8 KB allocated per item at 100k (775 MB) (see oracle output); the tree is built twice (links + no-links variants) and oracle/engine read it, so require 3x headroom
         free = shutil.disk_usage(tempfile.gettempdir()).free
         if free < need:
@@ -83,8 +86,13 @@ def main():
                 if got is None or got[1] == o_pre or got[0] != o['items'] + 1: bad.append((n, 'negative control: engine did not see the added 8 KiB file'))
                 os.unlink(big)
         finally:
+            timings[n] = round(time.monotonic() - t0, 1)
             if os.getuid() != 0:
                 for dp, dn, fn in os.walk(root): os.chmod(dp, 0o700)
             shutil.rmtree(root, ignore_errors=True)
-    print(json.dumps(dict(rows=rows, failures=bad), indent=1)); return 1 if bad else 0
+    out = dict(platform=platform.platform(), uid=os.getuid(), tmp_free_mib=shutil.disk_usage(tempfile.gettempdir()).free >> 20, seconds_by_size=timings, incomplete_sizes=incomplete, rows=rows, failures=bad,
+               verdict='FAIL' if bad else ('INCOMPLETE' if incomplete else 'PASS'))
+    txt = json.dumps(out, indent=1); print(txt)
+    if a.out: open(a.out, 'w').write(txt)
+    return 1 if bad else (3 if incomplete else 0)
 if __name__ == '__main__': sys.exit(main())

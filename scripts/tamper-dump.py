@@ -16,6 +16,9 @@ elif mode == 'extra_node': lines.append('File\t0\t' + root + '/ghost')
 elif mode == 'kind_swap': i = pick('File'); a = lines[i].split('\t'); a[0] = 'Symlink'; lines[i] = '\t'.join(a)
 elif mode == 'drop_skip': lines = [l for l in lines if not l.startswith('SKIP')]
 elif mode == 'extra_skip': lines.append('SKIP\tPermissionDenied\t' + root + '/ghost')
+elif mode == 'drop_one_skip':
+    k = [i for i, l in enumerate(lines) if l.startswith('SKIP') and '\ufffd' in l]
+    if k: del lines[k[0]]
 elif mode == 'mutate': open(root + '/drift_new', 'w').write('late')
 elif mode == 'none': pass
 print('\n'.join(lines))
