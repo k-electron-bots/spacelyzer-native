@@ -50,6 +50,11 @@ fn print_diff_detail(label: &str, diff: &verify_diff::PathDiff) {
     }
 }
 
+/// Minimal reversible escaping (backslash, newline, tab, CR) so a path is exactly one tab-separated field.
+fn esc(p: &str) -> String {
+    p.replace('\\', "\\\\").replace('\n', "\\n").replace('\t', "\\t").replace('\r', "\\r")
+}
+
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let (cmd, path) = match (a.get(1), a.get(2)) {
@@ -124,6 +129,17 @@ fn main() {
                 print_diff_detail("default-vs-default recheck", &d_recheck);
                 println!("paths differing in both comparisons: {}", d_portable.overlap(&d_recheck));
                 std::process::exit(1);
+            }
+        }
+        "dump" => {
+            // Developer accuracy aid: one tab-separated line per node (kind, cumulative bytes, escaped path), then one SKIP line per skipped entry.
+            // Consumed by scripts/independent-size-oracle.py --dump; the node set and sizes are exactly what the app's tree holds.
+            let tree = scan(&path, &ScanOptions::default(), &ScanProgress::default()).expect("scan failed");
+            for id in 0..tree.len() as u32 {
+                println!("{:?}\t{}\t{}", tree.kind(id), tree.size(id), esc(&tree.path(id)));
+            }
+            for s in &tree.skipped {
+                println!("SKIP\t{:?}\t{}", s.reason, esc(&s.path));
             }
         }
         "bench" => {
