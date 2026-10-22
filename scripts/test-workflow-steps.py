@@ -43,7 +43,7 @@ case "${STUB_DEMO:+x} $* " in x*" SPZ_DEMO=1 "*)
   case "$STUB_DEMO" in
     none) :;;
     *) n=81; case "$STUB_DEMO" in stall:*) n=$((${STUB_DEMO#stall:} - 1));; esac
-       for i in $(seq 1 $n); do touch "$T/spz-demo-ready-$i"; done
+       for i in $(seq 1 $n); do al=False; [ $i = 71 ] || [ $i = 72 ] && al=True; printf 'step=%s main=True w=1280 h=800 sheet=%s keyIsSheet=False alertModel=%s appearance=x\\n' $i $al $al > "$T/spz-demo-state-$i"; touch "$T/spz-demo-ready-$i"; done
        [ "$STUB_DEMO" = full ] && { touch "$T/spz-demo-finished"; for i in $(seq 1 178); do echo "PASS c$i d"; done > "$T/spz-assertions.txt"; };;
   esac; exit 0;; esac
 rd=""; for a in "$@"; do case "$a" in SPZ_RESULT_DIR=*) rd="${a#SPZ_RESULT_DIR=}";; esac; done
@@ -89,6 +89,7 @@ def workdir():
 def subst(body, w):
     body = body.replace('/tmp/spz-docs-capture', w + '/tmp/spz-docs-capture')
     body = body.replace('/tmp/spz-assertions.txt', w + '/tmp/spz-assertions.txt').replace('/tmp/spz-timing.txt', w + '/tmp/spz-timing.txt')
+    body = body.replace('python3 scripts/check-demo-state.py /tmp 81', 'python3 ' + REPO + '/scripts/check-demo-state.py ' + w + '/tmp 81')
     body = body.replace('bash scripts/make-docs-fixture.sh "$HOME/Sample"', 'mkdir -p "$HOME/Sample"')
     return body
 
@@ -145,13 +146,18 @@ def docs_cases(ci_path, label, expect_gate_fix):
 def asserts_cases():
     doc = load(CI); body = step(doc, 'macos', 'asserts')['run']
     lines = lambda n, f=0: ''.join((f'FAIL c{i} d\n' if i < f else f'PASS c{i} d\n') for i in range(n))
-    def mk(n=178, f=0, shots=81, timing='', extra=None):
+    def mk(n=178, f=0, shots=81, timing='', extra=None, skip_state=(), no_main=()):
         w = workdir(); open(w + '/tmp/spz-assertions.txt', 'w').write(lines(n, f)); open(w + '/tmp/spz-timing.txt', 'w').write(timing)
         for i in range(1, shots + 1): open(f'{w}/dist/screenshot-demo-{i}.png', 'w').write('x')
+        for i in range(1, 82):
+            al = i in (71, 72)
+            if i in skip_state: continue
+            open(f'{w}/tmp/spz-demo-state-{i}', 'w').write(f'step={i} main={"False" if i in no_main else "True"} w=1280 h=800 sheet={al or i in no_main} keyIsSheet={i in no_main} alertModel={al or i in no_main} appearance=x\n')
         return w
     for opts in ('-e', '-eo pipefail'):
         for name, kw, want_fail in [('178 PASS, all screenshots', {}, False), ('177 results', {'n': 177}, True), ('178 results, one FAIL', {'f': 1}, True),
-                                    ('80 of 81 screenshots', {'shots': 80}, True), ('APP NOT RUNNING', {'timing': 'APP NOT RUNNING\n'}, True), ('DEMO TIMEOUT', {'timing': 'DEMO x TIMEOUT\n'}, True)]:
+                                    ('80 of 81 screenshots', {'shots': 80}, True), ('APP NOT RUNNING', {'timing': 'APP NOT RUNNING\n'}, True), ('DEMO TIMEOUT', {'timing': 'DEMO x TIMEOUT\n'}, True),
+                                    ('stale-alert capture state (steps 73-81, the run 39843869589 defect)', {'no_main': range(73, 82)}, True), ('one state record missing', {'skip_state': (50,)}, True)]:
             w = mk(**kw); rc, out = run_step(subst(body, w), w, opts); check(f'asserts step [{opts}] {name}: {"fails" if want_fail else "passes"}', (rc != 0) == want_fail, f'rc={rc} {out[-200:]}'); shutil.rmtree(w)
         w = workdir(); rc, out = run_step(subst(body, w), w, opts); check(f'asserts step [{opts}] assertion file absent: fails', rc != 0, out[-200:]); shutil.rmtree(w)
     for real, label, want_fail in [('/downloads/run176/0.1.176/ui-assertions.txt', 'run-39451419467 (176 lines, 3 FAIL)', True),
@@ -366,7 +372,7 @@ def demo_cases():
         e = dict(env, STUB_TMPDIR=w + '/tmp')
         body = launch.replace('/tmp/spz-', w + '/tmp/spz-').replace('python3 scripts/capture-interactions.py &', 'true &')
         rc, out = run_step(body, w, opts, e)
-        ab = asserts.replace('/tmp/spz-', w + '/tmp/spz-')
+        ab = asserts.replace('/tmp/spz-', w + '/tmp/spz-').replace('python3 scripts/check-demo-state.py /tmp 81', 'python3 ' + REPO + '/scripts/check-demo-state.py ' + w + '/tmp 81')
         rc2, out2 = run_step(ab, w, opts, e)
         timing = open(w + '/dist/ui-timing.txt').read() if os.path.exists(w + '/dist/ui-timing.txt') else None
         shots = len([f for f in os.listdir(w + '/dist') if f.startswith('screenshot-demo-')])
