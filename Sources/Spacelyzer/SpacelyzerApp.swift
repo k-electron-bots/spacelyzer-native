@@ -59,7 +59,7 @@ struct SpacelyzerApp: App {
                         await BatchRemovalExecutionChecks.run()
                         await BatchUndoChecks.run()
                         MainStall.shared.start()
-                        func mark(_ n: Int) {
+                        @MainActor func mark(_ n: Int) {
                             // CI-only handshake: the runner owns screen-capture permission.
                             // State cannot advance until that exact state was captured (or failed).
                             let ready = "/tmp/spz-demo-ready-\(n)", ack = "/tmp/spz-demo-ack-\(n)"
