@@ -12,8 +12,16 @@ def run(argv, timeout, *, env=None):
 
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('--app',required=True);ap.add_argument('--work',required=True)
-    ap.add_argument('--budget-seconds',type=int,default=360);a=ap.parse_args()
+    ap.add_argument('--budget-seconds',type=int,default=360)
+    ap.add_argument('--job-deadline-epoch',type=float,required=True,
+                    help='absolute whole-job deadline in Unix seconds, supplied by consolidated runner')
+    ap.add_argument('--artifact-reserve-seconds',type=int,default=120)
+    a=ap.parse_args()
     if sys.platform!='darwin': raise RuntimeError('NOT-RUN: Mac scale segment needs macOS')
+    if a.artifact_reserve_seconds < 120: raise RuntimeError('artifact reserve must be at least120s')
+    available=a.job_deadline_epoch-time.time()-a.artifact_reserve_seconds
+    if available < a.budget_seconds:
+        raise RuntimeError('INCOMPLETE: whole-job deadline cannot reserve full scale segment plus artifacts')
     if not 240 <= a.budget_seconds <= 420: raise RuntimeError('budget must reserve 240..420 seconds')
     app=pathlib.Path(a.app).resolve();w=pathlib.Path(a.work).resolve()
     runner=os.environ.get('RUNNER_TEMP')
@@ -21,7 +29,7 @@ def main():
     if w.exists(): raise RuntimeError('work must not exist (no overwrite or reuse)')
     if not (app/'Contents/MacOS/Spacelyzer').is_file(): raise RuntimeError('prebuilt test app missing')
     w.mkdir();fixture=w/'fixture';res=w/'result';res.mkdir()
-    deadline=time.monotonic()+a.budget_seconds
+    deadline=time.monotonic()+min(a.budget_seconds,available)
     # Reserve210s for app work, exit/termination, bounded fixture deletion and verdict.
     def left(reserve=0):
         n=int(deadline-time.monotonic())-reserve

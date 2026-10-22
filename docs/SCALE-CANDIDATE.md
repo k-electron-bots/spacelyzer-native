@@ -42,7 +42,7 @@ The existing Swift suite still covers the43-node pre-first-enumeration path only
 Previous macOS job:25m36s. New CI universal-engine build and real Trash costs are unmeasured.
 Scale's default360s is a hard ceiling, not measured fit. It reserves210s after generation
 for app/process/deletion/verdict, but does not yet consume a shared whole-job deadline or
-reserve measured artifact-upload time. No combined35min fit or readiness claim exists.
+reserve measured artifact-upload time. The standalone runner now requires an absolute whole-job deadline and refuses before any fixture work unless the full segment plus at least120s artifact reserve fit; no workflow caller yet supplies that deadline. The app shares a150s work deadline under its180s cap, reserving30s for sampler flush/PNG/verdict/exit. These are fail-closed ceilings, not measured durations. No combined35min fit or readiness claim exists.
 
 Before an execution request: independent review of the integrated source, sampler flush,
 filter/layout identity and bounded cleanup; a defensible shared35min budget; then a separate

@@ -8,8 +8,10 @@ import Foundation
 // verify scripts/make_fixtures.py expansion-1m first. Timing is shared-runner evidence only.
 @MainActor enum LargeScanDriver {
     private static var started = false
+    // Hard180s process cap: at most150s work, at least30s for flush/PNG/verdict/exit.
+    private static var workDeadline = 0.0
     private static func wait(_ seconds: Double, _ cond: () -> Bool) async -> Bool {
-        let deadline = ProcessInfo.processInfo.systemUptime + seconds
+        let deadline = min(ProcessInfo.processInfo.systemUptime + seconds, workDeadline)
         while ProcessInfo.processInfo.systemUptime < deadline {
             if cond() { return true }
             try? await Task.sleep(nanoseconds: 10_000_000)
@@ -23,6 +25,7 @@ import Foundation
             exit(3)
         }
         started = true
+        workDeadline = ProcessInfo.processInfo.systemUptime + 150
         let fm = FileManager.default
         guard let dir = env["SPZ_RESULT_DIR"], dir.hasPrefix("/"),
               (try? fm.contentsOfDirectory(atPath: dir))?.isEmpty == true,
@@ -36,7 +39,7 @@ import Foundation
         let required = ["scale-real-scan-exact-million-item-tree", "scale-mounted-million-row-publication",
                         "scale-filter-exact-single-file", "scale-clear-filter-restores-million-rows",
                         "scale-main-queue-delay-under-250ms"]
-        // Hard process timeout, not a cancellation race with an uninterruptible engine poll.
+        // Hard process timeout; work waits share150s deadline, reserving30s finalization.
         DispatchQueue.global().asyncAfter(deadline: .now() + 180) {
             try? "FAIL scale driver timeout; no readiness claim\n".write(toFile: dir + "/result.txt", atomically: true, encoding: .utf8)
             exit(2)
@@ -71,7 +74,7 @@ import Foundation
         let sampler = ScaleMainQueueSampler()
         sampler.start()
         model.scan(root)
-        let scanned = await wait(90) { !model.scanning }
+        let scanned = await wait(65) { !model.scanning }
         let exact = scanned && model.error == nil && model.tree?.nodeCount == expectedNodes && model.tree?.wasCancelled == false
         Check.expect("scale-real-scan-exact-million-item-tree", exact,
                      "done=\(scanned) nodes=\(model.tree?.nodeCount ?? 0)/\(expectedNodes) error=\(model.error ?? "none")")
@@ -79,14 +82,14 @@ import Foundation
             failRemaining(1, "not reached: real million-item scan premise failed")
         }
         // The product view, not the test, publishes layoutVersion. All versions must agree.
-        let ready = await wait(20) {
+        let ready = await wait(15) {
             !model.filterPending && !model.rowsPending && model.outlineVersion == tree.version
                 && model.derivedVersion == tree.version && model.layoutVersion == tree.version
                 && model.outlineKeyView?.numberOfRows == 1 && currentTreemap(tree, filter: nil)
         }
         guard ready else { failRemaining(1, "not reached: mounted outline/derived/treemap initial publication failed") }
         model.toggle(folder)
-        let expanded = await wait(20) {
+        let expanded = await wait(15) {
             model.outlineRows.count == expectedRows && model.outlineKeyView?.numberOfRows == expectedRows
                 && model.outlineInfos.count == expectedRows && model.outlineShown.count == expectedRows
                 && model.outlineVersion == tree.version && !model.filterPending
@@ -103,7 +106,7 @@ import Foundation
                      "modelRows=\(model.outlineRows.count) tableRows=\(model.outlineKeyView?.numberOfRows ?? -1) lastRealCell=\(lastCellMatches)")
         guard expanded && lastCellMatches else { failRemaining(2, "not reached: expanded publication failed") }
         model.filterText = "f0000000.dat"
-        let filtered = await wait(20) {
+        let filtered = await wait(15) {
             !model.filterPending && model.activeFilter?.totalCount == 1
                 && model.activeFilter?.version == tree.version && model.outlineVersion == tree.version
                 && model.derivedVersion == tree.version
@@ -115,7 +118,7 @@ import Foundation
                      "filtered=\(filtered) matches=\(model.activeFilter?.totalCount ?? 0) rows=\(model.outlineRows.count)")
         guard filtered else { failRemaining(3, "not reached: exact filter failed") }
         model.filterText = ""
-        let cleared = await wait(20) {
+        let cleared = await wait(15) {
             !model.filterPending && model.activeFilter == nil && model.outlineRows.count == expectedRows
                 && model.outlineKeyView?.numberOfRows == expectedRows && model.outlineVersion == tree.version
                 && model.derivedVersion == tree.version && currentTreemap(tree, filter: nil)

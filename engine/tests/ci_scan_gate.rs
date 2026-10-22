@@ -101,7 +101,7 @@ fn real_cancel_after_two_completed_directory_enumerations_keeps_prior_entries() 
         let t = finish(s);
         assert!(start.elapsed() < Duration::from_secs(5), "coarse completion exceeded5s");
         assert!(!t.is_null());
-        assert_eq!(spz_tree_cancelled(t), 1);
+        assert_eq!(spz_tree_cancelled(t), 1, "midscan cancellation must publish cancelled tree");
         assert_eq!(spz_tree_node_count(t), 2003, "prior entries must survive, last directory files absent");
         spz_tree_free(t); spz_scan_free(s);
         let normal = f.start(0); // release immediately: full real scan independently succeeds.
