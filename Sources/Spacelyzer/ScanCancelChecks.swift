@@ -26,10 +26,10 @@ enum ScanCancelChecks {
         return cond()
     }
 
-    /// Sparse fixture files (truncate-created holes, no data blocks): enough entries that a full
-    /// scan takes seconds, so a cancel issued after the first progress items lands mid-scan with
-    /// overwhelming margin on any plausible runner.
-    private static func makeSparseFixture(in d: URL, dirs: Int, perDir: Int, size: UInt64) throws {
+    /// Sparse fixture files (truncate-created holes). A completed scan may race the first
+    /// progress observation. Fail the premise if no mid-scan window was observed; entry count
+    /// alone is not timing proof.
+    nonisolated private static func makeSparseFixture(in d: URL, dirs: Int, perDir: Int, size: UInt64) throws {
         let fm = FileManager.default
         for i in 0..<dirs {
             let sub = d.appendingPathComponent("d\(i)")
@@ -44,6 +44,22 @@ enum ScanCancelChecks {
         }
     }
 
+    /// A blocked run() cannot be raced with a structured task group: cancellation does not
+    /// interrupt its polling loop. A hard watchdog fails the process instead, without deleting
+    /// the fixture under a live scanner. The driver-level 300 s timeout remains unchanged.
+    private static func watchdog(_ seconds: Double, phase: String) -> DispatchWorkItem {
+        let item = DispatchWorkItem {
+            let text = "FAIL ScanCancelChecks timeout: \(phase); fixture retained because scanner may still be live\n"
+            FileHandle.standardError.write(Data(text.utf8))
+            if let dir = ProcessInfo.processInfo.environment["SPZ_RESULT_DIR"] {
+                try? text.write(toFile: dir + "/result.txt", atomically: true, encoding: .utf8)
+            }
+            exit(2)
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + seconds, execute: item)
+        return item
+    }
+
     static func run() async {
         let names = ["scan-cancel-stops-promptly-and-publishes-partial-tree",
                      "scan-cancel-before-progress-returns-promptly",
@@ -52,8 +68,14 @@ enum ScanCancelChecks {
         let marker = "spz-cxl-\(UUID().uuidString)"
         let d = fm.temporaryDirectory.appendingPathComponent(marker)
         try! fm.createDirectory(at: d, withIntermediateDirectories: true)
-        // The suite only ever creates and deletes its own temp fixture - nothing touches the Trash.
-        defer { try? fm.removeItem(at: d) }
+        let m = AppModel()
+        var cleanupAllowed = true
+        let totalDeadline = watchdog(240, phase: "whole suite (including fixture creation)")
+        defer {
+            totalDeadline.cancel()
+            if cleanupAllowed && !m.scanning { try? fm.removeItem(at: d) }
+            else { Check.note("ScanCancelChecks retained live-scanner fixture: \(d.path)") }
+        }
         // Canonicalize with the same syscall as the engine, then a HARD SAFETY GATE: the canonical
         // fixture root must live under the canonical temporary directory with this suite's marker.
         var buf = [CChar](repeating: 0, count: Int(PATH_MAX))
@@ -70,16 +92,19 @@ enum ScanCancelChecks {
         guard root.hasPrefix(tmpRoot + "/"), root.contains("spz-cxl-") else {
             for n in names { Check.expect(n, false, "safety gate refused fixture root \(root)") }; return
         }
-        do { try makeSparseFixture(in: d, dirs: 300, perDir: 500, size: 4_096) } catch {
+        do { try await Task.detached { try makeSparseFixture(in: d, dirs: 300, perDir: 500, size: 4_096) }.value } catch {
             for n in names { Check.expect(n, false, "fixture creation failed: \(error)") }; return
         }
 
         // Baseline: one full scan of the deterministic fixture. A cancelled baseline means the
         // fixture or engine is broken, so every check fails on its own terms rather than guessing.
+        let baselineDeadline = watchdog(60, phase: "baseline scan")
+        defer { baselineDeadline.cancel() }
         guard let s0 = ScanSession(root: root, excludes: []),
               let full = await s0.run(progress: { _ in }), !full.wasCancelled else {
             for n in names { Check.expect(n, false, "baseline full scan failed or was cancelled") }; return
         }
+        baselineDeadline.cancel()
         let fullCount = full.nodeCount
         guard fullCount > 150_000 else {
             for n in names { Check.expect(n, false, "fixture too small: \(fullCount) nodes") }; return
@@ -88,7 +113,6 @@ enum ScanCancelChecks {
         // 1. The REAL user path (ContentView Stop -> AppModel.cancel): cancel after real progress.
         // It must stop within the 10 s responsiveness bound and publish a PARTIAL tree, flagged
         // wasCancelled - a complete tree here means the cancel was ignored.
-        let m = AppModel()
         m.scan(root)
         let sawProgress = await wait(60) { m.progress.items >= 1_000 || !m.scanning }
         guard sawProgress, m.scanning, m.progress.items >= 1_000 else {
@@ -96,6 +120,8 @@ enum ScanCancelChecks {
                          "premise failed: scan ended before reaching 1000 items (items=\(m.progress.items) scanning=\(m.scanning)) - fixture too fast to cancel mid-scan")
             Check.expect("scan-cancel-before-progress-returns-promptly", false, "not reached: cancel premise failed")
             Check.expect("rescan-after-model-cancel-is-complete", false, "not reached: cancel premise failed")
+            m.cancel()
+            cleanupAllowed = await wait(10) { !m.scanning }
             return
         }
         let cancelAt = DispatchTime.now().uptimeNanoseconds
@@ -107,19 +133,29 @@ enum ScanCancelChecks {
                         && m.tree!.wasCancelled && m.tree!.nodeCount < fullCount,
                      "stopped=\(stopped) stopMs=\(String(format: "%.1f", stopMs)) nodes=\(m.tree.map { String($0.nodeCount) } ?? "nil")/\(fullCount) cancelled=\(m.tree.map { String($0.wasCancelled) } ?? "nil") error=\(m.error ?? "none")")
 
+        guard stopped else {
+            m.cancel()
+            cleanupAllowed = await wait(10) { !m.scanning }
+            Check.expect("scan-cancel-before-progress-returns-promptly", false, "not reached: prior cancel timed out")
+            Check.expect("rescan-after-model-cancel-is-complete", false, "not reached: prior cancel timed out")
+            return
+        }
+
         // 2. Immediate cancel at the session level: the sticky flag is set before the first poll,
-        // so run() must return promptly and any tree it yields must be flagged cancelled.
+        // so run() must return promptly with a flagged tree. A nil failure is not a pass.
         guard let s2 = ScanSession(root: root, excludes: []) else {
             Check.expect("scan-cancel-before-progress-returns-promptly", false, "ScanSession init failed")
             Check.expect("rescan-after-model-cancel-is-complete", false, "not reached: session init failed")
             return
         }
-        s2.cancel()
+        let immediateDeadline = watchdog(10, phase: "immediate cancel")
         let t2 = DispatchTime.now().uptimeNanoseconds
+        s2.cancel()
         let r2 = await s2.run(progress: { _ in })
+        immediateDeadline.cancel()
         let immMs = Double(DispatchTime.now().uptimeNanoseconds - t2) / 1_000_000
         Check.expect("scan-cancel-before-progress-returns-promptly",
-                     immMs < 10_000 && (r2 == nil || r2!.wasCancelled),
+                     immMs < 10_000 && r2 != nil && r2!.wasCancelled,
                      "immMs=\(String(format: "%.1f", immMs)) tree=\(r2.map { "nodes=\($0.nodeCount) cancelled=\($0.wasCancelled)" } ?? "nil")")
 
         // 3. A rescan after the cancel is unaffected: it completes with an exact, unflagged tree.
@@ -129,6 +165,10 @@ enum ScanCancelChecks {
                      done && m.error == nil && m.tree != nil && !m.tree!.wasCancelled
                         && m.tree!.nodeCount == fullCount,
                      "done=\(done) nodes=\(m.tree.map { String($0.nodeCount) } ?? "nil")/\(fullCount) cancelled=\(m.tree.map { String($0.wasCancelled) } ?? "nil") error=\(m.error ?? "none")")
+        if !done {
+            m.cancel()
+            cleanupAllowed = await wait(10) { !m.scanning }
+        }
     }
 }
 #endif
