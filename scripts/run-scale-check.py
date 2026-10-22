@@ -38,9 +38,10 @@ def main():
     run([sys.executable,generator,'verify',str(fixture),'--profile','expansion-1m'],left(210))
     env=dict(os.environ,SPZ_CHECKS='scale',SPZ_SCALE_ROOT=str(fixture),SPZ_RESULT_DIR=str(res))
     # Direct unique child PID only. No pkill/process-name targeting or other app interaction.
+    app_timeout=left(40)  # compute before spawning; budget failure must not orphan a child
     with (w/'stdout.log').open('wb') as out, (w/'stderr.log').open('wb') as err:
         p=subprocess.Popen([str(app/'Contents/MacOS/Spacelyzer')],env=env,stdout=out,stderr=err)
-        try: rc=p.wait(timeout=left(40))
+        try: rc=p.wait(timeout=app_timeout)
         except subprocess.TimeoutExpired:
             p.terminate()
             try: p.wait(timeout=5)
