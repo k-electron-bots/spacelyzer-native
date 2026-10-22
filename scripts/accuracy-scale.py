@@ -16,6 +16,7 @@ class Deadline:
     def check(self):
         if self.work_left() <= 0: raise DeadlineHit()
     def cap(self): return max(1.0, self.work_left())                                          # subprocess timeout
+    def abs(self): return time.monotonic() + self.work_left()                                 # absolute monotonic work deadline
 
 def build(root, n, seed, dl, links=True):
     r = random.Random(seed); files = []; items = 0; sym = hl = 0; dirs = [root]; sparse = 0; noperm = None
@@ -60,7 +61,7 @@ def cleanup(root, c, log):
     return True
 
 def skipped_count(spz, root, dl):
-    out = subprocess.run([spz, 'scan', root], capture_output=True, text=True, timeout=dl.cap()).stdout
+    out = O.run_bounded([spz, 'scan', root], dl.cap()).stdout
     m = re.search(r'\((\d+) skipped\)', out)
     return int(m.group(1)) if m else None      # None => the output format changed: caller FAILS
 
@@ -74,7 +75,7 @@ def one_size(n, a, dl, rows, bad, incomplete, leaks, timings):
             dl.check(); root = tempfile.mkdtemp(prefix=f'acc{n}{variant[0]}-'); roots.append([root, None])
             c = build(root, n, a.seed + n + seed_off, dl, links); roots[-1][1] = c; dl.check()
             vis = c['items'] - c['planted_unreadable_dirs']
-            tot, rc = subprocess.run([sys.executable, ORACLE, root, '--spz', a.spz, '--max-seconds', str(dl.cap())], capture_output=True, text=True), None
+            tot = O.run_bounded([sys.executable, ORACLE, root, '--spz', a.spz, '--max-seconds', str(dl.cap())], dl.cap() + 5)
             try: o = json.loads(tot.stdout)
             except ValueError: bad.append([n, variant, 'oracle output unparseable']); continue
             if o.get('verdict') == 'INCOMPLETE': incomplete.append([n, variant + ': ' + o['reason']]); return
@@ -82,7 +83,7 @@ def one_size(n, a, dl, rows, bad, incomplete, leaks, timings):
             skipped = skipped_count(a.spz, root, dl)
             legs = {}
             for backend in ('default', 'portable'):
-                dl.check(); pn = O.per_node(root, a.spz, has_hardlinks=c['extra_hardlinks'] > 0, backend=backend)
+                dl.check(); pn = O.per_node(root, a.spz, has_hardlinks=c['extra_hardlinks'] > 0, backend=backend, deadline=dl.abs())
                 if pn['drift']: incomplete.append([n, f'{variant}/{backend}: DRIFT during per-node run']); return
                 legs[backend] = dict(nodes=pn['nodes'], diffs=pn['diff_count'], first_diffs=pn['diffs'][:3], skips=pn['skips'], scope=pn['scope'])
                 if pn['diff_count']: bad.append([n, variant, backend, 'per-node diffs', pn['diffs'][:3]])
@@ -101,8 +102,10 @@ def one_size(n, a, dl, rows, bad, incomplete, leaks, timings):
         rows.append(dict(n=n, **res))
     except DeadlineHit:
         incomplete.append([n, 'deadline reached during build/compare'])
-    except subprocess.TimeoutExpired:
-        incomplete.append([n, 'engine/oracle subprocess hit the shared deadline'])
+    except (subprocess.TimeoutExpired, O.Capped):
+        incomplete.append([n, 'engine/oracle work hit the shared deadline'])
+    except KeyboardInterrupt:
+        incomplete.append([n, 'interrupted (SIGINT/SIGTERM) - partial, nothing claimed']); raise
     finally:
         log = []
         for root, c in roots:
@@ -115,12 +118,18 @@ def main():
     ap.add_argument('--deadline-seconds', type=float, default=600); ap.add_argument('--cleanup-reserve-seconds', type=float, default=60); ap.add_argument('--out')
     a = ap.parse_args(); dl = Deadline(a.deadline_seconds, min(a.cleanup_reserve_seconds, a.deadline_seconds / 2))
     bad, rows, incomplete, leaks, timings = [], [], [], [], {}
+    import signal
+    def _term(sig, frm): raise KeyboardInterrupt()
+    signal.signal(signal.SIGTERM, _term)
+    interrupted = False
     for n in map(int, a.sizes.split(',')):
+        if interrupted: incomplete.append([n, 'not started: interrupted']); continue
         if dl.work_left() <= 0: incomplete.append([n, 'not started: shared deadline reached']); continue
-        one_size(n, a, dl, rows, bad, incomplete, leaks, timings)
+        try: one_size(n, a, dl, rows, bad, incomplete, leaks, timings)
+        except KeyboardInterrupt: interrupted = True
     out = dict(platform=platform.platform(), uid=os.getuid(), deadline_seconds=a.deadline_seconds, cleanup_reserve_seconds=dl.reserve, total_seconds=round(time.monotonic() - dl.t0, 1),
                over_deadline=(time.monotonic() - dl.t0) > a.deadline_seconds, seconds_by_size=timings, incomplete=incomplete, leaks=leaks, rows=rows, failures=bad,
-               verdict='FAIL' if bad else ('INCOMPLETE' if incomplete else 'PASS'))
+               interrupted=interrupted, verdict='FAIL' if bad else ('INCOMPLETE' if incomplete else 'PASS'))
     txt = json.dumps(out, indent=1); print(txt)
     if a.out: open(a.out, 'w').write(txt)
     return 1 if bad else (3 if incomplete else 0)
