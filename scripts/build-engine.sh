@@ -16,4 +16,5 @@ else
   cargo build --release -p spacelyzer-engine --lib
   cp target/release/libspacelyzer_engine.a build/lib/
 fi
+bash scripts/check-no-ci-symbols.sh build/lib/libspacelyzer_engine.a
 echo "engine: $(ls -la build/lib/libspacelyzer_engine.a)"

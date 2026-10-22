@@ -5,8 +5,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 VERSION="${1:?version}"
 IDENTITY="${2:--}"
-swift build -c release --arch arm64 --arch x86_64
-BIN="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)/Spacelyzer"
+bash scripts/shipping-swift.sh -c release --arch arm64 --arch x86_64
+BIN="$(bash scripts/shipping-swift.sh -c release --arch arm64 --arch x86_64 --show-bin-path)/Spacelyzer"
+bash scripts/check-no-ci-symbols.sh build/lib/libspacelyzer_engine.a "$BIN"
 APP="dist/Spacelyzer.app"
 rm -rf dist && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Spacelyzer"

@@ -28,5 +28,13 @@ for seam in ['trashItem =', 'identityCheck =', 'restoreItem =', 'restoreCollisio
 for el in ['temporaryDirectory', 'spz-cxl-', 'root.hasPrefix(', 'realpath(', 'wasCancelled',
            'm.cancel()', 's.cancel()', 'ciParkNextScanAfterDirs', 'sessionParked', 'nodeCount']:
     need(el in body, 'missing required element: %s' % el)
+# Independent-review false-pass guards. These are source wiring assertions, not Swift execution.
+assert 'return cond()' not in body
+assert 'modelReleasedWithoutExpiry && ms < 5000 && idle' in body
+assert 'sessionParked && sessionReleasedWithoutExpiry && sessionMs < 5000' in body
+assert body.index('let modelReleasedWithoutExpiry = m.ciScanGateState == 2') < body.index('let idle = await wait(5)')
+assert body.index('let sessionReleasedWithoutExpiry = s.ciGateState == 2') < body.index('let t = await s.run')
+print('PASS structural sticky-expiry exclusion and explicit completion bounds (not Swift execution)')
+
 print('wiring OK' if ok else 'wiring FAILED')
 sys.exit(0 if ok else 1)

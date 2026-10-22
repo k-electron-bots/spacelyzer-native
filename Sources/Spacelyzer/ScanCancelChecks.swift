@@ -2,8 +2,8 @@
 import Foundation
 
 // STAGED: Swift UNCOMPILED/UNRUN on Mac. The ci-checks engine parks a per-session worker at
-// an actual walk boundary BEFORE the real cancel check. No forced verdict/result and no
-// progress-publication timing premise. Shipping engine has no hook or CI entry points.
+// a pre-first-enumeration walk boundary BEFORE the real cancel check. No forced verdict/result and no
+// progress-publication timing premise. Root-only cancellation is not substantial midscan or mounted UI responsiveness coverage. Shipping engine has no hook or CI entry points.
 @MainActor enum ScanCancelChecks {
     private static func wait(_ seconds: Double, _ cond: () -> Bool) async -> Bool {
         let end = ProcessInfo.processInfo.systemUptime + seconds
@@ -11,7 +11,7 @@ import Foundation
             if cond() { return true }
             try? await Task.sleep(nanoseconds: 5_000_000)
         }
-        return cond()
+        return false
     }
     static func run() async {
         let names = ["scan-cancel-stops-promptly-and-publishes-partial-tree",
@@ -67,11 +67,12 @@ import Foundation
             // Actual Stop handler path to the real C ABI cancel flag, then release the worker.
             m.cancel()
             m.ciReleaseScanGate()
+            let modelReleasedWithoutExpiry = m.ciScanGateState == 2
             let idle = await wait(5) { !m.scanning }
             let ms = Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6
             Check.expect("scan-cancel-stops-promptly-and-publishes-partial-tree",
-                         idle && m.error == nil && m.tree?.wasCancelled == true && m.tree?.nodeCount == 1,
-                         "parked=\(parked) idle=\(idle) cancelled=\(m.tree?.wasCancelled ?? false) nodes=\(m.tree?.nodeCount ?? 0) invocation_to_model_idle_ms=\(ms); coarse 5s completion bound, not UI dispatch latency")
+                         modelReleasedWithoutExpiry && ms < 5000 && idle && m.error == nil && m.tree?.wasCancelled == true && m.tree?.nodeCount == 1,
+                         "pre_first_enumeration=true released_without_expiry=\(modelReleasedWithoutExpiry) parked=\(parked) idle=\(idle) cancelled=\(m.tree?.wasCancelled ?? false) nodes=\(m.tree?.nodeCount ?? 0) invocation_to_model_idle_ms=\(ms); coarse 5s completion bound, not UI dispatch latency")
             guard idle else {
                 Check.expect(names[1], false, "not reached: model worker still active")
                 Check.expect(names[2], false, "not reached: model worker still active")
@@ -85,11 +86,14 @@ import Foundation
                 return
             }
             let sessionParked = await wait(2) { s.ciGateState == 1 }
+            let sessionStart = DispatchTime.now().uptimeNanoseconds
             s.cancel(); s.ciReleaseGate()
+            let sessionReleasedWithoutExpiry = s.ciGateState == 2
             let t = await s.run(progress: { _ in })  // watchdog bounds a broken real worker
+            let sessionMs = Double(DispatchTime.now().uptimeNanoseconds - sessionStart) / 1e6
             Check.expect("scan-cancel-before-progress-returns-promptly",
-                         sessionParked && t?.wasCancelled == true && t?.nodeCount == 1,
-                         "parked=\(sessionParked) cancelled=\(t?.wasCancelled ?? false) nodes=\(t?.nodeCount ?? 0)")
+                         sessionParked && sessionReleasedWithoutExpiry && sessionMs < 5000 && t?.wasCancelled == true && t?.nodeCount == 1,
+                         "pre_first_enumeration=true released_without_expiry=\(sessionReleasedWithoutExpiry) invocation_to_session_result_ms=\(sessionMs); coarse 5s completion bound, not UI dispatch latency; parked=\(sessionParked) cancelled=\(t?.wasCancelled ?? false) nodes=\(t?.nodeCount ?? 0)")
             session = nil
             m.scan(root) // unarmed normal session must complete independently
             let done = await wait(5) { !m.scanning }

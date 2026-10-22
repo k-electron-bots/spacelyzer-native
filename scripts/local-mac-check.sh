@@ -91,10 +91,11 @@ step cargo-failpoints rust_failpoints
 TESTSBIN="$WORK/spz-tests-bin"
 swift_tests() { bash scripts/build-ci-engine.sh && SPZ_CI_ENGINE=1 swift build -c release -Xswiftc -DSPZ_CI_TESTS --scratch-path "$WORK/build-tests" && cp "$(SPZ_CI_ENGINE=1 swift build -c release -Xswiftc -DSPZ_CI_TESTS --scratch-path "$WORK/build-tests" --show-bin-path)/Spacelyzer" "$TESTSBIN"; }
 NORMALBIN=""
-swift_normal() { swift build -c release --scratch-path "$WORK/build-normal" && NORMALBIN="$(swift build -c release --scratch-path "$WORK/build-normal" --show-bin-path)/Spacelyzer" && echo "$NORMALBIN" > "$WORK/normalbin"; }
+swift_normal() { bash scripts/shipping-swift.sh -c release --scratch-path "$WORK/build-normal" && NORMALBIN="$(bash scripts/shipping-swift.sh -c release --scratch-path "$WORK/build-normal" --show-bin-path)/Spacelyzer" && echo "$NORMALBIN" > "$WORK/normalbin"; }
 step swift-build-tests swift_tests
 step swift-build-normal swift_normal
 tripwires() { local nb; nb=$(cat "$WORK/normalbin") || return 1
+  bash scripts/check-no-ci-symbols.sh build/lib/libspacelyzer_engine.a "$nb" || return 1
   strings "$nb" > "$WORK/s-normal.txt"; strings "$TESTSBIN" > "$WORK/s-tests.txt"
   for m in 'SPZ_RESULT_DIR missing' 'commit-order-real-scan-published' 'async-removal-forgets-after-success' 'SPZ_CI_DISABLE_POISON_RELOAD' 'SPZ_CI_DISABLE_SELECTION_REVISION'; do
     if grep -q -- "$m" "$WORK/s-normal.txt"; then echo "tripwire: '$m' found in NORMAL build"; return 1; fi
