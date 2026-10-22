@@ -8,7 +8,7 @@ Unreadable directories/entries are listed, never silently dropped. Output is JSO
 items+allocated, exit 1 on disagreement. Exact comparison is only meaningful on a QUIET tree; --tolerate-bytes/--tolerate-items allow stated drift."""
 import argparse, json, os, subprocess, sys, re
 
-def walk(root):
+def walk(root, nodes=None):
     items = alloc = logical = symlinks = extra_links = 0
     seen = set(); unreadable = []; nonutf8 = 0; stack = [root]; dirs = 0
     while stack:
@@ -24,8 +24,9 @@ def walk(root):
                 unreadable.append([e.path, er.errno]); continue
             if os.fsencode(e.name).decode('utf-8', 'surrogateescape') != e.name or '\udc80' <= max(e.name, '\0') <= '\udcff': nonutf8 += 1
             import stat as S
-            if S.S_ISDIR(st.st_mode): dirs += 1; stack.append(e.path); continue
+            if S.S_ISDIR(st.st_mode): dirs += 1; stack.append(e.path); (nodes is not None) and nodes.__setitem__(e.path, ['Directory', 0]); continue
             if S.S_ISLNK(st.st_mode): symlinks += 1
+            if nodes is not None: nodes[e.path] = ['Symlink' if S.S_ISLNK(st.st_mode) else 'File', st.st_blocks * 512]
             logical += st.st_size
             if st.st_nlink > 1:
                 if (st.st_dev, st.st_ino) in seen: extra_links += 1; continue
@@ -33,6 +34,44 @@ def walk(root):
             alloc += st.st_blocks * 512
     return dict(root=root, items=items, dirs=dirs, allocated_bytes=alloc, logical_bytes=logical, symlinks=symlinks,
                 extra_hardlink_entries=extra_links, unreadable=unreadable, nonutf8_names=nonutf8)
+
+def unesc(t):
+    o = []; i = 0
+    while i < len(t):
+        c = t[i]
+        if c == '\\' and i + 1 < len(t): o.append({'n': '\n', 't': '\t', 'r': '\r', '\\': '\\'}.get(t[i + 1], t[i + 1])); i += 2
+        else: o.append(c); i += 1
+    return ''.join(o)
+
+def per_node(root, binp, has_hardlinks):
+    """Per-node comparison. nodes: path -> [kind, own allocated]; cumulative directory sizes are rolled up here, independently of the engine.
+    Cross-directory hard links make per-directory attribution walk-order dependent (engine docs say so), so with hard links only the node SET, kinds,
+    file sizes' multiset and the root total are compared; without them every node's cumulative size must match exactly."""
+    nodes = {}; walk(root, nodes)
+    cum = {}
+    for p, (k, sz) in nodes.items():
+        if k != 'Directory':
+            d = os.path.dirname(p)
+            while True:
+                cum[d] = cum.get(d, 0) + sz
+                if d == root: break
+                d = os.path.dirname(d)
+    r = subprocess.run([binp, 'dump', root], capture_output=True, text=True)
+    eng = {}; skips = []
+    for line in r.stdout.splitlines():
+        a = line.split('\t')
+        if a[0] == 'SKIP': skips.append((a[1], unesc(a[2]))); continue
+        eng[unesc(a[2])] = (a[0], int(a[1]))
+    want = {root: ('Directory', None)}; want.update({p: (k, None) for p, (k, _) in nodes.items()})
+    diffs = []
+    for p in sorted(set(want) | set(eng)):
+        if p not in eng: diffs.append(['only_oracle', p]); continue
+        if p not in want: diffs.append(['only_engine', p]); continue
+        if want[p][0] != eng[p][0]: diffs.append(['kind', p, want[p][0], eng[p][0]]); continue
+        if want[p][0] == 'Directory':
+            if not has_hardlinks and eng[p][1] != cum.get(p, 0): diffs.append(['dir_size', p, cum.get(p, 0), eng[p][1]])
+        elif not has_hardlinks and eng[p][1] != nodes[p][1]: diffs.append(['file_size', p, nodes[p][1], eng[p][1]])
+    return dict(nodes=len(want), diffs=diffs[:20], diff_count=len(diffs), skips=skips)
 
 def spz_line(binp, root):
     r = subprocess.run([binp, 'verify-cold', root], capture_output=True, text=True)
