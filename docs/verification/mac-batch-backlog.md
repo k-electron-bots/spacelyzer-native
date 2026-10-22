@@ -4,7 +4,7 @@ Source review and Linux checks do not close these gates. No new run, tag, releas
 
 ## Current baseline
 
-- Last reviewed candidate before this docs batch: `dc764d5f5445f206faa187d51ab8e8e9060a8d34` (engine tests for rescan memory, cancelled scans and removal semantics are the newest changes).
+- SUPERSEDED BASELINE: this backlog predates consolidated runs 39602481035 and 39683697776 (2026-10-21), which compiled the full app on Mac and passed 178/178 UI and 159/159 ordering checks, including the named cleanup/consumer suites (BatchRemoval, BatchUndo, Duplicates, Exclusions, FullDiskAccess, ItemReview, QuickLook, RemovalHistory, SkippedList, Volume). Items below are re-scoped accordingly. Last reviewed candidate before this docs batch: `dc764d5f5445f206faa187d51ab8e8e9060a8d34` (engine tests for rescan memory, cancelled scans and removal semantics are the newest changes).
 - Last packaging attempt at `3f138cbc` failed in Finder AppleScript parsing. The sidebar-property removal at `5882c1a9` has not completed a packaging run.
 - Docs batch 2a is a separate draft and waits for real captures. Do not replace missing images with mock screenshots.
 
@@ -15,8 +15,8 @@ Source review and Linux checks do not close these gates. No new run, tag, releas
 | Engine | Default and failpoints suites on APFS; save exit codes, per-binary totals and platform-skip names separately | Linux passes are not APFS evidence |
 | App | Build normal and test Swift products on the exact candidate; save toolchain versions and source SHA | Source checks are not compilation |
 | Ordering driver | Run required-manifest check, capture every named result exactly once, retain assertion text and real UI images | Injected fixtures do not prove real-system input or VoiceOver |
-| Cleanup | Disposable fixture: inspect, full-path confirmation, one-item/batch Trash, undo and history; failure, protected-path and identity-change cases | No user-file cleanup; no release-readiness inference |
-| CSV export | Compile; run the three declared export checks in [review-popover-future-mac-checks.md](../development/review-popover-future-mac-checks.md); save a real list and open it with UTF-8 import | Source only today; never compiled, never opened in Excel |
+| Cleanup | Disposable fixture: inspect, full-path confirmation, one-item/batch Trash, undo and history; failure, protected-path and identity-change cases. Check-level slices passed in run 39602481035 with MOCKED Trash/identity seams - a REAL Trash move has never executed; this row stays open until one does | No user-file cleanup; no release-readiness inference |
+| CSV export | Compiled as part of the run-39602481035 app build (CSVExport.swift was in that tree; 0 errors). Still open: run the three declared export checks in [review-popover-future-mac-checks.md](../development/review-popover-future-mac-checks.md) - they are source-only today; save a real list and open it with UTF-8 import | Never opened in Excel |
 | Stability | Repeated rescans, tree swaps/cancel and long-session measurements, with memory samples and stall logs | Do not infer a plateau from one scan. Linux engine-only checks exist (`engine/tests/rescan_memory.rs`, `partial_scan.rs`, `removal_semantics.rs`); they say nothing about Swift, APFS or a long session |
 | Icon | Inspect installed app icon at small sizes and in Finder | Asset pixels alone do not prove macOS rendering |
 | Installer | Create signed development DMG; mount; inspect Finder background/layout, app and Applications positions, 1x/2x appearance; verify detach | Self-signing is not Developer ID or notarization |
