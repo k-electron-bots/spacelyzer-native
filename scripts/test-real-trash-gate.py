@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Behavioral offline failure tests for RealTrashMoveChecks' confinement gate and check
-predicates. These execute the SAME logic the Swift encodes (realpath canonicalization, temp
-prefix + marker gate, and each check's end-state predicate) against real filesystem states
-created here, and prove every wrong state fails CLOSED. They test the design behaviorally;
-they are not a Swift compile or a Mac run. Exits 1 on any failure."""
+"""Behavioral offline failure tests for RealTrashMoveChecks' confinement gate, check
+predicates and cleanup validation. These are DESIGN checks: they mirror the logic the Swift
+encodes (realpath canonicalization, temp prefix + marker gate, each check's end-state
+predicate, the cleanup allowlist) in Python and prove every wrong state fails CLOSED. They are
+NOT an execution of the Swift logic, not a Swift compile and not a Mac run - they can miss a
+Swift that diverges from this mirror. Exits 1 on any failure."""
 import os, sys, tempfile, uuid, shutil
 
 ok = True
@@ -56,23 +57,50 @@ need(not case1(False, [('o','/tmp/elsewhere/a.bin')], True, '/tmp/elsewhere/a.bi
 need(not case1(False, [('o', root + '/a.bin')], True, root + '/a.bin', root), 'case1: file moved within the fixture FAILS')
 need(case1(False, [('o','/home/u/.Trash/a.bin')], True, '/home/u/.Trash/a.bin', root), 'case1: the real happy state PASSES')
 
-def case2(restored, size):
-    return restored and size == 1000
-need(not case2(False, 0), 'case2: nothing restored FAILS')
-need(not case2(True, 500), 'case2: restored with wrong size FAILS')
-need(case2(True, 1000), 'case2: the real happy state PASSES')
+def case2(settled, restored, size, kind):
+    return settled and restored and size == 1000 and kind == 'putBack'
+need(not case2(False, True, 1000, 'putBack'), 'case2: engine commit not settled (undo would be refused) FAILS')
+need(not case2(True, False, 0, 'notMoved'), 'case2: nothing restored FAILS')
+need(not case2(True, True, 500, 'putBack'), 'case2: restored with wrong size FAILS')
+need(not case2(True, True, 1000, 'notMoved'), 'case2: restored but wrong report kind FAILS')
+need(case2(True, True, 1000, 'putBack'), 'case2: the real happy state PASSES')
 
-def case3(exists, journal_count, message):
-    return exists and journal_count == 0 and message is not None
-need(not case3(False, 0, 'refused'), 'case3: file gone despite refusal FAILS')
-need(not case3(True, 1, None), 'case3: journaled move despite refusal FAILS')
-need(case3(True, 0, 'identity refused'), 'case3: the real refusal state PASSES')
+def case3(exists, journal_count, message, kind):
+    return exists and journal_count == 0 and message is not None \
+        and 'was replaced since the scan' in message and kind == 'notMoved'
+need(not case3(False, 0, 'This item was replaced since the scan', 'notMoved'), 'case3: file gone despite refusal FAILS')
+need(not case3(True, 1, 'This item was replaced since the scan', 'notMoved'), 'case3: journaled move despite refusal FAILS')
+need(not case3(True, 0, None, 'notMoved'), 'case3: no message FAILS (cause unproven)')
+need(not case3(True, 0, 'Please wait for the previous change to finish.', 'notMoved'), 'case3: in-flight gate message, not the identity verdict, FAILS')
+need(not case3(True, 0, 'This item was replaced since the scan', 'moved'), 'case3: identity message but wrong kind FAILS')
+need(case3(True, 0, 'This item was replaced since the scan, so it is not the item you reviewed.', 'notMoved'),
+     'case3: the real identity-refusal state PASSES')
 
-def case4(original_size, trashed_present):
-    return original_size == 2000 and trashed_present
-need(not case4(9000, True), 'case4: original overwritten by restore FAILS')
-need(not case4(2000, False), 'case4: trashed item vanished FAILS')
-need(case4(2000, True), 'case4: the real collision state PASSES')
+def case4(settled, original_size, trashed_present, message, kind, journal_count):
+    return settled and original_size == 2000 and trashed_present and message is not None \
+        and 'something already exists at' in message and kind == 'notMoved' and journal_count == 1
+need(not case4(False, 2000, True, 'Could not put it back: something already exists at /r/c.bin', 'notMoved', 1),
+     'case4: unsettled engine state (undo refused before the probe) FAILS')
+need(not case4(True, 9000, True, 'collision msg', 'notMoved', 1), 'case4: original overwritten by restore FAILS')
+need(not case4(True, 2000, False, 'collision msg', 'notMoved', 1), 'case4: trashed item vanished FAILS')
+need(not case4(True, 2000, True, 'Please wait for the previous change to finish.', 'notMoved', 1),
+     'case4: in-flight gate message, not the collision, FAILS')
+need(not case4(True, 2000, True, 'Could not put it back: something already exists at /r/c.bin', 'putBack', 0),
+     'case4: collision message but journal forgotten + wrong kind FAILS')
+need(case4(True, 2000, True, 'Could not put it back: something already exists at /r/c.bin', 'notMoved', 1),
+     'case4: the real collision state PASSES')
+
+# --- cleanup validation: only this suite's own fixture names in a .Trash may be deleted ---
+def cleanup_allowed(path):
+    name = os.path.basename(path)
+    stem, ext = os.path.splitext(name)
+    head = stem.split(' ')[0]
+    return '.Trash' in path and ext == '.bin' and head in ('a', 'b', 'c')
+need(cleanup_allowed('/Users/u/.Trash/a.bin'), 'cleanup: own trashed fixture file ALLOWED')
+need(cleanup_allowed('/Users/u/.Trash/c 2.bin'), "cleanup: Finder dedup copy 'c 2.bin' ALLOWED")
+need(not cleanup_allowed('/Users/u/.Trash/taxes.pdf'), 'cleanup: unrelated user file in Trash REFUSED')
+need(not cleanup_allowed('/Users/u/.Trash/report.bin'), 'cleanup: .bin but not a fixture name REFUSED')
+need(not cleanup_allowed('/tmp/elsewhere/a.bin'), 'cleanup: fixture name outside a .Trash REFUSED')
 
 print('gate+predicate behavioral tests OK' if ok else 'BEHAVIORAL FAILURES FOUND')
 sys.exit(0 if ok else 1)

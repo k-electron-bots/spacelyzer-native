@@ -24,7 +24,10 @@ man = open('scripts/check-ordering-manifest.py').read()
 need("'RealTrashMoveChecks'" in man, 'suite missing from manifest SUITES')
 for seam in ['trashItem =', 'identityCheck =', 'restoreItem =', 'restoreCollisionProbe =']:
     need(seam not in body, 'suite must NOT override the %s seam - the seams are what make it real' % seam)
-for guard in ['temporaryDirectory', 'spz-rtm-', 'hasPrefix(tmpRoot', 'realpath(', '.Trash', 'trashedLeftovers']:
+for guard in ['temporaryDirectory', 'spz-rtm-', 'hasPrefix(tmpRoot', 'realpath(', '.Trash', 'trashedLeftovers',
+              'settleSurfaces', 'layoutPublished', 'requiredVersion == nil',
+              'was replaced since the scan', 'something already exists at',
+              'isExpectedFixtureTrashItem', '.putBack', '.notMoved']:
     need(guard in body, 'missing safety-guard element: %s' % guard)
 print('wiring OK' if ok else 'wiring FAILED')
 sys.exit(0 if ok else 1)
