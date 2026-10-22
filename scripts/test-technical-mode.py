@@ -7,7 +7,7 @@ def st(key):return next(s for s in steps if s.get('id')==key or s.get('name','')
 keys=['technical_hardening','compile_only','consolidated','docs_only','perf','perf_in_run','docs_2x']
 def enabled(step,**values):
  e=step.get('if','${{ true }}').strip()[3:-2].strip()
- e=e.replace('&&',' and ').replace('||',' or ').replace('always()','True')
+ e=e.replace('&&',' and ').replace('||',' or ').replace('always()','True').replace('!cancelled()','True').replace('success()','True')
  e=re.sub(r'!(?!=)',' not ',e);e=re.sub(r'inputs\.(\w+)',lambda m:str(values.get(m[1],False)),e)
  e=re.sub(r'steps\.(\w+)\.outcome',lambda m:repr('success'),e)
  e=re.sub(r'steps\.(\w+)\.outputs\.(\w+)',lambda m:repr(''),e)

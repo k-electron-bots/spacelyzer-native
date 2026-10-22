@@ -239,7 +239,10 @@ jobs:
     timeout-minutes: 35
     steps:
       - name: Anchor hard35min job clock before checkout and builds
-        run: echo "SPZ_JOB_DEADLINE_EPOCH=$(( $(date +%s) + 2100 ))" >> "$GITHUB_ENV"
+        run: |
+          echo "SPZ_JOB_DEADLINE_EPOCH=$(( $(date +%s) + 2100 ))" >> "$GITHUB_ENV"
+          # Diagnostic collection dir (compile_only uploads it; scripts/dump-symbols.sh copies every symbol dump here, also on failure).
+          mkdir -p "$GITHUB_WORKSPACE/diag-out"; echo "SPZ_DIAG_DIR=$GITHUB_WORKSPACE/diag-out" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
       - name: Validate exclusive technical-hardening input
         if: ${{ inputs.technical_hardening }}
@@ -267,16 +270,34 @@ jobs:
         run: |
           sw_vers; xcodebuild -version; swift --version; rustc --version || true
           echo "::notice title=toolchain::$(sw_vers -productVersion) | $(xcodebuild -version | tr '\n' ' ') | sdk $(xcrun --show-sdk-version) | $(swift --version 2>&1 | head -1)"
+      - name: Record tool state (diagnostic only; reads state, installs nothing, never fails the build)
+        if: ${{ inputs.compile_only }}
+        continue-on-error: true
+        run: |
+          {
+            date -u; sw_vers; xcodebuild -version; xcrun --show-sdk-version; swift --version; rustc -vV; cargo --version; rustup --version
+            rustup show 2>&1 | head -30; rustup component list --installed 2>&1 | head -30
+            sysroot=$(rustc --print sysroot); host=$(rustc -vV | sed -n 's/^host: //p')
+            if [ -x "$sysroot/lib/rustlib/$host/bin/llvm-nm" ]; then echo "llvm-nm preinstalled: $sysroot/lib/rustlib/$host/bin/llvm-nm"; "$sysroot/lib/rustlib/$host/bin/llvm-nm" --version | head -3; else echo "llvm-nm not preinstalled (build-engine.sh installs llvm-tools once)"; fi
+            command -v nm || true
+          } > "$SPZ_DIAG_DIR/tool-state.txt" 2>&1 || true
+          cat "$SPZ_DIAG_DIR/tool-state.txt"
       - name: Build universal engine
-        run: ./scripts/build-engine.sh
-      - name: Build Swift app
+        id: engine
         run: |
           set -o pipefail
-          bash scripts/shipping-swift.sh -c release --arch arm64 --arch x86_64 2>&1 | tee /tmp/swiftbuild.log || {
+          ./scripts/build-engine.sh 2>&1 | tee "$SPZ_DIAG_DIR/engine-build.log"
+      - name: Build Swift app
+        id: swiftapp
+        run: |
+          set -o pipefail
+          bash scripts/shipping-swift.sh -c release --arch arm64 --arch x86_64 2>&1 | tee /tmp/swiftbuild.log "$SPZ_DIAG_DIR/swift-build.log" || {
             grep -E "error:" /tmp/swiftbuild.log | sort -u | head -15 | while IFS= read -r l; do echo "::error::${l//%/%25}"; done
             exit 1
           }
       - name: Typecheck the on-demand helper tools (the docs/demo steps compile them on demand; a type error must fail HERE, not in a scarce full run)
+        # Independent of the engine archive: still runs after an earlier build failure (job stays red), but not after cancel/timeout.
+        if: ${{ !cancelled() }}
         run: |
           swiftc -typecheck scripts/docs-capture.swift
           swiftc -typecheck scripts/ax-client.swift
@@ -285,7 +306,8 @@ jobs:
         id: ver
         run: echo "version=0.1.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
       - name: Import self-signed identity
-        if: ${{ !inputs.technical_hardening }}
+        # compile_only: independent of the engine/Swift outcome (secrets only), still red on its own failure; not after cancel.
+        if: ${{ !inputs.technical_hardening && (inputs.compile_only && !cancelled() || !inputs.compile_only && success()) }}
         id: sign
         env:
           SIGNING_CERT_P12_BASE64: ${{ secrets.SIGNING_CERT_P12_BASE64 }}
@@ -295,7 +317,9 @@ jobs:
           echo "hash=$HASH" >> "$GITHUB_OUTPUT"
       - name: Build TEST-ONLY app with SPZ_CI_TESTS (never packaged or released; the packaged DMG is built without the flag)
         id: testbuild
-        if: ${{ !inputs.docs_only }}
+        # compile_only: depends on the VERIFIED shipping archive (engine step) and the signing import; never runs against a
+        # missing/unverified archive. Independent of the shipping Swift build result. Other modes keep fail-fast success().
+        if: ${{ !inputs.docs_only && (inputs.compile_only && !cancelled() && steps.engine.outcome == 'success' && steps.sign.outcome == 'success' || !inputs.compile_only && success()) }}
         run: |
           # Optional code (perf driver, 2x shot server) is compiled only when its option is requested, behind its own flag, so the
           # default/consolidated test build includes staged, Mac-uncompiled test instrumentation.
@@ -315,7 +339,8 @@ jobs:
             echo "::error title=optional-code::the test build with optional code ($DEFS) failed to compile"
             exit 1
           fi
-          bash ./scripts/build-test-app.sh dist-test "${{ steps.sign.outputs.hash }}"
+          set -o pipefail
+          bash ./scripts/build-test-app.sh dist-test "${{ steps.sign.outputs.hash }}" 2>&1 | tee "$SPZ_DIAG_DIR/test-build.log"
       - name: Rust engine tests (native macOS, includes getattrlistbulk backend)
         if: ${{ !inputs.compile_only && !inputs.perf && !inputs.docs_only }}
         id: rust
@@ -755,6 +780,26 @@ jobs:
             exit 1
           fi
           echo "::notice title=ui-assertions::all $n UI assertions passed: $(cut -d' ' -f2 /tmp/spz-assertions.txt | tr '\n' ' ')"
+      - name: Collect compile diagnostics (compile_only; never fails the build, never masks a failure)
+        if: ${{ inputs.compile_only && !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 2
+        run: |
+          cd "$GITHUB_WORKSPACE"; mkdir -p "$SPZ_DIAG_DIR"
+          { echo "step outcomes: engine=${{ steps.engine.outcome }} swift=${{ steps.swiftapp.outcome }} sign=${{ steps.sign.outcome }} testbuild=${{ steps.testbuild.outcome }}"; ls -la build/lib build/ci-lib 2>&1; } > "$SPZ_DIAG_DIR/summary.txt" || true
+          cp -R build/ci-lib/symbols "$SPZ_DIAG_DIR/ci-engine-symbols" 2>/dev/null || echo "no ci-engine symbols dir" >> "$SPZ_DIAG_DIR/summary.txt"
+          cp /tmp/swiftbuild.log "$SPZ_DIAG_DIR/swiftbuild-errors-source.log" 2>/dev/null || true
+          ls -R "$SPZ_DIAG_DIR" | head -100; cat "$SPZ_DIAG_DIR/summary.txt"
+      - name: Upload compile diagnostics
+        if: ${{ inputs.compile_only && !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v4
+        with:
+          name: compile-diagnostics-${{ github.run_id }}
+          path: diag-out/
+          if-no-files-found: warn
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         if: ${{ always() && !inputs.compile_only && !inputs.docs_only }}
         id: functional_artifact
