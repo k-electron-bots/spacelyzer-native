@@ -44,6 +44,16 @@ try:
     ck('baseline real engine: 0 per-node diffs', r['diff_count'] == 0, r['diffs'][:3])
     ck('baseline skipped accounting equals oracle expectation', len(r['skips']) == exp_skips == r['expected_skips'], (r['skips'], exp_skips))
     ck('baseline no drift', not r['drift'])
+    # ROOT ALIAS (macOS: tempfile roots under /var/folders are reached through the /var -> /private/var symlink; the engine reports the canonical root).
+    # The oracle must resolve the root ONCE, up front, for both its walk and the engine dump. Only the root is resolved; nothing below it is followed.
+    alias = root + '-alias'
+    os.symlink(root, alias)
+    try:
+        ra = O.per_node(alias, SPZ, has_hardlinks=False, backend='default')
+        ck('symlinked ROOT alias: 0 per-node diffs, skips equal (root resolved once)', ra['diff_count'] == 0 and len(ra['skips']) == exp_skips == ra['expected_skips'], (ra['diff_count'], ra['diffs'][:3]))
+        rp = O.per_node(alias, SPZ, has_hardlinks=False, backend='portable')
+        ck('symlinked ROOT alias, portable leg: 0 per-node diffs', rp['diff_count'] == 0, rp['diffs'][:3])
+    finally: os.unlink(alias)
     ck('special files and symlinks present as nodes (fifo, socket, 3 symlinks)', r['nodes'] > 20)
     for t, want in [('file_bytes', 1), ('dir_bytes', 1), ('drop_file', 1), ('extra_node', 1), ('kind_swap', 1)]:
         r = pn(t); ck(f'tamper {t} caught by node diff', r['diff_count'] >= want, r['diff_count'])

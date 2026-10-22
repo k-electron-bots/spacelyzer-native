@@ -74,6 +74,7 @@ def per_node(root, binp, has_hardlinks, backend='default', deadline=None):
     compared here (sizes are NOT asserted per node; the root total is asserted by the totals step). WITHOUT hard links every file size and every directory's
     cumulative size must match exactly. Fails closed: a nonzero dump exit, unparseable dump line or skip-reason mismatch is a diff."""
     import time
+    root = os.path.realpath(root)   # resolve ONLY the root, once, for both the oracle walk and the engine dump (macOS /var -> /private/var); nothing below the root is followed
     nodes = {}; pre = walk(root, nodes, deadline=deadline)
     cum = {}
     for p, (k, sz) in nodes.items():
