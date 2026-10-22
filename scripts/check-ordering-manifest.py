@@ -13,7 +13,7 @@ SUITES = ['PublicationRegression', 'CommitOrderingRegression', 'ZeroMatchRegress
           'MountedViewRegression', 'MountedOutlineRegression', 'BatchRemovalChecks', 'BatchRemovalExecutionChecks',
           'BatchUndoChecks', 'DuplicatesChecks', 'DuplicatesRemovalChecks', 'ExclusionsChecks', 'FullDiskAccessChecks',
           'IdentityGateChecks', 'ItemReviewChecks', 'MultiSelectChecks', 'OutlineSelectionSyncChecks',
-          'QuickLookBatchChecks', 'QuickLookChecks', 'RemovalHistoryChecks', 'SkippedListChecks', 'VolumeChecks']
+          'QuickLookBatchChecks', 'QuickLookChecks', 'RealTrashMoveChecks', 'RemovalHistoryChecks', 'SkippedListChecks', 'VolumeChecks']
 files = {f: open(f).read() for f in glob.glob('Sources/**/*.swift', recursive=True)}
 declared, dynamic = set(), []
 for s in SUITES:
