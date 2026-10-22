@@ -37,3 +37,5 @@ rc=$?
 set -e
 [ "$rc" = 101 ] && grep -q 'assertion.*failed' "$W/no-cancel.log" || { cat "$W/no-cancel.log"; exit 1; }
 echo 'PASS negative control: omitting real cancel fails cancelled-tree assertion'
+
+python3 scripts/test-midscan-controls.py

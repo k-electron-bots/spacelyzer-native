@@ -24,6 +24,9 @@ struct SpacelyzerApp: App {
                     #if SPZ_CI_TESTS && SPZ_CI_SHOTS   // experimental render-derived 2x capture server; compiled only when the shots flag is passed to a test build
                     if let shotDir = env["SPZ_SHOT_DIR"], shotDir.hasPrefix("/") { ShotServer.start(dir: shotDir) }
                     #endif
+                    #if SPZ_CI_TESTS
+                    if env["SPZ_CHECKS"] == "scale" { await LargeScanDriver.run(model: model, env: env) }
+                    #endif
                     if let path = env["SPZ_AUTOSCAN"] { model.scan(path) }
                     // CI capture hooks (inert without the envs): a fixed window size and a forced
                     // appearance let release-app screenshots cover several sizes and both appearances.

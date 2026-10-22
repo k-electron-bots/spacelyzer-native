@@ -79,3 +79,35 @@ fn release_before_arrival_does_not_repark() {
         spz_tree_free(t); spz_scan_free(s);
     }
 }
+
+#[test]
+fn real_cancel_after_two_completed_directory_enumerations_keeps_prior_entries() {
+    unsafe {
+        // One child at each level forces serial directory descent, so target3 is
+        // reached only after root + child have each accounted1000 actual files.
+        // No elapsed/progress-publication guess and no concurrent siblings can race.
+        let f = Fixture::new();
+        std::fs::remove_dir_all(&f.0).unwrap();
+        std::fs::create_dir_all(f.0.join("chain/last")).unwrap();
+        for d in [f.0.clone(), f.0.join("chain"), f.0.join("chain/last")] {
+            for i in 0..1000 { std::fs::write(d.join(format!("file{i}")), b"real").unwrap(); }
+        }
+        let s = f.start(3);
+        assert!(parked(s), "midscan per-session park never reached");
+        assert_eq!(spz_scan_progress(s).items, 2002, "prior real entry accounting missing");
+        let start = Instant::now();
+        spz_scan_cancel(s); spz_ci_scan_gate_release(s);
+        assert_eq!(spz_ci_scan_gate_state(s), 2, "expired gate cannot count as midscan cancellation");
+        let t = finish(s);
+        assert!(start.elapsed() < Duration::from_secs(5), "coarse completion exceeded5s");
+        assert!(!t.is_null());
+        assert_eq!(spz_tree_cancelled(t), 1);
+        assert_eq!(spz_tree_node_count(t), 2003, "prior entries must survive, last directory files absent");
+        spz_tree_free(t); spz_scan_free(s);
+        let normal = f.start(0); // release immediately: full real scan independently succeeds.
+        spz_ci_scan_gate_release(normal);
+        let full = finish(normal); assert!(!full.is_null());
+        assert_eq!(spz_tree_cancelled(full), 0); assert_eq!(spz_tree_node_count(full), 3003);
+        spz_tree_free(full); spz_scan_free(normal);
+    }
+}

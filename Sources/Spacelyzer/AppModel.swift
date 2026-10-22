@@ -632,6 +632,7 @@ final class AppModel {
     func scanHome() { scan(NSHomeDirectory()) }
 
     #if SPZ_CI_TESTS
+    var ciScaleTreemapProbe: TreemapPublicationProbe?
     var ciParkNextScanAfterDirs: UInt64?
     var ciScanGateState: UInt8 { session?.ciGateState ?? 255 }
     func ciReleaseScanGate() { session?.ciReleaseGate() }

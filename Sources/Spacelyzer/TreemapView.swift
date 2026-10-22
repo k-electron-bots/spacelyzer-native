@@ -319,7 +319,11 @@ struct TrailingPane: View {
                     Spacer()
                     if let t = model.tree { Text(t.name(model.displayedRoot).isEmpty ? model.rootPath : t.path(model.displayedRoot)).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }
                 }.padding(8)
+                #if SPZ_CI_TESTS
+                TreemapView(publicationProbe: model.ciScaleTreemapProbe).padding([.horizontal, .bottom], 8)
+                #else
                 TreemapView().padding([.horizontal, .bottom], 8)
+                #endif
             case .kinds: KindsView().frame(maxHeight: .infinity)
             case .largest: LargestView().frame(maxHeight: .infinity)
             case .folders: FoldersView().frame(maxHeight: .infinity)
