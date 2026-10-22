@@ -83,8 +83,10 @@ def per_node(root, binp, has_hardlinks, backend='default', deadline=None):
                 cum[d] = cum.get(d, 0) + sz
                 if d == root: break
                 d = os.path.dirname(d)
+    import hashlib
+    t_dump = time.monotonic()
     r = run_bounded(([binp, 'dump', root] if isinstance(binp, str) else binp + [root]) + [backend], None if deadline is None else max(1.0, deadline - time.monotonic()))
-    eng = {}; skips = []; diffs = []
+    dump_seconds = round(time.monotonic() - t_dump, 3); eng = {}; skips = []; diffs = []
     if r.returncode != 0: diffs.append(['dump_exit', r.returncode, r.stderr[-200:]])
     for line in r.stdout.splitlines():
         a = line.split('\t')
@@ -108,7 +110,13 @@ def per_node(root, binp, has_hardlinks, backend='default', deadline=None):
     if lossy_got != pre['nonutf8_lossy']: diffs.append(['lossy_skip_multiset', pre['nonutf8_lossy'][:3], lossy_got[:3]])   # compares as a multiset: raw names may be indistinguishable after lossy rendering, counts are not
     post_nodes = {}; post = walk(root, post_nodes, deadline=deadline)
     drift = post_nodes != nodes or post['items'] != pre['items'] or post['allocated_bytes'] != pre['allocated_bytes']   # tree changed while the engine ran: result is INCONCLUSIVE, not an engine fault
-    return dict(backend=backend, scope=('path set + kinds + non-link file sizes NOT asserted; root total only' if has_hardlinks else 'full: path set, kinds, every file size, every directory cumulative size'), nodes=len(want), diffs=diffs[:20], diff_count=len(diffs), skips=skips, drift=drift, expected_skips=len(pre['unreadable']) + pre['nonutf8_names'], lossy_ambiguous=pre['lossy_ambiguous'])
+    leaf = {}
+    for d_ in diffs[:50]:
+        pth = d_[1] if len(d_) > 1 and isinstance(d_[1], str) else None
+        if pth and os.path.lexists(pth):
+            try: st_ = os.lstat(pth); leaf[pth] = dict(blocks=st_.st_blocks, size=st_.st_size, nlink=st_.st_nlink, mtime_ns=st_.st_mtime_ns, ctime_ns=st_.st_ctime_ns, ino=st_.st_ino)
+            except OSError as e_: leaf[pth] = dict(error=e_.errno)
+    return dict(backend=backend, dump_seconds=dump_seconds, dump_sha256=hashlib.sha256(r.stdout.encode()).hexdigest(), raw_dump=(r.stdout if diffs else None), all_diffs=diffs[:5000], leaf_stat_after=leaf, oracle_nodes=(nodes if diffs else None), oracle_cum_dirs=(cum if diffs else None), scope=('path set + kinds + non-link file sizes NOT asserted; root total only' if has_hardlinks else 'full: path set, kinds, every file size, every directory cumulative size'), nodes=len(want), diffs=diffs[:20], diff_count=len(diffs), skips=skips, drift=drift, expected_skips=len(pre['unreadable']) + pre['nonutf8_names'], lossy_ambiguous=pre['lossy_ambiguous'])
 
 def spz_line(binp, root, timeout=None):
     r = run_bounded([binp, 'verify-cold', root], timeout)

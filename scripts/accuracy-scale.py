@@ -74,7 +74,6 @@ def one_size(n, a, dl, rows, bad, incomplete, leaks, timings):
         for variant, links, seed_off in (('links', True, 0), ('nolinks', False, 1)):
             dl.check(); root = tempfile.mkdtemp(prefix=f'acc{n}{variant[0]}-'); roots.append([root, None])
             c = build(root, n, a.seed + n + seed_off, dl, links); roots[-1][1] = c; dl.check()
-            os.sync()   # flush delayed allocation so st_blocks is settled before any walk (an unexplained one-off size diff was seen once without this; cause unproven)
             vis = c['items'] - c['planted_unreadable_dirs']
             tot = O.run_bounded([sys.executable, ORACLE, root, '--spz', a.spz, '--max-seconds', str(dl.cap())], dl.cap() + 5)
             try: o = json.loads(tot.stdout)
@@ -86,11 +85,16 @@ def one_size(n, a, dl, rows, bad, incomplete, leaks, timings):
             for backend in ('default', 'portable'):
                 dl.check(); pn = O.per_node(root, a.spz, has_hardlinks=c['extra_hardlinks'] > 0, backend=backend, deadline=dl.abs())
                 if pn['drift']: incomplete.append([n, f'{variant}/{backend}: DRIFT during per-node run']); return
+                if pn['diff_count'] and a.evidence_dir:   # keep the FIRST failure in full before any recheck: raw engine dump, oracle per-node data, every diff, leaf stats
+                    os.makedirs(a.evidence_dir, exist_ok=True)
+                    ev = dict(size=n, variant=variant, backend=backend, platform=platform.platform(), spz_sha256=__import__('hashlib').sha256(open(a.spz, 'rb').read()).hexdigest(), root=root,
+                              elapsed_since_start=round(time.monotonic() - dl.t0, 1), per_node={k: v for k, v in pn.items()})
+                    json.dump(ev, open(os.path.join(a.evidence_dir, f'first-diff-{n}-{variant}-{backend}.json'), 'w'), indent=1, default=str)
                 if pn['diff_count']:   # a diff must reproduce to be an engine FAIL; a one-off is INCOMPLETE (still red, never a pass), with both observations kept
                     pn2 = O.per_node(root, a.spz, has_hardlinks=c['extra_hardlinks'] > 0, backend=backend, deadline=dl.abs())
                     if pn2['diff_count'] == 0 and not pn2['drift']:
                         incomplete.append([n, f'{variant}/{backend}: NON-REPRODUCIBLE per-node diff (first run {pn["diff_count"]} diffs, e.g. {pn["diffs"][:2]}; immediate recheck clean) - cause unproven, nothing claimed']); return
-                legs[backend] = dict(nodes=pn['nodes'], diffs=pn['diff_count'], first_diffs=pn['diffs'][:3], skips=pn['skips'], scope=pn['scope'])
+                legs[backend] = dict(nodes=pn['nodes'], diffs=pn['diff_count'], first_diffs=pn['diffs'][:3], skips=pn['skips'], scope=pn['scope'], dump_seconds=pn['dump_seconds'], dump_sha256=pn['dump_sha256'])
                 if pn['diff_count']: bad.append([n, variant, backend, 'per-node diffs', pn['diffs'][:3]])
             checks = dict(
                 items_vs_construction=o['items'] == vis and bool(o.get('spz')) and o['spz']['items'] == vis,
@@ -120,7 +124,7 @@ def one_size(n, a, dl, rows, bad, incomplete, leaks, timings):
 
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument('--spz', required=True); ap.add_argument('--sizes', default='1000,10000,100000'); ap.add_argument('--seed', type=int, default=7)
-    ap.add_argument('--deadline-seconds', type=float, default=600); ap.add_argument('--cleanup-reserve-seconds', type=float, default=60); ap.add_argument('--out')
+    ap.add_argument('--deadline-seconds', type=float, default=600); ap.add_argument('--cleanup-reserve-seconds', type=float, default=60); ap.add_argument('--out'); ap.add_argument('--evidence-dir')
     a = ap.parse_args(); dl = Deadline(a.deadline_seconds, min(a.cleanup_reserve_seconds, a.deadline_seconds / 2))
     bad, rows, incomplete, leaks, timings = [], [], [], [], {}
     import signal
