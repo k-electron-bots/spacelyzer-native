@@ -25,7 +25,14 @@ enum RealTrashMoveChecks {
         try! Data(repeating: 1, count: 1_000).write(to: d.appendingPathComponent("a.bin"))
         try! Data(repeating: 2, count: 5_000).write(to: d.appendingPathComponent("b.bin"))
         try! Data(repeating: 3, count: 9_000).write(to: d.appendingPathComponent("c.bin"))
-        defer { try? fm.removeItem(at: d) }
+        var trashedLeftovers: [URL] = []
+        defer {
+            try? fm.removeItem(at: d)
+            // Any fixture file still sitting in the Trash (expected only for the collision case,
+            // possible after a mid-suite failure) is this suite's own uniquely-named temp file:
+            // remove it so a failed run never leaves fixture content behind.
+            for u in trashedLeftovers { try? fm.removeItem(at: u) }
+        }
         // Canonicalize with the same syscall as the engine (see RemovalHistoryChecks), then a HARD
         // SAFETY GATE before any real Trash call: the canonical fixture root must live under the
         // canonical temporary directory and carry this suite's unique marker. Any doubt fails every
@@ -68,6 +75,7 @@ enum RealTrashMoveChecks {
             && m1.lastRemoved.count == 1
             && fm.fileExists(atPath: m1.lastRemoved[0].trashed.path)
             && !m1.lastRemoved[0].trashed.path.hasPrefix(root)
+            && m1.lastRemoved[0].trashed.path.contains(".Trash")
         Check.expect("real-trash-move-executes-and-journals", moved,
                      "gone=\(!fm.fileExists(atPath: aURL.path)) journal=\(m1.lastRemoved.count) trashed=\(m1.lastRemoved.first?.trashed.path ?? "nil") msg=\(m1.removalMessage ?? "nil")")
 
@@ -111,7 +119,7 @@ enum RealTrashMoveChecks {
             && fm.fileExists(atPath: trashedC.path)
         Check.expect("real-trash-restore-collision-keeps-both", collisionKept,
                      "originalIntact=\((try? Data(contentsOf: cURL).count) == 2_000) trashedPresent=\(fm.fileExists(atPath: trashedC.path)) msg=\(m3.removalMessage ?? "nil")")
-        try? fm.removeItem(at: trashedC)
+        trashedLeftovers.append(trashedC)
     }
 }
 #endif
