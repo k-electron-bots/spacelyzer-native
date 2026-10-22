@@ -105,6 +105,15 @@ with tempfile.TemporaryDirectory(prefix='sym-check-') as td:
   (w/f'{label}.c').write_text('void spz_scan_start(void){}\n'+extra+'\nint main(void){spz_scan_start();return 0;}\n')
   sub_('cc',str(w/f'{label}.c'),'-o',str(w/label));assert (w/label).exists()
   assert (run(label,envx(SPZ_EXPECT_ARCHS='')).returncode==0)==ok
+ # line-format contract: addressed and addressless llvm-nm lines (stub llvm-nm prints fixed text)
+ def fixed(text,name):
+  f=w/name;f.write_text('#!/bin/sh\ncat <<EOF2\n'+text+'\nEOF2\n');f.chmod(0o755);return str(f)
+ (w/'any.a').write_bytes(b'x')
+ cases=[('0000000000000000 T _spz_scan_start\n0000000000000010 T _spz_scan_cancel',0),('---------------- T _spz_scan_start',0),('T _spz_scan_start',0),('T spz_scan_start',0),('0000 D _spz_scan_start',0),
+  ('                 U _spz_scan_start',1),('0000 t _spz_scan_start',1),('0000 T _spz_scan_start\n                 U _spz_ci_scan_gate_state',1),('T _spz_scan_start\nT _spz_ci_scan_gate_release',1),('0000 T _xspz_scan_start',1),('0000 T _spz_scan_start_extra',1)]
+ for text,code in cases:
+  r=run('any.a',envx(SPZ_LLVM_NM=fixed(text,'fixednm.sh'),SPZ_EXPECT_ARCHS=''));assert r.returncode==code,(text,r.returncode,r.stderr)
+ # CI engine T regex contract, same stub (addressed + addressless), via the real build-ci-engine.sh is covered in test-ci-engine-isolation
  rd=os.environ.get('SPZ_REAL_APPLE_ARCHIVES','')
  if rd and pathlib.Path(rd).is_dir():
   a=pathlib.Path(rd)/'aarch64.a';x=pathlib.Path(rd)/'x86_64.a'
