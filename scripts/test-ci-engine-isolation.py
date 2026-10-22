@@ -26,6 +26,15 @@ cp valid.a target/ci-checks/release/libspacelyzer_engine.a
     assert (w/'build/lib/libspacelyzer_engine.a').read_bytes()==b'untouched-shipping-sentinel'
     assert (w/'build/ci-lib/libspacelyzer_ci.a').is_file()
     assert subprocess.run(['bash','scripts/build-ci-engine.sh'],cwd=w,env=dict(env,BREAK_BUILD='yes'),stdout=subprocess.PIPE,stderr=subprocess.PIPE).returncode!=0
+    # nm that fails (as Apple nm did on the lipo'd archive in Mac run 39832527366): presence still proven, error printed.
+    n=w/'bin'/'nm';n.write_text('#!/bin/sh\necho "nm: simulated member error" >&2\nexit 1\n');n.chmod(0o755)
+    r=subprocess.run(['bash','scripts/build-ci-engine.sh'],cwd=w,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    assert r.returncode==0 and b'simulated member error' in r.stderr,r.stderr
+    # ...and a CI archive lacking a required symbol still fails even with nm broken.
+    (w/'src2.c').write_text('void spz_ci_scan_start_parked(void){}\n');subprocess.run(['cc','-c',str(w/'src2.c'),'-o',str(w/'s2.o')],check=True)
+    subprocess.run(['rm','-f',str(w/'valid.a')]);subprocess.run(['ar','rcs',str(w/'valid.a'),str(w/'s2.o')],check=True)
+    assert subprocess.run(['bash','scripts/build-ci-engine.sh'],cwd=w,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE).returncode!=0
+    n.unlink()
     print('PASS actual shell: isolated paths, shipping unchanged, CI symbol definitions, build failure propagation')
 pkg=(repo/'Package.swift').read_text();test=(repo/'scripts/build-test-app.sh').read_text()
 assert 'ciEngine ? ["-Lbuild/ci-lib", "-lspacelyzer_ci"] : ["-Lbuild/lib", "-lspacelyzer_engine"]' in pkg
