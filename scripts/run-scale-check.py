@@ -109,12 +109,27 @@ def segment(a, app, w, generator, *, profile='expansion-1m', target_rel='expansi
         msg=str(e); write_verdict(w,'INCOMPLETE' if msg.startswith('INCOMPLETE') else 'FAIL',msg,phases); raise
     write_verdict(w,'PASS','scale segment evidence present; pixels require independent inspection',phases)
 
+def admission(a, now, platform):
+    """Fail-closed admission. Returns None to proceed, else (status, message). Extended budgets never bypass any check."""
+    if platform!='darwin': return ('NOT-RUN','NOT-RUN: Mac scale segment needs macOS')
+    if a.artifact_reserve_seconds < 120: return ('FAIL','artifact reserve must be at least120s')
+    if not 0 <= a.teardown_seconds <= 600: return ('FAIL','teardown reserve must be 0..600 seconds')
+    if not 420 <= a.max_budget_seconds <= 1500: return ('FAIL','max budget must be 420..1500 seconds')
+    available=a.job_deadline_epoch-now-a.artifact_reserve_seconds-a.teardown_seconds
+    if available < a.budget_seconds: return ('INCOMPLETE','INCOMPLETE: whole-job deadline cannot reserve full scale segment plus artifacts')
+    if not 240 <= a.budget_seconds <= a.max_budget_seconds: return ('FAIL',f'budget must reserve 240..{a.max_budget_seconds} seconds')
+    return None
+
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('--app',required=True);ap.add_argument('--work',required=True)
     ap.add_argument('--budget-seconds',type=int,default=360)
     ap.add_argument('--job-deadline-epoch',type=float,required=True,
                     help='absolute whole-job deadline in Unix seconds, supplied by consolidated runner')
     ap.add_argument('--artifact-reserve-seconds',type=int,default=120)
+    ap.add_argument('--max-budget-seconds',type=int,default=420,
+                    help='upper bound for --budget-seconds (default 420, the consolidated-run limit); a focused scale-only run may raise it to at most 1500')
+    ap.add_argument('--teardown-seconds',type=int,default=0,
+                    help='post-step job teardown the whole-job deadline must also cover (run 39843869589: about 190 s)')
     a=ap.parse_args()
     runner=os.environ.get('RUNNER_TEMP')
     w=pathlib.Path(a.work).resolve()
@@ -124,12 +139,9 @@ def main():
         if workdir_ok:
             w.mkdir(); (w/'result').mkdir(); write_verdict(w,status,msg,[])
         raise RuntimeError(msg)
-    if sys.platform!='darwin': early('NOT-RUN','NOT-RUN: Mac scale segment needs macOS')
-    if a.artifact_reserve_seconds < 120: early('FAIL','artifact reserve must be at least120s')
-    available=a.job_deadline_epoch-time.time()-a.artifact_reserve_seconds
-    if available < a.budget_seconds:
-        early('INCOMPLETE','INCOMPLETE: whole-job deadline cannot reserve full scale segment plus artifacts')
-    if not 240 <= a.budget_seconds <= 420: early('FAIL','budget must reserve 240..420 seconds')
+    bad=admission(a, time.time(), sys.platform)
+    if bad: early(*bad)
+    available=a.job_deadline_epoch-time.time()-a.artifact_reserve_seconds-a.teardown_seconds
     a.available=available
     app=pathlib.Path(a.app).resolve()
     if not runner or pathlib.Path(runner).resolve() not in w.parents: raise RuntimeError('work must be under RUNNER_TEMP')

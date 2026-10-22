@@ -1,0 +1,246 @@
+name: Scale-only verification
+
+# Engineering option, NOT approval to run and NOT a CI cadence. Dispatch-only, no inputs, no schedule, no push/PR/tag trigger.
+# A run needs fresh explicit owner approval per dispatch, one attempt, no retry. The workflow is dispatchable as soon as it exists on
+# the default branch: it must be disabled (or never pushed) until the owner approves a specific run.
+# Purpose: one focused Mac run of (a) the new test-only Swift compile, (b) the ci_scan_gate real-cancel regression, (c) the mounted
+# one-million-item scale segment, with an honest shared budget. It does not run the 81 demos, docs, packaging, DMG, signing or release.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  identity-guard:
+    # Fail-closed author/committer identity check for commits this event introduces.
+    # NEW is bounded by pinned trusted baselines audited clean on 2026-10-22 (see
+    # BASELINES in the script), never by other refs - a bad commit reachable from a
+    # surviving branch/tag cannot be laundered out of the set. ci.yml is currently
+    # disabled: this is a check that runs when CI runs (epic-* tag push,
+    # pull_request, workflow_dispatch), NOT server-side push prevention. Direct
+    # branch pushes do not trigger ci.yml; their coverage is the external drift
+    # watch. engine-linux and macos `needs: identity-guard`: a guard failure
+    # skips the build/release jobs. ~1 minute of ubuntu time, no Mac runner.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Identity guard (fail-closed)
+        env:
+          IG_EVENT: ${{ github.event_name }}
+          IG_REF_TYPE: ${{ github.ref_type }}
+          IG_BASE: ${{ github.event.pull_request.base.sha }}
+          IG_HEAD: ${{ github.event.pull_request.head.sha }}
+          IG_BEFORE: ${{ github.event.before }}
+          IG_SHA: ${{ github.sha }}
+        run: |
+          # identity-guard: FAIL CLOSED if any NEW commit introduced by this event carries an
+          # author or committer email outside the approved set (blank/missing email included).
+          #
+          # NEW is defined against PINNED TRUSTED BASELINES - commits audited clean on
+          # 2026-10-22 (author+committer, full ancestry). A commit counts as new only when it
+          # is in NO baseline ancestry. Bounding by "other refs" was rejected in review: a
+          # bad commit reachable from any surviving branch/tag would be laundered out of the
+          # set. Baseline ancestry itself is never scanned: it is the audited-clean past.
+          # Legacy pre-rewrite refs (old release tags etc.) do not descend from these
+          # baselines, so dispatching or re-tagging them fails closed over the cap - clearly,
+          # never silently green. Re-baselining is a deliberate audited edit of this file.
+          #
+          # COVERAGE HONESTY: ci.yml is currently DISABLED. When it runs (epic-* tag push,
+          # pull_request, workflow_dispatch) this guard is a check that runs when CI runs -
+          # NOT server-side push prevention. Direct branch pushes do not trigger ci.yml;
+          # their identity coverage is the external drift watch. Gating: engine-linux and
+          # macos `needs: identity-guard`, so a guard failure skips the build/release jobs.
+          #
+          # Env (mapped from GitHub context by the workflow step; values only, never inline):
+          #   IG_EVENT    = pull_request | push | workflow_dispatch (else fail closed)
+          #   IG_REF_TYPE = branch | tag  (push only)
+          #   IG_BASE/IG_HEAD = PR base/head sha (pull_request)
+          #   IG_BEFORE   = push before sha (push; all-zeros on new branch)
+          #   IG_SHA      = event head sha (all events)
+          #   IG_MAX_NEW  = cap on the bounded new-commit set (default 500; over-cap fails closed)
+          set -euo pipefail
+          # Approved identities, grounded in measured current history (%ae/%ce counts on
+          # 2026-10-22): k-electron-ai noreply (69), k.electron.ai@gmail.com (1066),
+          # GitHub web-merge committer noreply@github.com (948). Historical use is not
+          # ownership, so no other identity is allowed for FUTURE commits.
+          ALLOW='^(k-electron-ai@users\.noreply\.github\.com|k\.electron\.ai@gmail\.com|noreply@github\.com)$'
+          ZERO=0000000000000000000000000000000000000000
+          MAX_NEW="${IG_MAX_NEW:-500}"
+          # Trusted baselines, audited clean (author+committer, full ancestry) 2026-10-22.
+          BASELINES=(
+            a6f105b8537ae7f8cad084dae915ae1ddd9f64ce   # main
+            0e325fdd97f48bda730c880fca4a80b22af4c196   # mac-readiness-00aa46a2
+            62d3ba80e38a1ac54c813000f8318d5c5c37a1c7   # mac-stall-soak-00aa46a2
+          )
+
+          fail() { echo "::error::identity-guard FAIL-CLOSED: $1"; exit 1; }
+
+          # Complete ref fetch pulls in the baseline objects even when the checked-out ref
+          # (e.g. a tag) does not descend from them. Any failure fails closed - no || true.
+          fetch_refs() {
+            git fetch origin '+refs/heads/*:refs/remotes/origin/*' '+refs/tags/*:refs/tags/*' --quiet \
+              || fail "ref fetch failed - cannot pull the trusted baselines; refusing to guess"
+            local b
+            for b in "${BASELINES[@]}"; do
+              git cat-file -e "$b^{commit}" 2>/dev/null \
+                || fail "trusted baseline $b missing locally after full fetch - cannot bound new commits against audited-clean history"
+            done
+          }
+
+          check_commit_set() { # $1 = label; rest = rev-list args
+            local label="$1"; shift
+            local n emails_file bad_count
+            n=$(git rev-list --count "$@" 2>/dev/null) \
+              || fail "cannot enumerate new commits for $label (missing objects or malformed refs - insufficient history to prove new commits clean)"
+            if [ "$n" -eq 0 ]; then echo "identity-guard: PASS (no new commits since the trusted baselines: $label)"; return 0; fi
+            if [ "$n" -gt "$MAX_NEW" ]; then
+              fail "new-commit set for $label is $n, over cap $MAX_NEW - this looks like legacy pre-baseline history or an unaudited long-lived ref; refusing to scan it as new. Remedy: gate via pull_request, or an audited re-baseline (deliberate guard edit)."
+            fi
+            emails_file=$(mktemp)
+            git log --format='%ae%n%ce' "$@" > "$emails_file" \
+              || { rm -f "$emails_file"; fail "cannot read new-commit identities for $label"; }
+            # grep -c counts non-matching lines INCLUDING blank ones, so a blank author or
+            # committer email can never strip away into a silent pass.
+            bad_count=$(grep -cvxE "$ALLOW" "$emails_file" || true)
+            if [ "$bad_count" != "0" ]; then
+              echo "::error::identity-guard FAIL: $n new commit(s) ($label) carry unapproved or blank author/committer emails:"
+              grep -vxE "$ALLOW" "$emails_file" | sort -u | sed 's/^$/(blank email)/'
+              rm -f "$emails_file"
+              exit 1
+            fi
+            rm -f "$emails_file"
+            echo "identity-guard: PASS ($n new commit(s): $label)"
+          }
+
+          # Bounded new-commit set for events with no usable range (tag push, new-branch
+          # push, force push, dispatch): commits reachable from $2 but from NO trusted
+          # baseline ancestry. Sound against laundering: other branches/tags containing a
+          # bad commit do not hide it, because only baseline ancestry is subtracted.
+          baseline_check() { # $1 = label, $2 = sha
+            git cat-file -e "$2^{commit}" 2>/dev/null \
+              || fail "head $2 not present locally (shallow checkout? fetch-depth must be 0)"
+            check_commit_set "$1 ($2 since trusted baselines)" "$2" --not "${BASELINES[@]}"
+          }
+
+          event="${IG_EVENT:-}"
+          [ -n "$event" ] || fail "IG_EVENT unset - no event context, cannot determine the new-commit set"
+
+          case "$event" in
+            pull_request)
+              [ -n "${IG_BASE:-}" ] && [ -n "${IG_HEAD:-}" ] || fail "pull_request without base/head sha"
+              fetch_refs
+              git cat-file -e "$IG_BASE^{commit}" 2>/dev/null || fail "base $IG_BASE not present locally (shallow checkout? fetch-depth must be 0)"
+              git cat-file -e "$IG_HEAD^{commit}" 2>/dev/null || fail "head $IG_HEAD not present locally"
+              check_commit_set "PR $IG_BASE..$IG_HEAD" "$IG_BASE..$IG_HEAD"
+              ;;
+            push)
+              [ -n "${IG_SHA:-}" ] || fail "push without head sha"
+              fetch_refs
+              if [ "${IG_REF_TYPE:-}" = "tag" ]; then
+                echo "identity-guard: NOTE a tag push carries no commit range; checking commits the tag introduces since the trusted baselines (cap $MAX_NEW). Range enforcement applies to pull_request events; direct branch pushes are covered by the external drift watch."
+                baseline_check "tag push" "$IG_SHA"
+                exit 0
+              fi
+              git cat-file -e "$IG_SHA^{commit}" 2>/dev/null || fail "head $IG_SHA not present locally"
+              if [ "${IG_BEFORE:-}" = "$ZERO" ] || [ -z "${IG_BEFORE:-}" ]; then
+                MODE=baseline   # new branch: no before
+              elif git merge-base --is-ancestor "$IG_BEFORE" "$IG_SHA" 2>/dev/null; then
+                MODE=range      # normal push: before..after is exactly the pushed set
+              else
+                MODE=baseline   # force push: before is not an ancestor, range would be meaningless
+              fi
+              if [ "$MODE" = range ]; then
+                check_commit_set "push $IG_BEFORE..$IG_SHA" "$IG_BEFORE..$IG_SHA"
+              else
+                baseline_check "push" "$IG_SHA"
+              fi
+              ;;
+            workflow_dispatch)
+              [ -n "${IG_SHA:-}" ] || fail "workflow_dispatch without sha"
+              fetch_refs
+              echo "identity-guard: NOTE dispatch carries no commit range; checking commits the dispatched ref introduces since the trusted baselines (cap $MAX_NEW). Range enforcement applies to pull_request events."
+              baseline_check "dispatch" "$IG_SHA"
+              ;;
+            *)
+              fail "unsupported event '$event' - no defined new-commit set"
+              ;;
+          esac
+
+  macos:
+    needs: identity-guard
+    runs-on: macos-latest
+    timeout-minutes: 35
+    steps:
+      - name: Anchor hard 35 min job clock before checkout and builds
+        run: |
+          echo "SPZ_JOB_DEADLINE_EPOCH=$(( $(date +%s) + 2100 ))" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare diagnostics dir and shared work deadline (after checkout, which cleans the workspace)
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/diag-out"; echo "SPZ_DIAG_DIR=$GITHUB_WORKSPACE/diag-out" >> "$GITHUB_ENV"
+          # Budget (seconds from the anchor): scale segment 1000 + artifact reserve 120 + post-step teardown 190 (measured in run
+          # 39843869589) + 90 margin = 1400 held back. Build and gate work must finish by JOB-1400 or it is killed (a timeout is a failure).
+          echo "SPZ_COMPILE_DEADLINE_EPOCH=$(( SPZ_JOB_DEADLINE_EPOCH - 1400 ))" >> "$GITHUB_ENV"
+      - name: Toolchain versions
+        run: |
+          sw_vers; xcodebuild -version; swift --version; rustc --version || true
+      - name: Build universal engine
+        id: engine
+        run: |
+          set -o pipefail
+          python3 scripts/run-with-deadline.py ./scripts/build-engine.sh 2>&1 | tee "$SPZ_DIAG_DIR/engine-build.log"
+      - name: Build TEST-ONLY app with SPZ_CI_TESTS (never packaged or released; compiles the current Swift sources)
+        id: testbuild
+        run: |
+          set -o pipefail
+          python3 scripts/run-with-deadline.py bash ./scripts/build-test-app.sh dist-test "" 2>&1 | tee "$SPZ_DIAG_DIR/test-build.log"
+      - name: Engine ci_scan_gate real-cancel regression (result recorded; the scale segment still runs after a failure here)
+        id: gate
+        if: ${{ !cancelled() && steps.testbuild.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          rustup update stable --no-self-update
+          python3 scripts/run-with-deadline.py cargo test --locked -p spacelyzer-engine --features ci-checks --test ci_scan_gate -- --nocapture 2>&1 | tee "$SPZ_DIAG_DIR/ci-scan-gate.log"
+      - name: Mounted 1M scale segment (one attempt, incomplete fails closed)
+        id: scale
+        if: ${{ !cancelled() && steps.testbuild.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 19
+        run: |
+          python3 scripts/run-scale-check.py --app dist-test/Spacelyzer.app --work "$RUNNER_TEMP/spz-scale" --budget-seconds 1000 --max-budget-seconds 1200 --teardown-seconds 190 --job-deadline-epoch "$SPZ_JOB_DEADLINE_EPOCH" --artifact-reserve-seconds 120
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        id: scale_artifact
+        with:
+          name: scale-only-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/spz-scale/result/
+            ${{ runner.temp }}/spz-scale/*.log
+            ${{ runner.temp }}/spz-scale/segment-verdict.txt
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        continue-on-error: true
+        with:
+          name: scale-only-diagnostics-${{ github.sha }}
+          if-no-files-found: warn
+          path: diag-out/
+      - name: Scale-only evidence gate
+        if: ${{ always() }}
+        run: |
+          bad=""
+          add() { [ "$2" = success ] || bad="$bad $1=$2"; }
+          add engine '${{ steps.engine.outcome }}'; add testbuild '${{ steps.testbuild.outcome }}'; add gate '${{ steps.gate.outcome }}'
+          add scale '${{ steps.scale.outcome }}'; add scale_artifact '${{ steps.scale_artifact.outcome }}'
+          [ -z "$bad" ] || { echo "::error::scale-only evidence failed/incomplete:$bad"; exit 1; }
+          echo '::notice::Scale-only evidence complete; the mounted-window PNG still needs inspection; no distribution proof'
