@@ -180,7 +180,7 @@ def gate_cases():
     py = re.sub(r'!(?!=)', ' not ', py)
     py = re.sub(r'inputs\.(\w+)', r"I['\1']", py); py = re.sub(r'steps\.(\w+)\.outcome', r"O['\1']", py); py = re.sub(r'steps\.(\w+)\.outputs\.(\w+)', r"U['\1.\2']", py)
     def gate(I=None, O=None, U=None):
-        base_I = dict(compile_only=False, perf=False, perf_in_run=False, consolidated=True, docs_only=False); base_I.update(I or {})
+        base_I = dict(technical_hardening=False, compile_only=False, perf=False, perf_in_run=False, consolidated=True, docs_only=False); base_I.update(I or {})
         base_O = {k: 'success' for k in ['reset', 'docs', 'asserts', 'perf', 'ordering', 'rust', 'failpoints', 'bulk', 'dmg']}; base_O.update(O or {})
         base_U = {'testbuild.optional_build': ''}; base_U.update(U or {})
         return bool(eval(py, {}, {'I': base_I, 'O': base_O, 'U': base_U}))
@@ -209,7 +209,7 @@ def gate_cases():
         def sub(m):
             e = m.group(0)
             mi = re.fullmatch(r'\$\{\{ inputs\.(\w+) \}\}', e)
-            if mi: return {'compile_only': 'false', 'perf': 'false', 'perf_in_run': 'false', 'consolidated': 'true', **I}[mi.group(1)]
+            if mi: return {'compile_only': 'false', 'perf': 'false', 'perf_in_run': 'false', 'technical_hardening': False, 'consolidated': 'true', **I}[mi.group(1)]
             mo = re.fullmatch(r'\$\{\{ steps\.(\w+)\.outcome \}\}', e)
             if mo: return {'reset': 'success', 'docs': 'success', 'asserts': 'success', 'perf': 'success', 'ordering': 'success', 'rust': 'success', 'failpoints': 'success', 'bulk': 'success', 'dmg': 'success', **O}[mo.group(1)]
             mu = re.fullmatch(r'\$\{\{ steps\.testbuild\.outputs\.(\w+) \}\}', e)
@@ -222,7 +222,7 @@ def gate_cases():
         m = re.search(r'::error title=evidence-gate::failed or lost evidence:(.*)', out)
         assert m, out[-300:]
         return m.group(1).strip()
-    msg = gate_msg({'consolidated': 'true'}, {'bulk': 'failure'})
+    msg = gate_msg({'technical_hardening': False, 'consolidated': 'true'}, {'bulk': 'failure'})
     check('gate annotation names only bulk when only bulk failed', msg == 'bulk=failure', msg)
     msg = gate_msg({'perf': 'true'}, {'perf': 'failure', 'reset': 'skipped', 'docs': 'skipped', 'asserts': 'skipped', 'ordering': 'skipped', 'rust': 'skipped', 'bulk': 'skipped', 'dmg': 'skipped'})
     check('perf-exclusive: annotation names only perf, not the by-design skips', msg == 'perf=failure', msg)
@@ -232,7 +232,7 @@ def gate_cases():
     check('perf_in_run: annotation names perf', 'perf=failure' in msg, msg)
     msg = gate_msg({}, {}, {'testbuild.optional_build': 'failed'})
     check('testbuild optional build failure is named', msg == 'testbuild(optional_build)=failed', msg)
-    msg = gate_msg({'consolidated': 'false'}, {'asserts': 'failure', 'ordering': 'skipped', 'rust': 'skipped', 'bulk': 'skipped', 'dmg': 'skipped'})
+    msg = gate_msg({'technical_hardening': False, 'consolidated': 'false'}, {'asserts': 'failure', 'ordering': 'skipped', 'rust': 'skipped', 'bulk': 'skipped', 'dmg': 'skipped'})
     check('non-consolidated: names asserts only, skipped consolidated steps not listed', msg == 'asserts=failure', msg)
     check('gate body is no longer a bare exit 1', st['run'].strip() != 'exit 1')
 
@@ -293,7 +293,7 @@ def perf_cases():
     py = expr.replace('&&', ' and ').replace('||', ' or ')
     py = re.sub(r'!(?!=)', ' not ', py); py = re.sub(r'inputs\.(\w+)', r"I['\1']", py); py = re.sub(r'steps\.(\w+)\.outputs\.(\w+)', r"U['\1.\2']", py)
     def runs(I=None, U=None):
-        b = dict(compile_only=False, perf=False, perf_in_run=False, docs_only=False); b.update(I or {}); u = {'testbuild.optional_build': ''}; u.update(U or {})
+        b = dict(technical_hardening=False, compile_only=False, perf=False, perf_in_run=False, docs_only=False); b.update(I or {}); u = {'testbuild.optional_build': ''}; u.update(U or {})
         return bool(eval(py, {}, {'I': b, 'U': u}))
     check('perf step runs for perf (exclusive)', runs(I={'perf': True}) is True)
     check('perf step runs for perf_in_run', runs(I={'perf_in_run': True}) is True)
@@ -306,12 +306,12 @@ def perf_cases():
     for s_ in doc['jobs']['macos']['steps']:
         if s_.get('id') in ('reset', 'docs', 'asserts', 'ordering', 'rust', 'bulk', 'dmg'):
             e2 = re.sub(r'steps\.(\w+)\.outputs\.(\w+)', r"U['\1.\2']", re.sub(r'steps\.(\w+)\.outcome', r"O['\1']", re.sub(r'inputs\.(\w+)', r"I['\1']", s_['if'].strip()[3:-2].strip().replace('&&', ' and ').replace('||', ' or ')))).replace('!', ' not ').replace(' not =', '!=') if 'if' in s_ else 'True'
-            I = dict(compile_only=False, perf=True, perf_in_run=False, consolidated=True, docs_2x=False, docs_only=False)
+            I = dict(technical_hardening=False, compile_only=False, perf=True, perf_in_run=False, consolidated=True, docs_2x=False, docs_only=False)
             ok = bool(eval(e2.replace('always()', 'True'), {}, {'I': I, 'O': {k: 'success' for k in ('reset', 'docs', 'asserts')}, 'U': {'testbuild.optional_build': ''}})) if 'if' in s_ else True
             check(f'perf-exclusive: step {s_.get("id")} is skipped', ok is False)
 
 def demo_cases():
-    doc = load(CI); launch = step(doc, 'macos', 'Launch app and screenshot')['run']; asserts = step(doc, 'macos', 'asserts')['run']
+    doc = load(CI); launch = step(doc, 'macos', 'Launch app and screenshot')['run'].replace('${{ inputs.technical_hardening }}', 'false'); asserts = step(doc, 'macos', 'asserts')['run']
     def prep(opts, env):
         w = workdir(); os.makedirs(w + '/dist-test/Spacelyzer.app/Contents/MacOS'); os.makedirs(w + '/dist/Spacelyzer.app'); os.makedirs(w + '/scripts', exist_ok=True)
         os.makedirs(w + '/home/Library/Logs/DiagnosticReports')
@@ -556,7 +556,7 @@ def docs_only_cases():
         py = re.sub(r'steps\.(\w+)\.outcome', r"O['\1']", py)
         py = re.sub(r'steps\.(\w+)\.outputs\.(\w+)', r"U['\1.\2']", py)
         return bool(eval(py, {}, {'I': I, 'O': O, 'U': U}))
-    ALL_I = dict(compile_only=False, consolidated=False, perf=False, perf_in_run=False, docs_2x=False, docs_only=True)
+    ALL_I = dict(technical_hardening=False, compile_only=False, consolidated=False, perf=False, perf_in_run=False, docs_2x=False, docs_only=True)
     ALL_O = {k: 'success' for k in ['reset', 'docs', 'asserts', 'perf', 'ordering', 'rust', 'failpoints', 'bulk', 'dmg', 'testbuild']}
     ALL_U = {'testbuild.optional_build': ''}
     def runs_docs_only(st):
