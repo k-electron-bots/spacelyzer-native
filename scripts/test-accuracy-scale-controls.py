@@ -32,5 +32,32 @@ ck('cleanup refuses a path outside the temp dir', A.cleanup(os.path.expanduser('
 fake = tempfile.mktemp(suffix='.sh'); open(fake, 'w').write('#!/bin/sh\necho "changed format"\n'); os.chmod(fake, 0o755)
 q = tempfile.mkdtemp(prefix='acc-ctl-'); dl = A.Deadline(30, 5)
 ck('skipped-count output missing => None (caller FAILS, check not disabled)', A.skipped_count(fake, q, dl) is None); os.unlink(fake); shutil.rmtree(q)
+
+import signal, time
+def fake(body):
+    f = tempfile.mktemp(suffix='.sh'); open(f, 'w').write('#!/bin/sh\n' + body); os.chmod(f, 0o755); return f
+def scale(spz, deadline, sizes='1000', timeout=60):
+    o = tempfile.mktemp(suffix='.json'); t = time.monotonic()
+    r = subprocess.run([sys.executable, H + '/accuracy-scale.py', '--spz', spz, '--sizes', sizes, '--deadline-seconds', str(deadline), '--cleanup-reserve-seconds', '2', '--out', o], capture_output=True, text=True, timeout=timeout)
+    d = json.load(open(o)) if os.path.exists(o) else {}
+    if os.path.exists(o): os.unlink(o)
+    return r.returncode, d, time.monotonic() - t
+def leaked(): return sorted(set(glob.glob(tmp + '/acc*')) - before)
+REAL = SPZ
+f = fake('sleep 1000'); rc, d, dt = scale(f, 6)
+ck('hanging spz: INCOMPLETE rc3 within deadline+slack, nothing claimed, no leak', rc == 3 and d.get('verdict') == 'INCOMPLETE' and d.get('rows') == [] and dt < 6 + 8 and not leaked(), (rc, d.get('verdict'), round(dt, 1), leaked())); os.unlink(f)
+f = fake(f'sleep 3; exec "{REAL}" "$@"'); rc, d, dt = scale(f, 5)
+ck('slow spz (3s per call) under a 5s budget: INCOMPLETE, never PASS', rc == 3 and d.get('verdict') == 'INCOMPLETE' and d.get('rows') == [] and not leaked(), (rc, d.get('verdict'), round(dt, 1))); os.unlink(f)
+f = fake(f'if [ "$1" = verify-cold ] || [ "$1" = dump ]; then echo late > "$2/drift_$$"; fi; exec "{REAL}" "$@"'); rc, d, dt = scale(f, 60)
+ck('forced drift (tree changes while the engine runs): INCOMPLETE rc3 with a DRIFT reason, NOT a pass and NOT an engine failure', rc == 3 and d.get('verdict') == 'INCOMPLETE' and d.get('failures') == [] and any('DRIFT' in x[1] for x in d.get('incomplete', [])) and not leaked(), (rc, d.get('verdict'), d.get('incomplete'), d.get('failures'))); os.unlink(f)
+f = fake(f'if [ "$1" = dump ]; then "{REAL}" "$@" | sed "s/^SKIP\tPermissionDenied/SKIP\tSeparateVolume/"; else exec "{REAL}" "$@"; fi'); rc, d, dt = scale(f, 60)
+ck('corrupted skip REASON in the engine output: FAIL rc1 (per-node), not a pass', (os.getuid() == 0) or (rc == 1 and d.get('verdict') == 'FAIL' and any('per-node' in str(x) for x in d.get('failures', []))), (rc, d.get('verdict'), d.get('failures'))); os.unlink(f)
+f = fake(f'if [ "$1" = scan ]; then "{REAL}" "$@" | sed "s/ ([0-9]* skipped)//"; else exec "{REAL}" "$@"; fi'); rc, d, dt = scale(f, 60)
+ck('scan output without the skipped field: FAIL rc1 (check not disabled)', rc == 1 and d.get('verdict') == 'FAIL' and any('skipped_count_parsed_and_equal' in x for x in d.get('failures', [])), (rc, d.get('verdict'), d.get('failures'))); os.unlink(f)
+o = tempfile.mktemp(suffix='.json')
+pr = subprocess.Popen([sys.executable, H + '/accuracy-scale.py', '--spz', SPZ, '--sizes', '100000', '--deadline-seconds', '120', '--out', o], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+time.sleep(3); pr.send_signal(signal.SIGTERM); rc = pr.wait(timeout=60); d = json.load(open(o)) if os.path.exists(o) else {}
+ck('SIGTERM mid-run: artifact written (interrupted, INCOMPLETE), owned trees incl. mode-000 dir cleaned, nothing claimed', d.get('interrupted') is True and d.get('verdict') == 'INCOMPLETE' and d.get('rows') == [] and not leaked() and not d.get('leaks'), (rc, d.get('interrupted'), d.get('verdict'), leaked()))
+if os.path.exists(o): os.unlink(o)
 if os.path.exists(out): os.unlink(out)
 sys.exit(1 if fails else 0)

@@ -10,21 +10,41 @@ import argparse, json, os, subprocess, sys, re
 
 class Capped(Exception): pass
 
+def _bounded(it, deadline):
+    """Incremental iteration with a wall check every 64 entries of ANY kind (a huge directory is never drained before the budget is looked at)."""
+    import time
+    n = 0
+    for e in it:
+        n += 1
+        if deadline is not None and (n & 63) == 0 and time.monotonic() > deadline: raise Capped('time')
+        yield e
+
+def run_bounded(cmd, timeout):
+    """subprocess with a hard wall cap that kills the whole process group (a hung engine or its children cannot outlive the budget). Raises subprocess.TimeoutExpired."""
+    import signal
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+    try: out, err = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try: os.killpg(p.pid, signal.SIGKILL)
+        except OSError: pass
+        p.communicate(); raise
+    return subprocess.CompletedProcess(cmd, p.returncode, out, err)
+
 def walk(root, nodes=None, max_items=None, deadline=None):
     items = alloc = logical = symlinks = extra_links = 0
     seen = set(); unreadable = []; nonutf8 = []; stack = [root]; dirs = 0
     while stack:
         d = stack.pop()
         try:
-            it = list(os.scandir(d))
+            sc = os.scandir(d)
         except OSError as e:
             unreadable.append([d, e.errno]); continue
-        for e in it:
+        with sc as it:
+          for e in _bounded(it, deadline):
             try: os.fsencode(e.name).decode('utf-8')
             except UnicodeDecodeError: nonutf8.append(e.path); continue   # documented engine rule: not in the tree or any total, listed as skipped (lossy)
             items += 1
             if max_items is not None and items > max_items: raise Capped(f'items>{max_items}')
-            if deadline is not None and (items & 1023) == 0 and __import__('time').monotonic() > deadline: raise Capped('time')
             try: st = e.stat(follow_symlinks=False)
             except OSError as er:
                 unreadable.append([e.path, er.errno]); continue
@@ -48,12 +68,13 @@ def unesc(t):
         else: o.append(c); i += 1
     return ''.join(o)
 
-def per_node(root, binp, has_hardlinks, backend='default'):
+def per_node(root, binp, has_hardlinks, backend='default', deadline=None):
     """Per-node comparison. nodes: path -> [kind, own allocated]; cumulative directory sizes are rolled up here, independently of the engine.
     Cross-directory hard links make per-directory attribution walk-order dependent (engine docs say so), so WITH hard links only the node SET and KINDS are
     compared here (sizes are NOT asserted per node; the root total is asserted by the totals step). WITHOUT hard links every file size and every directory's
     cumulative size must match exactly. Fails closed: a nonzero dump exit, unparseable dump line or skip-reason mismatch is a diff."""
-    nodes = {}; pre = walk(root, nodes)
+    import time
+    nodes = {}; pre = walk(root, nodes, deadline=deadline)
     cum = {}
     for p, (k, sz) in nodes.items():
         if k != 'Directory':
@@ -62,7 +83,7 @@ def per_node(root, binp, has_hardlinks, backend='default'):
                 cum[d] = cum.get(d, 0) + sz
                 if d == root: break
                 d = os.path.dirname(d)
-    r = subprocess.run(([binp, 'dump', root] if isinstance(binp, str) else binp + [root]) + (['portable'] if backend == 'portable' and isinstance(binp, str) else []), capture_output=True, text=True)
+    r = run_bounded(([binp, 'dump', root] if isinstance(binp, str) else binp + [root]) + (['portable'] if backend == 'portable' and isinstance(binp, str) else []), None if deadline is None else max(1.0, deadline - time.monotonic()))
     eng = {}; skips = []; diffs = []
     if r.returncode != 0: diffs.append(['dump_exit', r.returncode, r.stderr[-200:]])
     for line in r.stdout.splitlines():
@@ -83,12 +104,12 @@ def per_node(root, binp, has_hardlinks, backend='default'):
     if exp_reasons != got_reasons: diffs.append(['skip_reason_or_path', exp_reasons[:3], got_reasons[:3]])   # exact (reason, path) multiset, not only a count
     lossy_got = sorted(p for _, p in skips if '\ufffd' in p)
     if lossy_got != pre['nonutf8_lossy']: diffs.append(['lossy_skip_multiset', pre['nonutf8_lossy'][:3], lossy_got[:3]])   # compares as a multiset: raw names may be indistinguishable after lossy rendering, counts are not
-    post_nodes = {}; post = walk(root, post_nodes)
+    post_nodes = {}; post = walk(root, post_nodes, deadline=deadline)
     drift = post_nodes != nodes or post['items'] != pre['items'] or post['allocated_bytes'] != pre['allocated_bytes']   # tree changed while the engine ran: result is INCONCLUSIVE, not an engine fault
     return dict(backend=backend, scope=('path set + kinds + non-link file sizes NOT asserted; root total only' if has_hardlinks else 'full: path set, kinds, every file size, every directory cumulative size'), nodes=len(want), diffs=diffs[:20], diff_count=len(diffs), skips=skips, drift=drift, expected_skips=len(pre['unreadable']) + pre['nonutf8_names'], lossy_ambiguous=pre['lossy_ambiguous'])
 
 def spz_line(binp, root, timeout=None):
-    r = subprocess.run([binp, 'verify-cold', root], capture_output=True, text=True, timeout=timeout)
+    r = run_bounded([binp, 'verify-cold', root], timeout)
     m = re.search(r'^default : (\d+) items (\d+) bytes', r.stdout, re.M)
     if not m: return None, r.returncode, r.stdout + r.stderr
     mp = re.search(r'^portable: (\d+) items (\d+) bytes', r.stdout, re.M)
@@ -108,8 +129,9 @@ def main():
         try: got, rc, out = spz_line(a.spz, root, left)
         except subprocess.TimeoutExpired:
             print(json.dumps(dict(root=root, verdict='INCOMPLETE', reason='engine timed out under the time cap; no comparison made'), indent=1)); return 3
-        try: o2 = walk(root, max_items=a.max_items)
-        except Capped: o2 = None
+        try: o2 = walk(root, max_items=a.max_items, deadline=dl)
+        except Capped:
+            print(json.dumps(dict(root=root, verdict='INCOMPLETE', reason='oracle post-run drift walk hit the cap; no comparison made'), indent=1)); return 3
         o['spz'] = None if got is None else dict(items=got[0], allocated_bytes=got[1], exit=rc)
         pl = getattr(spz_line, 'portable', None)
         o['spz_portable_leg'] = None if pl is None else dict(items=pl[0], allocated_bytes=pl[1], agrees_with_oracle=(abs(pl[0] - o['items']) <= a.tolerate_items and abs(pl[1] - o['allocated_bytes']) <= a.tolerate_bytes))
