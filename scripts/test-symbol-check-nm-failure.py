@@ -75,7 +75,20 @@ with tempfile.TemporaryDirectory(prefix='nm-fail-') as td:
   for env in (fail,real):
    assert run(f,env).returncode==1,(f,run(f,env).stderr)
  assert run('absent.a',fail).returncode==1
+ # 3b. large symbol tables: grep -q on a pipe under pipefail SIGPIPEs the writer (false 'control missing'); found with real rustc Apple archives
+ big=archive([macho(['spz_scan_start']+['sym_%06d_padding_to_make_the_name_long_enough_for_pipe_buffers'%i for i in range(30000)])])
+ (w/'big.a').write_bytes(big);(w/'fat_big.a').write_bytes(fat([(0x0100000c,big),(0x01000007,big)]))
+ for f in ['big.a','fat_big.a']:
+  r=run(f,fail);assert r.returncode==0,(f,r.stderr[-300:])
  # 4. parser output: Mach-O underscore stripped, stabs/undefined ignored, per-slice labels
  out=subprocess.run(['python3',str(w/'scripts/defined-symbols.py'),str(w/'fat_clean.a')],stdout=subprocess.PIPE,check=True).stdout.decode()
  assert 'cpu0x100000c spz_scan_start' in out and 'cpu0x1000007 spz_scan_start' in out and 'malloc' not in out and 'helper' in out,out
+ rd=os.environ.get('SPZ_REAL_APPLE_ARCHIVES','')
+ if rd and pathlib.Path(rd).is_dir():
+  a=pathlib.Path(rd)/'aarch64.a';x=pathlib.Path(rd)/'x86_64.a'
+  (w/'real_fat.a').write_bytes(fat([(0x0100000c,a.read_bytes()),(0x01000007,x.read_bytes())]))
+  for e in (fail,dict(os.environ)):
+   r=run('real_fat.a',e);assert r.returncode==0,r.stderr[-300:]
+  print('PASS real rustc aarch64+x86_64 apple-darwin shipping staticlibs (cross-compiled on Linux, fat wrapper built by this test)')
+ else: print('SKIP real rustc Apple archives (set SPZ_REAL_APPLE_ARCHIVES to a dir with aarch64.a x86_64.a)')
  print('PASS old script fails on nm failure; parser-based check passes clean thin/fat, prints nm error, fails closed on defined-CI/undefined-control/truncated/missing-slice-control/empty/garbage/absent')

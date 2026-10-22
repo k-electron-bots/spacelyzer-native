@@ -21,16 +21,18 @@ for file in "$@"; do
   errf=$(mktemp); rc=0
   syms=$(python3 "$here/defined-symbols.py" "$file" 2>"$errf") || rc=$?
   if [ "$rc" -ne 0 ]; then echo "cannot inspect shipping symbols: $file: $(cat "$errf")" >&2; rm -f "$errf"; exit 1; fi
-  slices=$(printf '%s\n' "$syms" | cut -d' ' -f1 | sort -u)
+  # symbol lists are large: grep -q on a pipe can SIGPIPE the writer under pipefail (false negative), so use a file
+  symf=$(mktemp); printf '%s\n' "$syms" > "$symf"
+  slices=$(cut -d' ' -f1 "$symf" | sort -u)
   for sl in $slices; do
-    printf '%s\n' "$syms" | grep -qx "$sl spz_scan_start" || { echo "cannot inspect shipping symbols: positive control spz_scan_start not defined in slice $sl of $file" >&2; rm -f "$errf"; exit 1; }
+    grep -qx "$sl spz_scan_start" "$symf" || { echo "cannot inspect shipping symbols: positive control spz_scan_start not defined in slice $sl of $file" >&2; rm -f "$errf" "$symf"; exit 1; }
   done
-  if printf '%s\n' "$syms" | grep -Eq ' spz_ci_scan_'; then echo "CI rendezvous symbol defined in shipping artifact: $file" >&2; rm -f "$errf"; exit 1; fi
+  if grep -Eq ' spz_ci_scan_' "$symf"; then echo "CI rendezvous symbol defined in shipping artifact: $file" >&2; rm -f "$errf"; exit 1; fi
   rc=0; out=$(nm -g "$file" 2>"$errf") || rc=$?
   if [ "$rc" -ne 0 ]; then
     echo "notice: nm -g exited $rc on $file (parser verified every slice). nm stderr (first 10 lines):" >&2; head -10 "$errf" >&2 || true
   elif printf '%s\n' "$out" | grep -E '(^|[[:space:]])_?spz_ci_scan_[[:alnum:]_]*([[:space:]]|$)' >/dev/null; then
     rm -f "$errf"; echo "CI rendezvous symbol in shipping artifact (nm): $file" >&2; exit 1
   fi
-  rm -f "$errf"
+  rm -f "$errf" "$symf"
 done
