@@ -7,7 +7,9 @@ spec = importlib.util.spec_from_file_location('acc', H + '/accuracy-scale.py'); 
 fails = []
 def ck(n, ok, d=''):
     print(('ok   ' if ok else 'FAIL ') + n + ('' if ok else ' :: ' + str(d))); (ok or fails.append(n))
-tmp = os.path.realpath(tempfile.gettempdir())
+PRIV = os.path.realpath(tempfile.mkdtemp(prefix='scalectl-'))   # private TMPDIR: leak detection only sees trees this test's children made (no cross-talk with other runs)
+os.environ['TMPDIR'] = PRIV; tempfile.tempdir = None
+tmp = PRIV
 before = set(glob.glob(tmp + '/acc*'))
 out = tempfile.mktemp(suffix='.json')
 r = subprocess.run([sys.executable, H + '/accuracy-scale.py', '--spz', SPZ, '--sizes', '100000', '--deadline-seconds', '4', '--cleanup-reserve-seconds', '2', '--out', out], capture_output=True, text=True)
@@ -68,4 +70,5 @@ time.sleep(3); pr.send_signal(signal.SIGTERM); rc = pr.wait(timeout=60); d = jso
 ck('SIGTERM mid-run: artifact written (interrupted, INCOMPLETE), owned trees incl. mode-000 dir cleaned, nothing claimed', d.get('interrupted') is True and d.get('verdict') == 'INCOMPLETE' and d.get('rows') == [] and not leaked() and not d.get('leaks'), (rc, d.get('interrupted'), d.get('verdict'), leaked()))
 if os.path.exists(o): os.unlink(o)
 if os.path.exists(out): os.unlink(out)
+shutil.rmtree(PRIV, ignore_errors=True)
 sys.exit(1 if fails else 0)
