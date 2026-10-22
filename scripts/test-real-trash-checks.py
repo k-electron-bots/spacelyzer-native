@@ -27,7 +27,8 @@ for seam in ['trashItem =', 'identityCheck =', 'restoreItem =', 'restoreCollisio
 for guard in ['temporaryDirectory', 'spz-rtm-', 'hasPrefix(tmpRoot', 'realpath(', '.Trash', 'trashedLeftovers',
               'settleSurfaces', 'layoutPublished', 'requiredVersion == nil',
               'was replaced since the scan', 'something already exists at',
-              'isExpectedFixtureTrashItem', '.putBack', '.notMoved']:
+              'isExpectedFixtureTrashItem', '.putBack', '.notMoved',
+              'options: .atomic', 'checkIdentity(', 'lstat(', 'st_ino', 'TrashedRef']:
     need(guard in body, 'missing safety-guard element: %s' % guard)
 print('wiring OK' if ok else 'wiring FAILED')
 sys.exit(0 if ok else 1)
