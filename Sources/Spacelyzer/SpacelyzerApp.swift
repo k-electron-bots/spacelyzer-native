@@ -2914,6 +2914,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         await BatchRemovalExecutionChecks.run()
         await BatchUndoChecks.run()
         await RealTrashMoveChecks.run()
+        await ScanCancelChecks.run()
         copyPathChecks()
         csvChecks()
         await foldersChecks()
@@ -3624,6 +3625,9 @@ final class BusyFlag: @unchecked Sendable {
         "real-trash-undo-restores-original",
         "real-trash-identity-replaced-refuses-move",
         "real-trash-restore-collision-keeps-both",
+        "scan-cancel-stops-promptly-and-publishes-partial-tree",
+        "scan-cancel-before-progress-returns-promptly",
+        "rescan-after-model-cancel-is-complete",
     ]
     static func run(tree: Tree) async -> Never {
         // Results go to a unique per-run directory chosen by the runner (SPZ_RESULT_DIR). Nothing shared is deleted or
