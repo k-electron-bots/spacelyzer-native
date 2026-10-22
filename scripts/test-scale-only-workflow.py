@@ -13,13 +13,13 @@ ck('identity-guard job identical to ci.yml', d['jobs']['identity-guard'] == ci['
 m = d['jobs']['macos']; st = m['steps']
 ck('macos needs identity-guard, 35 min cap, macos runner', m['needs'] == 'identity-guard' and m['timeout-minutes'] == 35 and m['runs-on'] == 'macos-latest')
 ck('job clock anchored first, 2100s', 'SPZ_JOB_DEADLINE_EPOCH' in st[0]['run'] and '2100' in st[0]['run'])
-ck('work deadline holds back 1400s', 'JOB_DEADLINE_EPOCH - 1400' in txt and 1000 + 120 + 190 + 90 == 1400)
+ck('work deadline holds back 1410s', 'JOB_DEADLINE_EPOCH - 1410' in txt and 1000 + 120 + 200 + 90 == 1410)
 code = '\n'.join(str(x.get('run', '')) + ' ' + str(x.get('uses', '')) for x in st).lower()
 for bad in ('secrets.', 'release', 'dmg', 'sign-setup', 'docs-capture', 'spz_demo', 'package'):
     ck(f'no {bad} in any step command', bad not in code)
 ck('no secrets anywhere in the file', 'secrets.' not in txt and 'contents: write' not in txt)
 by = {s.get('id'): s for s in st if s.get('id')}
-ck('scale args: 1000s budget, max 1200, teardown 190, reserve 120', all(x in by['scale']['run'] for x in ('--budget-seconds 1000', '--max-budget-seconds 1200', '--teardown-seconds 190', '--artifact-reserve-seconds 120')))
+ck('scale args: 1000s budget, max 1200, teardown 200, reserve 120', all(x in by['scale']['run'] for x in ('--budget-seconds 1000', '--max-budget-seconds 1200', '--teardown-seconds 200', '--artifact-reserve-seconds 120')))
 ck('scale and gate run only after a successful test build; neither can retry', 'testbuild.outcome' in by['scale']['if'] and 'testbuild.outcome' in by['gate']['if'] and 'retry' not in txt.lower().replace('no retry', ''))
 ck('scale step timeout 19 min <= job cap', by['scale']['timeout-minutes'] == 19 and by['scale']['continue-on-error'] is True)
 ck('artifact upload always, error if empty', by['scale_artifact']['if'].strip() == '${{ always() }}' and by['scale_artifact']['with']['if-no-files-found'] == 'error')
