@@ -24,7 +24,7 @@ Sizes describe allocated disk space, with hard links counted once. Scans stay on
 
 ## Install
 
-Requires macOS 14 or later. [Development DMGs](https://github.com/k-electron-bots/spacelyzer-native/releases) are self-signed, not notarized. This is **not a release-ready app**. Keyboard focus verification is under repair; real-Mac, VoiceOver and actual IME testing remain open.
+Requires macOS 14 or later. [Development DMGs](https://github.com/k-electron-bots/spacelyzer-native/releases) are self-signed, not notarized. This is **not a release-ready app**. Keyboard focus verification is under repair; real-Mac and actual IME testing remain open. VoiceOver speech is untested - the accessibility features are built, but VoiceOver is not a v1 gate.
 
 1. Download the DMG and open it.
 2. Drag Spacelyzer onto Applications.
