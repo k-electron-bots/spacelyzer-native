@@ -19,6 +19,10 @@ elif mode == 'extra_skip': lines.append('SKIP\tPermissionDenied\t' + root + '/gh
 elif mode == 'drop_one_skip':
     k = [i for i, l in enumerate(lines) if l.startswith('SKIP') and '\ufffd' in l]
     if k: del lines[k[0]]
+elif mode == 'reason_swap':
+    k = [i for i, l in enumerate(lines) if l.startswith('SKIP')]
+    if k: a = lines[k[0]].split('\t'); a[1] = 'SeparateVolume'; lines[k[0]] = '\t'.join(a)
+elif mode == 'dump_fail': print('\n'.join(lines)); sys.exit(3)
 elif mode == 'mutate': open(root + '/drift_new', 'w').write('late')
 elif mode == 'none': pass
 print('\n'.join(lines))
