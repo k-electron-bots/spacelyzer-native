@@ -38,6 +38,10 @@ def main():
     ap = argparse.ArgumentParser(); ap.add_argument('--spz', required=True); ap.add_argument('--sizes', default='1000,10000,100000'); ap.add_argument('--seed', type=int, default=7)
     a = ap.parse_args(); bad = []; rows = []
     for n in map(int, a.sizes.split(',')):
+        need = n * 12_000 * 3   # measured about 7.8 KB allocated per item at 100k (775 MB) (see oracle output); the tree is built twice (links + no-links variants) and oracle/engine read it, so require 3x headroom
+        free = shutil.disk_usage(tempfile.gettempdir()).free
+        if free < need:
+            print(f'NOT-RUN size {n}: needs about {need >> 20} MiB free, have {free >> 20} MiB (reported, not a pass)', file=sys.stderr); bad.append((n, 'NOT-RUN disk')); continue
         root = tempfile.mkdtemp(prefix=f'acc{n}-')
         try:
             c = build(root, n, a.seed + n)
