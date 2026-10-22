@@ -2913,6 +2913,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         QuickLookBatchChecks.run()
         await BatchRemovalExecutionChecks.run()
         await BatchUndoChecks.run()
+        await RealTrashMoveChecks.run()
         copyPathChecks()
         csvChecks()
         await foldersChecks()
@@ -3619,6 +3620,10 @@ final class BusyFlag: @unchecked Sendable {
         "group-removal-executes-through-same-per-item-path",
         "single-removal-clears-batch-undo-hint",
         "single-removal-drops-removed-id-from-multi-selection",
+        "real-trash-move-executes-and-journals",
+        "real-trash-undo-restores-original",
+        "real-trash-identity-replaced-refuses-move",
+        "real-trash-restore-collision-keeps-both",
     ]
     static func run(tree: Tree) async -> Never {
         // Results go to a unique per-run directory chosen by the runner (SPZ_RESULT_DIR). Nothing shared is deleted or
