@@ -229,7 +229,7 @@ jobs:
           echo "accuracy shared deadline: ${left}s (build, oracle, engine legs, cleanup inside it; cleanup reserve 120s)"
           [ "$left" -gt 180 ] || { echo "::error::not enough work budget left ($left s)"; exit 1; }
           rc=0
-          python3 scripts/accuracy-scale.py --spz target/release/spz --sizes 1000,10000,100000 --deadline-seconds "$left" --cleanup-reserve-seconds 120 --out "$GITHUB_WORKSPACE/acc-out/accuracy-scale.json" > "$GITHUB_WORKSPACE/acc-out/accuracy-scale.stdout" 2> "$GITHUB_WORKSPACE/acc-out/accuracy-scale.stderr" || rc=$?
+          python3 scripts/accuracy-scale.py --spz target/release/spz --sizes 1000,10000,100000 --deadline-seconds "$left" --cleanup-reserve-seconds 120 --out "$GITHUB_WORKSPACE/acc-out/accuracy-scale.json" --evidence-dir "$GITHUB_WORKSPACE/acc-out/evidence" > "$GITHUB_WORKSPACE/acc-out/accuracy-scale.stdout" 2> "$GITHUB_WORKSPACE/acc-out/accuracy-scale.stderr" || rc=$?
           tail -n 40 "$GITHUB_WORKSPACE/acc-out/accuracy-scale.stderr"; exit $rc
       - uses: actions/upload-artifact@v4
         if: ${{ always() }}
@@ -241,4 +241,4 @@ jobs:
       - name: Accuracy-only evidence gate
         if: ${{ always() }}
         run: |
-          python3 scripts/accuracy-gate.py acc-out/preflight.json acc-out/accuracy-scale.json build='${{ steps.build.outcome }}' preflight='${{ steps.preflight.outcome }}' controls='${{ steps.controls.outcome }}' accuracy='${{ steps.accuracy.outcome }}' artifact='${{ steps.acc_artifact.outcome }}'
+          python3 scripts/accuracy-gate.py acc-out/preflight.json acc-out/accuracy-scale.json build='${{ steps.build.outcome }}' preflight='${{ steps.preflight.outcome }}' controls='${{ steps.controls.outcome }}' accuracy='${{ steps.accuracy.outcome }}' artifact='${{ steps.acc_artifact.outcome }}' expect-platform=macOS

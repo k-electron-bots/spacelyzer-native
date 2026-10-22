@@ -26,6 +26,8 @@ ck('gate receives every step outcome', all(f"{k}='${{{{ steps.{k if k != 'artifa
 pre = [s for s in m['steps'] if s.get('name', '').startswith('Prepare artifact')][0]['run']; ck('work deadline = job - 410 (120 artifact + 200 teardown + 90 margin)', 'SPZ_JOB_DEADLINE_EPOCH - 410' in pre and 120 + 200 + 90 == 410)
 anc = m['steps'][0]['run']; ck('job clock anchored 2100s (35 min) before checkout', '+ 2100' in anc)
 acc = ids['accuracy']['run']; ck('accuracy deadline is remaining work budget capped at 1200, with the 120s cleanup reserve, sizes 1k/10k/100k', '-gt 1200 ] && left=1200' in acc and '--cleanup-reserve-seconds 120' in acc and '--sizes 1000,10000,100000' in acc and '--deadline-seconds "$left"' in acc)
+ck('accuracy step keeps first-failure evidence in the uploaded artifact dir', '--evidence-dir "$GITHUB_WORKSPACE/acc-out/evidence"' in acc and 'os.sync' not in open(R + '/scripts/accuracy-scale.py').read())
+ck('gate is given the exact macOS platform expectation', 'expect-platform=macOS' in gate)
 ck('accuracy step timeout covers its deadline', ids['accuracy']['timeout-minutes'] * 60 >= 1200)
 ck('accuracy is bounded by the shared work epoch (1690s), not only its step cap; controls capped at 8 min', (2100 - 410) >= 1200 and ids['controls']['timeout-minutes'] == 8)
 ck('controls keep BOTH suites running and logged', 'rc=1' in ids['controls']['run'] and ids['controls']['run'].count('tee') == 2)
@@ -39,7 +41,12 @@ except OSError: print('NOT-RUN git unavailable')
 tmp = tempfile.mkdtemp(); pf = tmp + '/pf.json'
 r = subprocess.run([sys.executable, R + '/scripts/accuracy-preflight.py', pf], capture_output=True, text=True); P = json.load(open(pf))
 ck('preflight runs and records capabilities', r.returncode == 0 and all(k in P for k in ('non_root', 'chmod000_enforced', 'case_sensitive', 'nfc_nfd_distinct', 'non_utf8_names', 'unix_socket', 'tmp_free_mib')), r.stderr[-200:])
-good_pf = dict(non_root=True, chmod000_enforced=True, notrun=[]); good_sc = dict(verdict='PASS', failures=[], incomplete=[], leaks=[], interrupted=False, over_deadline=False, rows=[dict(n=1000), dict(n=10000), dict(n=100000)])
+import copy, platform as _pl
+def leg(v): return dict(nodes=100, diffs=0, scope=('full: path set, kinds, every file size, every directory cumulative size' if v == 'nolinks' else 'path set + kinds + non-link file sizes NOT asserted; root total only'), skips=[['PermissionDenied', '/x/noperm']])
+CH = {k: True for k in ('items_vs_construction', 'bytes_oracle_vs_default', 'bytes_oracle_vs_portable', 'symlinks', 'extra_hardlinks', 'unreadable', 'skipped_count_parsed_and_equal', 'verdict_agree')}
+def var(v): return dict(construct=dict(planted_unreadable_dirs=1), checks=dict(CH), per_node={'default': leg(v), 'portable': leg(v)})
+good_pf = dict(non_root=True, chmod000_enforced=True, notrun=[], platform='macOS-15-arm64', uid=501)
+good_sc = dict(verdict='PASS', failures=[], incomplete=[], leaks=[], interrupted=False, over_deadline=False, platform='macOS-15-arm64', uid=501, rows=[dict(n=n, links=var('links'), nolinks=var('nolinks')) for n in (1000, 10000, 100000)])
 ok_steps = ['build=success', 'preflight=success', 'controls=success', 'accuracy=success', 'artifact=success']
 def gate(pfd, scd, steps=ok_steps):
     a = tmp + '/a.json'; b = tmp + '/b.json'
@@ -47,7 +54,7 @@ def gate(pfd, scd, steps=ok_steps):
         if v is None:
             if os.path.exists(p): os.unlink(p)
         else: json.dump(v, open(p, 'w'))
-    return subprocess.run([sys.executable, R + '/scripts/accuracy-gate.py', a, b, *steps], capture_output=True, text=True)
+    return subprocess.run([sys.executable, R + '/scripts/accuracy-gate.py', a, b, *steps, 'expect-platform=macOS'], capture_output=True, text=True)
 ck('gate PASS: all success + PASS + exercised unreadable', gate(good_pf, good_sc).returncode == 0)
 ck('gate passes with only filesystem NOT-RUN limits, and prints them', (lambda g: g.returncode == 0 and 'NOT-RUN' in g.stdout)(gate(dict(good_pf, notrun=['filesystem is case-insensitive']), good_sc)))
 def red(name, pfd, scd, steps=ok_steps): g = gate(pfd, scd, steps); ck(f'gate RED: {name}', g.returncode == 1 and '::error::' in g.stdout, (g.returncode, g.stdout[-200:]))
@@ -55,6 +62,23 @@ for st in range(5): red(f'step {ok_steps[st].split("=")[0]} failed', good_pf, go
 red('step skipped', good_pf, good_sc, ['build=success', 'preflight=success', 'controls=skipped', 'accuracy=success', 'artifact=success'])
 red('preflight artifact missing', None, good_sc); red('scale artifact missing', good_pf, None)
 red('running as root', dict(good_pf, non_root=False), good_sc); red('chmod 000 not enforced', dict(good_pf, chmod000_enforced=False), good_sc)
+def mut(f):
+    x = copy.deepcopy(good_sc); f(x); return x
+red('missing size 10000', good_pf, mut(lambda x: x['rows'].pop(1))); red('missing size 100000', good_pf, mut(lambda x: x['rows'].pop()))
+red('extra size 5000', good_pf, mut(lambda x: x['rows'].insert(1, dict(x['rows'][0], n=5000)))); red('sizes out of order', good_pf, mut(lambda x: x['rows'].reverse()))
+red('thinned row (no variants)', good_pf, mut(lambda x: x['rows'][2].pop('links'))); red('thinned row (no nolinks)', good_pf, mut(lambda x: x['rows'][0].pop('nolinks')))
+red('missing portable leg', good_pf, mut(lambda x: x['rows'][1]['links']['per_node'].pop('portable'))); red('missing default leg', good_pf, mut(lambda x: x['rows'][1]['nolinks']['per_node'].pop('default')))
+red('extra leg', good_pf, mut(lambda x: x['rows'][1]['nolinks']['per_node'].update(other=leg('nolinks'))))
+red('nonzero per-node diffs despite PASS', good_pf, mut(lambda x: x['rows'][2]['nolinks']['per_node']['portable'].update(diffs=1)))
+red('zero nodes compared', good_pf, mut(lambda x: x['rows'][0]['links']['per_node']['default'].update(nodes=0)))
+red('scope string missing', good_pf, mut(lambda x: x['rows'][0]['links']['per_node']['default'].pop('scope')))
+red('links variant claims full scope', good_pf, mut(lambda x: x['rows'][0]['links']['per_node']['default'].update(scope='full: path set')))
+red('a check false', good_pf, mut(lambda x: x['rows'][1]['links']['checks'].update(bytes_oracle_vs_portable=False)))
+red('a check missing', good_pf, mut(lambda x: x['rows'][1]['nolinks']['checks'].pop('skipped_count_parsed_and_equal')))
+red('skip reason wrong', good_pf, mut(lambda x: x['rows'][0]['links']['per_node']['default'].update(skips=[['SeparateVolume', '/x/noperm']])))
+red('skips missing', good_pf, mut(lambda x: x['rows'][0]['links']['per_node']['default'].update(skips=[])))
+red('platform is Linux, not macOS', dict(good_pf, platform='Linux-6'), dict(good_sc, platform='Linux-6'))
+red('platform differs preflight vs scale', good_pf, dict(good_sc, platform='macOS-14-arm64')); red('uid differs preflight vs scale', good_pf, dict(good_sc, uid=0))
 for k, v in (('verdict', 'FAIL'), ('verdict', 'INCOMPLETE'), ('leaks', ['x']), ('interrupted', True), ('over_deadline', True), ('rows', [])): red(f'scale {k}={v}', good_pf, dict(good_sc, **{k: v}))
 open(tmp + '/b.json', 'w').write('{not json'); g = subprocess.run([sys.executable, R + '/scripts/accuracy-gate.py', tmp + '/a.json', tmp + '/b.json', *ok_steps], capture_output=True, text=True); ck('gate RED: unparseable scale artifact', g.returncode == 1)
 sys.exit(1 if fails else 0)

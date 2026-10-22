@@ -36,9 +36,9 @@ ck('skipped-count output missing => None (caller FAILS, check not disabled)', A.
 import signal, time
 def fake(body):
     f = tempfile.mktemp(suffix='.sh'); open(f, 'w').write('#!/bin/sh\n' + body); os.chmod(f, 0o755); return f
-def scale(spz, deadline, sizes='1000', timeout=60):
+def scale(spz, deadline, sizes='1000', timeout=60, ev=None):
     o = tempfile.mktemp(suffix='.json'); t = time.monotonic()
-    r = subprocess.run([sys.executable, H + '/accuracy-scale.py', '--spz', spz, '--sizes', sizes, '--deadline-seconds', str(deadline), '--cleanup-reserve-seconds', '2', '--out', o], capture_output=True, text=True, timeout=timeout)
+    r = subprocess.run([sys.executable, H + '/accuracy-scale.py', '--spz', spz, '--sizes', sizes, '--deadline-seconds', str(deadline), '--cleanup-reserve-seconds', '2', '--out', o] + (['--evidence-dir', ev] if ev else []), capture_output=True, text=True, timeout=timeout)
     d = json.load(open(o)) if os.path.exists(o) else {}
     if os.path.exists(o): os.unlink(o)
     return r.returncode, d, time.monotonic() - t
@@ -55,8 +55,11 @@ ck('corrupted skip REASON in the engine output: FAIL rc1 (per-node), not a pass'
 f = fake(f'if [ "$1" = scan ]; then "{REAL}" "$@" | python3 -c \'import re,sys; [sys.stdout.write(re.sub(r" \\(\\d+ skipped\\)", "", l)) for l in sys.stdin]\'; else exec "{REAL}" "$@"; fi'); rc, d, dt = scale(f, 60)
 ck('scan output without the skipped field: FAIL rc1 (check not disabled)', rc == 1 and d.get('verdict') == 'FAIL' and any('skipped_count_parsed_and_equal' in x for x in d.get('failures', [])), (rc, d.get('verdict'), d.get('failures'))); os.unlink(f)
 flag = tempfile.mktemp(suffix='.once')
-f = fake(f'if [ "$1" = dump ] && [ ! -e "{flag}" ] && case "$2" in *acc1000n-*) true;; *) false;; esac; then touch "{flag}"; "{REAL}" "$@" | python3 -c \'import sys; L = sys.stdin.read().split("\\n"); a = L[1].split("\\t"); a[1] = str(int(a[1]) + 512); L[1] = "\\t".join(a); sys.stdout.write("\\n".join(L))\'; else exec "{REAL}" "$@"; fi'); rc, d, dt = scale(f, 60)
+f = fake(f'if [ "$1" = dump ] && [ ! -e "{flag}" ] && case "$2" in *acc1000n-*) true;; *) false;; esac; then touch "{flag}"; "{REAL}" "$@" | python3 -c \'import sys; L = sys.stdin.read().split("\\n"); a = L[1].split("\\t"); a[1] = str(int(a[1]) + 512); L[1] = "\\t".join(a); sys.stdout.write("\\n".join(L))\'; else exec "{REAL}" "$@"; fi'); evd = tempfile.mkdtemp(prefix='evd-'); rc, d, dt = scale(f, 60, ev=evd)
 ck('one-off per-node diff that does not reproduce: INCOMPLETE rc3 (NON-REPRODUCIBLE), never PASS and never FAIL-as-engine-bug', rc == 3 and d.get('verdict') == 'INCOMPLETE' and any('NON-REPRODUCIBLE' in x[1] for x in d.get('incomplete', [])) and d.get('failures') == [], (rc, d.get('verdict'), d.get('incomplete'), d.get('failures')))
+fe = sorted(glob.glob(evd + '/first-diff-*.json')); E = json.load(open(fe[0])) if fe else {}
+ck('first failure retained in full before the recheck: raw dump, all diffs, oracle nodes, leaf stats, binary hash, platform', len(fe) == 1 and E.get('per_node', {}).get('raw_dump') and E['per_node'].get('all_diffs') and E['per_node'].get('oracle_nodes') and E.get('spz_sha256') and E.get('platform') and 'leaf_stat_after' in E['per_node'], (fe, list(E)))
+shutil.rmtree(evd, ignore_errors=True)
 for x in (f, flag):
     if os.path.exists(x): os.unlink(x)
 o = tempfile.mktemp(suffix='.json')
