@@ -28,7 +28,7 @@ name: readiness-verify
 # observable on Mac CI" may remain open. The driver Mac-compiled cleanly in run 38773486853;
 # the uncompiled caveat from the first attempt is retired.
 #
-# GATE 1 - COMPILE: universal release build + both arch slices verified. Same as expand-fix-verify.
+# GATE 1 - COMPILE: universal release build + both arch slices verified. Same as the retired expand-fix-verify workflow (removed; its branches are archived at archive/perf-outline-batch-updates and archive/measure-expand-fix-7db129c).
 # GATE 2 - CORRECTNESS: the candidate's own SPZ_DEMO demo harness with expected=159 assertions
 #   (the count at 00aa46a2 per ci.yml's count rule; 169 belonged to the fix head and is NOT used).
 # GATE 3 - 1M PUBLICATION: one FRESH instance auto-scanning the ~1M-entry fixture.
