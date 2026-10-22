@@ -76,7 +76,7 @@ enum RealTrashMoveChecks {
             // failure), each revalidated by name AND by the device+inode recorded at move time.
             try? fm.removeItem(at: d)
             for ref in trashedLeftovers where isExpectedFixtureTrashItem(ref.url, marker: marker) {
-                if let now = ownership(ref.url), now == (ref.dev, ref.ino, ref.size) { try? fm.removeItem(at: ref.url) }
+                if let now = ownership(ref.url), now.dev == ref.dev, now.ino == ref.ino, now.size == ref.size { try? fm.removeItem(at: ref.url) }
             }
         }
         // Canonicalize with the same syscall as the engine (see RemovalHistoryChecks), then a HARD
@@ -152,9 +152,10 @@ enum RealTrashMoveChecks {
         // single lstat on the main actor is deliberate - checkIdentity's off-main guidance exists
         // for UI responsiveness.)
         try! Data(repeating: 9, count: 7_000).write(to: bURL, options: .atomic)
-        guard t.checkIdentity(b) != .same else {
+        let preVerdict = t.checkIdentity(b)
+        guard preVerdict == .replaced else {
             Check.expect("real-trash-identity-replaced-refuses-move", false,
-                         "premise failed: atomic replace did not change the identity (verdict still .same); refusing to run the real move")
+                         "premise failed: atomic replace must read as .replaced, got \(preVerdict); refusing to run the real move")
             Check.expect("real-trash-restore-collision-keeps-both", false, "not reached: identity premise failed")
             return
         }
