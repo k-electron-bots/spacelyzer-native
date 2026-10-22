@@ -22,13 +22,19 @@ def main():
     if not (app/'Contents/MacOS/Spacelyzer').is_file(): raise RuntimeError('prebuilt test app missing')
     w.mkdir();fixture=w/'fixture';res=w/'result';res.mkdir()
     deadline=time.monotonic()+a.budget_seconds
-    # Reserve the final180s for actual app work, exit/termination and verdict copying.
+    # Reserve210s for app work, exit/termination, bounded fixture deletion and verdict.
     def left(reserve=0):
         n=int(deadline-time.monotonic())-reserve
         if n<=0: raise RuntimeError('INCOMPLETE: segment budget exhausted')
         return n
     generator=str(pathlib.Path(__file__).with_name('make_fixtures.py'))
     run([sys.executable,generator,'generate',str(fixture),'--profile','expansion-1m'],left(210))
+    # Sparse fixtures otherwise have zero allocated bytes. Materialize the exact
+    #1-byte filter target, preserving its expected size and mtime before verification.
+    target=fixture/'expansion-1000000/f0000000.dat'
+    st=target.stat()
+    with target.open('r+b') as f: f.write(b'x')
+    os.utime(target,ns=(st.st_atime_ns,st.st_mtime_ns))
     run([sys.executable,generator,'verify',str(fixture),'--profile','expansion-1m'],left(210))
     env=dict(os.environ,SPZ_CHECKS='scale',SPZ_SCALE_ROOT=str(fixture),SPZ_RESULT_DIR=str(res))
     # Direct unique child PID only. No pkill/process-name targeting or other app interaction.
