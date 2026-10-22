@@ -10,7 +10,7 @@ import argparse, json, os, subprocess, sys, re
 
 def walk(root, nodes=None):
     items = alloc = logical = symlinks = extra_links = 0
-    seen = set(); unreadable = []; nonutf8 = 0; stack = [root]; dirs = 0
+    seen = set(); unreadable = []; nonutf8 = []; stack = [root]; dirs = 0
     while stack:
         d = stack.pop()
         try:
@@ -18,11 +18,12 @@ def walk(root, nodes=None):
         except OSError as e:
             unreadable.append([d, e.errno]); continue
         for e in it:
+            try: os.fsencode(e.name).decode('utf-8')
+            except UnicodeDecodeError: nonutf8.append(e.path); continue   # documented engine rule: not in the tree or any total, listed as skipped (lossy)
             items += 1
             try: st = e.stat(follow_symlinks=False)
             except OSError as er:
                 unreadable.append([e.path, er.errno]); continue
-            if os.fsencode(e.name).decode('utf-8', 'surrogateescape') != e.name or '\udc80' <= max(e.name, '\0') <= '\udcff': nonutf8 += 1
             import stat as S
             if S.S_ISDIR(st.st_mode): dirs += 1; stack.append(e.path); (nodes is not None) and nodes.__setitem__(e.path, ['Directory', 0]); continue
             if S.S_ISLNK(st.st_mode): symlinks += 1
@@ -33,7 +34,7 @@ def walk(root, nodes=None):
                 seen.add((st.st_dev, st.st_ino))
             alloc += st.st_blocks * 512
     return dict(root=root, items=items, dirs=dirs, allocated_bytes=alloc, logical_bytes=logical, symlinks=symlinks,
-                extra_hardlink_entries=extra_links, unreadable=unreadable, nonutf8_names=nonutf8)
+                extra_hardlink_entries=extra_links, unreadable=unreadable, nonutf8_names=len(nonutf8))
 
 def unesc(t):
     o = []; i = 0
@@ -47,7 +48,7 @@ def per_node(root, binp, has_hardlinks):
     """Per-node comparison. nodes: path -> [kind, own allocated]; cumulative directory sizes are rolled up here, independently of the engine.
     Cross-directory hard links make per-directory attribution walk-order dependent (engine docs say so), so with hard links only the node SET, kinds,
     file sizes' multiset and the root total are compared; without them every node's cumulative size must match exactly."""
-    nodes = {}; walk(root, nodes)
+    nodes = {}; pre = walk(root, nodes)
     cum = {}
     for p, (k, sz) in nodes.items():
         if k != 'Directory':
@@ -56,7 +57,7 @@ def per_node(root, binp, has_hardlinks):
                 cum[d] = cum.get(d, 0) + sz
                 if d == root: break
                 d = os.path.dirname(d)
-    r = subprocess.run([binp, 'dump', root], capture_output=True, text=True)
+    r = subprocess.run([binp, 'dump', root] if isinstance(binp, str) else binp + [root], capture_output=True, text=True)
     eng = {}; skips = []
     for line in r.stdout.splitlines():
         a = line.split('\t')
@@ -71,7 +72,9 @@ def per_node(root, binp, has_hardlinks):
         if want[p][0] == 'Directory':
             if not has_hardlinks and eng[p][1] != cum.get(p, 0): diffs.append(['dir_size', p, cum.get(p, 0), eng[p][1]])
         elif not has_hardlinks and eng[p][1] != nodes[p][1]: diffs.append(['file_size', p, nodes[p][1], eng[p][1]])
-    return dict(nodes=len(want), diffs=diffs[:20], diff_count=len(diffs), skips=skips)
+    post_nodes = {}; post = walk(root, post_nodes)
+    drift = post_nodes != nodes or post['items'] != pre['items'] or post['allocated_bytes'] != pre['allocated_bytes']   # tree changed while the engine ran: result is INCONCLUSIVE, not an engine fault
+    return dict(nodes=len(want), diffs=diffs[:20], diff_count=len(diffs), skips=skips, drift=drift, expected_skips=len(pre['unreadable']) + pre['nonutf8_names'])
 
 def spz_line(binp, root):
     r = subprocess.run([binp, 'verify-cold', root], capture_output=True, text=True)
