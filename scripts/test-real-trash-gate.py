@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Behavioral offline failure tests for RealTrashMoveChecks' confinement gate, check
-predicates and cleanup validation. These are DESIGN checks: they mirror the logic the Swift
+predicates, the identity premise and cleanup validation. These are DESIGN checks: they mirror the logic the Swift
 encodes (realpath canonicalization, temp prefix + marker gate, each check's end-state
 predicate, the cleanup allowlist) in Python and prove every wrong state fails CLOSED. They are
 NOT an execution of the Swift logic, not a Swift compile and not a Mac run - they can miss a
@@ -90,17 +90,64 @@ need(not case4(True, 2000, True, 'Could not put it back: something already exist
 need(case4(True, 2000, True, 'Could not put it back: something already exists at /r/c.bin', 'notMoved', 1),
      'case4: the real collision state PASSES')
 
-# --- cleanup validation: only this suite's own fixture names in a .Trash may be deleted ---
-def cleanup_allowed(path):
+# --- identity premise: the verdict is kind/dev/inode ONLY (engine/src/inspect.rs review_scanned) ---
+prem = tempfile.mkdtemp()
+try:
+    f = os.path.join(prem, 'item.bin')
+    with open(f, 'wb') as fh: fh.write(b'1' * 1000)
+    s1 = os.lstat(f)
+    with open(f, 'wb') as fh: fh.write(b'2' * 7000)   # non-atomic in-place overwrite
+    s2 = os.lstat(f)
+    need(s1.st_ino == s2.st_ino and s1.st_dev == s2.st_dev,
+         'premise: in-place size change KEEPS the inode - size alone can never force the refusal')
+    fd, tf = tempfile.mkstemp(dir=prem)                 # atomic replace: temp file + rename
+    os.write(fd, b'3' * 7000); os.close(fd); os.rename(tf, f)
+    s3 = os.lstat(f)
+    need(s3.st_ino != s1.st_ino and s3.st_dev == s1.st_dev,
+         'premise: atomic replace CHANGES the inode (same device) -> verdict .replaced')
+finally:
+    shutil.rmtree(prem, ignore_errors=True)
+
+# --- cleanup ownership: unique run-marked names + device/inode revalidation before any delete ---
+def cleanup_allowed(path, marker, rec_dev, rec_ino, rec_size):
     name = os.path.basename(path)
     stem, ext = os.path.splitext(name)
     head = stem.split(' ')[0]
-    return '.Trash' in path and ext == '.bin' and head in ('a', 'b', 'c')
-need(cleanup_allowed('/Users/u/.Trash/a.bin'), 'cleanup: own trashed fixture file ALLOWED')
-need(cleanup_allowed('/Users/u/.Trash/c 2.bin'), "cleanup: Finder dedup copy 'c 2.bin' ALLOWED")
-need(not cleanup_allowed('/Users/u/.Trash/taxes.pdf'), 'cleanup: unrelated user file in Trash REFUSED')
-need(not cleanup_allowed('/Users/u/.Trash/report.bin'), 'cleanup: .bin but not a fixture name REFUSED')
-need(not cleanup_allowed('/tmp/elsewhere/a.bin'), 'cleanup: fixture name outside a .Trash REFUSED')
+    if '.Trash' not in path or ext != '.bin' or head not in (marker + '-a', marker + '-b', marker + '-c'):
+        return False
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    # inode numbers can be recycled, so the recorded size must match too
+    return st.st_dev == rec_dev and st.st_ino == rec_ino and st.st_size == rec_size
+trashdir = tempfile.mkdtemp(suffix='-.Trash')
+try:
+    marker = 'spz-rtm-' + str(uuid.uuid4())
+    own = os.path.join(trashdir, marker + '-a.bin')
+    with open(own, 'wb') as fh: fh.write(b'x')
+    rec = os.lstat(own)
+    need(cleanup_allowed(own, marker, rec.st_dev, rec.st_ino, rec.st_size), 'cleanup: own trashed fixture file (name+dev+ino+size match) ALLOWED')
+    os.remove(own)
+    with open(own, 'wb') as fh: fh.write(b'yy')         # freed pathname reused by a NEW file
+    need(not cleanup_allowed(own, marker, rec.st_dev, rec.st_ino, rec.st_size),
+         'cleanup: freed path reused REFUSED even if the fs recycles the inode (size differs)')
+    cur = os.lstat(own)
+    need(not cleanup_allowed(own, marker, cur.st_dev, cur.st_ino + 1, cur.st_size),
+         'cleanup: recorded inode mismatch REFUSED')
+    need(not cleanup_allowed(own, marker, cur.st_dev, cur.st_ino, cur.st_size + 1),
+         'cleanup: recorded size mismatch REFUSED')
+    other = os.path.join(trashdir, 'taxes-' + marker + '-a.bin.pdf')
+    open(other, 'wb').close()
+    ost2 = os.lstat(other)
+    need(not cleanup_allowed(other, marker, ost2.st_dev, ost2.st_ino, ost2.st_size), 'cleanup: unrelated file in Trash REFUSED')
+    outsider = os.path.join(tempfile.gettempdir(), marker + '-b.bin')
+    open(outsider, 'wb').close()
+    ost = os.lstat(outsider)
+    need(not cleanup_allowed(outsider, marker, ost.st_dev, ost.st_ino, ost.st_size), 'cleanup: fixture-marked name outside a .Trash REFUSED')
+    os.remove(outsider)
+finally:
+    shutil.rmtree(trashdir, ignore_errors=True)
 
 print('gate+predicate behavioral tests OK' if ok else 'BEHAVIORAL FAILURES FOUND')
 sys.exit(0 if ok else 1)
