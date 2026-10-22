@@ -283,7 +283,10 @@ jobs:
         if: ${{ !inputs.docs_only }}
         run: |
           # Optional code (perf driver, 2x shot server) is compiled only when its option is requested, behind its own flag, so the
-          # default and consolidated test build contains exactly the code already built on a Mac. If requested optional code fails
+          # default/consolidated test build includes staged, Mac-uncompiled test instrumentation.
+          # build-test-app.sh builds the isolated ci-checks engine, verifies shipping archive bytes/
+          # symbols, and links only the test binary against it. compile_only covers both variants.
+          # If requested optional code fails
           # to compile, this step fails hard right here - it runs before every expensive check, so a broken optional compile stops
           # the run in its first minutes instead of burning through checks to a red gate.
           DEFS=""
@@ -330,6 +333,8 @@ jobs:
             cat "$SPZ_SKIP_MANIFEST"
             echo "::warning title=not-exercised::$(tr '\n' ';' < "$SPZ_SKIP_MANIFEST" | sed 's/%/%25/g')"
           fi
+          # Exact rendezvous/real-FFI tests, separate from the shipping-engine totals above.
+          cargo test --release --locked -p spacelyzer-engine --features ci-checks --test ci_scan_gate || status=$?
           exit "$status"
       - name: Failpoint panic-injection tests (size-table writer)
         if: ${{ !inputs.compile_only && !inputs.perf && !inputs.docs_only }}

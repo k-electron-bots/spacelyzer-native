@@ -612,6 +612,14 @@ final class ScanSession: @unchecked Sendable {
         guard let h = spz_scan_start(root, excludes.joined(separator: "\n")) else { return nil }
         handle = h
     }
+    #if SPZ_CI_TESTS
+    init?(root: String, excludes: [String], parkAfterDirs: UInt64) {
+        guard let h = spz_ci_scan_start_parked(root, excludes.joined(separator: "\n"), parkAfterDirs) else { return nil }
+        handle = h
+    }
+    var ciGateState: UInt8 { spz_ci_scan_gate_state(handle) }
+    func ciReleaseGate() { spz_ci_scan_gate_release(handle) }
+    #endif
     deinit { spz_scan_free(handle) }
 
     func cancel() { spz_scan_cancel(handle) }

@@ -631,6 +631,11 @@ final class AppModel {
     func scanStartupVolume() { scan("/") }
     func scanHome() { scan(NSHomeDirectory()) }
 
+    #if SPZ_CI_TESTS
+    var ciParkNextScanAfterDirs: UInt64?
+    var ciScanGateState: UInt8 { session?.ciGateState ?? 255 }
+    func ciReleaseScanGate() { session?.ciReleaseGate() }
+    #endif
     func scan(_ path: String) {
         cancel()
         scanGeneration &+= 1
@@ -642,7 +647,16 @@ final class AppModel {
         let epochAtStart = fsEpoch, mutatingAtStart = mutationPending || commitsInFlight > 0
         progress = ScanSnapshot(items: 0, bytes: 0)
         let start = Date()
-        guard let s = ScanSession(root: path, excludes: exclusions) else {
+        #if SPZ_CI_TESTS
+        let started: ScanSession?
+        if let count = ciParkNextScanAfterDirs {
+            ciParkNextScanAfterDirs = nil
+            started = ScanSession(root: path, excludes: exclusions, parkAfterDirs: count)
+        } else { started = ScanSession(root: path, excludes: exclusions) }
+        #else
+        let started = ScanSession(root: path, excludes: exclusions)
+        #endif
+        guard let s = started else {
             error = "Could not start a scan of \(path)"
             scanning = false
             return

@@ -89,7 +89,7 @@ rust_failpoints() { cargo test --locked --offline --manifest-path engine/Cargo.t
 step cargo-default rust_default
 step cargo-failpoints rust_failpoints
 TESTSBIN="$WORK/spz-tests-bin"
-swift_tests() { swift build -c release -Xswiftc -DSPZ_CI_TESTS --scratch-path "$WORK/build-tests" && cp "$(swift build -c release -Xswiftc -DSPZ_CI_TESTS --scratch-path "$WORK/build-tests" --show-bin-path)/Spacelyzer" "$TESTSBIN"; }
+swift_tests() { bash scripts/build-ci-engine.sh && SPZ_CI_ENGINE=1 swift build -c release -Xswiftc -DSPZ_CI_TESTS --scratch-path "$WORK/build-tests" && cp "$(SPZ_CI_ENGINE=1 swift build -c release -Xswiftc -DSPZ_CI_TESTS --scratch-path "$WORK/build-tests" --show-bin-path)/Spacelyzer" "$TESTSBIN"; }
 NORMALBIN=""
 swift_normal() { swift build -c release --scratch-path "$WORK/build-normal" && NORMALBIN="$(swift build -c release --scratch-path "$WORK/build-normal" --show-bin-path)/Spacelyzer" && echo "$NORMALBIN" > "$WORK/normalbin"; }
 step swift-build-tests swift_tests

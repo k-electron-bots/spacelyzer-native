@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Behavioral offline failure tests for ScanCancelChecks' predicates and safety gate. DESIGN
-checks: they mirror the logic the Swift encodes (temp prefix + marker gate and each check's
-end-state predicate) and prove every wrong state fails CLOSED. They are NOT an execution of the
+"""Behavioral offline failure tests for Legacy cancellation predicate examples and safety gate. DESIGN
+checks only: the deterministic Swift suite is now covered at its worker rendezvous by real
+Rust tests in engine/tests/ci_scan_gate.rs. These old timing examples are not that coverage. They are NOT an execution of the
 Swift logic, not a Swift compile and not a Mac run. Exits 1 on any failure."""
 import os, sys, tempfile, uuid, shutil
 

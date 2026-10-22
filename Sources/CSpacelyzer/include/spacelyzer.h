@@ -24,6 +24,11 @@ SpzProgress spz_scan_progress(const SpzScan *s);
 void spz_scan_cancel(const SpzScan *s);
 SpzTree *spz_scan_take_tree(SpzScan *s);
 void spz_scan_free(SpzScan *s);
+/* Test-only declarations. Definitions exist ONLY in the ci-checks engine artifact.
+   All Swift references are SPZ_CI_TESTS-gated; shipping links have no ci symbols. */
+SpzScan *spz_ci_scan_start_parked(const char *root, const char *excludes, uint64_t after_dirs);
+uint8_t spz_ci_scan_gate_state(const SpzScan *s);
+void spz_ci_scan_gate_release(const SpzScan *s);
 
 void spz_tree_free(SpzTree *t);
 uint64_t spz_tree_node_count(const SpzTree *t);

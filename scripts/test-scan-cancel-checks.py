@@ -25,8 +25,8 @@ man = open('scripts/check-ordering-manifest.py').read()
 need("'ScanCancelChecks'" in man, 'suite missing from manifest SUITES')
 for seam in ['trashItem =', 'identityCheck =', 'restoreItem =', 'restoreCollisionProbe =']:
     need(seam not in body, 'suite must NOT override the %s seam - real paths only' % seam)
-for el in ['temporaryDirectory', 'spz-cxl-', 'hasPrefix(tmpRoot', 'realpath(', 'wasCancelled',
-           'm.cancel()', 's2.cancel()', 'wait(10)', 'wait(60)', 'nodeCount']:
+for el in ['temporaryDirectory', 'spz-cxl-', 'root.hasPrefix(', 'realpath(', 'wasCancelled',
+           'm.cancel()', 's.cancel()', 'ciParkNextScanAfterDirs', 'sessionParked', 'nodeCount']:
     need(el in body, 'missing required element: %s' % el)
 print('wiring OK' if ok else 'wiring FAILED')
 sys.exit(0 if ok else 1)

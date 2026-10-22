@@ -90,7 +90,11 @@ unsafe fn spz_scan_start_impl(root: *const c_char, excludes: *const c_char) -> *
         exclude: cstr(excludes).lines().filter(|l| !l.is_empty()).map(PathBuf::from).collect(),
         ..Default::default()
     };
-    let progress = Arc::new(ScanProgress::default());
+    start_scan_worker(root, opts, ScanProgress::default())
+}
+
+unsafe fn start_scan_worker(root: PathBuf, opts: ScanOptions, progress: ScanProgress) -> *mut Scan {
+    let progress = Arc::new(progress);
     let result = Arc::new(Mutex::new(None));
     let (p2, r2) = (progress.clone(), result.clone());
     let h = std::thread::spawn(move || {
@@ -100,6 +104,31 @@ unsafe fn spz_scan_start_impl(root: *const c_char, excludes: *const c_char) -> *
         *r2.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
     });
     Box::into_raw(Box::new(Scan { progress, result, handle: Mutex::new(Some(h)) }))
+}
+
+/// CI-only start: arm the per-session gate BEFORE spawning the worker. Shipping has no symbol.
+#[cfg(feature = "ci-checks")]
+#[no_mangle]
+pub unsafe extern "C" fn spz_ci_scan_start_parked(root: *const c_char, excludes: *const c_char, after_dirs: u64) -> *mut Scan {
+    legacy(std::ptr::null_mut(), || {
+        let opts = ScanOptions { exclude: cstr(excludes).lines().filter(|l| !l.is_empty()).map(PathBuf::from).collect(), ..Default::default() };
+        let mut progress = ScanProgress::default();
+        progress.ci_gate = Some(Arc::new(crate::scan::CiScanGate::new(after_dirs)));
+        start_scan_worker(PathBuf::from(cstr(root)), opts, progress)
+    })
+}
+#[cfg(feature = "ci-checks")]
+#[no_mangle]
+pub unsafe extern "C" fn spz_ci_scan_gate_state(s: *const Scan) -> u8 {
+    legacy(255, || {
+        if s.is_null() { return 255; }
+        (&*s).progress.ci_gate.as_ref().map(|g| g.state()).unwrap_or(255)
+    })
+}
+#[cfg(feature = "ci-checks")]
+#[no_mangle]
+pub unsafe extern "C" fn spz_ci_scan_gate_release(s: *const Scan) {
+    legacy((), || { if !s.is_null() { if let Some(g) = &(&*s).progress.ci_gate { g.release(); } } })
 }
 
 #[no_mangle]
