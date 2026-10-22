@@ -4,3 +4,5 @@ dist/
 .build/
 *.p12
 *.keychain*
+__pycache__/
+*.pyc

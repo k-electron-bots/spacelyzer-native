@@ -7,7 +7,7 @@ def mk(rows):
     for n, line in rows.items(): open(f'{d}/spz-demo-state-{n}', 'w').write(line + '\n')
     return d
 def line(n, w=1280, h=800, sheet=False, key=False, model=False, main=True):
-    return f'step={n} main={main} w={w} h={h} sheet={sheet} keyIsSheet={key} alertModel={model} appearance=x'
+    return f'step={n} main={str(main).lower()} w={w} h={h} sheet={str(sheet).lower()} keyIsSheet={str(key).lower()} alertModel={str(model).lower()} appearance=NSAppearanceNameAqua'
 good = {n: line(n, sheet=n in (71, 72), model=n in (71, 72)) for n in range(70, 76)}
 # the defect: the alert sheet was resized and became "the window": no main window, key is a sheet, alert lingers after 72
 bad = dict(good); bad[72] = line(72, w=1024, h=700, sheet=True, key=True, model=True)
@@ -21,4 +21,10 @@ t('defect sequence fails and names step 73', any(x.startswith('step 73') for x i
 t('missing record fails', c.check(mk({n: v for n, v in good.items() if n != 74}), 75, 70) == ['step 74: no state record'])
 t('alert missing at 71 fails', any('step 71' in x for x in c.check(mk({**good, 71: line(71)}), 75, 70)))
 t('tiny window fails', any('plausible' in x for x in c.check(mk({**good, 73: line(73, w=40, h=40)}), 75, 70)))
+# the exact line shape Swift's DemoInput.stateLine interpolation produces for a healthy step (lowercase Bool), and for the stale-alert defect
+healthy = 'step=12 main=true w=1280 h=800 sheet=false keyIsSheet=false alertModel=false appearance=NSAppearanceNameAqua'
+t('real healthy Swift-format line passes (all 81 steps healthy)', c.check(mk({n: healthy.replace('step=12', f'step={n}') if n not in (71, 72) else healthy.replace('step=12', f'step={n}').replace('sheet=false', 'sheet=true').replace('alertModel=false', 'alertModel=true') for n in range(1, 82)}), 81) == [])
+stale = 'step=73 main=false w=1024 h=700 sheet=true keyIsSheet=true alertModel=true appearance=NSAppearanceNameDarkAqua'
+t('real stale-alert Swift-format line fails', c.check(mk({73: stale}), 73, 73) != [])
+t('capitalised Python-style booleans are NOT accepted', c.check(mk({12: healthy.replace('true', 'True').replace('false', 'False')}), 12, 12) != [])
 sys.exit(1 if fails else 0)
