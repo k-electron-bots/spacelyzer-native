@@ -19,11 +19,12 @@ fi
 # 39832527366) its exit status and stderr are printed; if it runs, it must also show T definitions.
 ci=build/ci-lib/libspacelyzer_ci.a
 syms=$(python3 scripts/defined-symbols.py "$ci") || { echo "cannot inspect CI engine symbols: $ci"; exit 1; }
-slices=$(printf '%s\n' "$syms" | cut -d' ' -f1 | sort -u)
+symf=build/ci-lib/defined-symbols.txt; printf '%s\n' "$syms" > "$symf"   # file, not a pipe: grep -q + pipefail SIGPIPE false negatives
+slices=$(cut -d' ' -f1 "$symf" | sort -u)
 [ -n "$slices" ] || { echo "no symbol slices parsed in $ci"; exit 1; }
 for sl in $slices; do
   for symbol in spz_ci_scan_start_parked spz_ci_scan_gate_state spz_ci_scan_gate_release; do
-    printf '%s\n' "$syms" | grep -qx "$sl $symbol" || { echo "missing CI symbol definition $symbol in slice $sl"; exit 1; }
+    grep -qx "$sl $symbol" "$symf" || { echo "missing CI symbol definition $symbol in slice $sl"; exit 1; }
   done
 done
 rc=0; nm -g "$ci" > build/ci-lib/symbols.txt 2> build/ci-lib/nm-stderr.txt || rc=$?
