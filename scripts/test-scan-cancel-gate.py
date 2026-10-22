@@ -35,10 +35,10 @@ FULL = 150_301
 def case1(stopped, stop_ms, error, has_tree, cancelled, nodes):
     return stopped and stop_ms < 10_000 and error is None and has_tree and cancelled and nodes < FULL
 need(not case1(False, 10_500, None, True, True, 80_000), 'case1: cancel never stopped (timeout) FAILS')
-need(not case1(True, 12_000, None, True, True, 80_000), 'case1: stop beyond the 10s responsiveness bound FAILS')
+need(not case1(True, 12_000, None, True, True, 80_000), 'case1: completion beyond the coarse 10s bound FAILS')
 need(not case1(True, 300, 'The scan failed.', True, True, 80_000), 'case1: error published FAILS')
 need(not case1(True, 300, None, False, False, 0), 'case1: no tree at all FAILS (partial tree is the designed outcome)')
-need(not case1(True, 300, None, True, True, FULL), 'case1: complete node count FAILS (cancel was ignored)')
+need(not case1(True, 300, None, True, True, FULL), 'case1: complete node count is non-green INCONCLUSIVE coverage (not ignored-cancel proof)')
 need(not case1(True, 300, None, True, False, 80_000), 'case1: unflagged tree FAILS (silently complete-looking)')
 need(case1(True, 300, None, True, True, 80_000), 'case1: the real happy state PASSES')
 
