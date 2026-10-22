@@ -135,37 +135,49 @@ def generate(root, profile):
         os.utime(p, ns=(mtime_ns, mtime_ns))
     print(f"profile={profile} files={nfiles} dirs={ndirs} spec_sha256={spec_hash(entries)}")
 
-def actual_inventory(root):
+def actual_inventory(root, progress=False):
     """lstat-only walk: relpath -> (kind, size, mtime_ns). Any symlink or
-    non-regular entry is reported as its own kind so it fails the comparison."""
+    non-regular entry is reported as its own kind so it fails the comparison.
+    progress prints entries walked and elapsed every 100k entries. (A threaded lstat variant was measured 4x SLOWER on a warm
+    Linux cache and has no Mac evidence, so it is not included.)"""
     out = {}
     stack = [""]
-    while stack:
-        rel = stack.pop()
-        p = os.path.join(root, rel) if rel else root
-        try:
-            entries = list(os.scandir(p))
-        except NotADirectoryError:
-            continue
-        for e in entries:
-            erel = f"{rel}/{e.name}" if rel else e.name
-            st = e.stat(follow_symlinks=False)
-            if e.is_symlink():
-                out[erel] = ("symlink", 0, st.st_mtime_ns)
-            elif e.is_dir(follow_symlinks=False):
-                out[erel] = ("dir", 0, st.st_mtime_ns)
-                stack.append(erel)
-            elif e.is_file(follow_symlinks=False):
-                out[erel] = ("file", st.st_size, st.st_mtime_ns)
-            else:
-                out[erel] = ("other", 0, st.st_mtime_ns)
+    t0 = time.monotonic(); seen = 0; nextmark = 100_000
+    if True:
+        while stack:
+            rel = stack.pop()
+            p = os.path.join(root, rel) if rel else root
+            try:
+                entries = list(os.scandir(p))
+            except NotADirectoryError:
+                continue
+            stat_one = lambda e: e.stat(follow_symlinks=False)
+            stats = [stat_one(e) for e in entries]
+            for e, st in zip(entries, stats):
+                erel = f"{rel}/{e.name}" if rel else e.name
+                if e.is_symlink():
+                    out[erel] = ("symlink", 0, st.st_mtime_ns)
+                elif e.is_dir(follow_symlinks=False):
+                    out[erel] = ("dir", 0, st.st_mtime_ns)
+                    stack.append(erel)
+                elif e.is_file(follow_symlinks=False):
+                    out[erel] = ("file", st.st_size, st.st_mtime_ns)
+                else:
+                    out[erel] = ("other", 0, st.st_mtime_ns)
+            seen += len(entries)
+            if progress and seen >= nextmark:
+                print(f"  ... walked {seen} entries elapsed={time.monotonic() - t0:.1f}s", flush=True)
+                while nextmark <= seen: nextmark += 100_000
     return out
 
 def verify(root, profile):
     if not os.path.isdir(root) or os.path.islink(root):
         print(f"FAILED: {root} is not a plain directory"); sys.exit(1)
+    t0 = time.monotonic()
     want = spec_entries(profile)
-    got = actual_inventory(root)
+    print(f"  ... spec built entries={len(want)} elapsed={time.monotonic() - t0:.1f}s", flush=True)
+    got = actual_inventory(root, progress=True)
+    print(f"  ... walk done entries={len(got)} elapsed={time.monotonic() - t0:.1f}s", flush=True)
     ok = True
     for rel in sorted(set(want) | set(got)):
         w, g = want.get(rel), got.get(rel)
@@ -177,7 +189,8 @@ def verify(root, profile):
             print(f"MISMATCH {rel} want={w} got={g}"); ok = False
     nfiles = sum(1 for v in got.values() if v[0] == "file")
     ndirs = sum(1 for v in got.values() if v[0] == "dir")
-    print(f"profile={profile} files={nfiles} dirs={ndirs} spec_sha256={spec_hash(want)} verify={'OK' if ok else 'FAILED'}")
+    print(f"  ... compared elapsed={time.monotonic() - t0:.1f}s", flush=True)
+    print(f"profile={profile} files={nfiles} dirs={ndirs} spec_sha256={spec_hash(want)} verify={'OK' if ok else 'FAILED'} elapsed={time.monotonic() - t0:.1f}s")
     sys.exit(0 if ok else 1)
 
 if __name__ == "__main__":
