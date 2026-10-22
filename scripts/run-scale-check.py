@@ -102,7 +102,7 @@ def segment(a, app, w, generator, *, profile='expansion-1m', target_rel='expansi
             if fixture.exists(): raise RuntimeError('INCOMPLETE: fixture cleanup did not finish')
         phase('cleanup', cleanup)
     except subprocess.TimeoutExpired as e:
-        write_verdict(w,'INCOMPLETE',f'phase exceeded its share of the segment budget ({e.cmd[1] if len(e.cmd)>1 else e.cmd[0]} timed out after {e.timeout}s); fixture and partial output left in place for the artifact',phases); raise
+        write_verdict(w,'INCOMPLETE',f'phase exceeded its share of the segment budget ({e.cmd[1] if len(e.cmd)>1 else e.cmd[0]} timed out after {e.timeout}s); partial logs and result are uploaded; the fixture stays on the runner and is NOT part of the artifact',phases); raise
     except Cancelled as e:
         write_verdict(w,'INCOMPLETE',str(e),phases); raise
     except Exception as e:

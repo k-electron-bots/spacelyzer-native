@@ -203,13 +203,12 @@ jobs:
         run: |
           set -o pipefail
           python3 scripts/run-with-deadline.py bash ./scripts/build-test-app.sh dist-test "" 2>&1 | tee "$SPZ_DIAG_DIR/test-build.log"
-      - name: Engine ci_scan_gate real-cancel regression (result recorded; the scale segment still runs after a failure here)
+      - name: Engine ci_scan_gate real-cancel regression on the runner's installed toolchain, no floating update (result recorded; the scale segment still runs after a failure here)
         id: gate
         if: ${{ !cancelled() && steps.testbuild.outcome == 'success' }}
         continue-on-error: true
         run: |
           set -o pipefail
-          rustup update stable --no-self-update
           python3 scripts/run-with-deadline.py cargo test --locked -p spacelyzer-engine --features ci-checks --test ci_scan_gate -- --nocapture 2>&1 | tee "$SPZ_DIAG_DIR/ci-scan-gate.log"
       - name: Mounted 1M scale segment (one attempt, incomplete fails closed)
         id: scale

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Per-step content-fidelity check for demo captures. A PNG that exists and has colours does not prove it shows the intended
-state (demo shots 72-81 in run 39843869589 were a stretched alert over a blank window). The app writes one state line per
+state (demo shots 72-81 in run 39843869589 were a stretched alert over a blank window). The app writes one state line (Swift string interpolation of Bool: lowercase true/false) per
 step (/tmp/spz-demo-state-N) before the capture handshake; this checks each against what that step must be.
 Usage: check-demo-state.py <dir> <last-step> [first-step]   exit 1 on any violation."""
 import re, sys, os
@@ -14,14 +14,14 @@ def check(d, last, first=1):
         if not os.path.isfile(p): bad.append(f'step {n}: no state record'); continue
         s = parse(open(p).read().strip())
         if s.get('step') != str(n): bad.append(f'step {n}: record names step {s.get("step")}')
-        if s.get('main') != 'True': bad.append(f'step {n}: no main (non-sheet) window')
+        if s.get('main') != 'true': bad.append(f'step {n}: no main (non-sheet) window')
         try:
             if int(s['w']) < 300 or int(s['h']) < 200: bad.append(f'step {n}: main window {s["w"]}x{s["h"]} is not a plausible app window')
         except Exception: bad.append(f'step {n}: unreadable size')
         want = n in ALERT_STEPS
-        if (s.get('sheet') == 'True') != want or (s.get('alertModel') == 'True') != want:
+        if (s.get('sheet') == 'true') != want or (s.get('alertModel') == 'true') != want:
             bad.append(f'step {n}: alert expected={want} sheet={s.get("sheet")} model={s.get("alertModel")}')
-        if not want and s.get('keyIsSheet') == 'True': bad.append(f'step {n}: key window is a sheet')
+        if not want and s.get('keyIsSheet') == 'true': bad.append(f'step {n}: key window is a sheet')
     return bad
 if __name__ == '__main__':
     bad = check(sys.argv[1], int(sys.argv[2]), int(sys.argv[3]) if len(sys.argv) > 3 else 1)

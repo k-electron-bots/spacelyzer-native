@@ -43,7 +43,7 @@ case "${STUB_DEMO:+x} $* " in x*" SPZ_DEMO=1 "*)
   case "$STUB_DEMO" in
     none) :;;
     *) n=81; case "$STUB_DEMO" in stall:*) n=$((${STUB_DEMO#stall:} - 1));; esac
-       for i in $(seq 1 $n); do al=False; [ $i = 71 ] || [ $i = 72 ] && al=True; printf 'step=%s main=True w=1280 h=800 sheet=%s keyIsSheet=False alertModel=%s appearance=x\\n' $i $al $al > "$T/spz-demo-state-$i"; touch "$T/spz-demo-ready-$i"; done
+       for i in $(seq 1 $n); do al=false; [ $i = 71 ] || [ $i = 72 ] && al=true; printf 'step=%s main=true w=1280 h=800 sheet=%s keyIsSheet=false alertModel=%s appearance=x\\n' $i $al $al > "$T/spz-demo-state-$i"; touch "$T/spz-demo-ready-$i"; done
        [ "$STUB_DEMO" = full ] && { touch "$T/spz-demo-finished"; for i in $(seq 1 178); do echo "PASS c$i d"; done > "$T/spz-assertions.txt"; };;
   esac; exit 0;; esac
 rd=""; for a in "$@"; do case "$a" in SPZ_RESULT_DIR=*) rd="${a#SPZ_RESULT_DIR=}";; esac; done
@@ -152,7 +152,7 @@ def asserts_cases():
         for i in range(1, 82):
             al = i in (71, 72)
             if i in skip_state: continue
-            open(f'{w}/tmp/spz-demo-state-{i}', 'w').write(f'step={i} main={"False" if i in no_main else "True"} w=1280 h=800 sheet={al or i in no_main} keyIsSheet={i in no_main} alertModel={al or i in no_main} appearance=x\n')
+            open(f'{w}/tmp/spz-demo-state-{i}', 'w').write(f'step={i} main={"false" if i in no_main else "true"} w=1280 h=800 sheet={str(al or i in no_main).lower()} keyIsSheet={str(i in no_main).lower()} alertModel={str(al or i in no_main).lower()} appearance=x\n')
         return w
     for opts in ('-e', '-eo pipefail'):
         for name, kw, want_fail in [('178 PASS, all screenshots', {}, False), ('177 results', {'n': 177}, True), ('178 results, one FAIL', {'f': 1}, True),
