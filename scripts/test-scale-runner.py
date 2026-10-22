@@ -25,7 +25,7 @@ with tempfile.TemporaryDirectory() as td:
   else:raise AssertionError('accepted '+kind)
   print('PASS refused',kind)
 if sys.platform!='darwin':
- r=subprocess.run([sys.executable,str(p),'--app','/not/an/app','--work','/not/a/work'],capture_output=True,text=True)
+ r=subprocess.run([sys.executable,str(p),'--app','/not/an/app','--work','/not/a/work','--job-deadline-epoch','0'],capture_output=True,text=True)
  assert r.returncode!=0 and 'needs macOS' in r.stderr
  print('PASS Linux refuses Mac segment execution')
 # Source contract checks, not Swift compilation or execution.
@@ -44,3 +44,10 @@ for rel,_,_,isdir in fm.PROFILES['expansion-1m']():
  count+=1;dirs+=int(isdir);direct+=int(rel.count('/')==1)
 assert count+1==1_000_005 and dirs==2 and direct+1==1_000_002,(count,dirs,direct)
 print('PASS structural probe/sampler contracts and actual generator node/row counts (no Swift/scale execution)')
+
+assert 'workDeadline = ProcessInfo.processInfo.systemUptime + 150' in s
+assert 'min(ProcessInfo.processInfo.systemUptime + seconds, workDeadline)' in s
+runner=p.read_text()
+assert runner.index('available < a.budget_seconds') < runner.index('w.mkdir()')
+assert 'required=True' in runner and 'artifact_reserve_seconds < 120' in runner
+print('PASS structural work/finalization and whole-job artifact reserve contracts (not runtime budget evidence)')
