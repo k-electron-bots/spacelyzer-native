@@ -48,6 +48,63 @@ print('PASS structural probe/sampler contracts and actual generator node/row cou
 assert 'workDeadline = ProcessInfo.processInfo.systemUptime + 150' in s
 assert 'min(ProcessInfo.processInfo.systemUptime + seconds, workDeadline)' in s
 runner=p.read_text()
-assert runner.index('available < a.budget_seconds') < runner.index('w.mkdir()')
+assert runner.index('available < a.budget_seconds') < runner.index("w.mkdir();(w/'result').mkdir()")  # the segment workdir is made only after the budget check (early() mkdir only records a verdict)
 assert 'required=True' in runner and 'artifact_reserve_seconds < 120' in runner
 print('PASS structural work/finalization and whole-job artifact reserve contracts (not runtime budget evidence)')
+
+# ---- Executed always-written verdict/log artifact controls (fake generator/app; not Mac, not scale evidence) ----
+import os,signal,time,types,textwrap
+def mk(td,gen_body,app_py=None):
+    t=pathlib.Path(td);(t/'app/Contents/MacOS').mkdir(parents=True);g=t/'gen.py';g.write_text(textwrap.dedent(gen_body))
+    ex=t/'app/Contents/MacOS/Spacelyzer'
+    ex.write_text('#!'+sys.executable+'\n'+textwrap.dedent(app_py or 'import sys\nsys.exit(0)\n'));ex.chmod(0o755)
+    w=t/'work';w.mkdir();(w/'result').mkdir();return t,g,w
+def args(budget=215): return types.SimpleNamespace(budget_seconds=budget,available=budget+5)
+def fixture_gen(extra=''): return ("import sys,os,time,pathlib\nmode,root=sys.argv[1],sys.argv[2]\nif mode=='generate':\n"
+    "    pathlib.Path(root,'expansion-1000000').mkdir(parents=True)\n    pathlib.Path(root,'expansion-1000000/f0000000.dat').write_bytes(b'')\n"
+    "    print('  ... 100000 entries elapsed=1.0s',flush=True)\n    "+extra+"\n")
+good_app=("import os,pathlib\nR=pathlib.Path(os.environ['SPZ_RESULT_DIR'])\n(R/'result.txt').write_text('PASS 5 scale checks, each exactly once\\n')\n"
+    "(R/'assertions.txt').write_text(''.join('PASS '+n+' d\\n' for n in "+repr(names)+"))\n(R/'scale-mounted-window.png').write_bytes(b'\\x89PNG\\r\\n\\x1a\\n'+b'0'*32)\n(R/'scale-metrics.txt').write_text('metrics\\n')\n")
+def verdict(w): return (w/'segment-verdict.txt').read_text()
+with tempfile.TemporaryDirectory() as td:
+    t,g,w=mk(td,fixture_gen('pass'),good_app)
+    m.segment(args(),t/'app',w,str(g),profile='x')
+    v=verdict(w); assert v.startswith('PASS ') and 'phase generate: ok' in v and 'phase cleanup: ok' in v,v
+    assert 'entries elapsed' in (w/'generator.log').read_text() and not (w/'fixture').exists()
+    print('PASS fake end-to-end: PASS verdict, phase timings, generator log kept, fixture removed')
+with tempfile.TemporaryDirectory() as td:
+    t,g,w=mk(td,fixture_gen('time.sleep(120)'))
+    t0=time.time()
+    try: m.segment(args(),t/'app',w,str(g),profile='x')
+    except subprocess.TimeoutExpired: pass
+    else: raise AssertionError('generator timeout accepted')
+    v=verdict(w); assert v.startswith('INCOMPLETE ') and 'phase generate: not-completed' in v,v
+    assert 'entries elapsed' in (w/'generator.log').read_text() and (w/'fixture').exists() and (w/'result').is_dir()
+    print('PASS generator timeout: INCOMPLETE verdict + partial generator log written, red (exception), took %.0fs'%(time.time()-t0))
+with tempfile.TemporaryDirectory() as td:
+    t,g,w=mk(td,"import sys\nprint('boom')\nsys.exit(3)\n")
+    try: m.segment(args(),t/'app',w,str(g),profile='x')
+    except RuntimeError: pass
+    else: raise AssertionError('generator failure accepted')
+    v=verdict(w); assert v.startswith('FAIL ') and 'boom' in (w/'generator.log').read_text(),v
+    print('PASS generator failure: FAIL verdict + log kept')
+with tempfile.TemporaryDirectory() as td:
+    t,g,w=mk(td,fixture_gen('pass'),'import sys\nsys.exit(7)\n')
+    try: m.segment(args(),t/'app',w,str(g),profile='x')
+    except RuntimeError: pass
+    else: raise AssertionError('app failure accepted')
+    v=verdict(w); assert v.startswith('FAIL ') and 'phase app: not-completed' in v and (w/'stderr.log').exists(),v
+    print('PASS app failure: FAIL verdict, app logs kept')
+with tempfile.TemporaryDirectory() as td:
+    t,g,w=mk(td,fixture_gen('time.sleep(120)'))
+    drv=t/'drv.py';drv.write_text("import importlib.util,pathlib,sys,types\nspec=importlib.util.spec_from_file_location('r','%s')\nm=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)\na=types.SimpleNamespace(budget_seconds=420,available=425)\nm.segment(a,pathlib.Path('%s/app'),pathlib.Path('%s'),'%s',profile='x')\n"%(p,t,w,g))
+    pr=subprocess.Popen([sys.executable,str(drv)],stderr=subprocess.PIPE);time.sleep(3);pr.send_signal(signal.SIGTERM);pr.wait(timeout=30)
+    v=verdict(w); assert pr.returncode!=0 and v.startswith('INCOMPLETE ') and 'cancel' in v and 'entries elapsed' in (w/'generator.log').read_text(),(pr.returncode,v)
+    print('PASS cancel (SIGTERM) mid-generation: INCOMPLETE cancelled verdict + partial log, red')
+# early precondition failure still leaves a verdict artifact (non-Mac host stands in for any precondition failure)
+if sys.platform!='darwin':
+    with tempfile.TemporaryDirectory() as td:
+        rt=pathlib.Path(td)/'rt';rt.mkdir();w=rt/'spz-scale'
+        r=subprocess.run([sys.executable,str(p),'--app','/not/app','--work',str(w),'--job-deadline-epoch','0'],capture_output=True,text=True,env=dict(os.environ,RUNNER_TEMP=str(rt)))
+        assert r.returncode!=0 and (w/'segment-verdict.txt').read_text().startswith('NOT-RUN'),(r.returncode,r.stderr)
+        print('PASS early precondition failure leaves a NOT-RUN verdict artifact and stays red')

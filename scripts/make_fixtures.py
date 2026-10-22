@@ -30,7 +30,7 @@ Safety and honesty rules:
 - Everything uses lstat semantics: symlinks are never followed, never created,
   and fail verification wherever found.
 """
-import hashlib, os, sys, argparse
+import hashlib, os, sys, argparse, time
 
 EPOCH = 1_700_000_000  # fixed base mtime in seconds; per-entry offset is deterministic
 NS = 1_000_000_000
@@ -93,20 +93,40 @@ def generate(root, profile):
         os.makedirs(root)
     dirs = []
     nfiles = ndirs = 0
-    for rel in sorted(entries):
-        kind, size, mtime_ns = entries[rel]
-        p = os.path.join(root, rel)
-        if os.path.lexists(p):  # impossible on a fresh root; defense in depth
-            print(f"REFUSED: {p} already exists"); sys.exit(1)
-        if kind == "dir":
-            os.mkdir(p); dirs.append((p, mtime_ns)); ndirs += 1
-        else:
-            fd = os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)  # O_EXCL: never follow a planted symlink
-            os.truncate(fd, size); os.close(fd)
-            os.utime(p, ns=(mtime_ns, mtime_ns)); nfiles += 1
-        total = nfiles + ndirs
-        if total % 100_000 == 0:
-            print(f"  ... {total} entries", flush=True)
+    t0 = time.monotonic()
+    # Descriptor-relative creation: every syscall resolves one name inside an already-open parent directory instead of
+    # re-walking the full path (and, on huge directories, re-looking-up the name) several times per file. O_EXCL and
+    # mkdir(dir_fd=) refuse anything that already exists (including a planted symlink); the parent is opened O_NOFOLLOW.
+    # Entries are created in sorted order, so one cached parent descriptor covers each contiguous run of children.
+    cur_parent, cur_fd = None, -1
+    def parent_fd(parent):
+        nonlocal cur_parent, cur_fd
+        if parent != cur_parent:
+            if cur_fd >= 0: os.close(cur_fd)
+            cur_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW); cur_parent = parent
+        return cur_fd
+    try:
+        for rel in sorted(entries):
+            kind, size, mtime_ns = entries[rel]
+            p = os.path.join(root, rel)
+            parent, name = os.path.split(p)
+            try:
+                if kind == "dir":
+                    os.mkdir(name, dir_fd=parent_fd(parent)); dirs.append((p, mtime_ns)); ndirs += 1
+                else:
+                    fd = os.open(name, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644, dir_fd=parent_fd(parent))  # O_EXCL: never follow a planted symlink
+                    try:
+                        os.ftruncate(fd, size); os.utime(fd, ns=(mtime_ns, mtime_ns))
+                    finally:
+                        os.close(fd)
+                    nfiles += 1
+            except FileExistsError:  # impossible on a fresh root; defense in depth
+                print(f"REFUSED: {p} already exists"); sys.exit(1)
+            total = nfiles + ndirs
+            if total % 100_000 == 0:
+                print(f"  ... {total} entries elapsed={time.monotonic() - t0:.1f}s", flush=True)
+    finally:
+        if cur_fd >= 0: os.close(cur_fd)
     # Directory mtimes last: creating children bumps the parent's mtime, so set
     # them only after every entry exists (children before parents is irrelevant
     # here - no new entries are created afterwards).

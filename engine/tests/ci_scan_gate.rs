@@ -4,9 +4,15 @@ use std::ffi::CString;
 use std::time::{Duration, Instant};
 
 struct Fixture(std::path::PathBuf);
+// Directory names must be unique per Fixture even when the clock repeats a value (parallel test threads in one process can read
+// the same timestamp on a coarse clock): a process-wide sequence number is part of the name and never repeats.
+static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+fn fixture_name(pid: u32, nanos: u128) -> String {
+    format!("spz-ci-gate-{}-{}-{}", pid, nanos, SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
 impl Fixture {
     fn new() -> Self {
-        let p = std::env::temp_dir().join(format!("spz-ci-gate-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let p = std::env::temp_dir().join(fixture_name(std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir(&p).unwrap();
         for d in ["a", "b"] {
             std::fs::create_dir(p.join(d)).unwrap();
@@ -110,4 +116,16 @@ fn real_cancel_after_two_completed_directory_enumerations_keeps_prior_entries() 
         assert_eq!(spz_tree_cancelled(full), 0); assert_eq!(spz_tree_node_count(full), 3003);
         spz_tree_free(full); spz_scan_free(normal);
     }
+}
+
+#[test]
+fn fixture_names_are_unique_for_identical_pid_and_clock_value() {
+    let names: std::collections::HashSet<String> = (0..1000).map(|_| fixture_name(4242, 1_700_000_000_000_000_000)).collect();
+    assert_eq!(names.len(), 1000, "same pid + same timestamp must still give distinct directories");
+}
+#[test]
+fn fixtures_created_concurrently_never_collide() {
+    let hs: Vec<_> = (0..32).map(|_| std::thread::spawn(|| { let f = Fixture::new(); f.0.clone() })).collect();
+    let paths: std::collections::HashSet<_> = hs.into_iter().map(|h| h.join().unwrap()).collect();
+    assert_eq!(paths.len(), 32);
 }
