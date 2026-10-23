@@ -5,7 +5,8 @@
 //!  * Linux: any creation failure panics. A fixture that cannot be built is a failure, never a skip.
 //!  * Elsewhere, EILSEQ panics UNLESS `SPZ_ALLOW_PLATFORM_SKIP=1`. Then `SPZ_SKIP_MANIFEST` MUST name an ABSOLUTE path to a file that
 //!    the caller created (empty) for THIS run. The helper never creates or defaults it (a missing, relative or unset path panics), but it
-//!    does NOT detect a stale file: freshness is the caller's responsibility. Each skip appends one complete line `<test name>\t<reason>\n`
+//!    Freshness is enforced, not caller discipline: SPZ_ALLOW_PLATFORM_SKIP=1 also requires SPZ_SKIP_RUN_ID (the caller's per-run
+//!    token) or the skip panics, and each skip appends one complete line `<run id>\t<test name>\t<reason>\n` (shared builder, same as the src-side producer)
 //!    with a single `write_all` on an O_APPEND handle under an in-process mutex. `write_all` may loop over several writes, so there is no
 //!    guarantee of a single syscall or of non-interleaving across processes (only a simulation on Linux was run; nothing on APFS or network filesystems). cargo still prints `ok` for the skipped test. A consumer must read the
 //!    manifest, list the names, and subtract them from the raw pass total; the raw "N passed" is not the exercised count.
@@ -25,7 +26,7 @@ pub fn made(r: std::io::Result<()>) -> bool {
             }
             let path = std::path::PathBuf::from(std::env::var("SPZ_SKIP_MANIFEST").unwrap_or_else(|_| panic!("{name}: SPZ_SKIP_MANIFEST is required with SPZ_ALLOW_PLATFORM_SKIP=1")));
             assert!(path.is_absolute(), "{name}: SPZ_SKIP_MANIFEST must be an absolute path, got {}", path.display());
-            let line = format!("{name}\tNOT EXERCISED: non-UTF-8 name refused (EILSEQ)\n");
+            let line = spacelyzer_engine::events::skip_manifest_line(std::env::var("SPZ_SKIP_RUN_ID").ok().as_deref(), &name).unwrap_or_else(|m| panic!("{name}: {m}"));
             let _g = MANIFEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap_or_else(|e| panic!("{name}: manifest {} must be created by the caller before the run: {e}", path.display()));
             f.write_all(line.as_bytes()).expect("write skip manifest");
