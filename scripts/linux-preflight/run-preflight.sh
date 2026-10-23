@@ -3,7 +3,8 @@
 # Mac run; a Mac run is never spent on a Linux-catchable error). The toolchain is REQUIRED: no swiftc = FAIL, never
 # a skip-as-green. Install (free, no account): https://www.swift.org/install/linux/ - e.g.
 #   curl -O https://download.swift.org/swift-6.1.2-release/ubuntu2204/swift-6.1.2-RELEASE/swift-6.1.2-RELEASE-ubuntu22.04.tar.gz
-# Verified on Swift 5.10.1 (reviewer) and 6.1.2 (builder); both compile the helpers in Swift 5 language mode.
+# Requires Swift 6.x: helper checks use Swift 5 language mode; L4 also requires
+# real Swift 6 language-mode typechecking. Swift 5.10.1 cannot satisfy this gate.
 set -u; cd "$(dirname "$0")/../.." || exit 1
 P=scripts/linux-preflight; W=$(mktemp -d); trap 'rm -rf "$W"' EXIT; rc=0
 SWIFTC="${SWIFTC:-$(command -v swiftc || true)}"
@@ -57,5 +58,5 @@ SWIFT_BIN="$(dirname "$SWIFTC")" python3 scripts/test-sheet-build-modes.py > "$W
 SWIFT_BIN="$(dirname "$SWIFTC")" python3 scripts/test-conditional-type-scope.py > "$W/l5.log" 2>&1 && { echo "PASS L5-conditional-nominal-scope"; cat "$W/l5.log"; } || { echo "FAIL L5-conditional-nominal-scope"; cat "$W/l5.log"; rc=1; }
 # HONEST LIMIT: stub SDKs are hand-written; native macOS SDK behavior, availability and AX semantics stay unproven
 # until a Mac run. This gate proves the helpers are free of Linux-catchable compile errors - nothing more.
-[ $rc -eq 0 ] && echo "PREFLIGHT GREEN (Linux-catchable compile errors excluded; NOT a macOS SDK proof)" || echo "PREFLIGHT FAILED"
+[ $rc -eq 0 ] && echo "PREFLIGHT GREEN: specified syntax, helper-stub, CF-idiom and conditional-scope controls passed; see printed exclusions. NOT full-app, native SDK, member/API, actor, runtime or pixel proof." || echo "PREFLIGHT FAILED"
 exit $rc
