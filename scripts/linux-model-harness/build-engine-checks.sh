@@ -12,6 +12,20 @@ OUT="$(cd "$(dirname "${1:?out}")" && pwd)/$(basename "$1")"; R="${2:-$REPO/Sour
 LIB="${SPZ_ENGINE_LIB:-$REPO/target/release/libspacelyzer_engine.a}"
 [ -f "$LIB" ] || (cd "$REPO" && cargo build --release -p spacelyzer-engine >/dev/null 2>&1) || true
 [ -f "$LIB" ] || { echo "engine staticlib missing: $LIB"; exit 4; }
+if [[ "${SPZ_WITH_CANCEL_CHECKS:-0}" == 1 ]]; then
+  # This mode calls real CI entry points. Never let unresolved-symbol linker tolerance
+  # substitute for a correctly feature-built archive.
+  symbols=$(mktemp -d)
+  bash "$REPO/scripts/dump-symbols.sh" "$LIB" "$symbols" || { rm -rf "$symbols"; exit 4; }
+  for symbol in spz_ci_scan_start_parked spz_ci_scan_gate_state spz_ci_scan_gate_release; do
+    grep -E "(^|[[:space:]])T[[:space:]]+_?$symbol$" "$symbols/thin.txt" >/dev/null || {
+      echo "cancellation checks require a ci-checks archive: missing $symbol" >&2
+      rm -rf "$symbols"; exit 4;
+    }
+  done
+  rm -rf "$symbols"
+fi
+
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 cp -r "$HERE/stubs" "$W/stubs"; mkdir -p "$W/CSpacelyzer"; cp -r "$REPO/Sources/CSpacelyzer/include" "$W/CSpacelyzer/include"
 printf 'module CSpacelyzer { header "spacelyzer.h" export * }\n' > "$W/CSpacelyzer/include/module.modulemap"
@@ -44,6 +58,16 @@ bx=next(k for k,l in enumerate(a) if 'private final class Box<T>' in l and k>en)
 be=next(k for k in range(bx,len(a)) if a[k].startswith('    }'))
 nd=next(l for l in a if 'private static func node(_ t: Tree, _ name: String)' in l)
 body='\n'.join(a[st:en+1]); box='\n'.join(a[bx:be+1])
+# Slice the existing export checks verbatim, including their real fixture helper.
+def method(signature):
+    start=next(k for k,l in enumerate(a) if signature in l)
+    end=next(k for k in range(start+1,len(a)) if a[k]=='    }')
+    return '\n'.join(a[start:end+1])
+export_methods='\n'.join(method(sig) for sig in [
+    'private static func csvChecks() {',
+    'private static func csvExportFlowChecks() async {',
+    'private static func fixture(_ tag: String, _ files: [(String, Int)]) -> URL {'])
+
 d=open(r+'/DuplicatesReviewView.swift').read(); i=d.index('enum DuplicateRemoval {'); j=d.index('\n}\n',i)+3
 open(w+'/dupremoval.swift','w').write('import Foundation\nimport CSpacelyzer\n'+d[i:j])
 def sl(f,key):
@@ -53,10 +77,15 @@ def sl(f,key):
     if t[pre:i].strip()=='@MainActor': i=pre
     j=t.index('\n}\n',i)+3
     return t[i:j]
-parts=[('DuplicatesReviewView.swift','final class DuplicatesModel'),('SkippedListView.swift','final class SkippedListModel'),('VolumeHeaderView.swift','final class VolumeHeaderModel'),('FullDiskAccessView.swift','enum FullDiskAccessStatus'),('FullDiskAccessView.swift','enum FullDiskAccessProbeOutcome'),('FullDiskAccessView.swift','final class FullDiskAccessModel'),('ExclusionsView.swift','enum ExclusionEditing'),('ExclusionsView.swift','final class ExclusionsModel'),('SpacelyzerApp.swift','final class OpenGate')]
+parts=[('TreemapView.swift','final class TreemapPublicationProbe'),('TreemapView.swift','struct TreemapPublicationEvidence'),('DuplicatesReviewView.swift','final class DuplicatesModel'),('SkippedListView.swift','final class SkippedListModel'),('VolumeHeaderView.swift','final class VolumeHeaderModel'),('FullDiskAccessView.swift','enum FullDiskAccessStatus'),('FullDiskAccessView.swift','enum FullDiskAccessProbeOutcome'),('FullDiskAccessView.swift','final class FullDiskAccessModel'),('ExclusionsView.swift','enum ExclusionEditing'),('ExclusionsView.swift','final class ExclusionsModel'),('SpacelyzerApp.swift','final class OpenGate')]
 open(w+'/sliced_models.swift','w').write('import Foundation\nimport CSpacelyzer\nimport AppKit\n'+'\n'.join(sl(f,k) for f,k in parts))
-open(w+'/folders_exec.swift','w').write('import Foundation\n@MainActor enum FoldersExec {\n'+box+'\n'+nd+'\n'+body+'\n    static func go() async { await foldersChecks() }\n}\n')
+open(w+'/folders_exec.swift','w').write('import Foundation\n@MainActor enum FoldersExec {\n'+box+'\n'+nd+'\n'+body+'\n'+export_methods+'\n    static func go() async { await foldersChecks(); csvChecks(); await csvExportFlowChecks() }\n}\n')
 PY
+# Cancellation is opt-in and requires the separately built ci-checks library.
+extra_sources=()
+if [[ "${SPZ_WITH_CANCEL_CHECKS:-0}" == 1 ]]; then
+  extra_sources+=("$R/ScanCancelChecks.swift")
+fi
 cat > "$W/main.swift" <<'M'
 import Foundation
 @MainActor func go() async {
@@ -66,6 +95,13 @@ import Foundation
 }
 await go()
 M
+if [[ "${SPZ_WITH_CANCEL_CHECKS:-0}" == 1 ]]; then
+  python3 - "$W/main.swift" <<'PY_CANCEL'
+import sys
+p=sys.argv[1];s=open(p).read();a='    print("DONE passes=';assert s.count(a)==1
+s=s.replace(a,'    await ScanCancelChecks.run()\n'+a,1);open(p,'w').write(s)
+PY_CANCEL
+fi
 cat > "$W/observable_stub.swift" <<'OS'
 protocol ObservableObject: AnyObject {}
 @propertyWrapper struct Published<V> { var wrappedValue: V; init(wrappedValue: V) { self.wrappedValue = wrappedValue } }
@@ -75,5 +111,5 @@ for m in UniformTypeIdentifiers AppKit; do swiftc -emit-module -emit-library -mo
 swiftc -Onone -DSPZ_CI_TESTS -I CSpacelyzer/include -I stubs -L stubs -lAppKit -lUniformTypeIdentifiers -swift-version 5 \
   -Xlinker --unresolved-symbols=ignore-all -Xlinker -rpath -Xlinker "$OUT.lib" \
   AppModel.patched.swift "$R/Engine.swift" "$R/BatchRemoval.swift" "$R/OutlineSelectionSync.swift" "$R/CSVExport.swift" "$R/MultiSelectChecks.swift" "$R/BatchRemovalChecks.swift" "$R/BatchRemovalExecutionChecks.swift" "$R/BatchUndoChecks.swift" "$R/IdentityGateChecks.swift" "$R/OutlineSelectionSyncChecks.swift" "$R/DuplicatesRemovalChecks.swift" "$R/DuplicatesChecks.swift" "$R/SkippedListChecks.swift" "$R/VolumeChecks.swift" "$R/FullDiskAccessChecks.swift" "$R/ItemReviewChecks.swift" "$R/ExclusionsChecks.swift" "$R/RemovalHistoryChecks.swift" \
-  verdict.swift check.swift main.swift shim.swift folders_exec.swift dupremoval.swift sliced_models.swift observable_stub.swift removal_selection_probe.swift -Xlinker "$LIB" -Xlinker -lpthread -Xlinker -ldl -Xlinker -lm -o "$OUT"
+  verdict.swift check.swift main.swift shim.swift folders_exec.swift dupremoval.swift sliced_models.swift observable_stub.swift removal_selection_probe.swift "${extra_sources[@]}" -Xlinker "$LIB" -Xlinker -lpthread -Xlinker -ldl -Xlinker -lm -o "$OUT"
 mkdir -p "$OUT.lib"; cp stubs/*.so "$OUT.lib/"
