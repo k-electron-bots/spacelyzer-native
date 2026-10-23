@@ -4,7 +4,7 @@ Status as of October 23, 2026. **Not release-ready.** No release, DMG distributi
 
 Older snapshot: [HISTORY-2026-10-06.md](HISTORY-2026-10-06.md). Ledger: [checkpoints.md](checkpoints.md). Open Mac items: [mac-batch-backlog.md](mac-batch-backlog.md).
 
-Latest: [October 23 replacement-run evidence and offline repair](2026-10-23-demo-replacement.md). Native checks passed, but capture acceptance failed; the repair has not run on a Mac.
+Latest: [October 23 run evidence and follow-up failure](2026-10-23-demo-replacement.md). Run 40022177880 passed native checks but failed capture acceptance. Repair run 40027695341 then failed shipping Swift compilation; its test app, demo and ordering never ran. The conditional-scope correction is offline-only.
 
 ## What a Mac has executed
 

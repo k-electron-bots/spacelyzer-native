@@ -47,6 +47,10 @@ sed 's/ as CFString//g; s/^import Foundation$/import Foundation\nimport CoreFoun
 "$SWIFTC" -typecheck -I "$W/m" "$W/helper3b.swift" > "$W/l3b.log" 2>&1 && echo "PASS L3b-realcf docs-capture" || { echo "FAIL L3b-realcf docs-capture"; cat "$W/l3b.log"; rc=1; }
 sed 's/ as CFString//g; s/^import Foundation$/import Foundation\nimport CoreFoundation/; s/func attribute(_ element: AXUIElement, _ name: CFString)/func attribute(_ element: AXUIElement, _ name: String)/' scripts/ax-client.swift > "$W/axclient3b.swift"
 "$SWIFTC" -typecheck -I "$W/m" "$W/axclient3b.swift" > "$W/l3b2.log" 2>&1 && echo "PASS L3b-realcf ax-client" || { echo "FAIL L3b-realcf ax-client"; cat "$W/l3b2.log"; rc=1; }
+# Layer 4 - preserve the REAL stateLine and observer conditional layout in BOTH
+# shipping/test configurations. Isolated function extraction alone missed this
+# symbol-visibility regression on Mac run40027695341. Missing compiler is red.
+SWIFT_BIN="$(dirname "$SWIFTC")" python3 scripts/test-sheet-build-modes.py > "$W/l4.log" 2>&1 && { echo "PASS L4-sheet-build-modes"; cat "$W/l4.log"; } || { echo "FAIL L4-sheet-build-modes"; cat "$W/l4.log"; rc=1; }
 # HONEST LIMIT: stub SDKs are hand-written; native macOS SDK behavior, availability and AX semantics stay unproven
 # until a Mac run. This gate proves the helpers are free of Linux-catchable compile errors - nothing more.
 [ $rc -eq 0 ] && echo "PREFLIGHT GREEN (Linux-catchable compile errors excluded; NOT a macOS SDK proof)" || echo "PREFLIGHT FAILED"

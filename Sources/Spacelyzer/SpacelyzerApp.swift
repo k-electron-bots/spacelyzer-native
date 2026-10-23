@@ -1365,10 +1365,16 @@ struct SpacelyzerApp: App {
             // SwiftUI Text may not be an NSTextField (run40022177880: correct
             // Not-scanned pixels + one row, but unknown identity). Read ONLY the
             // attached sheet's real hosted AX descendants, as the existing AX probe does.
+            #if SPZ_CI_TESTS
             let observed = FooterAXEvidence.inspect(attached, attachedTo: w)
             let texts = observed.entries.flatMap { [$0.label, $0.value] }
-            sheetRows = allViews(of: NSTableView.self).filter { $0.window === attached }.map { $0.numberOfRows }.max() ?? 0
             sheetId = observedSheetIdentity(texts, complete: !observed.truncated)
+            #else
+            // The AX observer is intentionally CI-only. Shipping builds do not
+            // substitute intent or pull the test observer into the product.
+            sheetId = "unknown"
+            #endif
+            sheetRows = allViews(of: NSTableView.self).filter { $0.window === attached }.map { $0.numberOfRows }.max() ?? 0
         }
         return "step=\(step) main=\(w != nil) w=\(Int(sz.width)) h=\(Int(sz.height)) sheet=\(sheet) keyIsSheet=\(key?.isSheet ?? false) alertModel=\(alertShown) sheetId=\(sheetId) sheetRows=\(sheetRows) appearance=\(NSApp.effectiveAppearance.name.rawValue)"
     }

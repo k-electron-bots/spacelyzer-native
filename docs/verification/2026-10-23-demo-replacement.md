@@ -30,3 +30,11 @@ The final gate correctly reported `asserts=failure v1cap=failure`. Continue-on-e
 Offline controls execute the extracted real classifier and no-panel Swift command body, plus the capture script against declared AX states. The original script fails the sticky-alert/overflow regression; the repair passes, including stuck-OK and unreadable-AX refusals. Helper preflight, workflow checks and shipping/Swift isolation controls pass on Linux. These are not a macOS SDK, native AX or pixel result.
 
 Still required: real Mac compilation and hosted AXSheets observation, actual alert dismissal and toolbar-overflow behavior, all strict capture/ordering gates, and pixel review of the intended states. No additional run, release, DMG, scale or soak is authorized by this document.
+
+## Follow-up 40027695341: shipping compilation failed
+
+[Run 40027695341](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/40027695341) tested `b1ce2312d0e4cfe9723a86453d41b9bfe37157b7` (the same repair plus four Markdown files). It failed shipping Swift compilation: `SpacelyzerApp.swift:1368:28: error: cannot find 'FooterAXEvidence' in scope`. The new observer call sat outside SPZ_CI_TESTS while the observer declaration was CI-only. Extracted-function tests and independent review missed this conditional-context defect.
+
+The universal engine and helper typecheck passed. Test-app build, demo, v1 capture and ordering were skipped: no new UI, ordering or screenshot acceptance exists. The demo diagnostic artifact and full logs were retained; the ordering upload had no results to upload and failed. The strict final gate failed. No automatic retry follows.
+
+The offline follow-up guards the observer call with its actual CI-only condition; shipping emits unknown rather than importing the test observer or substituting intent. An executable Swift5/6 compiler control now preserves the real stateLine body and the observer's actual enclosing source conditions, with declared AppKit/observer-body stubs. The original source fails shipping with the exact Mac missing-symbol error while its CI form compiles; the repair typechecks in both configurations. This check is part of required Linux preflight, not a macOS SDK build. Native hosted accessibility and capture validation remain open.
