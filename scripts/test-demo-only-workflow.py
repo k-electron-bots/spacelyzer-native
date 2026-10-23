@@ -17,8 +17,8 @@ ck('jobs are exactly identity-guard and macos; macos needs identity-guard', set(
 def block(t): i = t.index('  identity-guard:'); return t[i:t.index('  macos:')]
 ck('identity-guard byte-identical to accuracy-only and scale-only', block(txt) == block(open(R + '/.github/workflows/accuracy-only.yml').read()) == block(open(R + '/.github/workflows/scale-only.yml').read()))
 m = d['jobs']['macos']; ck('macos runner, 35 min job cap', m['runs-on'] == 'macos-latest' and m['timeout-minutes'] == 35)
-ck('no secrets, signing, DMG, release, 1M scale, ordering, docs captures, Rust test, bulk or write permission',
-   not re.search(r'secrets\.|sign-setup|package-dmg|\.dmg|run-scale-check|gh release|softprops|contents:\s*write|cargo test|docs-capture-2x|ordering driver|dist/ordering|bulk-vs', re.sub(r'(?m)^#.*$', '', txt)))
+ck('no secrets, signing, DMG, release, 1M scale, docs captures, Rust test, bulk or write permission',
+   not re.search(r'secrets\.|sign-setup|package-dmg|\.dmg|run-scale-check|gh release|softprops|contents:\s*write|cargo test|docs-capture-2x|bulk-vs', re.sub(r'(?m)^#.*$', '', txt)))
 ck('optional perf/2x code can never be selected (every guard compares the literal "false")', len(re.findall(r'\[ "(\w+)" = "true" \]', tb_txt := mine_all(txt))) == 3 and set(re.findall(r'\[ "(\w+)" = "true" \]', tb_txt)) == {'false'})
 ck('no input references left', 'inputs.' not in txt and 'steps.sign' not in txt and 'steps.ver' not in txt)
 uses = sorted({s['uses'] for s in m['steps'] if 'uses' in s}); ck('only checkout@v4 and upload-artifact@v4', uses == ['actions/checkout@v4', 'actions/upload-artifact@v4'], uses)
@@ -62,7 +62,7 @@ ck('capture helper is built inside the compile budget (run-with-deadline, before
    'run-with-deadline.py swiftc scripts/docs-capture.swift -o /tmp/spz-docs-capture' in hb['run'] and m['steps'].index(hb) < vorder.index('reset') and 'job-1380s' in txt and 'FAIL-CLOSED' in v1['name'])
 # --- executed: evidence gate
 gate_step = [s for s in m['steps'] if s.get('name', '').startswith('Demo-validation evidence gate')][0]; ck('gate runs always', gate_step['if'] == '${{ always() }}')
-GK = ['engine', 'swiftapp', 'testbuild', 'reset', 'ui_launch', 'asserts', 'v1cap', 'demo_artifact']
+GK = ['engine', 'swiftapp', 'testbuild', 'reset', 'ui_launch', 'asserts', 'v1cap', 'demo_artifact', 'ordering', 'ordering_artifact']
 def run_gate(outc):
     body = gate_step['run']
     for k in GK: body = body.replace('${{ steps.%s.outcome }}' % k, outc.get(k, 'success'))
