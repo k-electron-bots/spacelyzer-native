@@ -1,6 +1,6 @@
 # Visual tour
 
-These images were captured on a shared GitHub CI Mac (CI run 39602481035, October 2026) and show the current interface. Their file names, counts and times are example scan results, not expected values for your Mac. Acceptance of behavior is tracked separately in [verification](../verification/README.md).
+These images were captured on a shared GitHub CI Mac (CI run 39683697776, October 2026; the review popover is from run 39690848529) and show the current interface. Their file names, counts and times are example scan results, not expected values for your Mac. Acceptance of behavior is tracked separately in [verification](../verification/README.md).
 
 ## Follow folders or compare areas
 ![Outline beside the treemap](../images/overview.png)

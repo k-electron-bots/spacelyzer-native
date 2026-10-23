@@ -1,94 +1,26 @@
 # Verification status
 
-Status snapshot: October 6, 2026. **Not release-ready.** Latest completed execution is [CI128](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37480280298) at `24dff915c4aba1e567cdb6e1769688c766d23047`, not run124. Source main at this audit: `8b7d24b7388e52b46616c1d6255d88ff80109e30`; feature branch `item-inspect-engine-stack`: `9bc4143542ffcd97362ccbe92b6010a17aa54a6b`. They are separate versions.
+Status as of October 22, 2026. **Not release-ready.** No release, DMG distribution or notarization has been done. Every result below is from a named CI run; none is a guarantee.
 
-| CI128 stage | Result | Limit |
-|---|---|---|
-| Linux engine job | Passed | Not Mac UI evidence |
-| Mac engine gate | 145 exercised passes, 5 platform-unexercised names, 2 ignored tests | Raw cargo count of 150 includes those 5 skips; APFS refused non-UTF-8 fixtures |
-| Production Swift / universal engine / DMG packaging | Passed | Packaging is not a delivered artifact or release |
-| Test-only Swift with `SPZ_CI_TESTS` | Failed compilation | Missing progress argument labels and tuple-predicate compile issue |
-| UI assertions, screenshots, artifact upload, release | Did not run / skipped | No current UI evidence or downloadable DMG |
+Older snapshot: [HISTORY-2026-10-06.md](HISTORY-2026-10-06.md). Ledger: [checkpoints.md](checkpoints.md). Open Mac items: [mac-batch-backlog.md](mac-batch-backlog.md).
 
-The latest branch correction adds the required progress labels and names the equivalent strict tuple predicate only inside `SPZ_CI_TESTS`. Independent source review confirmed the published tree exactly matches the reviewed candidate (`d84560499f23a6fcab0e6b2a0cc91266e6232898`); no checks were weakened. **The corrected version has not compiled or run on Mac.** A follow-up run remains a separate permission gate.
+## What a Mac has executed
 
-CI128's `/Applications` backend agreement is bounded. Its HOME/Library mismatch was informational, not a pass; nonzero real-kernel `ATTR_CMN_ERROR` coverage is not demonstrated. No clean speed comparison, complete filesystem coverage, UI or release acceptance follows. [Latest checkpoint details](checkpoints.md#ci128-engine-pass-production-build-pass-test-only-compile-failure).
+| Area | Run | Result | Limit |
+|---|---|---|---|
+| Functional UI and ordering | [39683697776](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/39683697776) | 178/178 UI assertions, 159/159 ordering checks | Fixture data on a shared CI Mac |
+| Real Trash, undo, identity refusal, name collision, failure recovery | [39843869589](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/39843869589) | 178 PASS / 0 FAIL, including a real Trash move of only the selected fixture; keyboard-focus checks passed | The run failed at artifact upload and the gate, so it is not a clean pass. Demo screenshots 72-81 were stale or blank; that capture bug has a fix |
+| Test-only build with the capture fix | [39858272561](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/39858272561) | Compiled on the Mac | Compile only. The 1M-item scale run in that job did not complete |
+| Size accuracy against an independent oracle | [39871364562](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/39871364562) | Run failed on a harness path-alias bug (/var vs /private/var). A hash-bound recompare of the saved output showed 0 differences in 12 of 12 legs (1k, 10k, 100k items; with and without hard links; default and portable) | Recompare is post-hoc, not a clean run. Fixture-scoped. See [accuracy evidence](../development/ACCURACY-EVIDENCE.md) |
 
-Run124 remains the latest historical completed UI checkpoint: 90 PASS / 1 FAIL of 91, 48 states, with native footer full-label retrieval failed and separate external same-node Help+Value passed. It does not verify new branch controls. [Historical ledger](checkpoints.md) and [performance notes](../development/performance.md) retain scope and failures.
+## Open
 
-## What evidence supports
-| Area | Accepted scope | Limits |
-|---|---|---|
-| Engine | CI128 Mac engine gate: 145 exercised passes, 5 platform skips and 2 ignored; older jobs retained in ledger | Not exhaustive filesystem, permission, mount or APFS coverage |
-| E1 outline and filters | Scoped acceptance across runs96/97, including deep-row/count and actual choice-submenu images | Not a whole-app accessibility or real-Mac approval |
-| Async publication | Six specific UUID-barrier/cache/scan interleavings accepted; run113 actual mounted resize publication and pixels inspected, independently accepted within this bounded resize scope | Named resize/tree/filter/first-pending unmount cases are recorded in the ledger; Rust hit and publication checks are not gesture dispatch or a universal race guarantee |
-| Count readability and layout | Inspected light/dark/injected contrast states, active reload after real alternate-window restoration, measured 960x600 root | Not actual OS notifications, offscreen cell reuse or formal contrast compliance |
-| Zero-byte handling | Count/rect data, mocked removal-policy behavior, and inspected zero-area/no-match messages | Mocked policy tests do not prove real filesystem behavior |
-| Trash round trip | Disposable real-CI remove + undo narrowly passed through107 | Not real-hardware, failure/undo or permission coverage |
-| Footer | Run110 full variant and run111 natural compact variant fit simultaneous-warning fixtures; 37/38 semantics retained | Separate 700pt CI surface; warnings simulated. Run124 native check still failed with four rejected branches; separate external exact Help+Value passed. Compact Partial/time omissions do not display the full string. VoiceOver/tooltip unverified |
-| Keyboard focus | Run110 injected named boundaries and exact semantic extension-control navigation accepted; 80 PASS / 0 FAIL of 80 overall | Eleven helper controls passed within native-API/defensive-simulation scope; hidden/not-current predicates overlap. Old graph, modified-key/native-fallback and whole-keyboard behavior unproven |
+- Pixel review of the demo captures 72-81 after the fix: needs a new Mac run.
+- A Linux-only size anomaly (a 4 KB difference at an ancestor directory) is open. No raw log was retained.
+- CSV export and actual IME input are not verified on a Mac. VoiceOver speech is untested and is not a v1 gate.
+- Hard-link sizes are counted once for the whole scan, so a per-folder figure can depend on which link is reached first. This is by design.
+- Several name-handling cases are not exercised on macOS because APFS refuses those names. They are limits, not passes.
 
-## Named boundaries accepted; broader navigation and helper gaps remain
-The product now uses an explicit known-control focus boundary instead of relying on native key-view graph traversal across hosts. Run107 expects 80 named checks and 39 states, adding actual reverse Tab plus 11 isolated helper/defensive API controls. Run109 exercised the faithful native reverse command and exact source acquisition. Run110 passed revised semantic downstream, post-hide preservation and actual refusal-callback/restoration contracts. Its expected extension control was unique and matched the actual editor delegate even though the native next-key-view pointer was nil. Helpers are not real modified-shortcut or native-fallback execution proof. False-with-changed-responder cases are simulations of defensive behavior, not a claim about normal AppKit behavior. The old key-graph contract remains unexercised/unfixed.
+## Screenshots
 
-## Ungated performance measurements
-Run111 sampled cold-click latency was 260.9 ms/stall252.8 ms, later click42.3 ms; 40-arrow p50/p95/max18.6/187.4/787.6 ms with stall789.6 ms, typing/filter-arrow stall162.1 ms, hover0.6 ms. This mixed shared-runner result is not an overall performance win. Buffered stages put about202 ms before table mouseDown and about2.65 ms inside it, but the raw8s sample lacks a wall/uptime overlap bridge and per-stack chronology. No frame or product cause is established.
-
-Run110 measured a 2,096.7 ms first-click post-to-selection delay and a 2,093.2 ms main-thread stall, versus a 37.6 ms later click. Typing/filter arrows reached a 316.2 ms stall; 40-arrow latency was p50 35.7 / p95 74.6 / max 117.3 ms. Hover was 0.7 ms. These shared-runner measurements are outside the 80 green assertions. They do not prove a regression or a performance pass, and the first-click cause is unresolved.
-
-## Remaining gates
-Real-Mac use, actual IME, real OS accessibility notification/motion behavior, older-supported-OS behavior, broader window/multivolume behavior, permission/cancel accounting, broader real-hardware Trash/failure/undo behavior, leak/soak measurements and broader forced treemap interleavings remain open. VoiceOver/AX-tree speech verification is owner-descoped for v1 (2026-10-22): the accessibility features are built, actual VoiceOver speech is unverified and optional, not a gate. Manual marked-text reset checks do not establish actual IME behavior or the old equal-while-marked premise.
-
-[Run107](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37086620447), [run108](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37088229962) and [run109](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37089357517) are artifacts-only failures, not releases. Earlier failures and source/fixture decisions are in the [checkpoint ledger](checkpoints.md). [Roadmap](../ROADMAP.md) lists remaining product priorities.
-
-[Content migration map](content-map.md) records where the useful former overview, technical, safety and checkpoint material now lives.
-
-[Run110](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37092313793) is a bounded verification checkpoint, not a release. Actual modified shortcuts/native fallback, actual IME, VoiceOver/OS AX and full E2 gates remain open.
-
-[Run111](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37094174463) adds bounded compact presentation and causal diagnostics, not performance or release acceptance. Actual footer help/AX, sample-stage overlap and FDA-copy pixels remain unverified.
-
-## Historical failed checkpoints and bounded progress
-[Run112](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37096739621): 81 PASS / 1 FAIL of82,40states. NSHostingView-root full-label retrieval failed. The paired clock/PID showed the raw sampler header283.47ms after input trace began, after the115.5ms selection wait, so startup acknowledgement did not prove cold-click coverage.
-
-[Run113](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37098640048): 83 PASS / 1 FAIL of84,42states. Native mixed AX/view discovery still failed the full-label check. Mounted resize evidence and pixels41/42 passed within the narrow scope above. The explicit1s profiler-start settling arm has altered idle conditions and no cold comparability. MatchingPID/rawheader precedes trace by893.619ms, with subprocess end separately recorded; this is temporal alignment, not per-stack chronology or a performance pass. See the [ledger](checkpoints.md) and [performance notes](../development/performance.md).
-
-[Run114](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37101601436): 83 PASS / 1 FAIL of84,42states. The explicit passive-summary accessibility combine modifier compiled, but strict native full-label retrieval still returned two objects without that label. Pixels39/40 full/compact warnings stayed readable;41/42 resize publication/hit evidence and pixels remained stable. No external accessibility absence, VoiceOver, tooltip or overall performance claim follows.
-
-[Run115](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37104425688): 83 PASS / 1 FAIL of84,42states. A trusted external client read actual fullDetails in both Help and Value on the same AXStaticText in the verified700pt window (matching PID/title/AXWindow role). This bounded API retrieval is independently accepted, not VoiceOver, visible tooltip, real warnings or combine causality. The in-process native check remained failed. Source `3a48eb6` separately names an external UTF8 exact-details regression,85checks/42states, preserving the native check; its run116 checkpoint completed with84PASS/1FAIL of85; the new external check passed and native check still failed. The earlier UI dispatch obstacle was bypassed through a verified existing bot REST route, without auth changes.
-
-[Run116](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37108069847):84PASS/1FAIL of85,42states. Separate external same-node UTF8 exact Help+Value regression passed with mounted expected export, verified window/PID/role, fresh ack, EXIT_0 and VERIFIED result,202nodes/untruncated. The old native accessor check remains failed; no retroactive pass or VoiceOver/visible-tooltip/real-warning claim. Independent review accepted the bounded formal external regression.
-
-[Run117](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37109813090):86PASS/1FAIL of87,44states. Two actual mounted tree-replacement checks and pixels43/44 independently accepted: computed old arena publication rejected after newer replacement arena, preserving exact layout/tree/full520x300/current Rust hit. Pixels show only new-tree-only.txt before/after release. Combined tree/revision/generation/cancellation scope, not isolated tree predicate, demonstrated same-NodeID confusion, gesture dispatch, filter/unmount or universal protection. Native accessor failure and separate external exact PASS remain unchanged.
-
-[Run118](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37111144701):88PASS/1FAIL of89,46states. Two actual mounted filter-publication checks and pixels45/46 independently accepted: held old unfiltered publication rejected after actual txt filter, preserving exact layout/tree/filter/full520x300/current Rust hit. Both pixels show only keep-only.txt, no excluded.bin. Combined filter revision/generation/cancellation scope, not isolated predicate, gesture dispatch, unmount or universal protection. Native accessor failure and separate external exact PASS remain unchanged.
-
-[Run119](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37115126519):90PASS/1FAIL of91,48states. Two actual first-pending treemap unmount checks and pixels47/48 independently accepted: actual conditional removal/onDisappear advances generation while first layout is held; exact old callback then rejects with nil currentLayout/tree and zero size. Placeholder stays visible with no old layout return. Not raw stored-layout inspection, already-published cleanup, remount, gesture or universal proof. Native accessor failure and separate external exact PASS remain unchanged.
-
-## Run120: causal envelope coverage remains incomplete
-
-[Run120](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37116511862) at source `a941c25` compiled on Linux/macOS, including the external client. Whole result: 90 PASS / 1 FAIL of 91 checks, 48 states; release skipped. The native footer accessor remains the sole failure. The separate external same-node exact Help+Value regression passed. No new product safety or performance acceptance follows.
-
-Both diagnostic phases installed and removed their monitor/observer with zero recorded drops, identity-cap loss, collisions or ambiguous lookups. However, click and 31 of 40 arrows have unmatched exact timestamp identities. Only nine arrows have full exact-associated stage chains. Outbound/delivered timestamps differ by fractions of a nanosecond, consistent with representation quantization, but its mechanism is not proven. Do not retroactively relabel unmatched records. Model/view context is heuristic; common-mode runloop observations and queued-probe delay do not prove CPU-busy time or sleeping time. Buffered flush is included before stall summaries.
-
-PID17849 bridges place click at 10:37:30.708123 to 31.9608235Z and arrows at 10:37:31.964457 to 35.453766Z. The raw sampler header is 10:37:29.742Z, with an eight-second sampling command and subprocess end at 10:37:38Z. This is coarse temporal overlap for both phases, not per-stack chronology or exact per-event sampler coverage.
-
-Diagnostic click243.3ms/stall235.2ms, warm34.5ms; arrows p50/p95/max17.6/83.1/909.3ms, stall908.6ms; typing202.2ms, hover0.5ms. Shared-runner, altered-idle, profiler and instrumentation effects remain. No original-cold comparison, clean benchmark, overall win or CPU cause. Pixels8/48 inspected: selected outline row readable and unmount placeholder has no returned old layout. Existing narrow safety boundaries remain unchanged. Next work is prospective diagnostic identity repair, reviewed before landing, not optimization.
-
-[Artifact](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37116511862/artifacts/11271722675) includes the raw envelope and unchanged failure evidence.
-
-## Run121 and run122: prospective normalized diagnostic identity
-
-Run121 at `8ee2f15` failed Swift compilation before UI execution: nested Expected.matches called the actor-isolated pure timestampBin helper synchronously. Linux passed33 tests; no UI artifacts or91/48 runtime result. Run122 at `88aeb4d` marks only this pure argument/local-arithmetic helper nonisolated; shared monitoring and buffering state remain on MainActor.
-
-[Run122](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37121764101) compiled Swift/client and passed Rust33 tests. UI90 PASS /1 FAIL of91,48states. Native footer accessor remains failed; separate external exact Help+Value regression passed. Artifact publication is not release acceptance.
-
-Independent raw-envelope review accepted the prospective normalized injected arm: click1/arrow40 have post, monitor, native handler, assignment, outline update, SwiftUI selection, probe and driver records. Both monitors/observers installed and cleaned; zero drops, identity loss, collisions, ambiguous lookups or invalid timestamps. Normalized lookups3click/99arrows, all41 driver polls changed selection without timeout. This is rounded-microsecond singleton-tuple attribution only, not raw timestamp identity, general event identity, proven timestamp-conversion mechanism or retroactive relabeling of run120. Bin boundaries can split close timestamps; unrelated inbound same-tuple events remain indistinguishable. Model/view context remains heuristic.
-
-Click post-to-monitor332.768ms, monitor-to-table311.422ms, table handler1.347ms, driver59.063ms after assignment. Arrow0 handler2.249ms, driver619.936ms after assignment. Queued probes measure main-queue opportunity, not dispatch latency. Common-mode runloop gaps include actual handler/update records inside them and do not prove sleeping or CPU-busy time. Chronology-bearing profiling is needed before optimizing.
-
-Mixed click704.6ms/stall700.9ms,warm30.0ms; arrows p50/p95/max17.6/41.6/738.1ms,stall737.8ms; typing150.6ms,hover0.5ms. Alteredidle/sharedrunner/profiler/instrumentation and buffered flush limits remain; no clean benchmark or overall win. PID19240 raw sample header12:14:45.286Z precedes click12:14:46.083592Z and arrows12:14:47.801996Z;8s command/subprocess end12:14:54Z gives coarse temporal overlap, not per-stack chronology. Pixels8/48 inspected: readable selected row and no returned treemap behind the unmount placeholder.
-
-[Run121](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37120426167) · [Run122 artifact](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/37121764101/artifacts/11273437286). Native failure,120 missing exact identities and prior narrow safety boundaries remain unchanged.
-
-## Historical run123/run124 limits
-Run123 profiler finalization timed out and is inconclusive. Run124 produced a raw trace and bounded time-resolved click0/arrow0 observations, not a CPU cause or speed win. The successful path does not exercise macOS partial-failure preservation. [Full evidence and limits](checkpoints.md#run123-and-run124-bounded-chronology-native-footer-still-failed).
+Only window-only captures from named runs are published, per the [documentation policy](../documentation-policy.md). The demo run's full-screen captures include the menu bar and Dock and are evidence, not documentation images.
