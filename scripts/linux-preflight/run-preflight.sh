@@ -51,6 +51,10 @@ sed 's/ as CFString//g; s/^import Foundation$/import Foundation\nimport CoreFoun
 # shipping/test configurations. Isolated function extraction alone missed this
 # symbol-visibility regression on Mac run40027695341. Missing compiler is red.
 SWIFT_BIN="$(dirname "$SWIFTC")" python3 scripts/test-sheet-build-modes.py > "$W/l4.log" 2>&1 && { echo "PASS L4-sheet-build-modes"; cat "$W/l4.log"; } || { echo "FAIL L4-sheet-build-modes"; cat "$W/l4.log"; rc=1; }
+# Layer 5 - class-wide nominal conditional dependency model generated from all real
+# Swift sources. Compiler checks the model; explicit unsupported/excluded coverage
+# is printed. This is not SDK/member/actor typechecking. Failure/missing tools is red.
+SWIFT_BIN="$(dirname "$SWIFTC")" python3 scripts/test-conditional-type-scope.py > "$W/l5.log" 2>&1 && { echo "PASS L5-conditional-nominal-scope"; cat "$W/l5.log"; } || { echo "FAIL L5-conditional-nominal-scope"; cat "$W/l5.log"; rc=1; }
 # HONEST LIMIT: stub SDKs are hand-written; native macOS SDK behavior, availability and AX semantics stay unproven
 # until a Mac run. This gate proves the helpers are free of Linux-catchable compile errors - nothing more.
 [ $rc -eq 0 ] && echo "PREFLIGHT GREEN (Linux-catchable compile errors excluded; NOT a macOS SDK proof)" || echo "PREFLIGHT FAILED"
