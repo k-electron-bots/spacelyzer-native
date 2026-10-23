@@ -905,6 +905,78 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// Trash-while-scanning class: a CHILD directory deleted between the pre-walk hook and its enumerate
+    /// is recorded Unreadable (ENOENT is not PermissionDenied), its bytes never appear, the sibling is
+    /// fully counted, no entry is invented, and the subtree's incompleteness propagates to the root.
+    #[test]
+    fn a_child_directory_deleted_mid_walk_is_recorded_unreadable_and_never_invented() {
+        let root = fixture("delchild", 64);
+        let victim = root.join("victim");
+        fs::create_dir_all(&victim).unwrap();
+        fs::write(victim.join("gone"), vec![1u8; 4096]).unwrap();
+        fs::write(root.join("keeper"), vec![1u8; 4096]).unwrap();
+        let root = root.canonicalize().unwrap();
+        let victim = root.join("victim");
+        let hook = |d: &Path| {
+            if d == victim { fs::remove_dir_all(d).unwrap(); }
+        };
+        let opts = ScanOptions::default();
+        let progress = ScanProgress::default();
+        let (events, rx) = PreviewEvents::new(7, &root);
+        use std::os::unix::fs::MetadataExt;
+        let mut ctx = ctx_for(&opts, &progress, &events, fs::symlink_metadata(&root).unwrap().dev());
+        ctx.mid_walk_hook = Some(&hook);
+        let (node, complete, _previews) = walk(&root, &ctx);
+        assert!(!complete, "a subtree that vanished mid-walk is not complete");
+        let skipped = ctx.skipped.lock().unwrap();
+        assert_eq!(skipped.len(), 1, "exactly the victim is skipped: {:?}", skipped.iter().map(|s| (&s.path, s.reason)).collect::<Vec<_>>());
+        assert_eq!(skipped[0].path, victim.to_string_lossy().into_owned());
+        assert_eq!(skipped[0].reason, SkipReason::Unreadable, "ENOENT maps to Unreadable, never PermissionDenied");
+        assert!(!skipped[0].lossy);
+        drop(skipped);
+        // The victim was real when the ROOT was enumerated, so its (now empty) node legitimately remains;
+        // "never invented" = no child under it and zero bytes, while the keeper and fixture files are counted.
+        let victim_ent = node.ents.iter().find(|e| &*e.name == "victim").expect("victim node from the root enumeration");
+        assert_eq!(victim_ent.size, 0, "a deleted-mid-walk directory contributes no bytes");
+        assert!(victim_ent.dir.as_ref().map_or(true, |d| d.ents.is_empty()), "no children invented under the victim");
+        assert!(node.ents.iter().any(|e| &*e.name == "keeper"), "sibling counted");
+        let expected = ["keeper", "f"].iter().map(|n| fs::symlink_metadata(root.join(n)).unwrap().blocks() * 512).sum::<u64>();
+        assert_eq!(node.total, expected, "victim's bytes are absent; exactly the surviving files are counted (fs-native block sizes)");
+        let mut names = Vec::new();
+        while let Some(e) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            if let EventKind::DirComplete { path, .. } = e.kind { names.push(path); }
+        }
+        assert!(!names.iter().any(|p| *p == victim), "no completion record for a directory that vanished");
+        events.finish(false, false, false);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Same class at the ROOT: the walk returns an EMPTY tree with the root itself recorded Unreadable and
+    /// complete=false - scan() must not fabricate a vanished root's contents or panic; consumers see the
+    /// dishonest-total guard flags instead of a phantom empty-but-complete scan.
+    #[test]
+    fn the_root_deleted_mid_walk_returns_empty_with_the_root_recorded_unreadable() {
+        let root = fixture("delroot", 64).canonicalize().unwrap();
+        fs::write(root.join("gone"), vec![1u8; 4096]).unwrap();
+        let hook = |d: &Path| {
+            if d == root { fs::remove_dir_all(d).unwrap(); }
+        };
+        let opts = ScanOptions::default();
+        let progress = ScanProgress::default();
+        let (events, _rx) = PreviewEvents::new(8, &root);
+        let mut ctx = ctx_for(&opts, &progress, &events, 0);
+        ctx.mid_walk_hook = Some(&hook);
+        let (node, complete, _previews) = walk(&root, &ctx);
+        assert!(!complete);
+        assert_eq!(node.total, 0);
+        assert!(node.ents.is_empty());
+        let skipped = ctx.skipped.lock().unwrap();
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].path, root.to_string_lossy().into_owned());
+        assert_eq!(skipped[0].reason, SkipReason::Unreadable);
+        events.finish(false, false, false);
+    }
+
     #[test]
     fn plain_scan_walk_captures_no_identity() {
         // Event-disabled scans pay zero preview stats: pre is None, no event path runs.
