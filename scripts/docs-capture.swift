@@ -118,7 +118,7 @@ case "selectrow":
         if target != nil { break }
     }
     guard let row = target else { print("row not found: \(args[3])"); exit(1) }
-    guard AXUIElementSetAttributeValue(row, "AXSelected" as CFString, true as CFTypeRef) == .success else { print("select failed: \(args[3])"); exit(1) }
+    guard AXUIElementSetAttributeValue(row, "AXSelected" as CFString, kCFBooleanTrue) == .success else { print("select failed: \(args[3])"); exit(1) }
 case "choose":
     guard args.count == 5 else { exit(2) }
     let openers: Set<String> = ["AXMenuButton", "AXPopUpButton", "AXButton"]
@@ -182,7 +182,11 @@ case "sheettext":
     func ancestors(of el: AXUIElement) -> [AXUIElement] {
         var out: [AXUIElement] = [], cur = el, seen = Set<UInt>()
         for _ in 0..<64 {   // bounded: parent chains are short; the visited set breaks any attribute cycle
-            guard let parent = read(cur, "AXParent") as? AXUIElement else { break }
+            // AXParent of an AX element is always an AX element; conditional downcast to a CF type is a compile
+            // ERROR on the real toolchain ("will always succeed" - run 39961036509 step-8 log), so force-cast like
+            // the posRef as! AXValue precedent in `frame` above.
+            guard let parentRef = read(cur, "AXParent") else { break }
+            let parent = parentRef as! AXUIElement
             if !seen.insert(CFHash(parent)).inserted { break }
             out.append(parent); cur = parent
         }
@@ -191,6 +195,60 @@ case "sheettext":
     let collapsed = scopes.filter { a in !scopes.contains { b in !CFEqual(b, a) && ancestors(of: b).contains(where: { CFEqual($0, a) }) } }
     guard collapsed.count == 1 else { print("expected exactly one independent dialog/sheet/popover scope, found \(collapsed.count) (of \(scopes.count) matches)"); exit(1) }
     guard textIn(collapsed[0]) else { print("text not in the foreground dialog/sheet/popover: \(needle)"); exit(1) }
+case "snapshot":
+    // Read-only LIVE-state evidence (the "maximum leverage from a Mac contact" requirement): bounded full
+    // attribute/type/selected state WHILE a surface is presented, so one run settles the SDK/AX unknowns
+    // (scope identity, AXSelected write semantics, parent chains) whether the flow passes or fails. The capture
+    // script calls this before AND after mutating actions and on every failure path (diag).
+    print("== windows (CGWindowList, on-screen, this pid) ==")
+    if let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] {
+        for w in info where (w[kCGWindowOwnerPID as String] as? Int32) == pid {
+            print("window id=\(w[kCGWindowNumber as String] ?? "?") layer=\(w[kCGWindowLayer as String] ?? "?") alpha=\(w[kCGWindowAlpha as String] ?? "?") bounds=\(w[kCGWindowBounds as String] ?? [:])")
+        }
+    }
+    // Dedicated bounded walk: unlike descendants() this does NOT skip table/outline children - the selected ROW
+    // (the mutating action's target) lives inside the outline - but stays capped (512 elements, depth 24).
+    var queue: [(AXUIElement, Int)] = [], qi = 0
+    if let windows = read(app, "AXWindows") as? [AXUIElement] { queue += windows.map { ($0, 0) } }
+    var els: [(AXUIElement, Int)] = []
+    while qi < queue.count && els.count < 512 {
+        let (el, d) = queue[qi]; qi += 1; els.append((el, d))
+        if d < 24, let children = read(el, "AXChildren") as? [AXUIElement] { queue += children.map { ($0, d + 1) } }
+    }
+    print("== tree (first \(els.count) elements, caps 512/depth 24) ==")
+    var selected: [(Int, AXUIElement)] = []
+    for (idx, pair) in els.enumerated() {
+        let (el, d) = pair
+        let sel = read(el, "AXSelected").map { CFEqual($0, kCFBooleanTrue) } ?? false
+        let foc = read(el, "AXFocused").map { CFEqual($0, kCFBooleanTrue) } ?? false
+        var pt = CGPoint.zero, sz = CGSize.zero, frame = "-"
+        if let posRef = read(el, "AXPosition"), let sizeRef = read(el, "AXSize"),
+           AXValueGetValue(posRef as! AXValue, .cgPoint, &pt), AXValueGetValue(sizeRef as! AXValue, .cgSize, &sz) {
+            frame = "\(Int(pt.x)),\(Int(pt.y)),\(Int(sz.width)),\(Int(sz.height))"
+        }
+        print("#\(idx) depth=\(d) role=\(string(el, "AXRole")) subrole=\(string(el, "AXSubrole")) selected=\(sel) focused=\(foc) frame=\(frame) title=\(string(el, "AXTitle").prefix(80)) desc=\(string(el, "AXDescription").prefix(80)) label=\(string(el, "AXLabel").prefix(80)) value=\(string(el, "AXValue").prefix(120))")
+        if sel { selected.append((idx, el)) }
+    }
+    print("== foreground scopes (sheettext predicate over the visited cap; the live collapse verdict) ==")
+    var scopeCount = 0
+    for (el, _) in els {
+        let role = string(el, "AXRole")
+        if role == "AXSheet" || role == "AXPopover" || (role == "AXWindow" && ["AXSystemDialog", "AXDialog"].contains(string(el, "AXSubrole"))) {
+            scopeCount += 1
+            print("scope #\(scopeCount) role=\(role) subrole=\(string(el, "AXSubrole")) title=\(string(el, "AXTitle").prefix(80))")
+        }
+    }
+    print("scopes=\(scopeCount)")
+    print("== selected targets (parent role chains, innermost first) ==")
+    for (idx, el) in selected {
+        var chain: [String] = [], cur = el
+        for _ in 0..<16 {   // bounded; parent chains are short
+            guard let parentRef = read(cur, "AXParent") else { break }
+            let parent = parentRef as! AXUIElement   // same proven idiom as ancestors() above (run 39961036509)
+            chain.append(string(parent, "AXRole")); cur = parent
+        }
+        print("selected #\(idx) chain=\(chain.joined(separator: " < "))")
+    }
 case "escape":
     NSRunningApplication(processIdentifier: pid)?.activate()
     usleep(300_000)
