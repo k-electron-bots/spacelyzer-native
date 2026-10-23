@@ -45,3 +45,21 @@ Executed on Linux with Swift 6.1.2 against the release Rust library: 86 PASS,
 0 FAIL. Removing both pre-write snapshot checks causes exactly the two export
 flow/model checks to fail (84 PASS, 2 FAIL); the real checks are unchanged.
 Mac export, native save-panel behavior and UTF-8 import remain open.
+
+### Real cancellation and recovery
+
+`SWIFT_BIN=/path/to/usr/bin scripts/linux-model-harness/run-cancel-checks.sh`
+builds a separate temporary `ci-checks` archive, checks that the shipping archive
+is unchanged (or still absent), validates all three CI symbol definitions, then
+runs the broad checks plus the existing `ScanCancelChecks` against that archive.
+The temporary build and executable are removed on exit. A shipping-only archive
+is refused before linking in this mode.
+
+Executed on Linux, Swift 6.1.2: 89 PASS / 0 FAIL. Removing the real C ABI cancel
+call in `ScanSession.cancel` causes exactly the two cancellation checks to fail
+(87 PASS / 2 FAIL): the mutant returns complete 43-node trees instead of flagged
+root-only partial trees. The next normal scan's exact 43-node recovery is checked.
+This is a parked pre-first-enumeration boundary with coarse 5-second completion
+bounds, not substantial midscan cancellation, main-thread dispatch latency,
+mounted UI responsiveness, APFS or Mac evidence. AppKit and publishing stubs and
+injected CSV/Trash effects retain the broad harness's limitations above.
