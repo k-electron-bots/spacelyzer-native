@@ -8,7 +8,7 @@ public typealias AXUIElement = CFDictionary
 public typealias AXValue = CFArray
 public typealias pid_t = Int32
 
-public enum AXError: Int32 { case success = 0 }
+public enum AXError: Int32 { case success = 0, attributeUnsupported = -25205, noValue = -25212 }
 public enum AXValueType: Int32 { case cgPoint = 1, cgSize = 2 }
 
 public func AXUIElementCreateApplication(_ pid: pid_t) -> AXUIElement { fatalError("stub") }

@@ -1345,6 +1345,12 @@ struct SpacelyzerApp: App {
     }
     /// One line of observable state per demo step, written before the capture handshake so a capture can be checked
     /// against what the window really was (not just that a PNG exists).
+    static func observedSheetIdentity(_ texts: [String], complete: Bool) -> String {
+        guard complete else { return "unknown" }
+        if texts.contains("Not scanned") { return "notscanned" }
+        if texts.contains(where: { $0.hasPrefix("Moved ") && $0.contains("Trash") }) { return "removal-result" }
+        return "unknown"
+    }
     static func stateLine(step: Int, alertShown: Bool) -> String {
         let w = window
         let sz = w?.contentView?.frame.size ?? .zero
@@ -1356,11 +1362,13 @@ struct SpacelyzerApp: App {
         // Anything else is "unknown", which the fidelity gate rejects.
         var sheetId = "none", sheetRows = 0
         if let attached = w?.attachedSheet {
-            let texts = allViews(of: NSTextField.self).filter { $0.window === attached }.map { $0.stringValue }
+            // SwiftUI Text may not be an NSTextField (run40022177880: correct
+            // Not-scanned pixels + one row, but unknown identity). Read ONLY the
+            // attached sheet's real hosted AX descendants, as the existing AX probe does.
+            let observed = FooterAXEvidence.inspect(attached, attachedTo: w)
+            let texts = observed.entries.flatMap { [$0.label, $0.value] }
             sheetRows = allViews(of: NSTableView.self).filter { $0.window === attached }.map { $0.numberOfRows }.max() ?? 0
-            if texts.contains("Not scanned") { sheetId = "notscanned" }
-            else if texts.contains(where: { $0.hasPrefix("Moved ") && $0.contains("Trash") }) { sheetId = "removal-result" }
-            else { sheetId = "unknown" }
+            sheetId = observedSheetIdentity(texts, complete: !observed.truncated)
         }
         return "step=\(step) main=\(w != nil) w=\(Int(sz.width)) h=\(Int(sz.height)) sheet=\(sheet) keyIsSheet=\(key?.isSheet ?? false) alertModel=\(alertShown) sheetId=\(sheetId) sheetRows=\(sheetRows) appearance=\(NSApp.effectiveAppearance.name.rawValue)"
     }
@@ -3139,7 +3147,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
 @MainActor private enum FooterAXEvidence {
     struct Entry { let label: String; let help: String; let value: String }
     struct Result { let entries: [Entry]; let truncated: Bool; let discovered: Int; let rejected: Int }
-    static func inspect(_ root: NSWindow) -> Result {
+    static func inspect(_ root: NSWindow, attachedTo owner: NSWindow? = nil) -> Result {
         var entries: [Entry] = []
         var seen = Set<ObjectIdentifier>()
         var truncated = false
@@ -3249,12 +3257,31 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         var windowsRef: CFTypeRef?
         if AXUIElementCopyAttributeValue(selfAX, kAXWindowsAttribute as CFString, &windowsRef) == .success,
            let axWindows = windowsRef as? [AXUIElement] {
-            for axWindow in axWindows {
-                var titleRef: CFTypeRef?
-                AXUIElementCopyAttributeValue(axWindow, kAXTitleAttribute as CFString, &titleRef)
-                guard (titleRef as? String) == root.title else { continue }
-                axWalkAvailable = true
-                axVisit(axWindow, depth: 0, edge: "axuielement-window")
+            if let owner {
+                // Attached sheets are not reliably top-level AXWindows. Match the
+                // unique owning window, then its unique actual AXSheets child.
+                // An ambiguous title or multiple sheets supplies no exported evidence.
+                let owners = axWindows.filter { element in
+                    var title: CFTypeRef?
+                    AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &title)
+                    return (title as? String) == owner.title
+                }
+                if owner.attachedSheet === root, owners.count == 1 {
+                    var sheetsRef: CFTypeRef?
+                    if AXUIElementCopyAttributeValue(owners[0], "AXSheets" as CFString, &sheetsRef) == .success,
+                       let sheets = sheetsRef as? [AXUIElement], sheets.count == 1 {
+                        axWalkAvailable = true
+                        axVisit(sheets[0], depth: 0, edge: "axuielement-attached-sheet")
+                    }
+                }
+            } else {
+                for axWindow in axWindows {
+                    var titleRef: CFTypeRef?
+                    AXUIElementCopyAttributeValue(axWindow, kAXTitleAttribute as CFString, &titleRef)
+                    guard (titleRef as? String) == root.title else { continue }
+                    axWalkAvailable = true
+                    axVisit(axWindow, depth: 0, edge: "axuielement-window")
+                }
             }
         }
         if !axWalkAvailable {

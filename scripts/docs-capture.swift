@@ -150,6 +150,30 @@ case "hastext":
         string(element, "AXValue").contains(needle) || string(element, "AXLabel").contains(needle)
     }
     if !hit { print("text not present: \(needle)"); exit(1) }
+case "nosheet":
+    // An inaccessible tree is not proof of absence. Read the actual application's
+    // windows successfully, then refuse any live sheet/dialog/popover in their subtree.
+    guard let windows = read(app, "AXWindows") as? [AXUIElement], !windows.isEmpty else { print("windows unavailable"); exit(1) }
+    var queue = windows, i = 0
+    while i < queue.count {
+        guard i < 8192 else { print("tree truncated"); exit(1) }
+        let el = queue[i]; i += 1
+        guard let role = read(el, "AXRole") as? String else { print("role unavailable"); exit(1) }
+        if role == "AXSheet" || role == "AXPopover" || (role == "AXWindow" && ["AXSystemDialog", "AXDialog"].contains(string(el, "AXSubrole"))) { print("foreground panel still present"); exit(1) }
+        // Enumerating result-table rows is unnecessary and can exhaust the bound.
+        // Still require a readable role for every visited node. An AX error other
+        // than unsupported/no-value is not evidence that a subtree is absent.
+        if role == "AXTable" || role == "AXOutline" { continue }
+        var childrenRef: CFTypeRef?
+        let rc = AXUIElementCopyAttributeValue(el, "AXChildren" as CFString, &childrenRef)
+        if rc == .success {
+            guard let children = childrenRef as? [AXUIElement] else { print("invalid children"); exit(1) }
+            queue += children
+        } else if rc != .attributeUnsupported && rc != .noValue {
+            print("children unavailable"); exit(1)
+        }
+    }
+    print("no foreground panel")
 case "sheettext":
     // Text must appear in a FOREGROUND dialog/sheet/popover's OWN subtree, never in background window chrome:
     // a confirmation or result must be scoped by the dialog's own text - a background element carrying the same
