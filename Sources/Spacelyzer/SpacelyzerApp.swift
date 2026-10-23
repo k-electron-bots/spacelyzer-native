@@ -2831,7 +2831,12 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
 
     /// UNCOMPILED/UNRUN. Drives the export flow with injected effects: no window, no panel, no disk, no tree.
     private static func csvExportFlowChecks() async {
-        let tid = ObjectIdentifier(Box<Int>(0))
+        // ObjectIdentifier does not retain its object. Keep BOTH anchors alive through
+        // the test: temporary Boxes may be freed immediately and reuse the same address.
+        let originalTree = Box<Int>(0), replacementTree = Box<Int>(1)
+        defer { withExtendedLifetime((originalTree, replacementTree)) {} }
+        let tid = ObjectIdentifier(originalTree)
+        let replacementID = ObjectIdentifier(replacementTree)
         func snap(_ n: Int = 2) -> LargestExportSnapshot { LargestExportSnapshot(treeID: tid, treeVersion: 5, derivedVersion: 5, filterRevision: 1, revision: 1, ids: Array(0..<UInt32(n)), sizes: (0..<n).map { UInt64($0 + 1) * 100 }) }
         let url = URL(fileURLWithPath: "/tmp/never-written.csv")
         let paths: @Sendable (UInt32) -> String = { "/p/\($0)" }
@@ -2853,8 +2858,8 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         let goodOK = good == .written(rows: 2, marked: 0, changedDuringWrite: false) && asked.value == 1 && writes.value.count == 1 && text.contains("1,100,/p/0,") && text.contains("2,200,/p/1,")
 
         // changed WHILE the panel is open (any one field): nothing is written
-        var staleOK = true
-        for change in [{ (s: inout LargestExportSnapshot) in s.treeID = ObjectIdentifier(Box<Int>(1)) }, { $0.treeVersion += 1 }, { $0.filterRevision += 1 }, { $0.revision += 1 }, { $0.ids[0] = 9 }, { $0.sizes[1] += 1 }] as [(inout LargestExportSnapshot) -> Void] {
+        var staleOK = replacementID != tid
+        for change in [{ (s: inout LargestExportSnapshot) in s.treeID = replacementID }, { $0.treeVersion += 1 }, { $0.filterRevision += 1 }, { $0.revision += 1 }, { $0.ids[0] = 9 }, { $0.sizes[1] += 1 }] as [(inout LargestExportSnapshot) -> Void] {
             cur.value = snap(); writes.value = []
             let r = await LargestExport.run(blockedReason: { nil }, snapshot: { cur.value }, askURL: { var s = cur.value!; change(&s); cur.value = s; return url }, path: paths, write: { d, _ in writes.value.append(d) })
             if r != .staleAfterPanel || !writes.value.isEmpty { staleOK = false }
