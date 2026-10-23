@@ -26,25 +26,30 @@ print('PASS admission boundary690, late/expired refusal, exact-name negatives, d
 # leaving filesystem copying and result retention real. Never a native-app claim.
 import os, plistlib
 from unittest.mock import patch
-class Child:
-    pid=99999999
-    def __init__(self,*a,**kw): self.mode=MODE; self.calls=0; kw['stderr'].write('retained diagnostic\n'); kw['stderr'].flush()
-    def wait(self,timeout=None):
-        self.calls+=1
-        if self.mode=='timeout' and self.calls==1: raise subprocess.TimeoutExpired('fake-app',timeout)
-        return 7 if self.mode=='failure' else 0
-for MODE in ['timeout','failure','missing-result']:
+# Fake only native commands/clock. Fresh filesystem and partial retention remain real.
+for mode in ['launch-failure','crash','timeout','failed-result','missing-result']:
     with tempfile.TemporaryDirectory() as t:
         p=pathlib.Path(t);app=p/'app';(app/'Contents/MacOS').mkdir(parents=True)
         (app/'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'original'}))
         (app/'Contents/MacOS/Spacelyzer').write_text('fixture only')
-        with patch.object(m.subprocess,'run',return_value=subprocess.CompletedProcess([],0)),patch.object(m,'stop_apps'),patch.object(m.subprocess,'Popen',Child),patch('os.killpg'):
-            try:m.run(str(app),str(p/'output'),m.time.time()+1000)
-            except (RuntimeError,subprocess.TimeoutExpired,FileNotFoundError):pass
-            else:raise AssertionError('broken child accepted')
+        clock=[1000.0]
+        def native(argv, **kwargs):
+            if argv[0]=='open':
+                pathlib.Path(argv[argv.index('--stderr')+1]).write_text('retained diagnostic\n')
+                if mode=='launch-failure': raise subprocess.CalledProcessError(1,argv)
+                result=next(x.split('=',1)[1] for x in argv if x.startswith('SPZ_RESULT_DIR='))
+                if mode=='failed-result':
+                    pathlib.Path(result,'result.txt').write_text('FAIL simulated crash/check failure\n')
+                if mode=='crash': clock[0]+=400
+            return subprocess.CompletedProcess(argv,0)
+        def sleep(seconds): clock[0]+=max(seconds,.2)
+        with patch.object(m.subprocess,'run',side_effect=native),patch.object(m,'stop_apps'),patch.object(m.time,'time',side_effect=lambda:clock[0]),patch.object(m.time,'sleep',side_effect=sleep):
+            try:m.run(str(app),str(p/'output'),2000)
+            except (RuntimeError,subprocess.CalledProcessError,FileNotFoundError):pass
+            else:raise AssertionError('broken launch accepted')
         assert (p/'output/stderr.log').read_text()=='retained diagnostic\n'
         assert (p/'output/results').is_dir()
-print('PASS timeout, nonzero child exit, missing result all retain partial artifacts')
+print('PASS fake-open launch failure, crash, timeout, failed/missing result retain partial artifacts')
 # Wiring: prior evidence uploaded first, ordering required even when refused/skipped,
 # and ordering's own artifact always attempted with a bounded upload budget.
 import yaml

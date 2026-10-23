@@ -14,9 +14,9 @@ and that upload to succeed.
 
 The copied, ad-hoc signed test bundle gets a unique bundle identifier and fresh
 fixture/results. Prior Spacelyzer processes must be absent before launch. The
-runner launches the copied executable directly, retaining its actual exit code
-instead of treating LaunchServices' launch acknowledgement as app success.
-This launch adaptation is not Mac-executed yet. The existing OrderingDriver runs
+runner uses the existing Mac-proven `open -n` route with stdout/stderr and explicit
+environment arguments. Its launch acknowledgement is not success: fresh exact
+result and assertion manifests are required before the cutoff. The existing OrderingDriver runs
 unchanged: 166 exact required names, no missing/duplicate/unlisted/failing result,
 300-second internal watchdog. The outer330-second work deadline reserves5 seconds
 for process cleanup. Partial result/stdout/stderr evidence is retained on errors.
@@ -29,6 +29,6 @@ Worst-case existing demo/capture caps leave insufficient tail: late admission mu
 fail honestly, retaining already-uploaded evidence rather than skipping checks.
 
 Linux controls execute690-second admission boundary/refusal, result-name negatives,
-nonzero child exit, timeout/missing-result partial retention, workflow required-gate
+open launch failure, crash/timeout/missing-result partial retention, workflow required-gate
 failure/skip/cancel paths, and unchanged compile/job budgets. They do not prove
 AppKit launch behavior, native helper AX success, Mac checks or screenshot pixels.

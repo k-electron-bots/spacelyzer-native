@@ -79,20 +79,14 @@ def run(app, output, deadline):
         stop_apps(work_deadline)
         if time.time() >= work_deadline:
             raise RuntimeError('ordering setup exhausted work deadline')
-        env = dict(__import__('os').environ, SPZ_AUTOSCAN=str(fix), SPZ_DEMO='1', SPZ_CHECKS='ordering', SPZ_RESULT_DIR=str(res))
-        with (work/'stdout.log').open('w') as stdout, (work/'stderr.log').open('w') as stderr:
-            child = subprocess.Popen([str(bundle/'Contents/MacOS/Spacelyzer')], env=env, stdout=stdout, stderr=stderr, start_new_session=True)
-            try:
-                rc = child.wait(timeout=max(.01, work_deadline-5-time.time()))
-                if rc != 0: raise RuntimeError(f'ordering process exit {rc}')
-            except BaseException:
-                import os, signal
-                try: os.killpg(child.pid, signal.SIGTERM)
-                except ProcessLookupError: pass
-                try: child.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    os.killpg(child.pid, signal.SIGKILL); child.wait()
-                raise
+        # Preserve the Mac-proven LaunchServices route. The fresh exact result and
+        # assertion manifest are the verdict, never open's launch acknowledgement.
+        checked(['open', '-n', str(bundle), '--stdout', str(work/'stdout.log'), '--stderr', str(work/'stderr.log'),
+                 '--env', 'SPZ_AUTOSCAN='+str(fix), '--env', 'SPZ_DEMO=1', '--env', 'SPZ_CHECKS=ordering', '--env', 'SPZ_RESULT_DIR='+str(res)])
+        while not (res/'result.txt').is_file() and time.time() < work_deadline-5:
+            time.sleep(min(.2, max(0, work_deadline-5-time.time())))
+        if not (res/'result.txt').is_file():
+            raise RuntimeError('ordering timed out or exited without a result')
         verify_result(res, names)
         (output/'segment-verdict.txt').write_text('PASS required ordering segment\n')
     finally:
