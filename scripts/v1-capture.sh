@@ -98,10 +98,26 @@ if over; then note "SKIPPED trash flow: time budget"; elif step select ax select
       for _ in $(seq 1 10); do ax sheettext "Moved Backup 2025.zip" >/dev/null 2>&1 && { confirmed=1; break; }; nap 1; done
       if [ "$confirmed" -eq 1 ]; then
         [ "$press_rc" -eq 1 ] && note "trash-confirm-press outcome verified after AXPress error (result dialog names the target)"
-        snap trash-result-live; nap 2; shot trash-done
-        ax escape; nap 1
+        snap trash-result-live; nap 2
+        # Escape did not dismiss this alert in run40022177880. Press the observed OK
+        # button once, then require the result dialog to disappear before either done or history capture.
+        ax press OK; nap 1
+        dismissed=0
+        for _ in $(seq 1 5); do
+          ax nosheet >/dev/null 2>&1 && { dismissed=1; break; }
+          nap 1
+        done
+        if [ "$dismissed" -ne 1 ]; then
+          note "STEP-FAIL result-dismiss: result dismissal not observed (panel present or AX unreadable); done/history not captured"; diag result-dismiss
+        else
+          snap trash-dismissed-live; shot trash-done
+          # At960wide the button can be in the native toolbar overflow (retained AX snapshot).
+          if ! ax press "Removal history"; then
+            step history ax choose "more toolbar items" "Removed" || dismissed=0
+          fi
+        fi
         # Removal history must show THIS removal's journal entry in the popover, not just open.
-        if step history ax press "Removal history"; then
+        if [ "$dismissed" -eq 1 ]; then
           hist_ok=0
           for _ in $(seq 1 10); do ax sheettext "Backup 2025.zip" >/dev/null 2>&1 && { hist_ok=1; break; }; nap 1; done
           if [ "$hist_ok" -eq 1 ]; then snap history-live; shot removal-history; else note "STEP-FAIL history-content: journal entry for Backup 2025.zip not observed in the history popover"; diag history-content; fi

@@ -26,15 +26,22 @@ DIALOGTARGET="$SAMPLE/Archives/Backup 2025.zip"
 case "$2" in
  rect) echo "0,0,960,600";;
  hastext) grep -q -- "$3" "$STATE/background" "$STATE/dialog" 2>/dev/null || exit 1;;
+ nosheet) [ -n "$AXUNAVAILABLE" ] && exit 1; [ ! -f "$STATE/dialog" ]; exit $?;;
  sheettext) grep -q -- "$3" "$STATE/dialog" 2>/dev/null || exit 1;;
  choose) [ -n "$NOMENU" ] && exit 1
+   if [ "$3 $4" = "more toolbar items Removed" ]; then
+     [ -f "$STATE/dialog" ] && exit 1
+     echo "Backup 2025.zip moved to Trash · Put Back" > "$STATE/dialog"; exit 0
+   fi
    [ "$3 $4" = "Scan Exclusions…" ] && [ -z "$NOOPEN" ] && printf "Exclusions\nScans skip these locations. Changes apply when you rescan\n" > "$STATE/dialog"
    [ "$3 $4" = "Scan Duplicates…" ] && [ -z "$DUPTIMEOUT" ] && echo "3 groups · 6 files" > "$STATE/dialog"; exit 0;;
- escape) rm -f "$STATE/dialog"; exit 0;;
+ escape) [ -n "$STICKYRESULT" ] && grep -q "Moved Backup" "$STATE/dialog" 2>/dev/null && exit 0; rm -f "$STATE/dialog"; exit 0;;
  frame) if [ "$3" = "Open System Settings" ]; then echo 800,60,150,22; else echo 20,${FIELDY:-95},300,24; fi;;
  dump) echo tree;;
  snapshot) DSTATE=ABSENT; [ -f "$STATE/dialog" ] && DSTATE=LIVE; echo "snapshot dialog=$DSTATE" >> "$LOG"; echo "== tree =="; echo "dialog-state: $DSTATE"; exit 0;;
- press) [ "$3" = "Move selected item to Trash" ] && [ -n "$NOPRESS" ] && exit 1
+ press) if [ "$3" = "OK" ]; then [ -z "$OKSTUCK" ] && rm -f "$STATE/dialog"; exit 0; fi
+   if [ "$3" = "Removal history" ] && { [ -f "$STATE/dialog" ] || [ -n "$HISTORYOVERFLOW" ]; }; then exit 1; fi
+   [ "$3" = "Move selected item to Trash" ] && [ -n "$NOPRESS" ] && exit 1
    [ "$3" = "Move selected item to Trash" ] && [ -z "$NOALERT" ] && printf "Move to Trash? %s\n" "$DIALOGTARGET" > "$STATE/dialog"
    if [ "$3" = "Move to Trash" ] && [ -n "$STALERESULT" ]; then echo "Something else moved to the Trash." > "$STATE/dialog"; echo "press failed: Move to Trash" >&2; exit 1; fi
    if [ "$3" = "Move to Trash" ] && [ -n "$PRESSDISMISS" ]; then touch "$STATE/confirmed"; echo "Moved Backup 2025.zip to the Trash." > "$STATE/dialog"; echo "press failed: Move to Trash" >&2; exit 1; fi
@@ -161,4 +168,10 @@ ck('MUTATION: press errors and only a STALE generic result text (no confirm happ
    rc == 1 and 'STEP-FAIL trash-result' in st and 'outcome verified' not in st and 'screenshot-v1-trash-done.png' not in shots, (rc, log, st, shots))
 r = run({'V1_BUDGET': '-1'}); ck('FAIL-CLOSED: exhausted time budget skips shots, rc 1, INCOMPLETE', r[0] == 1 and 'SKIPPED' in r[1] and 'INCOMPLETE' in r[1], r[:2])
 ck('capture-owned fixture copy holds an identical non-zero 7 MB duplicate pair in every run', DUP and all(DUP), DUP)
+r = run({'STICKYRESULT':'1', 'HISTORYOVERFLOW':'1'})
+ck('observed-run regression: Escape-resistant result + overflow history uses OK/verified dismissal then menu, all6shots', r[0]==0 and 'screenshot-v1-removal-history.png' in r[3] and 'dialog-state: ABSENT' in r[6].get('v1-snapshot-trash-dismissed-live.txt', ''), r[:2])
+r = run({'STICKYRESULT':'1', 'OKSTUCK':'1'})
+ck('negative: OK does not dismiss result -> no history shot and explicit failure', r[0]==1 and 'STEP-FAIL result-dismiss' in r[1] and 'screenshot-v1-removal-history.png' not in r[3] and 'screenshot-v1-trash-done.png' not in r[3], r[:2])
+r = run({'AXUNAVAILABLE':'1'})
+ck('negative: inaccessible AX does not prove dismissal or authorize done/history shots', r[0]==1 and 'screenshot-v1-trash-done.png' not in r[3] and 'screenshot-v1-removal-history.png' not in r[3], r[:2])
 print('\n%d failed' % len(fails)); sys.exit(1 if fails else 0)
