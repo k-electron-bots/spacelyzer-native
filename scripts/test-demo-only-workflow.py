@@ -113,7 +113,11 @@ ck('wiring: sheet identity is OBSERVED from the attached sheet content, never fr
 sl = src.find('static func stateLine')
 body = src[sl:sl + 2200] if sl != -1 else ''
 ck('wiring: the state line emits OBSERVED sheet identity (Not-scanned headline, Moved...Trash result text) and content rows (the gate requires sheetId/sheetRows; Mac state records verify)',
-   sl != -1 and 'sheetId=' in body and 'sheetRows=' in body and '"Not scanned"' in body and 'hasPrefix("Moved ")' in body, sl)
+   sl != -1 and 'sheetId=' in body and 'sheetRows=' in body
+   and 'FooterAXEvidence.inspect(attached, attachedTo: w)' in body
+   and 'observedSheetIdentity(texts, complete: !observed.truncated)' in body
+   and '"Not scanned"' in src[src.find('static func observedSheetIdentity'):sl]
+   and 'hasPrefix("Moved ")' in src[src.find('static func observedSheetIdentity'):sl], sl)
 m78 = src.find('mark(stepNumber); stepNumber += 1\n                                DemoInput.key(53)')
 ck('wiring: step 78 waits for real sheet content (rows > 0, bounded) and lets the presentation settle before capture', m78 != -1 and 'contentDeadline7' in src[max(0, m78 - 3000):m78] and 'numberOfRows' in src[max(0, m78 - 3000):m78], m78)
 A = [s for s in m['steps'] if s.get('id') == 'asserts'][0]['run']
