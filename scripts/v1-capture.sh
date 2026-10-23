@@ -31,7 +31,9 @@ mkdir -p "$SAMPLE/Documents/Reports" "$SAMPLE/Downloads"
 yes 'sample duplicate content' | head -c 7340032 > "$SAMPLE/Documents/Reports/Annual Summary.pdf"
 cp "$SAMPLE/Documents/Reports/Annual Summary.pdf" "$SAMPLE/Downloads/Annual Summary (1).pdf" || { note "FAIL duplicate pair"; exit 1; }
 pkill Spacelyzer; nap 2
-open -n "$APP" --env SPZ_WINDOW_SIZE=960x600 --env SPZ_AUTOSCAN="$SAMPLE"
+# Exclusions and Duplicates open from the toolbar's Scan menu. At 960x600 the toolbar collapses that menu into the
+# "more toolbar items" overflow (run 39947043378 AX dump), so these two sections use a 1280x800 instance.
+open -n "$APP" --env SPZ_WINDOW_SIZE=1280x800 --env SPZ_AUTOSCAN="$SAMPLE"
 for _ in $(seq 1 10); do PID=$(pgrep -n -f "$APP/Contents/MacOS/Spacelyzer"); [ -n "$PID" ] && break; nap 1; done
 [ -n "$PID" ] || { note "FAIL app did not launch"; exit 1; }
 note "launched pid=$PID app=$APP"
@@ -39,26 +41,71 @@ note "launched pid=$PID app=$APP"
 for _ in $(seq 1 30); do ax hastext " items" >/dev/null 2>&1 && break; nap 1; done
 nap 2
 
-# 1. Exclusions sheet (opens only; nothing is added).
-if step exclusions ax choose Scan "Exclusions…"; then nap 2; shot exclusions; ax escape; nap 1; fi
+# 1. Exclusions sheet (opens only; nothing is added). The shot counts only when the sheet's OWN content is observed:
+# a successful menu press is not proof the sheet opened with content.
+if step exclusions ax choose Scan "Exclusions…"; then
+  excl_ok=0
+  for _ in $(seq 1 10); do ax sheettext "Scans skip these locations" >/dev/null 2>&1 && { excl_ok=1; break; }; nap 1; done
+  if [ "$excl_ok" -eq 1 ]; then nap 1; shot exclusions; else note "STEP-FAIL exclusions-content: the Exclusions sheet's own text was not observed"; diag exclusions-content; fi
+  ax escape; nap 1
+fi
 # 2. Duplicates review: wait for the real result, not a fixed delay.
 if over; then note "SKIPPED duplicates: time budget"; elif step duplicates ax choose Scan "Duplicates…"; then
-  for _ in $(seq 1 45); do ax hastext "groups ·" >/dev/null 2>&1 && break; ax hastext "No duplicate files found" >/dev/null 2>&1 && break; nap 1; done
-  nap 1; shot duplicates; ax escape; nap 1
+  dup_ok=0
+  for _ in $(seq 1 45); do ax sheettext "groups ·" >/dev/null 2>&1 && { dup_ok=1; break; }; ax sheettext "No duplicate files found" >/dev/null 2>&1 && { dup_ok=1; break; }; nap 1; done   # the sheet's own content, not background chrome
+  # The wait is a GATE: markers that never appear mean no shot (missing readiness never counts as OK).
+  if [ "$dup_ok" -eq 1 ]; then nap 1; shot duplicates; else note "STEP-FAIL duplicates-content: neither the groups summary nor the empty state appeared in the Duplicates sheet"; diag duplicates-content; fi
+  ax escape; nap 1
 fi
 # 3. Cleanup flow on ONE sample file: confirmation, result alert, removal history. Never confirms without the alert showing.
+# The target is selected BY NAME (Backup 2025.zip, the fixture's largest file): "select row 0 of the first table" is the
+# outline's largest FOLDER (run 39947043378 trashed the whole Archives folder instead of one file).
+# Back to 960x600 (the docs size for this flow; the FDA layout check is defined at 960x600).
+pkill Spacelyzer; nap 2
+open -n "$APP" --env SPZ_WINDOW_SIZE=960x600 --env SPZ_AUTOSCAN="$SAMPLE"
+for _ in $(seq 1 10); do PID=$(pgrep -n -f "$APP/Contents/MacOS/Spacelyzer"); [ -n "$PID" ] && break; nap 1; done
+[ -n "$PID" ] || { note "FAIL app did not relaunch for the Trash flow"; exit 1; }
+for _ in $(seq 1 30); do ax hastext " items" >/dev/null 2>&1 && break; nap 1; done
+nap 2
 ax press Largest; nap 2
-if over; then note "SKIPPED trash flow: time budget"; elif step select ax select 0 && nap 1 && step trash-open ax press "Move selected item to Trash"; then
+if over; then note "SKIPPED trash flow: time budget"; elif step select ax selectrow "Backup 2025.zip" && nap 1 && step trash-open ax press "Move selected item to Trash"; then
   nap 2
-  if ax hastext "Move to Trash?" >/dev/null 2>&1; then
-    shot trash-confirm
-    if step trash-confirm-press ax press "Move to Trash"; then
-      nap 3; shot trash-done
-      ax escape; nap 1
-      if step history ax press "Removal history"; then nap 2; shot removal-history; ax escape; nap 1; fi
-    fi
-  else
+  if ! ax sheettext "Move to Trash?" >/dev/null 2>&1; then   # the CONFIRMATION'S OWN title, never the background window
     note "FAIL trash-confirm: alert text not present; nothing was confirmed"; diag trash-confirm
+  elif ! ax sheettext "$SAMPLE/Archives/Backup 2025.zip" >/dev/null 2>&1; then   # must be named BY THE DIALOG: the background Largest row carries the same path and must not launder the check
+    # Scope guard: the confirmation must name the OWNED FIXTURE FILE BY ITS FULL SCANNED PATH ($SAMPLE is the
+    # disposable fixture root we passed to SPZ_AUTOSCAN, so this is exactly the path the app displays for it).
+    # A same-named file anywhere else, a folder, or another item is refused without confirming
+    # (run 39947043378 confirmed the Archives FOLDER).
+    note "FAIL trash-scope: confirmation does not name the fixture file $SAMPLE/Archives/Backup 2025.zip; nothing confirmed"; diag trash-scope; ax escape; nap 1
+  else
+    shot trash-confirm
+    # The confirm is proven by its OUTCOME on BOTH press paths: a returned error can follow a DELIVERED press (the
+    # alert dismisses itself mid-action - run 39947043378: "press failed: Move to Trash" 63 ms after the shot), and a
+    # "successful" return is not proof the result appeared. Only "not found" is a genuine missing button.
+    # The postcondition is the fresh RESULT dialog naming the exact target ("Moved Backup 2025.zip to the Trash.");
+    # a stale or unrelated result alert cannot satisfy it. Never a blind re-press.
+    press_rc=0; press_out=$(ax press "Move to Trash" 2>&1) || press_rc=1
+    if [ "$press_rc" -eq 1 ] && [[ "$press_out" == *"not found"* ]]; then
+      note "STEP-FAIL trash-confirm-press: $press_out"; diag trash-confirm-press
+    else
+      confirmed=0
+      for _ in $(seq 1 10); do ax sheettext "Moved Backup 2025.zip" >/dev/null 2>&1 && { confirmed=1; break; }; nap 1; done
+      if [ "$confirmed" -eq 1 ]; then
+        [ "$press_rc" -eq 1 ] && note "trash-confirm-press outcome verified after AXPress error (result dialog names the target)"
+        nap 2; shot trash-done
+        ax escape; nap 1
+        # Removal history must show THIS removal's journal entry in the popover, not just open.
+        if step history ax press "Removal history"; then
+          hist_ok=0
+          for _ in $(seq 1 10); do ax sheettext "Backup 2025.zip" >/dev/null 2>&1 && { hist_ok=1; break; }; nap 1; done
+          if [ "$hist_ok" -eq 1 ]; then shot removal-history; else note "STEP-FAIL history-content: journal entry for Backup 2025.zip not observed in the history popover"; diag history-content; fi
+          ax escape; nap 1
+        fi
+      else
+        note "STEP-FAIL trash-result: result dialog naming Backup 2025.zip not observed after the confirm press (rc=$press_rc: $press_out)"; diag trash-result
+      fi
+    fi
   fi
 fi
 

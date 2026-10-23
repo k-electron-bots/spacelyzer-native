@@ -279,6 +279,9 @@ struct SpacelyzerApp: App {
                             let fm = FileManager.default
                             let trashed = model.lastRemoved.last?.trashed
                             Check.expect("real-trash-moves-only-the-selected-fixture", !fm.fileExists(atPath: victimPath) && fm.fileExists(atPath: keepPath) && model.lastRemoved.count == journalBefore + 1 && (trashed.map { fm.fileExists(atPath: $0.path) } ?? false), "message=\(model.removalMessage ?? "nil") journalBefore=\(journalBefore) journalAfter=\(model.lastRemoved.count)")
+                            // Dismiss the result alert BEFORE step 14 (fidelity contract: the Moved-to-Trash alert is up at
+                            // steps 71-72 only). finishUndo re-sets removalMessage, so it is cleared again after undoRemoval below.
+                            model.removalMessage = nil; model.pendingRemoval = nil
                             try? await Task.sleep(nanoseconds: 1_000_000_000); mark(14)
                             // Undo is refused while a commit or surface publication is pending: settle the
                             // surfaces first (acting as the layout surface) so a refusal means a real block,
@@ -286,6 +289,9 @@ struct SpacelyzerApp: App {
                             _ = await PublicationRegression.settleSurfaces(model)
                             model.undoRemoval(); await model.settleRemoval()
                             Check.expect("undo-restores-the-fixture", fm.fileExists(atPath: victimPath) && !(trashed.map { fm.fileExists(atPath: $0.path) } ?? true), "message=\(model.removalMessage ?? "nil")")
+                            // finishUndo re-set removalMessage to the undo text; dismiss again so shots 15-16 are modal-free.
+                            model.removalMessage = nil; model.pendingRemoval = nil
+                            try? await Task.sleep(nanoseconds: 700_000_000)
                         } else {
                             Check.expect("real-trash-moves-only-the-selected-fixture", false, "fixture node not found")
                             Check.expect("undo-restores-the-fixture", false, "fixture node not found")
@@ -379,8 +385,9 @@ struct SpacelyzerApp: App {
                             Check.expect("outline-sort-name-and-size-order", byName && bySize, "top=\(top.count) name=\(byName) size=\(bySize)")
                         }
                         mark(16)
-                        // Steps 17-19: visual evidence without a modal in the way. Step 15's "Moved ... to the Trash" alert
-                        // covered the earlier screenshots, so dismiss it, widen the sidebar so folder item counts show, and open the menus.
+                        // Steps 17-19: visual evidence without a modal in the way. The step-13 result alert was already
+                        // dismissed before step 14 (fidelity: alerts only at 71-72); this reset is a belt-and-braces no-op
+                        // if so, then widen the sidebar so folder item counts show, and open the menus.
                         model.removalMessage = nil; model.pendingRemoval = nil; model.clearFilters(); model.selected = nil
                         try? await Task.sleep(nanoseconds: 1_000_000_000)
                         let split = DemoInput.allViews(of: NSSplitView.self).first
@@ -594,7 +601,7 @@ struct SpacelyzerApp: App {
                             inactiveFixture.isReleasedWhenClosed = false
                             inactiveFixture.makeKeyAndOrderFront(nil)
                             Perf.log(focusDiagnostic("after-fixture-key-window"))
-                            try? await Task.sleep(nanoseconds: 500_000_000)
+                            try? await Task.sleep(nanoseconds: 900_000_000)   // let the appearance transition finish (run 39947043378 shot 35 had a dark remnant)
                             Check.expect("e2-inactive-count-color-policy", (focusWindow?.isKeyWindow == false) && NSApp.keyWindow === inactiveFixture && OutlineDemoEvidence.inactiveSelectedCountPolicy && selectedBeforeInactive != nil && model.selected == selectedBeforeInactive && OutlineDemoEvidence.table?.selectedRow == tableRowBeforeInactive && selectedBeforeInactive.flatMap { model.outlineIndex[$0] } == tableRowBeforeInactive)
                             mark(35)
                             Perf.log(focusDiagnostic("before-activation"))
@@ -844,7 +851,15 @@ struct SpacelyzerApp: App {
                             // 49: a real rescan with the progress UI and Stop control visible.
                             model.clearFilters(); model.displayedRoot = 0; model.expanded = []; model.refreshOutline(); model.tab = .treemap
                             DemoInput.setContentSizeExact(DemoInput.window, NSSize(width: 1280, height: 800))
-                            try? await Task.sleep(nanoseconds: 1_000_000_000)
+                            // Wait for the relayout to stabilize, not a fixed delay (run 39947043378 shot 49 mid-relayout).
+                            // The runner can clamp the size, so the condition is stability, not an exact match.
+                            var last49 = CGSize.zero, stable49 = 0
+                            let relayoutDeadline49 = Date().addingTimeInterval(5)
+                            while stable49 < 2 && Date() < relayoutDeadline49 {
+                                let cur49 = DemoInput.window?.contentView?.frame.size ?? .zero
+                                stable49 = cur49 == last49 ? stable49 + 1 : 0; last49 = cur49
+                                try? await Task.sleep(nanoseconds: 200_000_000)
+                            }
                             let rescanT0 = Perf.now()
                             model.scan("/Library")
                             try? await Task.sleep(nanoseconds: 400_000_000)
@@ -1009,6 +1024,19 @@ struct SpacelyzerApp: App {
                                     sheetShown7 = NSApp.windows.contains { $0.isSheet }
                                     if !sheetShown7 { try? await Task.sleep(nanoseconds: 20_000_000) }
                                 }
+                                // Wait for real sheet CONTENT, not mere attachment: the list must load rows and the
+                                // presentation animation must settle (run 39947043378 captured a mid-presentation spinner).
+                                let contentDeadline7 = Date().addingTimeInterval(10)
+                                var sheetRows7 = 0
+                                while Date() < contentDeadline7 {
+                                    if let sheet7 = NSApp.windows.first(where: { $0.isSheet }) {
+                                        sheetRows7 = DemoInput.allViews(of: NSTableView.self).filter { $0.window === sheet7 }.map { $0.numberOfRows }.max() ?? 0
+                                        if sheetRows7 > 0 { break }
+                                    }
+                                    try? await Task.sleep(nanoseconds: 50_000_000)
+                                }
+                                try? await Task.sleep(nanoseconds: 300_000_000)   // presentation animation settle
+                                Perf.log("not-scanned sheet content rows=\(sheetRows7) before capture")
                                 mark(stepNumber); stepNumber += 1
                                 DemoInput.key(53)   // Esc closes the sheet (it also has a default-action Done)
                                 try? await Task.sleep(nanoseconds: 500_000_000)
@@ -1322,7 +1350,19 @@ struct SpacelyzerApp: App {
         let sz = w?.contentView?.frame.size ?? .zero
         let sheet = w?.attachedSheet != nil
         let key = NSApp.keyWindow
-        return "step=\(step) main=\(w != nil) w=\(Int(sz.width)) h=\(Int(sz.height)) sheet=\(sheet) keyIsSheet=\(key?.isSheet ?? false) alertModel=\(alertShown) appearance=\(NSApp.effectiveAppearance.name.rawValue)"
+        // Sheet identity OBSERVED from the attached sheet's own content, never from presentation intent: the
+        // Not-scanned sheet carries its "Not scanned" headline; the removal-result alert carries its
+        // "Moved ... to the Trash." message (the confirm dialog says "Move to Trash?", a different string).
+        // Anything else is "unknown", which the fidelity gate rejects.
+        var sheetId = "none", sheetRows = 0
+        if let attached = w?.attachedSheet {
+            let texts = allViews(of: NSTextField.self).filter { $0.window === attached }.map { $0.stringValue }
+            sheetRows = allViews(of: NSTableView.self).filter { $0.window === attached }.map { $0.numberOfRows }.max() ?? 0
+            if texts.contains("Not scanned") { sheetId = "notscanned" }
+            else if texts.contains(where: { $0.hasPrefix("Moved ") && $0.contains("Trash") }) { sheetId = "removal-result" }
+            else { sheetId = "unknown" }
+        }
+        return "step=\(step) main=\(w != nil) w=\(Int(sz.width)) h=\(Int(sz.height)) sheet=\(sheet) keyIsSheet=\(key?.isSheet ?? false) alertModel=\(alertShown) sheetId=\(sheetId) sheetRows=\(sheetRows) appearance=\(NSApp.effectiveAppearance.name.rawValue)"
     }
     static func click(fromTop y: CGFloat, x: CGFloat) {
         guard let w = window else { Perf.log("kbd: no window"); return }

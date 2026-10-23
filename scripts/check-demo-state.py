@@ -5,6 +5,7 @@ step (/tmp/spz-demo-state-N) before the capture handshake; this checks each agai
 Usage: check-demo-state.py <dir> <last-step> [first-step]   exit 1 on any violation."""
 import re, sys, os
 ALERT_STEPS = {71, 72}          # the real Moved-to-Trash alert is up for these steps only
+SHEET_STEPS = {78}                # the designed Not-scanned sheet: up and key, but NO alert in the model (ux-polish-7)
 def parse(line):
     return dict(kv.split('=', 1) for kv in line.split() if '=' in kv)
 def check(d, last, first=1):
@@ -19,6 +20,17 @@ def check(d, last, first=1):
             if int(s['w']) < 300 or int(s['h']) < 200: bad.append(f'step {n}: main window {s["w"]}x{s["h"]} is not a plausible app window')
         except Exception: bad.append(f'step {n}: unreadable size')
         want = n in ALERT_STEPS
+        if n in SHEET_STEPS:
+            # Only the DESIGNED Not-scanned sheet is allowed here: identity, frontmost, content loaded, no alert in the model.
+            if s.get('sheet') != 'true' or s.get('keyIsSheet') != 'true':
+                bad.append(f'step {n}: intended sheet not showing sheet={s.get("sheet")} keyIsSheet={s.get("keyIsSheet")}')
+            if s.get('sheetId') != 'notscanned': bad.append(f'step {n}: wrong sheet identity sheetId={s.get("sheetId")}')
+            if s.get('alertModel') == 'true': bad.append(f'step {n}: stale alert model over the intended sheet')
+            try:
+                if int(s.get('sheetRows', '0')) < 1: bad.append(f'step {n}: sheet content not loaded sheetRows={s.get("sheetRows")}')
+            except ValueError: bad.append(f'step {n}: unreadable sheetRows={s.get("sheetRows")}')
+            continue
+        if want and s.get('sheetId') != 'removal-result': bad.append(f'step {n}: wrong alert identity sheetId={s.get("sheetId")}')
         if (s.get('sheet') == 'true') != want or (s.get('alertModel') == 'true') != want:
             bad.append(f'step {n}: alert expected={want} sheet={s.get("sheet")} model={s.get("alertModel")}')
         if not want and s.get('keyIsSheet') == 'true': bad.append(f'step {n}: key window is a sheet')

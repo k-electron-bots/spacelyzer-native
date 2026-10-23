@@ -16,6 +16,7 @@ import Darwin
 //   docs-capture <pid> frame <label>     "x,y,w,h" (screen points) of the element whose title/description/value/label is <label>
 //   docs-capture <pid> dump              print role|title|description|label of the accessibility tree (diagnostic only)
 //   docs-capture <pid> hastext <text>    exit 0 only if <text> appears in some element's title/description/value/label
+//   docs-capture <pid> sheettext <text>  exit 0 only if <text> appears inside a dialog/sheet/popover's own subtree (never background chrome)
 // Exit 1 when a control is not found. Never touches the Trash or any real file.
 let args = CommandLine.arguments
 guard args.count >= 3, let pid = Int32(args[1]) else { FileHandle.standardError.write(Data("usage\n".utf8)); exit(2) }
@@ -72,6 +73,9 @@ case "press":
     guard args.count == 4 else { exit(2) }
     let pressable: Set<String> = ["AXRadioButton", "AXButton", "AXTab", "AXMenuButton", "AXPopUpButton", "AXCheckBox"]
     guard let target = descendants().first(where: { pressable.contains(string($0, "AXRole")) && label($0, matches: args[3]) }) else { print("not found: \(args[3])"); exit(1) }
+    // AXPress on a control of a non-active app can fail; bring the app forward first (same as `escape`).
+    NSRunningApplication(processIdentifier: pid)?.activate()
+    usleep(200_000)
     guard AXUIElementPerformAction(target, "AXPress" as CFString) == .success else { print("press failed: \(args[3])"); exit(1) }
 case "type":
     guard args.count == 4 else { exit(2) }
@@ -97,9 +101,29 @@ case "rect":
     }
     guard found else { print("no window"); exit(1) }
     print("\(Int(minX)),\(Int(minY)),\(Int(maxX - minX)),\(Int(maxY - minY))")
+case "selectrow":
+    // Select the first row (in any table/outline) whose visible text contains args[3]. v1-capture uses this to target
+    // ONE specific fixture FILE: "row 0 of the first table" is the outline's largest FOLDER (run 39947043378 trashed
+    // the whole Archives folder instead of one file).
+    guard args.count == 4 else { exit(2) }
+    func rowText(_ row: AXUIElement, _ depth: Int = 0) -> String {
+        guard depth < 3 else { return "" }
+        var text = string(row, "AXTitle") + " " + string(row, "AXValue") + " " + string(row, "AXLabel") + " " + string(row, "AXDescription")
+        for child in (read(row, "AXChildren") as? [AXUIElement]) ?? [] { text += " " + rowText(child, depth + 1) }
+        return text
+    }
+    var target: AXUIElement? = nil
+    for el in descendants(limit: 8192) where ["AXTable", "AXOutline"].contains(string(el, "AXRole")) {
+        for row in (read(el, "AXRows") as? [AXUIElement]) ?? [] where rowText(row).contains(args[3]) { target = row; break }
+        if target != nil { break }
+    }
+    guard let row = target else { print("row not found: \(args[3])"); exit(1) }
+    guard AXUIElementSetAttributeValue(row, "AXSelected" as CFString, true as CFTypeRef) == .success else { print("select failed: \(args[3])"); exit(1) }
 case "choose":
     guard args.count == 5 else { exit(2) }
     let openers: Set<String> = ["AXMenuButton", "AXPopUpButton", "AXButton"]
+    NSRunningApplication(processIdentifier: pid)?.activate()
+    usleep(200_000)
     guard let opener = descendants().first(where: { openers.contains(string($0, "AXRole")) && label($0, matches: args[3]) }) else { print("menu button not found: \(args[3])"); exit(1) }
     guard AXUIElementPerformAction(opener, "AXPress" as CFString) == .success else { print("menu press failed: \(args[3])"); exit(1) }
     usleep(800_000)
@@ -126,6 +150,47 @@ case "hastext":
         string(element, "AXValue").contains(needle) || string(element, "AXLabel").contains(needle)
     }
     if !hit { print("text not present: \(needle)"); exit(1) }
+case "sheettext":
+    // Text must appear in a FOREGROUND dialog/sheet/popover's OWN subtree, never in background window chrome:
+    // a confirmation or result must be scoped by the dialog's own text - a background element carrying the same
+    // string (e.g. the Largest row behind the dialog, whose full path matches the guard's expected path) must NOT
+    // satisfy a dialog-scope check (reviewer challenge on 0d8ed84; run 39947043378's dialog named the Archives
+    // FOLDER while the file row sat behind it).
+    guard args.count == 4 else { exit(2) }
+    let needle = args[3]
+    var scopes: [AXUIElement] = []
+    for el in descendants(limit: 8192) {
+        let role = string(el, "AXRole")
+        if role == "AXSheet" || role == "AXPopover" || (role == "AXWindow" && ["AXSystemDialog", "AXDialog"].contains(string(el, "AXSubrole"))) { scopes.append(el) }
+    }
+    func textIn(_ root: AXUIElement) -> Bool {
+        var queue = [root], i = 0, seen = 0
+        while i < queue.count && seen < 2048 {
+            let el = queue[i]; i += 1; seen += 1
+            if string(el, "AXTitle").contains(needle) || string(el, "AXDescription").contains(needle) ||
+               string(el, "AXValue").contains(needle) || string(el, "AXLabel").contains(needle) { return true }
+            if let children = read(el, "AXChildren") as? [AXUIElement] { queue += children }
+        }
+        return false
+    }
+    // One VISUAL panel can surface as nested AX matches (e.g. an AXSystemDialog window containing an AXSheet child):
+    // collapse ancestors whose subtree contains another collected scope, keeping the innermost panel, so one panel
+    // counts once. Exactly ONE INDEPENDENT foreground scope is then required: two disjoint panels, or a stale
+    // background dialog beside the real one, refuse - a background surface cannot launder an end state (reviewer).
+    // The capture script escapes each surface before opening the next, so a healthy flow shows exactly one panel;
+    // transient overlaps are retried by the caller's bounded poll.
+    func ancestors(of el: AXUIElement) -> [AXUIElement] {
+        var out: [AXUIElement] = [], cur = el, seen = Set<UInt>()
+        for _ in 0..<64 {   // bounded: parent chains are short; the visited set breaks any attribute cycle
+            guard let parent = read(cur, "AXParent") as? AXUIElement else { break }
+            if !seen.insert(CFHash(parent)).inserted { break }
+            out.append(parent); cur = parent
+        }
+        return out
+    }
+    let collapsed = scopes.filter { a in !scopes.contains { b in !CFEqual(b, a) && ancestors(of: b).contains(where: { CFEqual($0, a) }) } }
+    guard collapsed.count == 1 else { print("expected exactly one independent dialog/sheet/popover scope, found \(collapsed.count) (of \(scopes.count) matches)"); exit(1) }
+    guard textIn(collapsed[0]) else { print("text not in the foreground dialog/sheet/popover: \(needle)"); exit(1) }
 case "escape":
     NSRunningApplication(processIdentifier: pid)?.activate()
     usleep(300_000)
