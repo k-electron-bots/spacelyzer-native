@@ -91,3 +91,24 @@ fn excluding_one_hard_link_keeps_the_inode_counted_through_the_other() {
     assert_eq!(scan_ex(&d, vec![d.join("a")]).size(0), full, "bytes still counted via b");
     assert_eq!(scan_ex(&d, vec![d.join("a"), d.join("b")]).size(0), 0, "both links excluded");
 }
+
+/// Scope note, asserted: matching is BYTE-exact, so Unicode-normalization variants of the same visible name are
+/// distinct entries and an exclusion spelled one way does NOT match the other normalization (Linux behavior; macOS
+/// normalization is filesystem-dependent and remains unaudited - known-gaps doc).
+#[cfg(target_os = "linux")] // Linux pins byte-exactness; APFS may not even let NFC/NFD coexist, so this must never run on a Mac.
+#[test]
+fn nfc_and_nfd_spellings_are_distinct_and_an_exclusion_matches_only_its_exact_bytes() {
+    let d = std::env::temp_dir().join(format!("excl-{}-u", std::process::id())); let _ = fs::remove_dir_all(&d);
+    let nfc = "caf\u{00e9}";              // e + combining? no: precomposed U+00E9
+    let nfd = "cafe\u{0301}";             // e + combining acute
+    assert_ne!(nfc, nfd, "precondition: the two spellings differ in bytes");
+    fs::create_dir_all(d.join(nfc)).unwrap(); fs::write(d.join(nfc).join("f"), vec![1u8; 4000]).unwrap();
+    fs::create_dir_all(d.join(nfd)).unwrap(); fs::write(d.join(nfd).join("f"), vec![1u8; 4000]).unwrap();
+    let d = d.canonicalize().unwrap();
+    let t = scan_ex(&d, vec![]);
+    assert!(t.find(d.join(nfc).to_str().unwrap()).is_some() && t.find(d.join(nfd).to_str().unwrap()).is_some(), "both normalizations appear as distinct entries");
+    let t = scan_ex(&d, vec![d.join(nfc)]);
+    assert!(t.find(d.join(nfc).to_str().unwrap()).is_none(), "the NFC-spelled exclusion matches the NFC entry");
+    assert!(t.find(d.join(nfd).to_str().unwrap()).is_some(), "the NFD entry is NOT matched by the NFC spelling");
+    assert!(t.unobserved_exclusions.is_empty(), "the request matched, so nothing is unobserved");
+}
