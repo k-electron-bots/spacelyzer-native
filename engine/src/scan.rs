@@ -406,6 +406,13 @@ fn rebase_through_root(e: &str, root_can: &str) -> String {
     }
 }
 
+/// The walk looks exclusions up by the CURRENT directory's string; the index keys each request by its parent path.
+/// A request directly under "/" (e.g. "/tmp") is keyed under "" (its parent spelling from rfind), so the root
+/// directory's lookup key must be "" too - using "/" there would never match (previously untested, known-gaps doc).
+fn excl_lookup_key(dir: &str) -> &str {
+    if dir == "/" { "" } else { dir }
+}
+
 fn build_exclusion_index(ex: &[Option<String>]) -> std::collections::HashMap<String, Vec<(Box<str>, usize)>> {
     let mut m: std::collections::HashMap<String, Vec<(Box<str>, usize)>> = Default::default();
     for (i, x) in ex.iter().enumerate() {
@@ -470,7 +477,7 @@ fn walk(dir: &Path, ctx: &Ctx) -> (DirNode, bool, bool) {
     // not "complete under the scanner's accounting" and no final preview record may claim it.
     let mut entries_complete = true;
     let dir_excl: Option<&Vec<(Box<str>, usize)>> = if ctx.excl_by_parent.is_empty() { None } else {
-        dir.to_str().and_then(|d| ctx.excl_by_parent.get(if d == "/" { "" } else { d }))
+        dir.to_str().and_then(|d| ctx.excl_by_parent.get(excl_lookup_key(d)))
     };
     for r in raw {
         if r.name_lossy {
@@ -953,6 +960,18 @@ mod exclusion_rebase_tests {
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         base
+    }
+
+    #[test]
+    fn an_exclusion_directly_under_the_scan_root_matches_at_the_root_directory() {
+        // The known-gaps untested case: scan rooted at "/", request "/tmp". The index keys it under "" (parent
+        // spelling from rfind); the root directory's lookup must use the same "" key or the exclusion never matches.
+        let idx = build_exclusion_index(&[Some("/tmp".to_string()), Some("/tmp/x".to_string()), Some("/".to_string()), Some("relative".to_string())]);
+        let root_hits = &idx[excl_lookup_key("/")];
+        assert!(root_hits.iter().any(|(n, _)| &**n == "tmp"), "root-level request found at the root directory: {idx:?}");
+        assert!(!root_hits.iter().any(|(n, _)| &**n == "x"), "a deeper request is NOT matched at the root");
+        assert!(idx[excl_lookup_key("/tmp")].iter().any(|(n, _)| &**n == "x"), "the deeper request matches at its own parent");
+        assert!(idx.values().flatten().all(|(n, _)| !n.is_empty()), "a bare / or relative request is unindexable (reported unobserved, never matched)");
     }
 
     #[test]
