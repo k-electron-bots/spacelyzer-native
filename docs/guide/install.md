@@ -26,6 +26,8 @@ Full Disk Access in **System Settings > Privacy & Security** may be needed to re
 
 ![The in-app banner shown when Full Disk Access is missing](../images/install-fda-banner.png)
 
+Captured October 2026 on a CI Mac (run 39947043378) from the test-only build over a disposable sample folder; window-only capture. The banner sits below the filter controls.
+
 No networking code is present in the app. Scanning and filtering run locally.
 
 Continue with the [quick start](quick-start.md).
