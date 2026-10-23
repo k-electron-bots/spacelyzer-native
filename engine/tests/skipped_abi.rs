@@ -72,6 +72,23 @@ fn a_non_utf8_path_is_flagged_lossy_and_a_utf8_one_is_not() {
     assert_eq!((bad_flag, good_flag), (1, 0));
 }
 
+/// A REAL U+FFFD name is valid UTF-8: when such an entry is skipped for another reason (here: user exclusion), the
+/// skipped path is an EXACT reopenable path, not a lossy rendering - it must NOT be flagged lossy. The old heuristic
+/// flagged any path containing U+FFFD (docs/development/scanner-known-gaps.md); the flag now comes from the backend's
+/// exact per-entry name_lossy bit, and only a genuinely non-UTF-8 name is lossy.
+#[test]
+fn a_real_replacement_char_name_skipped_for_another_reason_is_not_flagged_lossy() {
+    let d = fixture("fffd-real");
+    let real = d.join("a\u{FFFD}real");
+    if !made(std::fs::create_dir_all(&real)) { return; }
+    let t = scan_with(&d, vec![real.clone()]);
+    let (c, st) = counts(&t); assert_eq!(st, 0);
+    assert_eq!(c[SkipReason::UserExcluded as usize], 1, "{:?}", t.skipped);
+    let (p, r, l, _) = item(&t, 0);
+    assert_eq!(p.unwrap(), real.to_string_lossy());
+    assert_eq!((r, l), (SkipReason::UserExcluded as u8, 0), "exact reopenable path, not a lossy rendering");
+}
+
 #[test]
 fn permission_denied_directories_are_counted_when_the_test_user_cannot_read_them() {
     use std::os::unix::fs::PermissionsExt;

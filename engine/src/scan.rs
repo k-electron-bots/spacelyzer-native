@@ -476,7 +476,7 @@ fn walk(dir: &Path, ctx: &Ctx) -> (DirNode, bool, bool) {
         if r.name_lossy {
             // Fail closed: a node must never carry a name that can alias a sibling or point at a different real entry (removal/reveal/rescan build
             // paths from names). Left out of the tree and listed as unreadable with the lossy flag; its bytes are NOT in any total.
-            ctx.skipped.lock().unwrap().push(Skipped::new(&dir.join(&*r.name), SkipReason::Unreadable));
+            ctx.skipped.lock().unwrap().push(Skipped::with_lossy(&dir.join(&*r.name), SkipReason::Unreadable, true));
             entries_complete = false;
             continue;
         }

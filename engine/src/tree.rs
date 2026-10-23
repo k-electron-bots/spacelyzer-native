@@ -200,14 +200,21 @@ pub struct Skipped {
     /// The path as UTF-8. When the real path is not valid UTF-8 this is a LOSSY rendering (invalid bytes replaced), see `lossy`.
     pub path: String,
     pub reason: SkipReason,
-    /// True when `path` may be a lossy rendering that cannot be used to reopen the entry. Conservative: the scanner's directory backend already
-    /// converts entry NAMES to UTF-8 lossily, so a non-UTF-8 name arrives as U+FFFD text; any path containing U+FFFD (or not valid UTF-8) is flagged.
-    /// A real name that legitimately contains U+FFFD is flagged too (fail closed).
+    /// True when `path` may be a lossy rendering that cannot be used to reopen the entry. Exact, not heuristic: the scanner's backends record
+    /// per-entry `name_lossy` from the raw bytes (portable: `to_str().is_none()`; macOS bulk: `from_utf8(...).is_err()`), and lossy-named entries are
+    /// skipped before they can ever become a walk ancestor, so every OTHER skipped path is built from valid-UTF-8 components and `lossy` is exactly
+    /// `path.to_str().is_none()`. A real name that legitimately contains U+FFFD is valid UTF-8 and is NO LONGER false-flagged; the one genuinely lossy
+    /// path (the name-lossy entry itself) is marked by the caller via `with_lossy` because its U+FFFD came from conversion, not from the disk bytes.
     pub lossy: bool,
 }
 impl Skipped {
     pub fn new(path: &std::path::Path, reason: SkipReason) -> Skipped {
-        Skipped { path: path.to_string_lossy().into_owned(), reason, lossy: path.to_str().map_or(true, |p| p.contains('\u{FFFD}')) }
+        Skipped { path: path.to_string_lossy().into_owned(), reason, lossy: path.to_str().is_none() }
+    }
+    /// For the one caller that already knows the exact bit: a name-lossy entry's own path (its U+FFFD is a conversion artifact, so `to_str()` is Some
+    /// even though the path cannot be reopened).
+    pub fn with_lossy(path: &std::path::Path, reason: SkipReason, lossy: bool) -> Skipped {
+        Skipped { path: path.to_string_lossy().into_owned(), reason, lossy }
     }
 }
 
