@@ -671,6 +671,20 @@ impl PreviewCollector {
     }
 }
 
+/// One skip-manifest line, fail-closed on freshness: without the caller's per-run token the consumer can never
+/// distinguish this run's skips from a stale file's, so there is no line at all and the skip panics instead of
+/// recording. The token must be non-empty and line-shaped (no tab/newline) or it would corrupt the format.
+/// Shared by BOTH producers (src unit tests and tests/common/mod.rs integration tests) so the format can never drift.
+#[doc(hidden)]
+pub fn skip_manifest_line(run_id: Option<&str>, name: &str) -> Result<String, &'static str> {
+    match run_id {
+        Some(id) if !id.is_empty() && !id.contains(['\t', '\n']) => {
+            Ok(format!("{id}\t{name}\tNOT EXERCISED: non-UTF-8 name refused (EILSEQ)\n"))
+        }
+        _ => Err("SPZ_SKIP_RUN_ID is required with SPZ_ALLOW_PLATFORM_SKIP=1 (non-empty, no tab/newline): it is the freshness token that lets the consumer reject a stale manifest"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -680,8 +694,11 @@ mod tests {
     /// `ok`; to keep that from reading as a pass:
     ///  * Linux: ANY creation failure panics. A fixture that cannot be built is a failure, never a skip.
     ///  * Elsewhere, EILSEQ panics UNLESS `SPZ_ALLOW_PLATFORM_SKIP=1` with `SPZ_SKIP_MANIFEST` naming an ABSOLUTE
-    ///    path to a caller-created file; then one line `<test name>\t<reason>` is appended under a lock, the test
-    ///    returns false here, and the caller returns early. Any other error still panics.
+    ///    path to a caller-created file AND `SPZ_SKIP_RUN_ID` carrying the caller's per-run token; then one line
+    ///    `<run id>\t<test name>\t<reason>` is appended under a lock, the test returns false here, and the caller
+    ///    returns early. Any other error still panics. The run id is the freshness proof: a consumer that knows the
+    ///    current run's token rejects a stale or foreign manifest line instead of subtracting it (a previously
+    ///    undetectable case, known-gaps doc).
     fn made(r: std::io::Result<()>) -> bool {
         use std::io::Write;
         static MANIFEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -694,7 +711,7 @@ mod tests {
                 }
                 let path = std::path::PathBuf::from(std::env::var("SPZ_SKIP_MANIFEST").unwrap_or_else(|_| panic!("{name}: SPZ_SKIP_MANIFEST is required with SPZ_ALLOW_PLATFORM_SKIP=1")));
                 assert!(path.is_absolute(), "{name}: SPZ_SKIP_MANIFEST must be an absolute path, got {}", path.display());
-                let line = format!("{name}\tNOT EXERCISED: non-UTF-8 name refused (EILSEQ)\n");
+                let line = skip_manifest_line(std::env::var("SPZ_SKIP_RUN_ID").ok().as_deref(), &name).unwrap_or_else(|m| panic!("{name}: {m}"));
                 let _g = MANIFEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
                 let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap_or_else(|e| panic!("{name}: manifest {} must be created by the caller before the run: {e}", path.display()));
                 f.write_all(line.as_bytes()).expect("write skip manifest");
@@ -703,6 +720,16 @@ mod tests {
             }
             Err(e) => panic!("fixture creation failed: {e}"),
         }
+    }
+
+    #[test]
+    fn a_skip_line_requires_the_run_id_and_carries_it_verbatim() {
+        assert!(skip_manifest_line(None, "t").is_err(), "no token: fail closed");
+        assert!(skip_manifest_line(Some(""), "t").is_err(), "empty token: fail closed");
+        assert!(skip_manifest_line(Some("a\tb"), "t").is_err(), "tab would corrupt the line format");
+        assert!(skip_manifest_line(Some("a\nb"), "t").is_err(), "newline would inject a second line");
+        let line = skip_manifest_line(Some("gha-1-2"), "my_test").unwrap();
+        assert!(line.starts_with("gha-1-2\tmy_test\t") && line.ends_with("EILSEQ)\n"), "line is <run id>\\t<name>\\t<reason>: {line:?}");
     }
 
     #[test]

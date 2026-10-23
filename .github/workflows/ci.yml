@@ -359,6 +359,9 @@ jobs:
           export SPZ_ALLOW_PLATFORM_SKIP=1
           export SPZ_SKIP_MANIFEST="$RUNNER_TEMP/spz-skip-manifest.txt"
           : > "$SPZ_SKIP_MANIFEST"
+          # Freshness token: the engine refuses to record a skip without it, and every recorded line carries it,
+          # so a stale or foreign manifest is detected below instead of being silently subtracted.
+          export SPZ_SKIP_RUN_ID="gha-${{ github.run_id }}-${{ github.run_attempt }}"
           # --no-fail-fast: one failing binary must not hide the results of the binaries after it.
           status=0
           cargo test --release -p spacelyzer-engine --no-fail-fast -- --nocapture 2>&1 | tee /tmp/cargotest.log || status=$?
@@ -366,6 +369,13 @@ jobs:
             grep -E -A3 "panicked|firmlink check" /tmp/cargotest.log | grep -v "^--" | sort -u | head -12 | while IFS= read -r l; do echo "::error::${l//%/%25}"; done || true
           fi
           { grep -E "firmlink check" /tmp/cargotest.log || true; } | while IFS= read -r l; do echo "::notice::${l//%/%25}"; done
+          # Freshness gate: every manifest line must carry THIS run's token. A stale or foreign line means the
+          # subtraction below would hide tests from a DIFFERENT run, so the step fails instead of accounting.
+          stale=$(grep -vc "^$SPZ_SKIP_RUN_ID"$'\t' "$SPZ_SKIP_MANIFEST" || true)
+          if [ "$stale" -ne 0 ]; then
+            echo "::error::skip manifest has $stale line(s) without the current run id ($SPZ_SKIP_RUN_ID) - stale or foreign manifest; refusing to count skips"
+            status=1
+          fi
           # Accounting: skipped tests are reported ok by cargo, so subtract the manifest names from the raw total.
           raw_passed=$(awk '/^test result:/ {for (i = 2; i <= NF; i++) if ($i == "passed;") n += $(i-1)} END {print n + 0}' /tmp/cargotest.log)
           raw_failed=$(awk '/^test result:/ {for (i = 2; i <= NF; i++) if ($i == "failed;") n += $(i-1)} END {print n + 0}' /tmp/cargotest.log)

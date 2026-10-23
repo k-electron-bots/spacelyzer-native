@@ -30,8 +30,9 @@ STUBS = {
  'rustup': 'exit 0', 'cargo': '''# stands in for `cargo test`: prints per-binary summaries per $STUB_CARGO (pass | skips | fail | abort)
 case "$STUB_CARGO" in
   pass) echo 'test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'; echo 'test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'; exit 0;;
-  skips) echo 'test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'; echo 'test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'; printf 'nonutf8_a\\nnonutf8_b\\n' >> "$SPZ_SKIP_MANIFEST"; exit 0;;
-  skips8) echo 'test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'; echo 'test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'; printf '%s\\n' 'non_utf8_names_are_left_out_of_the_tree_so_they_are_never_grouped_or_aliased' 'inspect_path_boundary_contract' 'a_non_utf8_scan_root_is_refused_and_a_non_utf8_exclusion_matches_nothing' 'a_non_utf8_path_is_flagged_lossy_and_a_utf8_one_is_not' 'lossy_name_siblings_cannot_alias_a_real_node_or_overmatch_an_exclusion' 'events::tests::non_utf8_root_is_refused_not_scanned_lossily' 'events::tests::non_utf8_root_round_trips_exactly' 'events::tests::non_utf8_roots_with_identical_lossy_text_stay_distinct' >> "$SPZ_SKIP_MANIFEST"; exit 0;;
+  skips) echo 'test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'; echo 'test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'; printf '%s\\t%s\\n' "$SPZ_SKIP_RUN_ID" 'nonutf8_a' "$SPZ_SKIP_RUN_ID" 'nonutf8_b' >> "$SPZ_SKIP_MANIFEST"; exit 0;;
+  stale) echo 'test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'; echo 'test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'; printf 'OLD_RUN_ID\\tleftover_from_a_previous_run\\n' >> "$SPZ_SKIP_MANIFEST"; exit 0;;
+  skips8) echo 'test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'; echo 'test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'; for n in 'non_utf8_names_are_left_out_of_the_tree_so_they_are_never_grouped_or_aliased' 'inspect_path_boundary_contract' 'a_non_utf8_scan_root_is_refused_and_a_non_utf8_exclusion_matches_nothing' 'a_non_utf8_path_is_flagged_lossy_and_a_utf8_one_is_not' 'lossy_name_siblings_cannot_alias_a_real_node_or_overmatch_an_exclusion' 'events::tests::non_utf8_root_is_refused_not_scanned_lossily' 'events::tests::non_utf8_root_round_trips_exactly' 'events::tests::non_utf8_roots_with_identical_lossy_text_stay_distinct'; do printf '%s\t%s\n' "$SPZ_SKIP_RUN_ID" "$n"; done >> "$SPZ_SKIP_MANIFEST"; exit 0;;
   fail) echo 'test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'; echo "thread 'x' panicked at engine/tests/engine.rs:1:1"; echo 'test result: FAILED. 19 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out'; exit 101;;
   abort) echo 'error: could not compile'; exit 101;;
 esac''',
@@ -397,11 +398,12 @@ def demo_cases():
             shutil.rmtree(w)
 
 def rust_cases():
-    doc = load(CI); body = step(doc, 'macos', 'rust')['run']
+    doc = load(CI); body = step(doc, 'macos', 'rust')['run'].replace('${{ github.run_id }}', 'RID').replace('${{ github.run_attempt }}', '1')
     for opts in ('-e', '-eo pipefail'):
         for name, env, want_rc0, want_in in [('all pass', {'STUB_CARGO': 'pass'}, True, ['raw passed=51 failed=0', 'exercised passes=51', 'cargo exit=0']),
                                              ('passes with 2 platform skips', {'STUB_CARGO': 'skips'}, True, ['raw passed=51', 'NOT EXERCISED (platform skips, counted as passed by cargo)=2', 'exercised passes=49', 'nonutf8_a']),
                                              ('passes with the 8 skips the next Mac run must record (5 existing + 3 events.rs additions)', {'STUB_CARGO': 'skips8'}, True, ['raw passed=51', 'NOT EXERCISED (platform skips, counted as passed by cargo)=8', 'exercised passes=43', 'non_utf8_names_are_left_out_of_the_tree_so_they_are_never_grouped_or_aliased', 'inspect_path_boundary_contract', 'a_non_utf8_scan_root_is_refused_and_a_non_utf8_exclusion_matches_nothing', 'a_non_utf8_path_is_flagged_lossy_and_a_utf8_one_is_not', 'lossy_name_siblings_cannot_alias_a_real_node_or_overmatch_an_exclusion', 'events::tests::non_utf8_root_is_refused_not_scanned_lossily', 'events::tests::non_utf8_root_round_trips_exactly', 'events::tests::non_utf8_roots_with_identical_lossy_text_stay_distinct']),
+                                             ('fails closed on a stale manifest (lines without the current run id)', {'STUB_CARGO': 'stale'}, False, ['stale or foreign manifest', 'OLD_RUN_ID']),
                                              ('one test fails', {'STUB_CARGO': 'fail'}, False, ['cargo exit=101', 'APPROXIMATE', '::error::']),
                                              ('cargo cannot compile', {'STUB_CARGO': 'abort'}, False, ['cargo exit=101', 'raw passed=0'])]:
             w = workdir(); b = body.replace('/tmp/cargotest.log', w + '/tmp/cargotest.log')
