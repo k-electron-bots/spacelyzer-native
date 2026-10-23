@@ -7,7 +7,9 @@ def mk(rows):
     for n, line in rows.items(): open(f'{d}/spz-demo-state-{n}', 'w').write(line + '\n')
     return d
 def line(n, w=1280, h=800, sheet=False, key=False, model=False, main=True):
-    return f'step={n} main={str(main).lower()} w={w} h={h} sheet={str(sheet).lower()} keyIsSheet={str(key).lower()} alertModel={str(model).lower()} appearance=NSAppearanceNameAqua'
+    sid = 'removal-result' if model else ('notscanned' if sheet else 'none')
+    rows = 3 if (sheet and not model) else 0
+    return f'step={n} main={str(main).lower()} w={w} h={h} sheet={str(sheet).lower()} keyIsSheet={str(key).lower()} alertModel={str(model).lower()} sheetId={sid} sheetRows={rows} appearance=NSAppearanceNameAqua'
 good = {n: line(n, sheet=n in (71, 72), model=n in (71, 72)) for n in range(70, 76)}
 # the defect: the alert sheet was resized and became "the window": no main window, key is a sheet, alert lingers after 72
 bad = dict(good); bad[72] = line(72, w=1024, h=700, sheet=True, key=True, model=True)
@@ -22,9 +24,24 @@ t('missing record fails', c.check(mk({n: v for n, v in good.items() if n != 74})
 t('alert missing at 71 fails', any('step 71' in x for x in c.check(mk({**good, 71: line(71)}), 75, 70)))
 t('tiny window fails', any('plausible' in x for x in c.check(mk({**good, 73: line(73, w=40, h=40)}), 75, 70)))
 # the exact line shape Swift's DemoInput.stateLine interpolation produces for a healthy step (lowercase Bool), and for the stale-alert defect
-healthy = 'step=12 main=true w=1280 h=800 sheet=false keyIsSheet=false alertModel=false appearance=NSAppearanceNameAqua'
-t('real healthy Swift-format line passes (all 81 steps healthy)', c.check(mk({n: healthy.replace('step=12', f'step={n}') if n not in (71, 72) else healthy.replace('step=12', f'step={n}').replace('sheet=false', 'sheet=true').replace('alertModel=false', 'alertModel=true') for n in range(1, 82)}), 81) == [])
-stale = 'step=73 main=false w=1024 h=700 sheet=true keyIsSheet=true alertModel=true appearance=NSAppearanceNameDarkAqua'
+healthy = 'step=12 main=true w=1280 h=800 sheet=false keyIsSheet=false alertModel=false sheetId=none sheetRows=0 appearance=NSAppearanceNameAqua'
+def healthy81(n):
+    # per-step designed state: the Moved-to-Trash alert is up at 71-72; the designed Not-scanned sheet (no alert) is up and key at 78
+    line = healthy.replace('step=12', f'step={n}')
+    if n in (71, 72): line = line.replace('sheet=false', 'sheet=true').replace('alertModel=false', 'alertModel=true').replace('sheetId=none', 'sheetId=removal-result')
+    if n == 78: line = line.replace('sheet=false', 'sheet=true').replace('keyIsSheet=false', 'keyIsSheet=true').replace('sheetId=none', 'sheetId=notscanned').replace('sheetRows=0', 'sheetRows=3')
+    return line
+t('real healthy Swift-format line passes (all 81 steps healthy, alert at 71/72, Not-scanned sheet at 78)', c.check(mk({n: healthy81(n) for n in range(1, 82)}), 81) == [])
+t('intended Not-scanned sheet at 78 (sheet key, no alert model) passes', c.check(mk({78: healthy81(78)}), 78, 78) == [])
+t('stale alert model at 78 still fails (the sheet must NOT be an alert)', c.check(mk({78: healthy81(78).replace('alertModel=false', 'alertModel=true')}), 78, 78) != [])
+t('intended sheet missing at 78 fails', c.check(mk({78: healthy81(78).replace('sheet=true', 'sheet=false').replace('keyIsSheet=true', 'keyIsSheet=false')}), 78, 78) != [])
+t('a sheet at 77 (no designed sheet there) fails', c.check(mk({77: healthy81(77).replace('sheet=false', 'sheet=true')}), 77, 77) != [])
+t('sheet present but not key at 78 fails (the shot needs the sheet frontmost)', c.check(mk({78: healthy81(78).replace('keyIsSheet=true', 'keyIsSheet=false')}), 78, 78) != [])
+stale = 'step=73 main=false w=1024 h=700 sheet=true keyIsSheet=true alertModel=true sheetId=removal-result sheetRows=0 appearance=NSAppearanceNameDarkAqua'
 t('real stale-alert Swift-format line fails', c.check(mk({73: stale}), 73, 73) != [])
+t('wrong sheet identity at 78 fails (only the designed Not-scanned sheet is allowed)', c.check(mk({78: healthy81(78).replace('sheetId=notscanned', 'sheetId=unknown')}), 78, 78) != [])
+t('sheet up but content not loaded at 78 fails (mid-presentation spinner is not a publishable shot)', c.check(mk({78: healthy81(78).replace('sheetRows=3', 'sheetRows=0')}), 78, 78) != [])
+t('wrong alert identity at 71 fails', c.check(mk({71: healthy81(71).replace('sheetId=removal-result', 'sheetId=unknown')}), 71, 71) != [])
+t('missing identity fields at 78 fail closed', c.check(mk({78: 'step=78 main=true w=1280 h=800 sheet=true keyIsSheet=true alertModel=false appearance=x'}), 78, 78) != [])
 t('capitalised Python-style booleans are NOT accepted', c.check(mk({12: healthy.replace('true', 'True').replace('false', 'False')}), 12, 12) != [])
 sys.exit(1 if fails else 0)

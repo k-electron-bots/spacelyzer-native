@@ -77,7 +77,9 @@ CD = R + '/scripts/check-demo-state.py'
 def write_states(dirp, mod=None):
     for n in range(1, 82):
         alert = n in (71, 72)
-        s = dict(step=n, main='true', w=1280, h=800, sheet=str(alert).lower(), alertModel=str(alert).lower(), keyIsSheet='false')
+        s = dict(step=n, main='true', w=1280, h=800, sheet=str(alert).lower(), alertModel=str(alert).lower(), keyIsSheet='false',
+                 sheetId=('removal-result' if alert else 'none'), sheetRows=0)
+        if n == 78: s.update(sheet='true', keyIsSheet='true', sheetId='notscanned', sheetRows=3)   # the designed Not-scanned sheet: up and key, content loaded, no alert in the model
         if mod: mod(n, s)
         if s is None: continue
         open(f'{dirp}/spz-demo-state-{n}', 'w').write(' '.join(f'{k}={v}' for k, v in s.items()) + '\n')
@@ -95,6 +97,25 @@ ck('fidelity: no alert at step 71 -> rc1', fidelity(lambda n, s: s.update(sheet=
 ck('fidelity: tiny window at step 76 -> rc1', fidelity(lambda n, s: s.update(w=100) if n == 76 else None).returncode == 1)
 ck('fidelity: key window is a sheet at step 79 -> rc1', fidelity(lambda n, s: s.update(keyIsSheet='true') if n == 79 else None).returncode == 1)
 ck('fidelity: no main window at step 74 -> rc1', fidelity(lambda n, s: s.update(main='false') if n == 74 else None).returncode == 1)
+ck('fidelity: wrong sheet identity at 78 -> rc1', fidelity(lambda n, s: s.update(sheetId='unknown') if n == 78 else None).returncode == 1)
+ck('fidelity: sheet content not loaded at 78 (sheetRows=0) -> rc1', fidelity(lambda n, s: s.update(sheetRows=0) if n == 78 else None).returncode == 1)
+ck('fidelity: wrong alert identity at 71 -> rc1', fidelity(lambda n, s: s.update(sheetId='unknown') if n == 71 else None).returncode == 1)
+# --- static wiring: the step-13 result alert must be dismissed BEFORE mark(14) AND again after the undo (fidelity: alerts only at 71-72)
+src = open(R + '/Sources/Spacelyzer/SpacelyzerApp.swift').read()
+real_ck = src.find('Check.expect("real-trash-moves-only-the-selected-fixture"'); dismiss1 = src.find('model.removalMessage = nil; model.pendingRemoval = nil', real_ck); mark14 = src.find('mark(14)', real_ck)
+undo_ck = src.find('Check.expect("undo-restores-the-fixture"'); dismiss2 = src.find('model.removalMessage = nil; model.pendingRemoval = nil', undo_ck); settle700 = src.find('700_000_000', undo_ck)
+ck('wiring: step-13 result alert dismissed before mark(14) and again after the undo check (not execution proof; Mac pixels verify)', -1 < real_ck < dismiss1 < mark14 and -1 < undo_ck < dismiss2 < settle700, (real_ck, dismiss1, mark14, undo_ck, dismiss2))
+cv = open(R + '/Sources/Spacelyzer/ContentView.swift').read()
+scan_menu = cv.find('Label("Scan", systemImage: "externaldrive")'); scan_label = cv.find('.accessibilityLabel("Scan")')
+ck('wiring: the icon-only Scan toolbar menu carries an accessibility label (Finding 3: unlabeled AXButton in the run dump; Mac AX tree verifies)', -1 < scan_menu < scan_label, (scan_menu, scan_label))
+ck('wiring: sheet identity is OBSERVED from the attached sheet content, never from presentation intent (no DemoSheetState flag anywhere)',
+   'DemoSheetState' not in cv and 'DemoSheetState' not in src, 'intent flag still referenced')
+sl = src.find('static func stateLine')
+body = src[sl:sl + 2200] if sl != -1 else ''
+ck('wiring: the state line emits OBSERVED sheet identity (Not-scanned headline, Moved...Trash result text) and content rows (the gate requires sheetId/sheetRows; Mac state records verify)',
+   sl != -1 and 'sheetId=' in body and 'sheetRows=' in body and '"Not scanned"' in body and 'hasPrefix("Moved ")' in body, sl)
+m78 = src.find('mark(stepNumber); stepNumber += 1\n                                DemoInput.key(53)')
+ck('wiring: step 78 waits for real sheet content (rows > 0, bounded) and lets the presentation settle before capture', m78 != -1 and 'contentDeadline7' in src[max(0, m78 - 3000):m78] and 'numberOfRows' in src[max(0, m78 - 3000):m78], m78)
 A = [s for s in m['steps'] if s.get('id') == 'asserts'][0]['run']
 def run_asserts(npass=178, shots=81, timing='', mod=None, missing_state=None, nfail=0):
     work = tempfile.mkdtemp(prefix='demoassert-'); made = []
@@ -119,6 +140,8 @@ if base is None: print('NOT-RUN: /tmp/spz-* files already exist; refusing to clo
 ck('UI-assertion step executed: 178 PASS, 81 shots, 81 healthy states -> rc0', base.returncode == 0, base.stdout[-300:] + base.stderr[-300:])
 for name, kw in [('app not running at end', dict(timing='APP NOT RUNNING at end (crashed or exited)\n')), ('demo step timeout', dict(timing='DEMO STEP TIMEOUT: expected 73, last 72\n')), ('demo finish timeout', dict(timing='DEMO FINISH TIMEOUT: final assertions not completed\n')),
                  ('missing screenshot (80 of 81)', dict(shots=80)), ('177 results instead of 178', dict(npass=177)), ('a FAIL line among 178', dict(npass=177, nfail=1)),
-                 ('missing state record 77', dict(missing_state=77)), ('stale alert at step 78', dict(mod=lambda n, s: s.update(sheet='true', alertModel='true') if n == 78 else None))]:
+                 ('missing state record 77', dict(missing_state=77)), ('stale alert at step 78', dict(mod=lambda n, s: s.update(alertModel='true') if n == 78 else None)),
+                 ('intended sheet missing at 78', dict(mod=lambda n, s: s.update(sheet='false', keyIsSheet='false') if n == 78 else None)),
+                 ('a sheet at 77 (no designed sheet there)', dict(mod=lambda n, s: s.update(sheet='true') if n == 77 else None))]:
     r = run_asserts(**kw); ck(f'UI-assertion step: {name} -> rc1 (not weakened)', r is not None and r.returncode == 1, None if r is None else (r.returncode, r.stdout[-200:]))
 print(f'\n{len(fails)} failed'); sys.exit(1 if fails else 0)

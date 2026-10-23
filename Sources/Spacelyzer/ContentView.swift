@@ -53,6 +53,7 @@ struct ContentView: View {
                     Button("Duplicates…") { showDuplicates = true }
                         .disabled(model.tree == nil)
                 } label: { Label("Scan", systemImage: "externaldrive") }
+                    .accessibilityLabel("Scan").help("Scan a folder, manage exclusions, or review duplicates")
                 if model.scanning {
                     Button { model.cancel() } label: { Label("Stop", systemImage: "stop.circle") }
                         .accessibilityLabel("Stop scan").help("Stop the current scan")

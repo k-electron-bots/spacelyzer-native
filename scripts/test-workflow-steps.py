@@ -43,7 +43,7 @@ case "${STUB_DEMO:+x} $* " in x*" SPZ_DEMO=1 "*)
   case "$STUB_DEMO" in
     none) :;;
     *) n=81; case "$STUB_DEMO" in stall:*) n=$((${STUB_DEMO#stall:} - 1));; esac
-       for i in $(seq 1 $n); do al=false; [ $i = 71 ] || [ $i = 72 ] && al=true; printf 'step=%s main=true w=1280 h=800 sheet=%s keyIsSheet=false alertModel=%s appearance=x\\n' $i $al $al > "$T/spz-demo-state-$i"; touch "$T/spz-demo-ready-$i"; done
+       for i in $(seq 1 $n); do al=false; [ $i = 71 ] || [ $i = 72 ] && al=true; sh=$al; key=false; sid=none; rows=0; $al && sid=removal-result; [ $i = 78 ] && { sh=true; key=true; sid=notscanned; rows=3; }; printf 'step=%s main=true w=1280 h=800 sheet=%s keyIsSheet=%s alertModel=%s sheetId=%s sheetRows=%s appearance=x\\n' $i $sh $key $al $sid $rows > "$T/spz-demo-state-$i"; touch "$T/spz-demo-ready-$i"; done
        [ "$STUB_DEMO" = full ] && { touch "$T/spz-demo-finished"; for i in $(seq 1 178); do echo "PASS c$i d"; done > "$T/spz-assertions.txt"; };;
   esac; exit 0;; esac
 rd=""; for a in "$@"; do case "$a" in SPZ_RESULT_DIR=*) rd="${a#SPZ_RESULT_DIR=}";; esac; done
@@ -152,7 +152,9 @@ def asserts_cases():
         for i in range(1, 82):
             al = i in (71, 72)
             if i in skip_state: continue
-            open(f'{w}/tmp/spz-demo-state-{i}', 'w').write(f'step={i} main={"false" if i in no_main else "true"} w=1280 h=800 sheet={str(al or i in no_main).lower()} keyIsSheet={str(i in no_main).lower()} alertModel={str(al or i in no_main).lower()} appearance=x\n')
+            intended_sheet = i == 78 and i not in no_main
+            sid = 'removal-result' if al else ('notscanned' if intended_sheet else 'none'); rows = 3 if intended_sheet else 0
+            open(f'{w}/tmp/spz-demo-state-{i}', 'w').write(f'step={i} main={"false" if i in no_main else "true"} w=1280 h=800 sheet={str(al or intended_sheet or i in no_main).lower()} keyIsSheet={str(intended_sheet or i in no_main).lower()} alertModel={str(al or i in no_main).lower()} sheetId={sid} sheetRows={rows} appearance=x\n')
         return w
     for opts in ('-e', '-eo pipefail'):
         for name, kw, want_fail in [('178 PASS, all screenshots', {}, False), ('177 results', {'n': 177}, True), ('178 results, one FAIL', {'f': 1}, True),
