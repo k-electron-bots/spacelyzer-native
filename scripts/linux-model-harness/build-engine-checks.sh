@@ -44,6 +44,16 @@ bx=next(k for k,l in enumerate(a) if 'private final class Box<T>' in l and k>en)
 be=next(k for k in range(bx,len(a)) if a[k].startswith('    }'))
 nd=next(l for l in a if 'private static func node(_ t: Tree, _ name: String)' in l)
 body='\n'.join(a[st:en+1]); box='\n'.join(a[bx:be+1])
+# Slice the existing export checks verbatim, including their real fixture helper.
+def method(signature):
+    start=next(k for k,l in enumerate(a) if signature in l)
+    end=next(k for k in range(start+1,len(a)) if a[k]=='    }')
+    return '\n'.join(a[start:end+1])
+export_methods='\n'.join(method(sig) for sig in [
+    'private static func csvChecks() {',
+    'private static func csvExportFlowChecks() async {',
+    'private static func fixture(_ tag: String, _ files: [(String, Int)]) -> URL {'])
+
 d=open(r+'/DuplicatesReviewView.swift').read(); i=d.index('enum DuplicateRemoval {'); j=d.index('\n}\n',i)+3
 open(w+'/dupremoval.swift','w').write('import Foundation\nimport CSpacelyzer\n'+d[i:j])
 def sl(f,key):
@@ -53,9 +63,9 @@ def sl(f,key):
     if t[pre:i].strip()=='@MainActor': i=pre
     j=t.index('\n}\n',i)+3
     return t[i:j]
-parts=[('DuplicatesReviewView.swift','final class DuplicatesModel'),('SkippedListView.swift','final class SkippedListModel'),('VolumeHeaderView.swift','final class VolumeHeaderModel'),('FullDiskAccessView.swift','enum FullDiskAccessStatus'),('FullDiskAccessView.swift','enum FullDiskAccessProbeOutcome'),('FullDiskAccessView.swift','final class FullDiskAccessModel'),('ExclusionsView.swift','enum ExclusionEditing'),('ExclusionsView.swift','final class ExclusionsModel'),('SpacelyzerApp.swift','final class OpenGate')]
+parts=[('TreemapView.swift','final class TreemapPublicationProbe'),('TreemapView.swift','struct TreemapPublicationEvidence'),('DuplicatesReviewView.swift','final class DuplicatesModel'),('SkippedListView.swift','final class SkippedListModel'),('VolumeHeaderView.swift','final class VolumeHeaderModel'),('FullDiskAccessView.swift','enum FullDiskAccessStatus'),('FullDiskAccessView.swift','enum FullDiskAccessProbeOutcome'),('FullDiskAccessView.swift','final class FullDiskAccessModel'),('ExclusionsView.swift','enum ExclusionEditing'),('ExclusionsView.swift','final class ExclusionsModel'),('SpacelyzerApp.swift','final class OpenGate')]
 open(w+'/sliced_models.swift','w').write('import Foundation\nimport CSpacelyzer\nimport AppKit\n'+'\n'.join(sl(f,k) for f,k in parts))
-open(w+'/folders_exec.swift','w').write('import Foundation\n@MainActor enum FoldersExec {\n'+box+'\n'+nd+'\n'+body+'\n    static func go() async { await foldersChecks() }\n}\n')
+open(w+'/folders_exec.swift','w').write('import Foundation\n@MainActor enum FoldersExec {\n'+box+'\n'+nd+'\n'+body+'\n'+export_methods+'\n    static func go() async { await foldersChecks(); csvChecks(); await csvExportFlowChecks() }\n}\n')
 PY
 cat > "$W/main.swift" <<'M'
 import Foundation
