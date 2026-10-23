@@ -18,7 +18,10 @@ shot() {   # shot <name>: capture the union of the app's windows (main window pl
   local r; r=$(ax rect) || { note "FAIL $1 rect: $r"; return 1; }
   screencapture -x -R "$r" "$OUT/screenshot-v1-$1.png" && [ -s "$OUT/screenshot-v1-$1.png" ] && note "OK $1 rect=$r" || { note "FAIL $1 screencapture rect=$r"; return 1; }
 }
-diag() { ax dump > "$OUT/v1-dump-$1.txt" 2>&1; }
+diag() { ax dump > "$OUT/v1-dump-$1.txt" 2>&1; ax snapshot > "$OUT/v1-snapshot-$1.txt" 2>&1; }
+# snap <stage>: bounded full-attribute AX snapshot WHILE the surface is live (before dismissal), so one Mac contact
+# settles the SDK/AX unknowns (scope identity, AXSelected semantics, parent chains) whether the flow passes or fails.
+snap() { note "SNAPSHOT $1"; ax snapshot > "$OUT/v1-snapshot-$1.txt" 2>&1; }
 step() {   # step <shot name> <command...>: run an AX command; on failure keep a diagnostic tree dump
   local n="$1"; shift
   "$@" || { note "STEP-FAIL $n: $*"; diag "$n"; return 1; }
@@ -46,7 +49,7 @@ nap 2
 if step exclusions ax choose Scan "Exclusions…"; then
   excl_ok=0
   for _ in $(seq 1 10); do ax sheettext "Scans skip these locations" >/dev/null 2>&1 && { excl_ok=1; break; }; nap 1; done
-  if [ "$excl_ok" -eq 1 ]; then nap 1; shot exclusions; else note "STEP-FAIL exclusions-content: the Exclusions sheet's own text was not observed"; diag exclusions-content; fi
+  if [ "$excl_ok" -eq 1 ]; then snap exclusions-live; nap 1; shot exclusions; else note "STEP-FAIL exclusions-content: the Exclusions sheet's own text was not observed"; diag exclusions-content; fi
   ax escape; nap 1
 fi
 # 2. Duplicates review: wait for the real result, not a fixed delay.
@@ -54,7 +57,7 @@ if over; then note "SKIPPED duplicates: time budget"; elif step duplicates ax ch
   dup_ok=0
   for _ in $(seq 1 45); do ax sheettext "groups ·" >/dev/null 2>&1 && { dup_ok=1; break; }; ax sheettext "No duplicate files found" >/dev/null 2>&1 && { dup_ok=1; break; }; nap 1; done   # the sheet's own content, not background chrome
   # The wait is a GATE: markers that never appear mean no shot (missing readiness never counts as OK).
-  if [ "$dup_ok" -eq 1 ]; then nap 1; shot duplicates; else note "STEP-FAIL duplicates-content: neither the groups summary nor the empty state appeared in the Duplicates sheet"; diag duplicates-content; fi
+  if [ "$dup_ok" -eq 1 ]; then snap duplicates-live; nap 1; shot duplicates; else note "STEP-FAIL duplicates-content: neither the groups summary nor the empty state appeared in the Duplicates sheet"; diag duplicates-content; fi
   ax escape; nap 1
 fi
 # 3. Cleanup flow on ONE sample file: confirmation, result alert, removal history. Never confirms without the alert showing.
@@ -68,7 +71,7 @@ for _ in $(seq 1 10); do PID=$(pgrep -n -f "$APP/Contents/MacOS/Spacelyzer"); [ 
 for _ in $(seq 1 30); do ax hastext " items" >/dev/null 2>&1 && break; nap 1; done
 nap 2
 ax press Largest; nap 2
-if over; then note "SKIPPED trash flow: time budget"; elif step select ax selectrow "Backup 2025.zip" && nap 1 && step trash-open ax press "Move selected item to Trash"; then
+if over; then note "SKIPPED trash flow: time budget"; elif step select ax selectrow "Backup 2025.zip" && snap select-target && nap 1 && step trash-open ax press "Move selected item to Trash"; then
   nap 2
   if ! ax sheettext "Move to Trash?" >/dev/null 2>&1; then   # the CONFIRMATION'S OWN title, never the background window
     note "FAIL trash-confirm: alert text not present; nothing was confirmed"; diag trash-confirm
@@ -79,6 +82,7 @@ if over; then note "SKIPPED trash flow: time budget"; elif step select ax select
     # (run 39947043378 confirmed the Archives FOLDER).
     note "FAIL trash-scope: confirmation does not name the fixture file $SAMPLE/Archives/Backup 2025.zip; nothing confirmed"; diag trash-scope; ax escape; nap 1
   else
+    snap trash-confirm-live
     shot trash-confirm
     # The confirm is proven by its OUTCOME on BOTH press paths: a returned error can follow a DELIVERED press (the
     # alert dismisses itself mid-action - run 39947043378: "press failed: Move to Trash" 63 ms after the shot), and a
@@ -89,17 +93,18 @@ if over; then note "SKIPPED trash flow: time budget"; elif step select ax select
     if [ "$press_rc" -eq 1 ] && [[ "$press_out" == *"not found"* ]]; then
       note "STEP-FAIL trash-confirm-press: $press_out"; diag trash-confirm-press
     else
+      snap trash-after-press
       confirmed=0
       for _ in $(seq 1 10); do ax sheettext "Moved Backup 2025.zip" >/dev/null 2>&1 && { confirmed=1; break; }; nap 1; done
       if [ "$confirmed" -eq 1 ]; then
         [ "$press_rc" -eq 1 ] && note "trash-confirm-press outcome verified after AXPress error (result dialog names the target)"
-        nap 2; shot trash-done
+        snap trash-result-live; nap 2; shot trash-done
         ax escape; nap 1
         # Removal history must show THIS removal's journal entry in the popover, not just open.
         if step history ax press "Removal history"; then
           hist_ok=0
           for _ in $(seq 1 10); do ax sheettext "Backup 2025.zip" >/dev/null 2>&1 && { hist_ok=1; break; }; nap 1; done
-          if [ "$hist_ok" -eq 1 ]; then shot removal-history; else note "STEP-FAIL history-content: journal entry for Backup 2025.zip not observed in the history popover"; diag history-content; fi
+          if [ "$hist_ok" -eq 1 ]; then snap history-live; shot removal-history; else note "STEP-FAIL history-content: journal entry for Backup 2025.zip not observed in the history popover"; diag history-content; fi
           ax escape; nap 1
         fi
       else
@@ -128,7 +133,7 @@ try:
 except Exception as e:
     print("FDA-LAYOUT UNKNOWN: frames unavailable (%s)" % e)
 PY
-  shot fda-banner
+  snap fda-live; shot fda-banner
 else
   note "FAIL fda relaunch"
 fi
