@@ -10,7 +10,7 @@ macOS 14 or later. Builds are in development; see [verification status](../verif
 
 ![The install window: drag Spacelyzer onto Applications](../images/install-dmg-window.png)
 
-Captured October 2026 on a CI Mac. A label-contrast background fix for this window merged after the capture; the updated Finder window still awaits Mac verification.
+Historical image: captured October 2026 on a CI Mac from development build 0.1.185 (its title bar shows that version, not the current build). A label-contrast background fix for this window merged after the capture; the updated Finder window still awaits Mac verification. Development builds only; this is not a release.
 
 ## First launch
 The build is self-signed, not notarized, so macOS blocks the first open. On macOS 14 and later (steps verified against the macOS 14+ Gatekeeper flow):
