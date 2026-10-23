@@ -16,7 +16,7 @@ Older snapshot: [HISTORY-2026-10-06.md](HISTORY-2026-10-06.md). Ledger: [checkpo
 ## Open
 
 - Pixel review of the demo captures 72-81 after the fix: needs a new Mac run.
-- A Linux-only size anomaly (a 4 KB difference at an ancestor directory) is open. No raw log was retained.
+- The Linux-only 4 KB ancestor anomaly (NOLINKS, seed 100008, 100k) remains OPEN: not reproduced with its recorded parameters on October 23 (retained artifact shows 0 per-node diffs); original raw lost, observation unexplained and unretired. Separately, run-to-run hard-link attribution flips on the parallel backend were found and reproduced (order-dependence; a deterministic-attribution change is a pending owner decision). See checkpoints.md.
 - CSV export and actual IME input are not verified on a Mac. VoiceOver speech is untested and is not a v1 gate.
 - Hard-link sizes are counted once for the whole scan, so a per-folder figure can depend on which link is reached first. This is by design.
 - Several name-handling cases are not exercised on macOS because APFS refuses those names. They are limits, not passes.
