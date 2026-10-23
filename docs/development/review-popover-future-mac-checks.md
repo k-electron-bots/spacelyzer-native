@@ -1,4 +1,6 @@
-# Review popover: Mac checks (3 written as UNCOMPILED/UNRUN source, the rest PLANNED)
+# Review popover and export: historical check plan
+
+Current evidence: [October 23 native results and remaining limits](../verification/2026-10-23-demo-replacement.md). This page preserves the original source-stage plan; its UNCOMPILED/UNRUN labels below are historical, not current status. The three CSV checks and declared review/folder checks are in the 166-check manifest that passed run 40022177880. Mounted-window/save-panel/import behavior remains separate; no blanket popover acceptance follows from model checks.
 
 Written as source in SpacelyzerApp.swift (declared in the manifest, 65 names, never compiled or run, so no result exists):
 `review-model-refuses-and-drops-when-engine-untrusted` (pre-read refusal and post-read drop, items 4/5 at model level only),
