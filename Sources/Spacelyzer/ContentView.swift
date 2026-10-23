@@ -12,6 +12,7 @@ struct ContentView: View {
     @State private var showExclusions = false
     @State private var showDuplicates = false
     @State private var showRemovalHistory = false
+    @State private var bannerHeight: CGFloat = 0
 
     var body: some View {
         @Bindable var model = model
@@ -24,10 +25,12 @@ struct ContentView: View {
                         .safeAreaInset(edge: .top, spacing: 0) { FilterBar() }
                         .navigationSplitViewColumnWidth(min: 300, ideal: 380, max: 700)
                         .padding(.bottom, StatusBar.height)
+                        .padding(.top, bannerHeight)
                 } detail: {
                     TrailingPane()
                         .frame(minWidth: 380)
                         .padding(.bottom, StatusBar.height)
+                        .padding(.top, bannerHeight)
                         .background(GeometryReader { g in
                             Color.clear.onChange(of: g.size, initial: true) { _, _ in LayoutProbe.log("detail", g) }
                         })
@@ -35,7 +38,7 @@ struct ContentView: View {
             }
         }
         .transaction { if reduceMotion { $0.animation = nil } }
-        .safeAreaInset(edge: .top, spacing: 0) { FullDiskAccessBanner() }
+        .safeAreaInset(edge: .top, spacing: 0) { FullDiskAccessBanner(onHeight: { bannerHeight = $0 }) }
         .safeAreaInset(edge: .bottom, spacing: 0) { StatusBar() }
         .toolbar {
             ToolbarItemGroup {

@@ -1,0 +1,482 @@
+name: Demo-validation (lean)
+
+# Engineering option, NOT approval to run and NOT a CI cadence. Dispatch-only, no inputs, no schedule, no push/PR/tag trigger.
+# A run needs fresh explicit owner approval per dispatch, one attempt, no retry. It is dispatchable as soon as it exists on the default branch:
+# it must be disabled (or never pushed) until the owner approves a specific run.
+# Purpose: one Mac run of the FULL 81-step scripted demo (steps 71-81 need the earlier steps) on the TEST-ONLY app, with the per-step state records
+# (scripts/check-demo-state.py) and the retained UI assertions, to validate the capture/state fix by pixels and state. The build, reset, demo-launch and
+# assertion steps are copied verbatim from ci.yml (scripts/test-demo-only-workflow.py compares them), with only input references resolved to the
+# technical_hardening values. No Rust test suite, bulk-vs-portable run, ordering driver, 1M scale segment, DMG, signing, docs captures or release.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  identity-guard:
+    # Fail-closed author/committer identity check for commits this event introduces.
+    # NEW is bounded by pinned trusted baselines audited clean on 2026-10-22 (see
+    # BASELINES in the script), never by other refs - a bad commit reachable from a
+    # surviving branch/tag cannot be laundered out of the set. ci.yml is currently
+    # disabled: this is a check that runs when CI runs (epic-* tag push,
+    # pull_request, workflow_dispatch), NOT server-side push prevention. Direct
+    # branch pushes do not trigger ci.yml; their coverage is the external drift
+    # watch. engine-linux and macos `needs: identity-guard`: a guard failure
+    # skips the build/release jobs. ~1 minute of ubuntu time, no Mac runner.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Identity guard (fail-closed)
+        env:
+          IG_EVENT: ${{ github.event_name }}
+          IG_REF_TYPE: ${{ github.ref_type }}
+          IG_BASE: ${{ github.event.pull_request.base.sha }}
+          IG_HEAD: ${{ github.event.pull_request.head.sha }}
+          IG_BEFORE: ${{ github.event.before }}
+          IG_SHA: ${{ github.sha }}
+        run: |
+          # identity-guard: FAIL CLOSED if any NEW commit introduced by this event carries an
+          # author or committer email outside the approved set (blank/missing email included).
+          #
+          # NEW is defined against PINNED TRUSTED BASELINES - commits audited clean on
+          # 2026-10-22 (author+committer, full ancestry). A commit counts as new only when it
+          # is in NO baseline ancestry. Bounding by "other refs" was rejected in review: a
+          # bad commit reachable from any surviving branch/tag would be laundered out of the
+          # set. Baseline ancestry itself is never scanned: it is the audited-clean past.
+          # Legacy pre-rewrite refs (old release tags etc.) do not descend from these
+          # baselines, so dispatching or re-tagging them fails closed over the cap - clearly,
+          # never silently green. Re-baselining is a deliberate audited edit of this file.
+          #
+          # COVERAGE HONESTY: ci.yml is currently DISABLED. When it runs (epic-* tag push,
+          # pull_request, workflow_dispatch) this guard is a check that runs when CI runs -
+          # NOT server-side push prevention. Direct branch pushes do not trigger ci.yml;
+          # their identity coverage is the external drift watch. Gating: engine-linux and
+          # macos `needs: identity-guard`, so a guard failure skips the build/release jobs.
+          #
+          # Env (mapped from GitHub context by the workflow step; values only, never inline):
+          #   IG_EVENT    = pull_request | push | workflow_dispatch (else fail closed)
+          #   IG_REF_TYPE = branch | tag  (push only)
+          #   IG_BASE/IG_HEAD = PR base/head sha (pull_request)
+          #   IG_BEFORE   = push before sha (push; all-zeros on new branch)
+          #   IG_SHA      = event head sha (all events)
+          #   IG_MAX_NEW  = cap on the bounded new-commit set (default 500; over-cap fails closed)
+          set -euo pipefail
+          # Approved identities, grounded in measured current history (%ae/%ce counts on
+          # 2026-10-22): k-electron-ai noreply (69), k.electron.ai@gmail.com (1066),
+          # GitHub web-merge committer noreply@github.com (948). Historical use is not
+          # ownership, so no other identity is allowed for FUTURE commits.
+          ALLOW='^(k-electron-ai@users\.noreply\.github\.com|k\.electron\.ai@gmail\.com|noreply@github\.com)$'
+          ZERO=0000000000000000000000000000000000000000
+          MAX_NEW="${IG_MAX_NEW:-500}"
+          # Trusted baselines, audited clean (author+committer, full ancestry) 2026-10-22.
+          BASELINES=(
+            a6f105b8537ae7f8cad084dae915ae1ddd9f64ce   # main
+            0e325fdd97f48bda730c880fca4a80b22af4c196   # mac-readiness-00aa46a2
+            62d3ba80e38a1ac54c813000f8318d5c5c37a1c7   # mac-stall-soak-00aa46a2
+          )
+
+          fail() { echo "::error::identity-guard FAIL-CLOSED: $1"; exit 1; }
+
+          # Complete ref fetch pulls in the baseline objects even when the checked-out ref
+          # (e.g. a tag) does not descend from them. Any failure fails closed - no || true.
+          fetch_refs() {
+            git fetch origin '+refs/heads/*:refs/remotes/origin/*' '+refs/tags/*:refs/tags/*' --quiet \
+              || fail "ref fetch failed - cannot pull the trusted baselines; refusing to guess"
+            local b
+            for b in "${BASELINES[@]}"; do
+              git cat-file -e "$b^{commit}" 2>/dev/null \
+                || fail "trusted baseline $b missing locally after full fetch - cannot bound new commits against audited-clean history"
+            done
+          }
+
+          check_commit_set() { # $1 = label; rest = rev-list args
+            local label="$1"; shift
+            local n emails_file bad_count
+            n=$(git rev-list --count "$@" 2>/dev/null) \
+              || fail "cannot enumerate new commits for $label (missing objects or malformed refs - insufficient history to prove new commits clean)"
+            if [ "$n" -eq 0 ]; then echo "identity-guard: PASS (no new commits since the trusted baselines: $label)"; return 0; fi
+            if [ "$n" -gt "$MAX_NEW" ]; then
+              fail "new-commit set for $label is $n, over cap $MAX_NEW - this looks like legacy pre-baseline history or an unaudited long-lived ref; refusing to scan it as new. Remedy: gate via pull_request, or an audited re-baseline (deliberate guard edit)."
+            fi
+            emails_file=$(mktemp)
+            git log --format='%ae%n%ce' "$@" > "$emails_file" \
+              || { rm -f "$emails_file"; fail "cannot read new-commit identities for $label"; }
+            # grep -c counts non-matching lines INCLUDING blank ones, so a blank author or
+            # committer email can never strip away into a silent pass.
+            bad_count=$(grep -cvxE "$ALLOW" "$emails_file" || true)
+            if [ "$bad_count" != "0" ]; then
+              echo "::error::identity-guard FAIL: $n new commit(s) ($label) carry unapproved or blank author/committer emails:"
+              grep -vxE "$ALLOW" "$emails_file" | sort -u | sed 's/^$/(blank email)/'
+              rm -f "$emails_file"
+              exit 1
+            fi
+            rm -f "$emails_file"
+            echo "identity-guard: PASS ($n new commit(s): $label)"
+          }
+
+          # Bounded new-commit set for events with no usable range (tag push, new-branch
+          # push, force push, dispatch): commits reachable from $2 but from NO trusted
+          # baseline ancestry. Sound against laundering: other branches/tags containing a
+          # bad commit do not hide it, because only baseline ancestry is subtracted.
+          baseline_check() { # $1 = label, $2 = sha
+            git cat-file -e "$2^{commit}" 2>/dev/null \
+              || fail "head $2 not present locally (shallow checkout? fetch-depth must be 0)"
+            check_commit_set "$1 ($2 since trusted baselines)" "$2" --not "${BASELINES[@]}"
+          }
+
+          event="${IG_EVENT:-}"
+          [ -n "$event" ] || fail "IG_EVENT unset - no event context, cannot determine the new-commit set"
+
+          case "$event" in
+            pull_request)
+              [ -n "${IG_BASE:-}" ] && [ -n "${IG_HEAD:-}" ] || fail "pull_request without base/head sha"
+              fetch_refs
+              git cat-file -e "$IG_BASE^{commit}" 2>/dev/null || fail "base $IG_BASE not present locally (shallow checkout? fetch-depth must be 0)"
+              git cat-file -e "$IG_HEAD^{commit}" 2>/dev/null || fail "head $IG_HEAD not present locally"
+              check_commit_set "PR $IG_BASE..$IG_HEAD" "$IG_BASE..$IG_HEAD"
+              ;;
+            push)
+              [ -n "${IG_SHA:-}" ] || fail "push without head sha"
+              fetch_refs
+              if [ "${IG_REF_TYPE:-}" = "tag" ]; then
+                echo "identity-guard: NOTE a tag push carries no commit range; checking commits the tag introduces since the trusted baselines (cap $MAX_NEW). Range enforcement applies to pull_request events; direct branch pushes are covered by the external drift watch."
+                baseline_check "tag push" "$IG_SHA"
+                exit 0
+              fi
+              git cat-file -e "$IG_SHA^{commit}" 2>/dev/null || fail "head $IG_SHA not present locally"
+              if [ "${IG_BEFORE:-}" = "$ZERO" ] || [ -z "${IG_BEFORE:-}" ]; then
+                MODE=baseline   # new branch: no before
+              elif git merge-base --is-ancestor "$IG_BEFORE" "$IG_SHA" 2>/dev/null; then
+                MODE=range      # normal push: before..after is exactly the pushed set
+              else
+                MODE=baseline   # force push: before is not an ancestor, range would be meaningless
+              fi
+              if [ "$MODE" = range ]; then
+                check_commit_set "push $IG_BEFORE..$IG_SHA" "$IG_BEFORE..$IG_SHA"
+              else
+                baseline_check "push" "$IG_SHA"
+              fi
+              ;;
+            workflow_dispatch)
+              [ -n "${IG_SHA:-}" ] || fail "workflow_dispatch without sha"
+              fetch_refs
+              echo "identity-guard: NOTE dispatch carries no commit range; checking commits the dispatched ref introduces since the trusted baselines (cap $MAX_NEW). Range enforcement applies to pull_request events."
+              baseline_check "dispatch" "$IG_SHA"
+              ;;
+            *)
+              fail "unsupported event '$event' - no defined new-commit set"
+              ;;
+          esac
+
+  macos:
+    needs: identity-guard
+    runs-on: macos-latest
+    timeout-minutes: 35
+    steps:
+      - name: Anchor hard35min job clock before checkout and builds
+        run: |
+          echo "SPZ_JOB_DEADLINE_EPOCH=$(( $(date +%s) + 2100 ))" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare artifact dir and shared compile deadline (after checkout, which cleans the workspace)
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/diag-out" "$GITHUB_WORKSPACE/dist"; echo "SPZ_DIAG_DIR=$GITHUB_WORKSPACE/diag-out" >> "$GITHUB_ENV"
+          # Builds must end by job-1380s (the 35-min clock is anchored before checkout): reset 2 + demo 12 + v1 window captures 3 + assertions + upload 3 + gate fit in the rest.
+          echo "SPZ_COMPILE_DEADLINE_EPOCH=$(( SPZ_JOB_DEADLINE_EPOCH - 1380 ))" >> "$GITHUB_ENV"
+      - name: Toolchain versions
+        run: |
+          sw_vers; xcodebuild -version; swift --version; rustc --version || true
+          echo "::notice title=toolchain::$(sw_vers -productVersion) | $(xcodebuild -version | tr '\n' ' ') | sdk $(xcrun --show-sdk-version) | $(swift --version 2>&1 | head -1)"
+      - name: Build universal engine
+        id: engine
+        run: |
+          set -o pipefail; mkdir -p "$SPZ_DIAG_DIR"
+          python3 scripts/run-with-deadline.py ./scripts/build-engine.sh 2>&1 | tee "$SPZ_DIAG_DIR/engine-build.log"
+      - name: Build Swift app
+        id: swiftapp
+        run: |
+          set -o pipefail
+          mkdir -p "$SPZ_DIAG_DIR"
+          python3 scripts/run-with-deadline.py bash scripts/shipping-swift.sh -c release --arch arm64 --arch x86_64 2>&1 | tee /tmp/swiftbuild.log "$SPZ_DIAG_DIR/swift-build.log" || {
+            grep -E "error:" /tmp/swiftbuild.log | sort -u | head -15 | while IFS= read -r l; do echo "::error::${l//%/%25}"; done
+            exit 1
+          }
+      - name: Typecheck the on-demand helper tools (the docs/demo steps compile them on demand; a type error must fail HERE, not in a scarce full run)
+        # Independent of the engine archive: still runs after an earlier build failure (job stays red), but not after cancel/timeout.
+        if: ${{ !cancelled() }}
+        run: |
+          python3 scripts/run-with-deadline.py swiftc -typecheck scripts/docs-capture.swift
+          python3 scripts/run-with-deadline.py swiftc -typecheck scripts/ax-client.swift
+      - name: Build the capture helper inside the compile budget (so the v1 capture step's time is all capture work)
+        run: |
+          python3 scripts/run-with-deadline.py swiftc scripts/docs-capture.swift -o /tmp/spz-docs-capture
+          test -x /tmp/spz-docs-capture
+      - name: Version
+        id: ver
+        run: echo "version=0.1.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+      - name: Build TEST-ONLY app with SPZ_CI_TESTS (never packaged or released; the packaged DMG is built without the flag)
+        id: testbuild
+        # compile_only: depends on the VERIFIED shipping archive (engine step) and the signing import; never runs against a
+        # missing/unverified archive. Independent of the shipping Swift build result. Other modes keep fail-fast success().
+        if: ${{ success() }}
+        run: |
+          # Optional code (perf driver, 2x shot server) is compiled only when its option is requested, behind its own flag, so the
+          # default/consolidated test build includes staged, Mac-uncompiled test instrumentation.
+          # build-test-app.sh builds the isolated ci-checks engine, verifies shipping archive bytes/
+          # symbols, and links only the test binary against it. compile_only covers both variants.
+          # If requested optional code fails
+          # to compile, this step fails hard right here - it runs before every expensive check, so a broken optional compile stops
+          # the run in its first minutes instead of burning through checks to a red gate.
+          DEFS=""
+          if [ "false" = "true" ] || [ "false" = "true" ]; then DEFS="$DEFS SPZ_CI_PERF"; fi
+          if [ "false" = "true" ]; then DEFS="$DEFS SPZ_CI_SHOTS"; fi
+          if [ -n "$DEFS" ]; then
+            if SPZ_TEST_EXTRA_DEFINES="$DEFS" python3 scripts/run-with-deadline.py bash ./scripts/build-test-app.sh dist-test ""; then
+              echo "optional_build=ok" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            echo "optional_build=failed" >> "$GITHUB_OUTPUT"
+            echo "::error title=optional-code::the test build with optional code ($DEFS) failed to compile"
+            exit 1
+          fi
+          set -o pipefail; mkdir -p "$SPZ_DIAG_DIR"
+          python3 scripts/run-with-deadline.py bash ./scripts/build-test-app.sh dist-test "" 2>&1 | tee "$SPZ_DIAG_DIR/test-build.log"
+      - name: Reset persisted app state (guarantees a first-launch state for the docs captures and the demo below; runs before any app launch in this job)
+        if: ${{ success() }}
+        id: reset
+        continue-on-error: true
+        timeout-minutes: 2
+        run: |
+          set -u
+          DOM=com.k-electron.spacelyzer-native
+          EV=dist/docs-reset-evidence.txt
+          mkdir -p dist; : > "$EV"
+          fail() { echo "::error title=docs-reset::$1"; echo "RESET FAILED: $1" >> "$EV"; cat "$EV"; exit 1; }
+          # 1. Stop every Spacelyzer process BEFORE touching defaults, so a running app cannot write cached state back.
+          pkill -TERM -x Spacelyzer || true
+          for _ in $(seq 1 10); do pgrep -x Spacelyzer >/dev/null || break; sleep 1; done
+          if pgrep -x Spacelyzer >/dev/null; then pkill -KILL -x Spacelyzer || true; for _ in $(seq 1 5); do pgrep -x Spacelyzer >/dev/null || break; sleep 1; done; fi
+          pgrep -x Spacelyzer >/dev/null && fail "a Spacelyzer process survived SIGKILL: $(pgrep -lx Spacelyzer | tr '\n' ' ')"
+          echo "no Spacelyzer process running" >> "$EV"
+          # 2. Evidence of what the demo left behind.
+          { echo "--- defaults before reset"; { defaults read "$DOM" 2>&1 | head -40 || true; }; echo "--- plist before reset"; { ls -l "$HOME/Library/Preferences/$DOM.plist" 2>&1 || true; }; echo "--- saved state before reset"; { ls -la "$HOME/Library/Saved Application State/$DOM.savedState" 2>&1 | head -10 || true; }; } >> "$EV"
+          # 3. Remove state, then prove it is gone. A failed delete or an unreadable result counts as not clean.
+          defaults delete "$DOM" >> "$EV" 2>&1 || echo "defaults delete returned nonzero (accepted only if the domain is verified absent below)" >> "$EV"
+          rm -f "$HOME/Library/Preferences/$DOM.plist" || fail "could not remove the preferences plist"
+          rm -rf "$HOME/Library/Saved Application State/$DOM.savedState" || fail "could not remove saved window state"
+          killall cfprefsd 2>/dev/null || true
+          sleep 2
+          # `OUT=$(cmd); RC=$?` would exit the whole step under bash -e when cmd fails, which is exactly the expected "domain absent" case.
+          OUT=$(defaults read "$DOM" 2>&1) && RC=0 || RC=$?
+          { echo "--- defaults after reset (rc=$RC)"; echo "$OUT" | head -5; } >> "$EV"
+          if [ "$RC" -eq 0 ]; then fail "defaults domain still readable after reset"; fi
+          echo "$OUT" | grep -q "does not exist" || fail "defaults read failed for a reason other than the domain being absent: $(echo "$OUT" | head -2)"
+          [ ! -e "$HOME/Library/Preferences/$DOM.plist" ] || fail "preferences plist still present"
+          [ ! -e "$HOME/Library/Saved Application State/$DOM.savedState" ] || fail "saved window state still present"
+          echo "RESET VERIFIED: no process, domain absent, plist absent, saved state absent" >> "$EV"
+          cat "$EV"
+      - name: Launch app and screenshot (informational)
+        id: ui_launch
+        if: ${{ steps.reset.outcome == 'success' && steps.testbuild.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 12
+        run: |
+          mkdir -p dist
+          if [ "true" != true ]; then
+          # First-launch window, no autoscan: the welcome screen the demo run never shows.
+          open -n dist/Spacelyzer.app
+          sleep 6
+          screencapture -x dist/screenshot-welcome.png || true
+          pkill Spacelyzer || true
+          sleep 2
+          # Welcome at several window sizes in both appearances, plus the FDA banner state
+          # (SPZ_DEMO_FDA_REFUSED forces a probe refusal; inert without the env).
+          for size in 960x600 1280x800 1600x1000; do
+            open -n dist/Spacelyzer.app --env SPZ_WINDOW_SIZE=$size
+            sleep 7
+            screencapture -x "dist/screenshot-welcome-$size.png" || true
+            pkill Spacelyzer || true
+            sleep 2
+            open -n dist/Spacelyzer.app --env SPZ_WINDOW_SIZE=$size --env SPZ_DEMO_APPEARANCE=dark
+            sleep 7
+            screencapture -x "dist/screenshot-welcome-$size-dark.png" || true
+            pkill Spacelyzer || true
+            sleep 2
+          done
+          open -n dist/Spacelyzer.app --env SPZ_WINDOW_SIZE=1280x800 --env SPZ_DEMO_FDA_REFUSED=1
+          sleep 7
+          screencapture -x dist/screenshot-fda-banner.png || true
+          pkill Spacelyzer || true
+          sleep 2
+          open -n dist/Spacelyzer.app --env SPZ_AUTOSCAN=/Library
+          sleep 1.5
+          screencapture -x dist/screenshot-scanning-progress-a.png || true
+          sleep 1.5
+          screencapture -x dist/screenshot-scanning-progress-b.png || true
+          sleep 5
+          screencapture -x dist/screenshot-scanning.png || true
+          sleep 35
+          screencapture -x dist/screenshot.png || true
+          pgrep -fl Spacelyzer || echo "app not running"
+          pkill Spacelyzer || true
+          sleep 2
+          fi
+          # Scripted interaction run: the app writes /tmp/spz-demo-step after each state settles.
+          swiftc scripts/ax-client.swift -o /tmp/spz-ax-client
+          rm -rf /tmp/spz-chronology
+          rm -f /tmp/spz-interaction-envelope.txt /tmp/spz-footer-ax-status.txt /tmp/spz-footer-ax-result.txt /tmp/spz-footer-ax-expected.txt /tmp/spz-footer-ax-ready /tmp/spz-footer-ax-ack /tmp/spz-footer-ax-client.txt /tmp/spz-cold-click-subprocess-end.txt /tmp/spz-sample.txt /tmp/spz-cold-click-sample.txt /tmp/spz-cold-click-sample-command.txt /tmp/spz-cold-click-sample-status.txt /tmp/spz-cold-click-ready /tmp/spz-cold-click-ack /tmp/spz-demo-ready-* /tmp/spz-demo-ack-* /tmp/spz-demo-*.png /tmp/spz-demo-step /tmp/spz-demo-finished /tmp/spz-geom.txt /tmp/spz-timing.txt /tmp/spz-assertions.txt
+          open -n dist-test/Spacelyzer.app --env SPZ_AUTOSCAN=/Library --env SPZ_DEMO=1
+          for step in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 23 24 19 25 20 21 22 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81; do
+            for i in $(seq 1 240); do
+              if [ -f /tmp/spz-footer-ax-ready ] && [ ! -f /tmp/spz-footer-ax-ack ]; then
+                target_pid=$(cat /tmp/spz-footer-ax-ready)
+                python3 - "$target_pid" >> /tmp/spz-footer-ax-client.txt 2>&1 <<'PY'
+          import subprocess, sys
+          from pathlib import Path
+          result_path = Path("/tmp/spz-footer-ax-result.txt")
+          status_path = Path("/tmp/spz-footer-ax-status.txt")
+          try:
+              result = subprocess.run(["/tmp/spz-ax-client", sys.argv[1], "/tmp/spz-footer-ax-expected.txt", "/tmp/spz-footer-ax-result.txt"], timeout=12)
+              print(f"ax-client process-exit code={result.returncode}; diagnostic not a pass", flush=True)
+              status_path.write_text(f"EXIT_{result.returncode}")
+              if result.returncode != 0: result_path.unlink(missing_ok=True)
+          except subprocess.TimeoutExpired:
+              result_path.unlink(missing_ok=True)
+              status_path.write_text("TIMEOUT")
+              print("ax-client process-timeout seconds=12 INCONCLUSIVE; partial flushed records retained", flush=True)
+          except OSError as error:
+              result_path.unlink(missing_ok=True)
+              status_path.write_text("START_ERROR")
+              print(f"ax-client process-start-error {error} INCONCLUSIVE", flush=True)
+          PY
+                touch /tmp/spz-footer-ax-ack
+              fi
+              if [ -f /tmp/spz-cold-click-ready ] && [ ! -f /tmp/spz-cold-click-ack ] && [ -z "${chronology_pid:-}" ]; then
+                python3 scripts/capture-interactions.py &
+                chronology_pid=$!
+              fi
+              [ -f "/tmp/spz-demo-ready-$step" ] && break; sleep 1
+            done
+            if [ ! -f "/tmp/spz-demo-ready-$step" ]; then
+              echo "DEMO STEP TIMEOUT: expected $step, last $(cat /tmp/spz-demo-step 2>/dev/null)" >> /tmp/spz-timing.txt
+              break
+            fi
+            # The old step7 sampler is disabled to avoid overlapping cold-input sampling.
+            screencapture -x "dist/screenshot-demo-$step.png"
+            touch "/tmp/spz-demo-ack-$step"
+          done
+          for i in $(seq 1 30); do [ -f /tmp/spz-demo-finished ] && break; sleep 1; done
+          [ -f /tmp/spz-demo-finished ] || echo 'DEMO FINISH TIMEOUT: final assertions not completed' >> /tmp/spz-timing.txt
+          pgrep -x Spacelyzer >/dev/null && echo 'app still running at end' >> /tmp/spz-timing.txt || echo 'APP NOT RUNNING at end (crashed or exited)' >> /tmp/spz-timing.txt
+          if [ -f /tmp/spz-timing.txt ]; then
+            body=$(grep -v -E '^(selection changed|outline rows|derived |filter text)' /tmp/spz-timing.txt | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}' | tail -c 30000)
+            echo "::notice title=timing::$body"
+          fi
+          cp /tmp/spz-footer-ax-client.txt dist/footer-ax-client.txt 2>/dev/null || true
+          cp /tmp/spz-footer-ax-expected.txt dist/footer-ax-expected.txt 2>/dev/null || true
+          cp /tmp/spz-footer-ax-result.txt dist/footer-ax-result.txt 2>/dev/null || true
+          cp /tmp/spz-footer-ax-status.txt dist/footer-ax-status.txt 2>/dev/null || true
+          cp /tmp/spz-timing.txt dist/ui-timing.txt 2>/dev/null || true
+          pkill Spacelyzer || true
+          sleep 3
+          if [ -n "${chronology_pid:-}" ]; then
+            wait "$chronology_pid" || echo 'chronology helper failed; capture inconclusive' >> /tmp/spz-timing.txt
+          fi
+          mkdir -p dist/chronology
+          cp /tmp/spz-chronology/*.txt /tmp/spz-chronology/*.json /tmp/spz-chronology/*.xml /tmp/spz-chronology/*.zip dist/chronology/ 2>/dev/null || true
+          cp /tmp/spz-footer-ax-client.txt dist/footer-ax-client.txt 2>/dev/null || true
+          cp /tmp/spz-footer-ax-expected.txt dist/footer-ax-expected.txt 2>/dev/null || true
+          cp /tmp/spz-footer-ax-result.txt dist/footer-ax-result.txt 2>/dev/null || true
+          cp /tmp/spz-footer-ax-status.txt dist/footer-ax-status.txt 2>/dev/null || true
+          cp /tmp/spz-timing.txt dist/ui-timing.txt
+          cp /tmp/spz-interaction-envelope.txt dist/interaction-envelope.txt 2>/dev/null || true
+          if [ -f /tmp/spz-sample.txt ]; then cp /tmp/spz-sample.txt dist/main-thread-sample.txt; body=$(python3 scripts/sample-summary.py /tmp/spz-sample.txt | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}' | head -c 12000); echo "::notice title=sample::$body"; fi
+          for f in $(ls -t ~/Library/Logs/DiagnosticReports/Spacelyzer*.ips 2>/dev/null | head -1); do
+            cp "$f" dist/crash-report.ips
+            c=$(python3 scripts/crash-summary.py "$f")
+            echo "::notice title=crash::$c"
+          done
+      - name: v1 window-only cleanup captures (FAIL-CLOSED, gate-required; real captures of the test-only app on a disposable sample tree; pixels still need review)
+        id: v1cap
+        if: ${{ always() && steps.reset.outcome == 'success' && steps.testbuild.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          pkill Spacelyzer || true
+          sleep 2
+          rc=0; bash scripts/v1-capture.sh dist-test/Spacelyzer.app dist/v1-capture || rc=$?
+          cat dist/v1-capture/v1-capture-status.txt || true
+          exit $rc
+      - name: UI assertions (fail the build on any failure)
+        if: ${{ always() && steps.ui_launch.outcome != 'skipped' }}
+        id: asserts
+        continue-on-error: true
+        run: |
+          cp /tmp/spz-assertions.txt dist/ui-assertions.txt 2>/dev/null || true
+          # Ordinary log lines survive artifact-service failure and annotation truncation.
+          echo 'Critical focus/reset evidence (strict assertions remain below):'
+          grep -E '^(before-resign|after-direct-resign|after-fixture-key-window|before-activation|activation-wait-seconds=|reload-after-responder-wait|tab-chain |rest-chain-|native-tab |window-size |demo-ax |boundary-sim |boundary-setup |boundary-native |boundary-hidden |interaction-clock |interaction-stage |interaction-sample |footer-constrained |footer-ax |treemap-mounted |treemap-tree-swap |treemap-filter |treemap-unmount |sample launched |sample completed |sample missing:|sample failed/missing report:|same-value-fixture-start |before-same-value-clear |check FAIL|app still running at end|APP NOT RUNNING|DEMO .*TIMEOUT)' /tmp/spz-timing.txt 2>/dev/null || true
+          cat /tmp/spz-assertions.txt || true
+          # Count of ^PASS/^FAIL lines the demo emits at this head; run 37959435404 emitted 126 (121 PASS, 5 FAIL before this fix). Change only with the name-by-name list in the PR that changes it. The batch-removal planning slice adds 5: batch-removal-single-copy-of-group-approved, batch-removal-all-copies-keeps-one-deterministically, batch-removal-unknown-path-refused, batch-removal-non-group-item-approved, batch-removal-out-of-date-model-refuses-all. The multi-select slice adds 6: multi-select-toggle-adds-and-removes-membership, multi-select-focus-follows-toggle-and-removal, multi-select-range-covers-row-order-slice, multi-select-range-without-anchor-anchors-on-click, multi-select-hidden-members-excluded-from-batch-candidates, multi-select-clear-resets-set-and-focus. The outline-sync slice adds 5: outline-sync-added-row-becomes-focus, outline-sync-removal-of-other-keeps-focus, outline-sync-removal-moves-focus-to-last-row-order-member, outline-sync-empty-clears-focus, multi-select-set-normalizes-to-row-order. The batch-quicklook slice adds 5: quicklook-batch-payload-row-order-and-focus, quicklook-batch-payload-focus-outside-falls-back-to-first, quicklook-batch-refuses-empty-and-relative-before-panel, quicklook-batch-show-presents-items-with-clamped-focus-synchronously, shift-click-range-focus-matches-table-path. The batch-execution slice adds 5: batch-execution-moves-each-item-through-per-item-path, batch-execution-failure-skips-and-reports-rest-complete, batch-execution-identity-refusal-skips-item, preview-targets-hidden-set-previews-nothing, preview-targets-empty-set-falls-back-to-focus. The batch-undo slice adds 5: batch-undo-restores-whole-batch-in-one-pass, batch-undo-collision-keeps-that-item-in-history, group-removal-plan-keeps-one-copy-deterministically, group-removal-executes-through-same-per-item-path, single-removal-clears-batch-undo-hint. The mid-batch consistency slice adds 2: batch-execution-poison-mid-batch-refuses-remaining-items, batch-execution-out-of-date-mid-batch-refuses-remaining-items. The outline readable-name slice adds 1: outline-names-keep-readable-width-at-min-window. The ux-polish-7 sweep adds 14 always-emitted plus one failure-only: batch7-rescan-progress-captured, batch7-size-applied-960x600, batch7-size-applied-1280x800, batch7-size-applied-1600x1000, batch7-outline-names-readable-960x600, batch7-outline-names-readable-1280x800, batch7-outline-names-readable-1600x1000, batch7-kinds-folders-row-zero-bytes, batch7-removal-alert-restored-light, batch7-removal-alert-restored-dark, batch7-zero-area-fixture-ready-960, batch7-no-match-fixture-ready-1280-dark, batch7-unreadable-dir-listed-in-not-scanned, batch7-other-volume-listed-in-not-scanned, and batch7-not-scanned-sheet-opened (failure-only in ux-polish-7). The ux-polish-8 fix-forward makes batch7-not-scanned-sheet-opened always-emitting: 174 -> 175. The ux-polish-12 slice adds 1: footer-voiceover-action-name-clean: 175 -> 176. The mounted-selection repair stack adds 2: multi-select-focus-from-outside-set-replaces-set, single-removal-drops-removed-id-from-multi-selection: 176 -> 178 (run 39602481035 emitted 178 PASS, 0 FAIL).
+          expected=178
+          if grep -q 'APP NOT RUNNING' /tmp/spz-timing.txt 2>/dev/null; then echo "::error title=ui-assertions::app was not running at the end of the demo (crash or exit)"; exit 1; fi
+          if grep -q 'DEMO .*TIMEOUT' /tmp/spz-timing.txt 2>/dev/null; then echo "::error title=ui-assertions::$(grep 'DEMO .*TIMEOUT' /tmp/spz-timing.txt)"; exit 1; fi
+          for step in $(seq 1 81); do [ -s "dist/screenshot-demo-$step.png" ] || { echo "::error title=ui-assertions::missing screenshot step $step"; exit 1; }; done
+          python3 scripts/check-demo-state.py /tmp 81 || { echo "::error title=ui-assertions::a demo capture does not show its intended state (see FIDELITY FAIL lines)"; exit 1; }
+          n=$(grep -c '^PASS\|^FAIL' /tmp/spz-assertions.txt 2>/dev/null || echo 0)
+          if grep -q '^FAIL' /tmp/spz-assertions.txt 2>/dev/null || [ "$n" -ne "$expected" ]; then
+            echo "::error title=ui-assertions::expected $expected results, got $n; $(tr '\n' ';' < /tmp/spz-assertions.txt 2>/dev/null)"
+            exit 1
+          fi
+          echo "::notice title=ui-assertions::all $n UI assertions passed: $(cut -d' ' -f2 /tmp/spz-assertions.txt | tr '\n' ' ')"
+      - name: Collect per-step demo state records (evidence)
+        if: ${{ always() }}
+        continue-on-error: true
+        run: |
+          mkdir -p dist/demo-state; cp /tmp/spz-demo-state-* dist/demo-state/ 2>/dev/null || echo "no state records" > dist/demo-state/NONE.txt
+          python3 scripts/check-demo-state.py /tmp 81 > dist/demo-state/fidelity.txt 2>&1 || true
+          cat dist/demo-state/fidelity.txt
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        id: demo_artifact
+        with:
+          name: demo-validation-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            dist/screenshot-demo-*.png
+            dist/main-thread-sample.txt
+            dist/crash-report.ips
+            dist/ui-assertions.txt
+            dist/ui-timing.txt
+            dist/interaction-envelope.txt
+            dist/chronology/
+            dist/footer-ax-client.txt
+            dist/footer-ax-expected.txt
+            dist/footer-ax-result.txt
+            dist/footer-ax-status.txt
+            dist/docs-reset-evidence.txt
+            dist/v1-capture/
+            dist/demo-state/
+            diag-out/
+      - name: Demo-validation evidence gate (fails unless every step succeeded; PNG pixels still need inspection)
+        if: ${{ always() }}
+        run: |
+          bad=""
+          add() { [ "$2" = success ] || bad="$bad $1=$2"; }
+          add engine '${{ steps.engine.outcome }}'; add swiftapp '${{ steps.swiftapp.outcome }}'; add testbuild '${{ steps.testbuild.outcome }}'
+          add reset '${{ steps.reset.outcome }}'; add ui_launch '${{ steps.ui_launch.outcome }}'; add asserts '${{ steps.asserts.outcome }}'; add v1cap '${{ steps.v1cap.outcome }}'
+          add demo_artifact '${{ steps.demo_artifact.outcome }}'
+          [ -z "$bad" ] || { echo "::error::demo validation failed/incomplete:$bad"; exit 1; }
+          echo '::notice::Demo state and assertions complete; PNG pixels still need inspection; no distribution proof'
+      - name: Stop any app left running (also after a step timeout)
+        if: ${{ always() }}
+        continue-on-error: true
+        run: pkill Spacelyzer || true

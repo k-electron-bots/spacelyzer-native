@@ -110,8 +110,13 @@ final class FullDiskAccessModel: ObservableObject {
 /// because only its answer decides whether there is anything to show.
 struct FullDiskAccessBanner: View {
     @StateObject private var model: FullDiskAccessModel
+    /// Reports the banner's height while it is shown (0 when hidden). NavigationSplitView columns do not
+    /// inherit an ancestor's top safe-area inset, so the banner covered the filter bar and the top of the
+    /// treemap pane (clipped install-fda-banner.png, refreshed from run 39683697776); ContentView pads the columns by this height.
+    private let onHeight: ((CGFloat) -> Void)?
 
-    init(model: FullDiskAccessModel? = nil) {
+    init(model: FullDiskAccessModel? = nil, onHeight: ((CGFloat) -> Void)? = nil) {
+        self.onHeight = onHeight
         // CI capture hook: SPZ_DEMO_FDA_REFUSED=1 forces a probe refusal so a runner can
         // screenshot the banner state. Inert without the env; it can only refuse, never grant.
         let forced: FullDiskAccessModel? = ProcessInfo.processInfo.environment["SPZ_DEMO_FDA_REFUSED"] == "1"
@@ -139,6 +144,8 @@ struct FullDiskAccessBanner: View {
                 }
                 .padding(10)
                 .background(.bar)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { onHeight?($0) }
+                .onDisappear { onHeight?(0) }
             }
         }
         .background(Color.clear.onAppear { model.refresh() })   // fires even while hidden
