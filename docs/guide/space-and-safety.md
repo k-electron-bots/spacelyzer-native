@@ -12,6 +12,10 @@ Zero-byte matching files are still matches. They remain in count-based lists eve
 Check on disk shows an item as it is right now: preview, full path and size, refreshed from the filesystem rather than from the scan. The results can change between the scan and the review; the review says so when they do.
 
 ## Move to Trash
+![The Move to Trash confirmation, naming the selected item with its full path and size](../images/trash-confirmation.png)
+
+Captured October 2026 on a CI Mac (run 39947043378) from the test-only build; window-only capture. The dialog shows a disposable sample fixture: the selected item is the fixture's Archives folder (304.1 MB), not a real user folder.
+
 Review the full-path confirmation. Protected paths, selections outside the filter and selections awaiting a filter result are refused. Undo is available for removal. Do not treat this as permission to remove an unfamiliar system file.
 
 Batch removal moves several reviewed items in one pass, with one undo for the batch. The removal history lists everything removed this session, newest first, each with its own Put Back. A restore returns the item to its original location; rescan to refresh the numbers afterward.
