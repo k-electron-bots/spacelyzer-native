@@ -1,13 +1,16 @@
 # Verification status
 
-Status as of October 22, 2026. **Not release-ready.** No release, DMG distribution or notarization has been done. Every result below is from a named CI run; none is a guarantee.
+Status as of October 23, 2026. **Not release-ready.** No release, DMG distribution or notarization has been done. Every result below is from a named CI run; none is a guarantee.
 
 Older snapshot: [HISTORY-2026-10-06.md](HISTORY-2026-10-06.md). Ledger: [checkpoints.md](checkpoints.md). Open Mac items: [mac-batch-backlog.md](mac-batch-backlog.md).
+
+Latest: [October 23 replacement-run evidence and offline repair](2026-10-23-demo-replacement.md). Native checks passed, but capture acceptance failed; the repair has not run on a Mac.
 
 ## What a Mac has executed
 
 | Area | Run | Result | Limit |
 |---|---|---|---|
+| Current native check execution | [40022177880](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/40022177880) | 178 UI assertions and 166 required ordering checks passed; shipping/test builds passed | Whole run failed strict capture fidelity and v1 capture acceptance; repair is offline-only |
 | Functional UI and ordering | [39683697776](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/39683697776) | 178/178 UI assertions, 159/159 ordering checks | Fixture data on a shared CI Mac |
 | Real Trash, undo, identity refusal, name collision, failure recovery | [39843869589](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/39843869589) | 178 PASS / 0 FAIL, including a real Trash move of only the selected fixture; keyboard-focus checks passed | The run failed at artifact upload and the gate, so it is not a clean pass. Demo screenshots 72-81 were stale or blank; that capture bug has a fix |
 | Test-only build with the capture fix | [39858272561](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/39858272561) | Compiled on the Mac | Compile only. The 1M-item scale run in that job did not complete |
@@ -15,9 +18,9 @@ Older snapshot: [HISTORY-2026-10-06.md](HISTORY-2026-10-06.md). Ledger: [checkpo
 
 ## Open
 
-- Pixel review of the demo captures 72-81 after the fix: needs a new Mac run.
+- Capture acceptance remains open: run 40022177880 rejected step 78 identity and supplied four valid v1 captures of six. The reviewed repair needs native validation and pixel review; see the dated evidence above.
 - The Linux-only 4 KB ancestor anomaly (NOLINKS, seed 100008, 100k) remains OPEN: not reproduced with its recorded parameters on October 23 (retained artifact shows 0 per-node diffs); original raw lost, observation unexplained and unretired. Separately, run-to-run hard-link attribution flips on the parallel backend were found and reproduced (order-dependence; a deterministic-attribution change is a pending owner decision). See checkpoints.md.
-- CSV export and actual IME input are not verified on a Mac. VoiceOver speech is untested and is not a v1 gate.
+- Three CSV formatting/export-flow/model-wiring checks passed on the CI Mac with injected panel/write seams. Real save-panel/file/import behavior and actual IME input remain unverified. VoiceOver speech is untested and is not a v1 gate.
 - Hard-link sizes are counted once for the whole scan, so a per-folder figure can depend on which link is reached first. This is by design.
 - Several name-handling cases are not exercised on macOS because APFS refuses those names. They are limits, not passes.
 
