@@ -48,6 +48,12 @@ sed 's/ as CFString//g; s/^import Foundation$/import Foundation\nimport CoreFoun
 "$SWIFTC" -typecheck -I "$W/m" "$W/helper3b.swift" > "$W/l3b.log" 2>&1 && echo "PASS L3b-realcf docs-capture" || { echo "FAIL L3b-realcf docs-capture"; cat "$W/l3b.log"; rc=1; }
 sed 's/ as CFString//g; s/^import Foundation$/import Foundation\nimport CoreFoundation/; s/func attribute(_ element: AXUIElement, _ name: CFString)/func attribute(_ element: AXUIElement, _ name: String)/' scripts/ax-client.swift > "$W/axclient3b.swift"
 "$SWIFTC" -typecheck -I "$W/m" "$W/axclient3b.swift" > "$W/l3b2.log" 2>&1 && echo "PASS L3b-realcf ax-client" || { echo "FAIL L3b-realcf ax-client"; cat "$W/l3b2.log"; rc=1; }
+# External sheet probe: full real-CF helper typecheck plus executed graph/binding
+# refusal controls. This route remains diagnostic only, not capture acceptance.
+sed 's/ as CFString//g; s/^import Foundation$/import Foundation\nimport CoreFoundation/' scripts/sheet-probe.swift > "$W/sheetprobe.swift"
+"$SWIFTC" -typecheck -I "$W/m" "$W/sheetprobe.swift" > "$W/sheetprobe.log" 2>&1 && echo "PASS L3c-realcf sheet-probe" || { echo "FAIL L3c-realcf sheet-probe"; cat "$W/sheetprobe.log"; rc=1; }
+SWIFT_BIN="$(dirname "$SWIFTC")" python3 scripts/test-sheet-probe.py > "$W/probe-controls.log" 2>&1 && { echo "PASS external-sheet-graph-controls"; cat "$W/probe-controls.log"; } || { echo "FAIL external-sheet-graph-controls"; cat "$W/probe-controls.log"; rc=1; }
+python3 scripts/test-capture-sheet-evidence.py > "$W/binding-controls.log" 2>&1 && { echo "PASS external-sheet-binding-controls"; cat "$W/binding-controls.log"; } || { echo "FAIL external-sheet-binding-controls"; cat "$W/binding-controls.log"; rc=1; }
 # Layer 4 - preserve the REAL stateLine and observer conditional layout in BOTH
 # shipping/test configurations. Isolated function extraction alone missed this
 # symbol-visibility regression on Mac run40027695341. Missing compiler is red.

@@ -33,3 +33,5 @@ public let kAXStaticTextRole = "AXStaticText"
 public let kAXValueAttribute = "AXValue"
 public let kAXWindowRole = "AXWindow"
 public let kAXWindowsAttribute = "AXWindows"
+
+public func AXUIElementGetTypeID() -> CFTypeID { CFDictionaryGetTypeID() }

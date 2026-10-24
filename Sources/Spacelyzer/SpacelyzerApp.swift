@@ -63,9 +63,12 @@ struct SpacelyzerApp: App {
                             // CI-only handshake: the runner owns screen-capture permission.
                             // State cannot advance until that exact state was captured (or failed).
                             let ready = "/tmp/spz-demo-ready-\(n)", ack = "/tmp/spz-demo-ack-\(n)"
-                            try? (DemoInput.stateLine(step: n, alertShown: model.removalMessage != nil) + "\n").write(toFile: "/tmp/spz-demo-state-\(n)", atomically: true, encoding: .utf8)
+                            let captureToken = UUID().uuidString
+                            let capturePID = ProcessInfo.processInfo.processIdentifier
+                            let captureSource = ProcessInfo.processInfo.environment["SPZ_CAPTURE_SOURCE"] ?? "unknown"
+                            try? (DemoInput.stateLine(step: n, alertShown: model.removalMessage != nil) + " pid=\(capturePID) captureToken=\(captureToken) source=\(captureSource)\n").write(toFile: "/tmp/spz-demo-state-\(n)", atomically: true, encoding: .utf8)
                             try? "\(n)".write(toFile: "/tmp/spz-demo-step", atomically: true, encoding: .utf8)
-                            try? Data().write(to: URL(fileURLWithPath: ready))
+                            try? "\(captureToken)".write(toFile: ready, atomically: true, encoding: .utf8)
                             let deadline = Date().addingTimeInterval(30)
                             while !FileManager.default.fileExists(atPath: ack) && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
                             if !FileManager.default.fileExists(atPath: ack) { Perf.log("DEMO CAPTURE ACK TIMEOUT step=\(n)") }
