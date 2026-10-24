@@ -9,7 +9,7 @@ def ck(n, ok, d=''):
     print(('ok   ' if ok else 'FAIL ') + n + ('' if ok else ' :: ' + str(d))); (ok or fails.append(n))
 def run(env_extra):
     t = tempfile.mkdtemp(); os.makedirs(t + '/stubs'); os.makedirs(t + '/scripts')
-    for f in ['v1-capture.sh', 'run-bounded.py']: shutil.copy(R + '/scripts/' + f, t + '/scripts/' + f)
+    for f in ['v1-capture.sh', 'run-bounded.py','capture-history-wide.sh']: shutil.copy(R + '/scripts/' + f, t + '/scripts/' + f)
     open(t + '/scripts/make-docs-fixture.sh', 'w').write('#!/bin/bash\nmkdir -p "$1"; echo x > "$1/f"\n')
     open(t + '/stubs/pkill', 'w').write('#!/bin/bash\nexit 0\n')
     open(t + '/stubs/open', 'w').write('#!/bin/bash\necho "open $*" >> "$LOG"\nexit 0\n')
@@ -24,7 +24,8 @@ DIALOGTARGET="$SAMPLE/Archives/Backup 2025.zip"
 [ -n "$WRONGTARGET" ] && DIALOGTARGET="/tmp/other/Backup 2025.zip"
 [ -n "$LISTROWPATH" ] && DIALOGTARGET="$SAMPLE/Archives"
 case "$2" in
- rect) echo "0,0,960,600";;
+ resize) [ -n "$WIDERESIZEFAIL" ] && exit 1; touch "$STATE/wide"; echo 'resized 1280x800'; exit 0;;
+ rect) [ -f "$STATE/wide" ] && echo "0,0,1280,800" || echo "0,0,960,600";;
  hastext) grep -q -- "$3" "$STATE/background" "$STATE/dialog" 2>/dev/null || exit 1;;
  nosheet) [ -n "$AXUNAVAILABLE" ] && exit 1; [ ! -f "$STATE/dialog" ]; exit $?;;
  sheettext) grep -q -- "$3" "$STATE/dialog" 2>/dev/null || exit 1;;
@@ -41,6 +42,7 @@ case "$2" in
  dump) echo tree;;
  snapshot) DSTATE=ABSENT; [ -f "$STATE/dialog" ] && DSTATE=LIVE; echo "snapshot dialog=$DSTATE" >> "$LOG"; echo "== tree =="; echo "dialog-state: $DSTATE"; exit 0;;
  press) if [ "$3" = "OK" ]; then [ -z "$OKSTUCK" ] && rm -f "$STATE/dialog"; exit 0; fi
+   if [ "$3" = "Removal history" ] && [ -f "$STATE/wide" ] && [ -n "$WIDENOOPEN" ]; then exit 0; fi
    if [ "$3" = "Removal history" ] && { [ -f "$STATE/dialog" ] || [ -n "$HISTORYOVERFLOW" ]; }; then exit 1; fi
    [ "$3" = "Move selected item to Trash" ] && [ -n "$NOPRESS" ] && exit 1
    [ "$3" = "Move selected item to Trash" ] && [ -z "$NOALERT" ] && printf "Move to Trash? %s\n" "$DIALOGTARGET" > "$STATE/dialog"
@@ -108,7 +110,7 @@ ck('script wiring: every dialog-dependent check is sheet-scoped (confirmation ti
    'sheettext "Move to Trash?"' in script_src and 'sheettext "$SAMPLE/Archives/Backup 2025.zip"' in script_src and 'sheettext "Moved Backup 2025.zip"' in script_src
    and 'sheettext "groups ·"' in script_src and 'hastext "Backup 2025.zip"' not in script_src and 'hastext "Move to Trash?"' not in script_src and 'hastext "Moved Backup 2025.zip"' not in script_src, None)
 rc, st, log, shots, dumps, snaps, bodies = run({})
-ck('happy path: all 6 shots, done, rc 0', rc == 0 and shots == ['screenshot-v1-duplicates.png', 'screenshot-v1-exclusions.png', 'screenshot-v1-fda-banner.png', 'screenshot-v1-removal-history.png', 'screenshot-v1-trash-confirm.png', 'screenshot-v1-trash-done.png'] and 'FDA-LAYOUT OK' in st, (rc, shots, st))
+ck('happy path: all6original shots plus required wide history, done, rc0', rc == 0 and shots == ['screenshot-v1-duplicates.png', 'screenshot-v1-exclusions.png', 'screenshot-v1-fda-banner.png', 'screenshot-v1-removal-history-wide.png', 'screenshot-v1-removal-history.png', 'screenshot-v1-trash-confirm.png', 'screenshot-v1-trash-done.png'] and 'FDA-LAYOUT OK' in st, (rc, shots, st))
 ck('live snapshots executed: all 8 stage snapshots written; dialog surfaces captured WHILE LIVE (never after dismissal); the selected-target snapshot is pre-dialog',
    all(f'v1-snapshot-{n}.txt' in snaps for n in ['exclusions-live', 'duplicates-live', 'select-target', 'trash-confirm-live', 'trash-after-press', 'trash-result-live', 'history-live', 'fda-live'])
    and all('dialog-state: LIVE' in bodies.get(f'v1-snapshot-{n}.txt', '') for n in ['exclusions-live', 'duplicates-live', 'trash-confirm-live', 'trash-result-live', 'history-live'])
@@ -183,4 +185,15 @@ r = run({'HISTORYOVERFLOW':'1','HISTORYNOOPEN':'1'})
 ck('actual run40042043674 failure-shape control: direct history absent, overflow returns success WITHOUT popover -> history refused, done retained, no repeated open',
    r[0]==1 and 'STEP-FAIL history-content' in r[1] and 'screenshot-v1-removal-history.png' not in r[3] and 'screenshot-v1-trash-done.png' in r[3] and sum('choose more toolbar items Removed' in x for x in r[2])==1 and sum('press Removal history' in x for x in r[2])==1,
    (r[0],r[1],r[3]))
+r=run({})
+opens=[x for x in r[2] if x.startswith('open ')]
+wideidx=next(i for i,x in enumerate(r[2]) if 'resize 1280 800' in x)
+fdaidx=next(i for i,x in enumerate(r[2]) if x.startswith('open ') and 'SPZ_DEMO_FDA_REFUSED=1' in x)
+ck('wide capture same PID/session: resize after compact history, before FDA relaunch, no second removal',len(opens)==3 and wideidx<fdaidx and sum(x=='123 press Move to Trash' for x in r[2])==1 and 'dialog-state: LIVE' in r[6].get('v1-snapshot-history-wide-live.txt',''),r[2])
+wide_source=open(R+'/scripts/capture-history-wide.sh').read()
+ck('wide stage budget invariant: entire20s wrapper requires20s remaining inside original165s; six original shot count unchanged', 'START + 20' in script_src and '"$BOUND" 20 bash scripts/capture-history-wide.sh' in script_src and 'BUDGET="${V1_BUDGET:-165}"' in script_src and '[ "$oks" -ne 6 ]' in script_src)
+ck('actual resize helper verifies unique ordinary window and observed dimensions, not set-return success alone', 'case "resize":' in helper_src and 'mainWindows.count == 1' in helper_src and 'AXStandardWindow' in helper_src and 'abs(actual.width-width) <= 2' in helper_src and 'abs(actual.height-height) <= 2' in helper_src)
+for mode in ['WIDERESIZEFAIL','WIDENOOPEN']:
+ r=run({mode:'1'})
+ ck('wide-stage refusal '+mode+' retains all6original shots but cannot COMPLETE',r[0]==1 and 'WIDE-HISTORY OK:' not in r[1] and 'screenshot-v1-removal-history-wide.png' not in r[3] and 'screenshot-v1-removal-history.png' in r[3] and 'STEP-FAIL history-wide' in r[1],r[:2])
 print('\n%d failed' % len(fails)); sys.exit(1 if fails else 0)

@@ -35,3 +35,5 @@ public let kAXWindowRole = "AXWindow"
 public let kAXWindowsAttribute = "AXWindows"
 
 public func AXUIElementGetTypeID() -> CFTypeID { CFDictionaryGetTypeID() }
+
+public func AXValueCreate(_ type: AXValueType, _ valuePtr: UnsafeRawPointer) -> AXValue? { fatalError("stub") }

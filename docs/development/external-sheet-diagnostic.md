@@ -1,6 +1,8 @@
-# External sheet observation (diagnostic-only candidate)
+# External sheet observation (initial diagnostic route)
 
-The existing native fidelity gate is unchanged. Native unknown is never rewritten; the external witness is not a native-accessor pass. A positive observer disagreement refuses a bound diagnostic capture.
+This section records the initial diagnostic-only policy, superseded in b412b3fe
+by the explicitly reviewed observed-sheet-v1 gate. The standalone native check
+remains unchanged. Native unknown is never rewritten; the external witness is not a native-accessor pass. A positive observer disagreement refuses a bound diagnostic capture.
 
 The CI-only producer supplies a fresh UUID, process PID and source pin in the raw state and publishes the UUID in the existing ready marker. The runner pins the launched executable path, process start and checkout SHA, then at step 78 validates producer ready/raw identity, unacknowledged state and source. A bounded read-only helper requires actual process-matched nodes, one independent focused sheet, exact Not scanned headline and qualifier, loaded AX rows, and complete bounded traversal. AXChildren and AXSheets routes share DAG nodes; cycles refuse. Wrong type, error, ambiguity, stale focus and truncation refuse.
 
@@ -30,8 +32,8 @@ The history opening failure remains unresolved. Existing acceptance gates are
 unchanged.
 
 
-Local successor candidate: `external-sheet-acceptance-proposal.md` describes an
+Landed successor in b412b3fe: `external-sheet-acceptance-proposal.md` describes an
 explicit observed-sheet-v1 gate for review. Published diagnostic-only claims
 above describe the prior landed policy. The local successor preserves raw
 native status, names the external route separately, binds external JSON too,
-and uses the exact bound image. It is not landed or native-verified.
+and uses the exact bound image. It is landed, but not native-verified.

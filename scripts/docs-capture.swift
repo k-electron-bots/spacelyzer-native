@@ -59,6 +59,22 @@ func post(character: Character) {
 }
 
 switch command {
+case "resize":
+    // Capture-only: resize the unique ordinary app window, never a popover.
+    guard args.count == 5, let width = Double(args[3]), let height = Double(args[4]),
+          width >= 600, width <= 2000, height >= 400, height <= 1400,
+          let windows = read(app, "AXWindows") as? [AXUIElement] else { exit(2) }
+    let mainWindows = windows.filter { string($0, "AXRole") == "AXWindow" && string($0, "AXSubrole") == "AXStandardWindow" }
+    guard mainWindows.count == 1 else { print("resize requires one ordinary window"); exit(1) }
+    var requested = CGSize(width: width, height: height)
+    guard let value = AXValueCreate(.cgSize, &requested),
+          AXUIElementSetAttributeValue(mainWindows[0], "AXSize" as CFString, value) == .success else { print("resize refused"); exit(1) }
+    usleep(500_000)
+    guard let actualRef = read(mainWindows[0], "AXSize") else { print("resize unreadable"); exit(1) }
+    var actual = CGSize.zero
+    guard AXValueGetValue(actualRef as! AXValue, .cgSize, &actual),
+          abs(actual.width-width) <= 2, abs(actual.height-height) <= 2 else { print("resize dimensions not observed"); exit(1) }
+    print("resized \(Int(actual.width))x\(Int(actual.height))")
 case "windowid":
     let info = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
     var best: (id: Int, area: Double)? = nil

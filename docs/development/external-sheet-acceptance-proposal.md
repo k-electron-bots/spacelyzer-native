@@ -1,7 +1,7 @@
-# Local observed-sheet-v1 acceptance candidate (NOT LANDED)
+# Observed-sheet-v1 acceptance rule
 
-Published policy remains diagnostic-only. This LOCAL candidate implements the
-explicit new observed-sheet-v1 rule for engineering review. The standalone
+Landed in b412b3fe after independent engineering review. This implements the
+explicit new observed-sheet-v1 rule. The standalone
 native check still fails raw `sheetId=unknown`. Workflow assertions now invoke
 the named observed gate, not silent error suppression. This is not a claim
 that the existing native accessor passed.
@@ -19,7 +19,7 @@ An unknown native accessor is not contrary identity evidence. A positive native
 identity other than Not scanned is contrary evidence and must refuse. The new
 route could establish observed Not scanned identity while explicitly leaving
 the native accessor unverified. This is an acceptance rule change and requires
-engineering review before landing. Actual gate tests are implemented below.
+review of any further criterion change. Actual gate tests are implemented below.
 
 ## Proposed required external evidence
 
@@ -96,6 +96,7 @@ Pre/post observations are captured by the trusted runner while unacknowledged;
 the later artifact gate validates their consistency, not current process life
 after the demo has ended.
 
-The history candidate remains separate, local and visually unverified. Its
+The history repair candidate is landed with user approval of the anchor change,
+but is still visually unverified. Its
 root-bound popover could change position at narrow AND wide widths; presentation
 UX and pixels need review before any landing/readiness decision.
