@@ -77,13 +77,15 @@ struct ContentView: View {
                     }
             }
             ToolbarItem {
-                Button { showRemovalHistory = true } label: { Label("Removed", systemImage: "arrow.uturn.backward.circle") }
+                Button {
+                    #if SPZ_CI_TESTS
+                    print("history-transition action-delivered priorState=\(showRemovalHistory) entries=\(model.lastRemoved.count)")
+                    #endif
+                    showRemovalHistory = true
+                } label: { Label("Removed", systemImage: "arrow.uturn.backward.circle") }
                     .disabled(model.lastRemoved.isEmpty)
                     .help("Items moved to the Trash this session, each with its own Put Back")
                     .accessibilityLabel("Removal history")
-                    .popover(isPresented: $showRemovalHistory) {
-                        RemovalHistoryPopover(model: model)
-                    }
             }
             ToolbarItem(placement: .principal) {
                 Picker("View", selection: $model.tab) {
@@ -122,6 +124,26 @@ struct ContentView: View {
         .alert("Export", isPresented: Binding(get: { model.exportMessage != nil }, set: { if !$0 { model.exportMessage = nil } })) {
             Button("OK", role: .cancel) {}
         } message: { Text(model.exportMessage ?? "") }
+        // Keep presentation on the persistent content host. The Removed toolbar
+        // button may be represented by a transient native overflow menu item.
+        .onChange(of: showRemovalHistory) { _, presented in
+            #if SPZ_CI_TESTS
+            print("history-transition state=\(presented) entries=\(model.lastRemoved.count)")
+            #endif
+        }
+        .popover(isPresented: $showRemovalHistory) {
+            RemovalHistoryPopover(model: model)
+                .onAppear {
+                    #if SPZ_CI_TESTS
+                    print("history-transition content-appeared entries=\(model.lastRemoved.count)")
+                    #endif
+                }
+                .onDisappear {
+                    #if SPZ_CI_TESTS
+                    print("history-transition content-disappeared")
+                    #endif
+                }
+        }
         .sheet(isPresented: $showExclusions) {
             ExclusionsView(exclusions: $model.exclusions, tree: model.tree)
         }
