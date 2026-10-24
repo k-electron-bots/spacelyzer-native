@@ -97,16 +97,21 @@ def diagnostic_step78(pin_path, raw_path, producer_ready, ack_path, output):
     def observe(a):
         # The app only serves its run loop (needed for out-of-process AX) while this
         # request file exists, and records live-state drift in the drift file.
-        req=probe_request_path(ack_path);req.write_text(a['token'])
+        req=probe_request_path(ack_path);marker=blocked_path(ack_path)
+        marker.unlink(missing_ok=True)  # stale marker from an earlier cycle can never satisfy this one
+        tmp=req.with_name(req.name+'.tmp');tmp.write_text(a['token']);os.replace(tmp,req)  # atomic: the app never reads a partial token
         try:result=observe_inner(a)
         finally:req.unlink(missing_ok=True)
         # The app writes the blocked marker only after its last live comparison, once
         # it is back in the blocking wait. No image or after-probe check proceeds
         # without it, so a final run-loop slice cannot race the screenshot.
-        marker=blocked_path(ack_path);end=time.monotonic()+BLOCKED_WAIT_SECONDS
+        end=time.monotonic()+BLOCKED_WAIT_SECONDS
         while not marker.exists():
             if time.monotonic()>=end:raise ValueError('app did not confirm returning to the blocked wait')
             time.sleep(0.02)
+        try:payload=marker.read_text()
+        except OSError as e:raise ValueError('blocked marker unreadable: '+str(e))
+        if payload!='stable:'+a['token']:raise ValueError('blocked marker is not this request\'s stable confirmation: '+repr(payload[:80]))
         return result
     def observe_inner(a):
         try:r=subprocess.run(['/tmp/spz-sheet-probe',str(a['pid']),str(a['step']),a['token']],capture_output=True,text=True,timeout=8)

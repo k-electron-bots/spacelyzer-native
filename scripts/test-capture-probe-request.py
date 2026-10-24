@@ -4,19 +4,32 @@ diagnostic_step78 with declared subprocess seams. Linux logic proof only."""
 import importlib.util,pathlib,tempfile,json,threading,time
 spec=importlib.util.spec_from_file_location('binding','scripts/capture-sheet-evidence.py');m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 good=lambda token:json.dumps(dict(pid=42,step=78,captureToken=token,source='external-AXUIElement',identity='notscanned',scopeCount=1,reason='observed',texts=['Not scanned','These locations were not scanned, so they are not in the totals.'],rows=1,complete=True))
-for scenario in ['request-during-probe','removed-after-timeout','removed-after-refusal','drift-rejected','drift-before-probe-rejected','no-blocked-marker-refuses']:
+for scenario in ['request-during-probe','removed-after-timeout','removed-after-refusal','drift-rejected','drift-before-probe-rejected','no-blocked-marker-refuses','drifted-marker-rejected','wrong-token-marker-rejected','stale-marker-rejected','unknown-payload-rejected','unreadable-marker-rejected']:
  with tempfile.TemporaryDirectory() as t:
   p=pathlib.Path(t);token='producer-generated-uuid-A';raw=p/'raw';ready=p/'ready';ack=p/'spz-demo-ack-78';req=p/'spz-demo-probe-78';drift=p/'spz-demo-drift-78'
   raw.write_text(f'step=78 pid=42 captureToken={token} source=sha-A main=true sheet=true keyIsSheet=true alertModel=false sheetRows=1 sheetId=unknown')
   ready.write_text(token);(p/'pin').write_text(json.dumps(dict(pid=42,start='start-A',executable='/app/A',source='sha-A')))
   if scenario=='drift-before-probe-rejected':drift.write_text('baseline=a')
+  def payload():
+   return {'drifted-marker-rejected':'drifted:'+token,'wrong-token-marker-rejected':'stable:other-token','unknown-payload-rejected':'garbage'}.get(scenario,'stable:'+token)
+  if scenario=='stale-marker-rejected':(p/'spz-demo-blocked-78').write_text('stable:'+token)  # residue from a previous cycle
   seen=[];blocked=p/'spz-demo-blocked-78';m.BLOCKED_WAIT_SECONDS=0.4
   stop=[False]
   def app():
    # fake app: confirms the blocked wait only after the request file is withdrawn
    while not stop[0]:
-    if seen and not req.exists() and scenario!='no-blocked-marker-refuses':blocked.write_text('stable');return
+    if seen and not req.exists() and scenario!='no-blocked-marker-refuses':blocked.write_text(payload());return
     time.sleep(0.01)
+  if scenario=='stale-marker-rejected':
+   # app never answers this cycle; the stale residue must have been cleared, so this must refuse
+   def app():
+    while not stop[0]:time.sleep(0.01)
+  if scenario=='unreadable-marker-rejected':
+   # marker is a directory: exists() is true but reading fails
+   def app():
+    while not stop[0]:
+     if seen and not req.exists():blocked.mkdir();return
+     time.sleep(0.01)
   th=threading.Thread(target=app);th.start()
   def run(argv,**kw):
    if argv[0]=='ps':return type('R',(),{'stdout':'start-A' if argv[-1]=='lstart=' else '/app/A'})()
@@ -36,7 +49,7 @@ for scenario in ['request-during-probe','removed-after-timeout','removed-after-r
   finally:m.subprocess.run=orig;stop[0]=True;th.join()
   assert not req.exists(),(scenario,'probe request left behind')
   if scenario=='request-during-probe':assert ok and seen==[True],(ok,seen)
-  elif scenario=='no-blocked-marker-refuses':assert not ok and seen==[True]
+  elif scenario in ['no-blocked-marker-refuses','drifted-marker-rejected','wrong-token-marker-rejected','stale-marker-rejected','unknown-payload-rejected','unreadable-marker-rejected']:assert not ok and seen==[True],(scenario,ok,seen)
   elif scenario=='drift-before-probe-rejected':assert not ok and seen==[],(ok,seen)
   else:assert not ok,scenario
   print('PASS',scenario)

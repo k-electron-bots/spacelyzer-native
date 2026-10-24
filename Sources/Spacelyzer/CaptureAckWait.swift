@@ -11,6 +11,7 @@ import Foundation
 enum CaptureAckWait {
     struct Hooks {
         var exists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+        var read: (String) -> String? = { try? String(contentsOfFile: $0, encoding: .utf8) }
         var write: (String, String) -> Void = { try? $1.write(toFile: $0, atomically: true, encoding: .utf8) }
         var now: () -> Date = { Date() }
         var sleep: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
@@ -20,6 +21,7 @@ enum CaptureAckWait {
         let ack = "/tmp/spz-demo-ack-\(step)", probe = "/tmp/spz-demo-probe-\(step)", drift = "/tmp/spz-demo-drift-\(step)", blocked = "/tmp/spz-demo-blocked-\(step)"
         let baseline = fingerprint()
         var drifted = false, pumped = false, announcedBlocked = false
+        var token = ""
         func check() {
             let current = fingerprint()
             if current != baseline, !drifted {
@@ -28,18 +30,21 @@ enum CaptureAckWait {
             }
         }
         while !hooks.exists(ack) && hooks.now() < deadline {
-            if hooks.exists(probe) {
+            // One observation cycle per capture step. After the blocked marker is
+            // written the wait never pumps again, even if a new request appears.
+            if !announcedBlocked, hooks.exists(probe), let requested = hooks.read(probe), !requested.isEmpty {
+                token = requested
                 pumped = true
                 hooks.pump(0.05)
                 check()
             } else {
                 // Request withdrawn: take one last live comparison, then announce that
-                // the main thread is blocked again. The runner takes the image only
-                // after this marker, so no run-loop slice can follow it.
+                // the main thread is blocked again. The marker carries the request
+                // token and the verdict; the runner accepts only "stable:<token>".
                 if pumped, !announcedBlocked {
                     check()
                     announcedBlocked = true
-                    hooks.write(blocked, drifted ? "drifted" : "stable")
+                    hooks.write(blocked, (drifted ? "drifted:" : "stable:") + token)
                 }
                 hooks.sleep(0.05)
             }
