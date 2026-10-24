@@ -70,8 +70,15 @@ struct SpacelyzerApp: App {
                             try? "\(n)".write(toFile: "/tmp/spz-demo-step", atomically: true, encoding: .utf8)
                             try? "\(captureToken)".write(toFile: ready, atomically: true, encoding: .utf8)
                             let deadline = Date().addingTimeInterval(30)
-                            while !FileManager.default.fileExists(atPath: ack) && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
-                            if !FileManager.default.fileExists(atPath: ack) { Perf.log("DEMO CAPTURE ACK TIMEOUT step=\(n)") }
+                            // Blocks like the original loop unless the runner requested an
+                            // external observation; then it serves the run loop and records drift.
+                            let acked = CaptureAckWait.wait(step: n, deadline: deadline, fingerprint: {
+                                let w = DemoInput.window
+                                let sz = w?.contentView?.frame.size ?? .zero
+                                let sheet = w?.attachedSheet.map { ObjectIdentifier($0).hashValue } ?? 0
+                                return "w=\(Int(sz.width)) h=\(Int(sz.height)) sheet=\(sheet) alert=\(model.removalMessage != nil) tab=\(model.tab) sel=\(model.selected ?? 0) rows=\(model.outlineRows.count) appearance=\(NSApp.effectiveAppearance.name.rawValue)"
+                            })
+                            if !acked { Perf.log("DEMO CAPTURE ACK TIMEOUT step=\(n)") }
                         }
                         if let first = model.outlineRows.first?.node { model.toggle(first) }   // expand top folder
                         try? await Task.sleep(nanoseconds: 3_000_000_000); mark(1)               // CI shoots step 1
@@ -3279,12 +3286,25 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
                 }
                 Perf.log("footer-ax owner-selection attachedPairCurrent=\(owner.attachedSheet === root) matches=\(owners.count)")
                 if owner.attachedSheet === root, owners.count == 1 {
-                    var sheetsRef: CFTypeRef?
-                    let sheetsError = AXUIElementCopyAttributeValue(owners[0], "AXSheets" as CFString, &sheetsRef)
-                    Perf.log("footer-ax sheet-selection error=\(sheetsError.rawValue) arrayReadable=\(sheetsRef is [AXUIElement]) count=\((sheetsRef as? [AXUIElement])?.count ?? -1)")
-                    if sheetsError == .success, let sheets = sheetsRef as? [AXUIElement], sheets.count == 1 {
+                    func axArray(_ element: AXUIElement, _ key: String) -> (rc: Int32, value: [AXUIElement]?) {
+                        var ref: CFTypeRef?
+                        let rc = AXUIElementCopyAttributeValue(element, key as CFString, &ref)
+                        Perf.log("footer-ax sheet-selection attribute=\(key) error=\(rc.rawValue) arrayReadable=\(ref is [AXUIElement]) count=\((ref as? [AXUIElement])?.count ?? -1)")
+                        return (rc.rawValue, rc == .success ? ref as? [AXUIElement] : nil)
+                    }
+                    let selection = AttachedSheetSelection<AXUIElement>.select(
+                        owner: owners[0],
+                        sheets: { axArray($0, "AXSheets") },
+                        children: { axArray($0, "AXChildren") },
+                        role: { element in
+                            var ref: CFTypeRef?
+                            let rc = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &ref)
+                            return (rc.rawValue, rc == .success ? ref as? String : nil)
+                        })
+                    Perf.log("footer-ax sheet-selection route=\(selection.route.rawValue) selected=\(selection.sheet != nil) reason=\(selection.reason)")
+                    if let sheet = selection.sheet {
                         axWalkAvailable = true
-                        axVisit(sheets[0], depth: 0, edge: "axuielement-attached-sheet")
+                        axVisit(sheet, depth: 0, edge: "axuielement-attached-sheet-\(selection.route.rawValue)")
                     }
                 }
             } else {
