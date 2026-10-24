@@ -1,0 +1,9 @@
+# External sheet observation (diagnostic-only candidate)
+
+The existing native fidelity gate is unchanged. Native unknown is never rewritten; the external witness is not a native-accessor pass. A positive observer disagreement refuses a bound diagnostic capture.
+
+The CI-only producer supplies a fresh UUID, process PID and source pin in the raw state and publishes the UUID in the existing ready marker. The runner pins the launched executable path, process start and checkout SHA, then at step 78 validates producer ready/raw identity, unacknowledged state and source. A bounded read-only helper requires actual process-matched nodes, one independent focused sheet, exact Not scanned headline and qualifier, loaded AX rows, and complete bounded traversal. AXChildren and AXSheets routes share DAG nodes; cycles refuse. Wrong type, error, ambiguity, stale focus and truncation refuse.
+
+The runner rechecks process/source/ready/raw before and after the external probe and its diagnostic screenshot. Evidence uses a new UUID directory; replay refuses. Raw state, external result, screenshot and hash-bound manifest are separate files under dist/sheet-observation. Probe timeout is eight seconds, screenshot four, whole diagnostic command eighteen, below the existing thirty-second producer acknowledgement deadline. A diagnostic failure records incomplete evidence and never changes the existing fidelity verdict or permits intent substitution. The normal screenshot/ack still follows, even on diagnostic failure.
+
+Linux controls execute the real probe body on declared AX graphs and the real binding/orchestration logic with declared subprocess seams, plus whole-helper real-CF stub typecheck. They do not prove native ps formatting, actual Not scanned export readability, a working native AXSheets route, or pixel correctness. No Mac run is authorized by this code. The separate history popover opening failure remains unresolved; this observer does not repair it.
