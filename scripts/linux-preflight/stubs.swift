@@ -11,7 +11,7 @@ public typealias CFArray = NSArray
 public let kCFBooleanTrue: CFBoolean = NSNumber(value: true)
 public typealias AXUIElement = NSString
 public typealias AXValue = NSNumber
-public enum AXError { case success, failure, attributeUnsupported, noValue }
+public enum AXError: Int32 { case success = 0, failure = -25200, attributeUnsupported = -25205, noValue = -25212 }
 public func AXUIElementCreateApplication(_ pid: Int32) -> AXUIElement { fatalError() }
 public func AXUIElementCopyAttributeValue(_ element: AXUIElement, _ name: CFString, _ result: UnsafeMutablePointer<CFTypeRef?>) -> AXError { fatalError() }
 public func AXUIElementPerformAction(_ element: AXUIElement, _ action: CFString) -> AXError { fatalError() }
