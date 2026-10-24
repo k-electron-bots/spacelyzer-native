@@ -3,7 +3,7 @@
 Requires producer ready JSON with step/token/pid/start/executable/source/raw_sha256.
 Nothing here manufactures that producer record or changes the raw native state.
 """
-import hashlib,json,pathlib,subprocess,time,os
+import hashlib,json,pathlib,subprocess,time,os,signal,uuid,sys
 
 def digest(p):return hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
 def process_identity(pid):
@@ -53,8 +53,6 @@ def capture(*,ready,raw,ack,expected,output,inspect=process_identity,observe=Non
     (output/'binding.json').write_text(json.dumps(manifest,sort_keys=True))
     return manifest
 
-# No CLI yet: this library cannot run until the real producer ready publication
-# and workflow source/process pins are implemented and independently reviewed.
 
 def diagnostic_step78(pin_path, raw_path, producer_ready, ack_path, output):
     pin=json.loads(pathlib.Path(pin_path).read_text())
@@ -65,6 +63,8 @@ def diagnostic_step78(pin_path, raw_path, producer_ready, ack_path, output):
     root=pathlib.Path(output)/token
     if root.exists():raise ValueError('replayed capture token')
     root.mkdir(parents=True)
+    (root/'raw-native.txt').write_bytes(raw.read_bytes())
+    (root/'producer-ready.txt').write_bytes(pathlib.Path(producer_ready).read_bytes())
     anchor=dict(pin,step=78,token=token,raw_sha256=digest(raw));(root/'ready.json').write_text(json.dumps(anchor))
     expected=dict(anchor);expected.pop('raw_sha256')
     producer_bytes=pathlib.Path(producer_ready).read_bytes()
@@ -72,24 +72,86 @@ def diagnostic_step78(pin_path, raw_path, producer_ready, ack_path, output):
         if pathlib.Path(producer_ready).read_bytes()!=producer_bytes:raise ValueError('producer ready changed')
         return subprocess.run(['git','rev-parse','HEAD'],check=True,capture_output=True,text=True,timeout=3).stdout.strip()
     def observe(a):
-        r=subprocess.run(['/tmp/spz-sheet-probe',str(a['pid']),str(a['step']),a['token']],capture_output=True,text=True,timeout=8)
+        try:r=subprocess.run(['/tmp/spz-sheet-probe',str(a['pid']),str(a['step']),a['token']],capture_output=True,text=True,timeout=8)
+        except subprocess.TimeoutExpired as e:
+            def text(v):return v.decode(errors='replace') if isinstance(v,bytes) else (v or '')
+            (root/'probe-stdout.txt').write_text(text(e.stdout));(root/'probe-stderr.txt').write_text(text(e.stderr))
+            raise
         (root/'probe-stdout.txt').write_text(r.stdout);(root/'probe-stderr.txt').write_text(r.stderr)
         if r.returncode:raise ValueError('external probe refused rc='+str(r.returncode))
         return json.loads(r.stdout)
     def shot(p):subprocess.run(['screencapture','-x',str(p)],check=True,timeout=4)
     return capture(ready=root/'ready.json',raw=raw,ack=ack_path,expected=expected,output=root/'bound',observe=observe,screenshot=shot,source=source)
 
+def wait_pin(pin_path, executable, output, budget=3):
+    """Launch PID can appear after open returns. No unbounded launch polling."""
+    output=pathlib.Path(output);output.mkdir(parents=True,exist_ok=True)
+    deadline=time.monotonic()+budget; reasons=[]
+    def remaining():
+        n=deadline-time.monotonic()
+        if n<=0:raise TimeoutError('launch pin deadline expired')
+        return n
+    while time.monotonic()<deadline:
+        try:
+            r=subprocess.run(['pgrep','-n','-f',executable],capture_output=True,text=True,timeout=remaining())
+            if r.returncode:raise ValueError('pgrep rc='+str(r.returncode)+' stderr='+r.stderr.strip())
+            pid=int(r.stdout.strip());identity={'pid':pid}
+            for key,field in [('start','lstart'),('executable','comm')]:
+                value=subprocess.run(['ps','-p',str(pid),'-o',field+'='],check=True,capture_output=True,text=True,timeout=remaining()).stdout.strip()
+                identity[key]=os.path.realpath(value) if key=='executable' else value
+            if not identity['start'] or identity['executable']!=os.path.realpath(executable):raise ValueError('unexpected launched process identity '+json.dumps(identity))
+            identity['source']=subprocess.run(['git','rev-parse','HEAD'],check=True,capture_output=True,text=True,timeout=remaining()).stdout.strip()
+            pathlib.Path(pin_path).write_text(json.dumps(identity))
+            (output/'launch-pin.json').write_text(json.dumps(identity))
+            print('EXTERNAL DIAGNOSTIC launch pin '+json.dumps(identity),flush=True)
+            return identity
+        except Exception as e:reasons.append(type(e).__name__+': '+str(e))
+        time.sleep(min(.1,max(0,deadline-time.monotonic())))
+    reason={'status':'refused','budgetSeconds':budget,'reasons':reasons}
+    (output/'launch-pin-failure.json').write_text(json.dumps(reason))
+    print('EXTERNAL DIAGNOSTIC launch pin refused '+json.dumps(reason),flush=True)
+    raise ValueError('bounded launch pin unavailable')
+
+def supervise_capture(args, budget=18, command=None):
+    """Parent retains status and partial files even if capture worker is killed.
+    Kill the entire worker process group, including a blocked AX/screenshot child.
+    This cap is below the existing 30s producer ack wait, not an acceptance gate.
+    """
+    output=pathlib.Path(args[-1]);output.mkdir(parents=True,exist_ok=True)
+    attempt=output/('attempt-'+uuid.uuid4().hex);attempt.mkdir()
+    status={'status':'incomplete','budgetSeconds':budget,'acceptance':False}
+    manifest=attempt/'supervisor.json';manifest.write_text(json.dumps(status))
+    argv=command or [sys.executable,__file__,'capture-worker',*map(str,args)]
+    with (attempt/'worker-stdout.txt').open('w') as out, (attempt/'worker-stderr.txt').open('w') as err:
+        proc=None
+        try:
+            proc=subprocess.Popen(argv,stdout=out,stderr=err,start_new_session=True)
+            rc=proc.wait(timeout=budget)
+            status.update(status='complete' if rc==0 else 'failed',returncode=rc)
+        except subprocess.TimeoutExpired:
+            status.update(status='timed-out',reason='outer capture deadline expired; partial artifacts retained')
+        except Exception as e:status.update(status='failed',reason=type(e).__name__+': '+str(e))
+        finally:
+            if proc is not None:
+                # Clean descendants after worker exit as well as after a timeout.
+                try:os.killpg(proc.pid,signal.SIGKILL)
+                except ProcessLookupError:pass
+                proc.wait()
+            manifest.write_text(json.dumps(status,sort_keys=True))
+    print('EXTERNAL DIAGNOSTIC supervisor '+manifest.read_text(),flush=True)
+    if status['status']=='complete':print((attempt/'worker-stdout.txt').read_text(),flush=True)
+    return 0 if status['status']=='complete' else 1
+
 if __name__=='__main__':
     import sys
-    if len(sys.argv)==5 and sys.argv[1]=='pin':
-        pid=int(sys.argv[2]);identity=process_identity(pid)
-        identity['source']=subprocess.run(['git','rev-parse','HEAD'],check=True,capture_output=True,text=True,timeout=3).stdout.strip()
-        if identity['executable']!=os.path.realpath(sys.argv[4]):raise ValueError('unexpected launched executable')
-        pathlib.Path(sys.argv[3]).write_text(json.dumps(identity))
+    if len(sys.argv)==5 and sys.argv[1]=='wait-pin':
+        wait_pin(*sys.argv[2:])
     elif len(sys.argv)==7 and sys.argv[1]=='capture':
-        try:diagnostic_step78(*sys.argv[2:])
+        sys.exit(supervise_capture(sys.argv[2:]))
+    elif len(sys.argv)==7 and sys.argv[1]=='capture-worker':
+        try:print('EXTERNAL DIAGNOSTIC binding '+json.dumps(diagnostic_step78(*sys.argv[2:]),sort_keys=True),flush=True)
         except Exception as e:
             pathlib.Path(sys.argv[6]).mkdir(parents=True,exist_ok=True)
             (pathlib.Path(sys.argv[6])/'diagnostic-failure.txt').write_text(type(e).__name__+': '+str(e))
             raise
-    else:raise SystemExit('usage: pin PID FILE | capture PIN RAW READY ACK OUTPUT')
+    else:raise SystemExit('usage: wait-pin PIN EXECUTABLE OUTPUT | capture PIN RAW READY ACK OUTPUT')
