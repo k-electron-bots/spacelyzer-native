@@ -8,7 +8,7 @@ ALERT_STEPS = {71, 72}          # the real Moved-to-Trash alert is up for these 
 SHEET_STEPS = {78}                # the designed Not-scanned sheet: up and key, but NO alert in the model (ux-polish-7)
 def parse(line):
     return dict(kv.split('=', 1) for kv in line.split() if '=' in kv)
-def check(d, last, first=1):
+def check(d, last, first=1, observed_sheet=None):
     bad = []
     for n in range(first, last + 1):
         p = os.path.join(d, f'spz-demo-state-{n}')
@@ -24,7 +24,10 @@ def check(d, last, first=1):
             # Only the DESIGNED Not-scanned sheet is allowed here: identity, frontmost, content loaded, no alert in the model.
             if s.get('sheet') != 'true' or s.get('keyIsSheet') != 'true':
                 bad.append(f'step {n}: intended sheet not showing sheet={s.get("sheet")} keyIsSheet={s.get("keyIsSheet")}')
-            if s.get('sheetId') != 'notscanned': bad.append(f'step {n}: wrong sheet identity sheetId={s.get("sheetId")}')
+            if observed_sheet is not None:
+                try:observed_sheet(n,s)
+                except Exception as e:bad.append(f'step {n}: observed identity refused: {e}')
+            elif s.get('sheetId') != 'notscanned':bad.append(f'step {n}: wrong sheet identity sheetId={s.get("sheetId")}')
             if s.get('alertModel') == 'true': bad.append(f'step {n}: stale alert model over the intended sheet')
             try:
                 if int(s.get('sheetRows', '0')) < 1: bad.append(f'step {n}: sheet content not loaded sheetRows={s.get("sheetRows")}')

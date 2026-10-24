@@ -28,3 +28,10 @@ and termination of a spawned descendant after timeout with partial files kept.
 macOS `ps` output formatting, real AX reachability, and pixels remain unproved.
 The history opening failure remains unresolved. Existing acceptance gates are
 unchanged.
+
+
+Local successor candidate: `external-sheet-acceptance-proposal.md` describes an
+explicit observed-sheet-v1 gate for review. Published diagnostic-only claims
+above describe the prior landed policy. The local successor preserves raw
+native status, names the external route separately, binds external JSON too,
+and uses the exact bound image. It is not landed or native-verified.

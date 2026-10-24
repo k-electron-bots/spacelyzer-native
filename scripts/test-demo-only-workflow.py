@@ -133,7 +133,11 @@ def run_asserts(npass=178, shots=81, timing='', mod=None, missing_state=None, nf
         if any(os.path.exists(f'/tmp/spz-demo-state-{n}') for n in range(1, 82)): return None
         write_states('/tmp', mod); made += [f'/tmp/spz-demo-state-{n}' for n in range(1, 82)]
         if missing_state: os.remove(f'/tmp/spz-demo-state-{missing_state}')
-        return subprocess.run(['bash', '-e', '-c', A], cwd=work, capture_output=True, text=True)
+        subprocess.run([sys.executable,R+'/scripts/observed-test-fixture.py',work,'/tmp'],check=True)
+        made += ['/tmp/spz-demo-ready-78','/tmp/spz-capture-process-pin.json']
+        # Declared source/executable fixture seams; actual observed gate runs.
+        body=A.replace('"$(git rev-parse HEAD)"','sha-A').replace('"$PWD/dist-test/Spacelyzer.app/Contents/MacOS/Spacelyzer"','/app/A')
+        return subprocess.run(['bash', '-e', '-c', body], cwd=work, capture_output=True, text=True)
     finally:
         for p in made:
             try: os.remove(p)
