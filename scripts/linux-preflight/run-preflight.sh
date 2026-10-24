@@ -48,6 +48,8 @@ sed 's/ as CFString//g; s/^import Foundation$/import Foundation\nimport CoreFoun
 "$SWIFTC" -typecheck -I "$W/m" "$W/helper3b.swift" > "$W/l3b.log" 2>&1 && echo "PASS L3b-realcf docs-capture" || { echo "FAIL L3b-realcf docs-capture"; cat "$W/l3b.log"; rc=1; }
 sed 's/ as CFString//g; s/^import Foundation$/import Foundation\nimport CoreFoundation/; s/func attribute(_ element: AXUIElement, _ name: CFString)/func attribute(_ element: AXUIElement, _ name: String)/' scripts/ax-client.swift > "$W/axclient3b.swift"
 "$SWIFTC" -typecheck -I "$W/m" "$W/axclient3b.swift" > "$W/l3b2.log" 2>&1 && echo "PASS L3b-realcf ax-client" || { echo "FAIL L3b-realcf ax-client"; cat "$W/l3b2.log"; rc=1; }
+# Source-derived history action execution in both modes; no SwiftUI renderer claim.
+SWIFT_BIN="$(dirname "$SWIFTC")" python3 scripts/test-history-presentation.py > "$W/history-controls.log" 2>&1 && { echo "PASS history-action-host-controls"; cat "$W/history-controls.log"; } || { echo "FAIL history-action-host-controls"; cat "$W/history-controls.log"; rc=1; }
 # External sheet probe: full real-CF helper typecheck plus executed graph/binding
 # refusal controls. This route remains diagnostic only, not capture acceptance.
 sed 's/ as CFString//g; s/^import Foundation$/import Foundation\nimport CoreFoundation/' scripts/sheet-probe.swift > "$W/sheetprobe.swift"
