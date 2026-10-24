@@ -125,6 +125,17 @@ if over; then note "SKIPPED trash flow: time budget"; elif step select ax select
           for _ in $(seq 1 10); do ax sheettext "Backup 2025.zip" >/dev/null 2>&1 && { hist_ok=1; break; }; nap 1; done
           if [ "$hist_ok" -eq 1 ]; then snap history-live; shot removal-history; else note "STEP-FAIL history-content: journal entry for Backup 2025.zip not observed in the history popover"; diag history-content; fi
           ax escape; nap 1
+          if [ "$hist_ok" -eq 1 ]; then
+            # Same PID/session/journal entry, no new removal. The entire added
+            # wide stage has a 20s cap within the unchanged 165s v1 budget.
+            if [ $(( $(date +%s) - START + 20 )) -gt "$BUDGET" ]; then
+              note "STEP-FAIL history-wide: insufficient remaining original budget"
+            elif python3 "$BOUND" 20 bash scripts/capture-history-wide.sh "$HELPER" "$PID" "$OUT" "$BOUND"; then
+              note "WIDE-HISTORY OK: same-session 1280x800 actual entry captured"
+            else
+              note "STEP-FAIL history-wide: capture refused or timed out"
+            fi
+          fi
         fi
       else
         note "STEP-FAIL trash-result: result dialog naming Backup 2025.zip not observed after the confirm press (rc=$press_rc: $press_out)"; diag trash-result
@@ -160,7 +171,7 @@ pkill Spacelyzer; nap 2
 note "done"
 # Fail closed: anything but 6 captured shots with an OK layout verdict is an incomplete validation, never green.
 oks=$(grep -c '^OK ' "$STATUS")
-if [ "$oks" -ne 6 ] || grep -Eq '^(FAIL|STEP-FAIL|SKIPPED|FDA-LAYOUT (FAIL|UNKNOWN))' "$STATUS" || ! grep -q '^FDA-LAYOUT OK' "$STATUS"; then
+if [ "$oks" -ne 6 ] || grep -Eq '^(FAIL|STEP-FAIL|SKIPPED|FDA-LAYOUT (FAIL|UNKNOWN))' "$STATUS" || ! grep -q '^FDA-LAYOUT OK' "$STATUS" || ! grep -q '^WIDE-HISTORY OK:' "$STATUS" || [ ! -s "$OUT/screenshot-v1-removal-history-wide.png" ]; then
   note "V1-CAPTURE INCOMPLETE: $oks of 6 shots OK; see FAIL/STEP-FAIL/SKIPPED/FDA-LAYOUT lines (not a pass, not docs-complete)"; exit 1
 fi
-note "V1-CAPTURE COMPLETE: 6 of 6 shots and FDA-LAYOUT OK; pixels still need review before any publication"
+note "V1-CAPTURE COMPLETE: 6 of 6 original shots, same-session wide history and FDA-LAYOUT OK; pixels still need review before any publication"

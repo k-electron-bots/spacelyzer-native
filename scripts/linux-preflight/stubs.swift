@@ -49,3 +49,5 @@ public struct CGPoint { public var x: CGFloat; public var y: CGFloat; public sta
 public struct CGSize { public var width: CGFloat; public var height: CGFloat; public static let zero = CGSize(width: 0, height: 0) }
 public let kCGWindowLayer: CFString = "kCGWindowLayer"
 public let kCGWindowAlpha: CFString = "kCGWindowAlpha"
+
+public func AXValueCreate(_ type: AXValueType, _ valuePtr: UnsafeRawPointer) -> AXValue? { fatalError("stub") }
