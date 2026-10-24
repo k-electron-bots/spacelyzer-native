@@ -51,3 +51,12 @@ public let kCGWindowLayer: CFString = "kCGWindowLayer"
 public let kCGWindowAlpha: CFString = "kCGWindowAlpha"
 
 public func AXValueCreate(_ type: AXValueType, _ valuePtr: UnsafeRawPointer) -> AXValue? { fatalError("stub") }
+
+public class NSScreen {
+ public static var screens: [NSScreen] { [] }
+ public var frame: CGRect { .zero }
+ public var visibleFrame: CGRect { .zero }
+ public var backingScaleFactor: Double { 1 }
+}
+
+public func AXIsProcessTrusted() -> Bool { false }

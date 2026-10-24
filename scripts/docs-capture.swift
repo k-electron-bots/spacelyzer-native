@@ -59,20 +59,52 @@ func post(character: Character) {
 }
 
 switch command {
+case "geometry":
+    // Read-only actual screen/window constraints, independent of resize success.
+    for (index, screen) in NSScreen.screens.enumerated() {
+        print("screen index=\(index) frame=\(screen.frame) visibleFrame=\(screen.visibleFrame) scale=\(screen.backingScaleFactor)")
+    }
+    var windowsRef: CFTypeRef?
+    let windowsRC = AXUIElementCopyAttributeValue(app, "AXWindows" as CFString, &windowsRef)
+    print("geometry targetPID=\(pid) clientPID=\(getpid()) trusted=\(AXIsProcessTrusted()) operation=AXWindows error=\(windowsRC.rawValue)")
+    guard windowsRC == .success, let windows = windowsRef as? [AXUIElement] else { exit(1) }
+    for (index, window) in windows.enumerated() {
+        print("window index=\(index) role=\(string(window,"AXRole")) subrole=\(string(window,"AXSubrole")) title=\(string(window,"AXTitle"))")
+        for key in ["AXPosition", "AXSize", "AXMinimized", "AXFullScreen", "AXEnabled"] {
+            var value: CFTypeRef?
+            let rc = AXUIElementCopyAttributeValue(window, key as CFString, &value)
+            print("window index=\(index) operation=\(key) error=\(rc.rawValue) value=\(String(describing:value))")
+        }
+    }
 case "resize":
-    // Capture-only: resize the unique ordinary app window, never a popover.
     guard args.count == 5, let width = Double(args[3]), let height = Double(args[4]),
-          width >= 600, width <= 2000, height >= 400, height <= 1400,
-          let windows = read(app, "AXWindows") as? [AXUIElement] else { exit(2) }
+          width >= 600, width <= 2000, height >= 400, height <= 1400 else { print("resize invalid request"); exit(2) }
+    print("resize targetPID=\(pid) requested=\(width)x\(height) clientPID=\(getpid()) trusted=\(AXIsProcessTrusted())")
+    var windowsRef: CFTypeRef?
+    let windowsRC = AXUIElementCopyAttributeValue(app, "AXWindows" as CFString, &windowsRef)
+    print("resize operation=AXWindows error=\(windowsRC.rawValue)")
+    guard windowsRC == .success, let windows = windowsRef as? [AXUIElement] else { print("resize windows unreadable"); exit(1) }
     let mainWindows = windows.filter { string($0, "AXRole") == "AXWindow" && string($0, "AXSubrole") == "AXStandardWindow" }
+    print("resize ordinaryWindowCount=\(mainWindows.count)")
     guard mainWindows.count == 1 else { print("resize requires one ordinary window"); exit(1) }
+    let window = mainWindows[0]
+    for (index, screen) in NSScreen.screens.enumerated() { print("resize screen=\(index) frame=\(screen.frame) visibleFrame=\(screen.visibleFrame)") }
+    var beforeRef: CFTypeRef?
+    let beforeRC = AXUIElementCopyAttributeValue(window, "AXSize" as CFString, &beforeRef)
+    var before = CGSize.zero
+    let beforeRead = beforeRef.map { AXValueGetValue($0 as! AXValue, .cgSize, &before) } ?? false
+    print("resize before error=\(beforeRC.rawValue) decoded=\(beforeRead) width=\(before.width) height=\(before.height)")
     var requested = CGSize(width: width, height: height)
-    guard let value = AXValueCreate(.cgSize, &requested),
-          AXUIElementSetAttributeValue(mainWindows[0], "AXSize" as CFString, value) == .success else { print("resize refused"); exit(1) }
+    guard let value = AXValueCreate(.cgSize, &requested) else { print("resize AXValueCreate failed"); exit(1) }
+    let setRC = AXUIElementSetAttributeValue(window, "AXSize" as CFString, value)
+    print("resize operation=setAXSize error=\(setRC.rawValue)")
     usleep(500_000)
-    guard let actualRef = read(mainWindows[0], "AXSize") else { print("resize unreadable"); exit(1) }
+    var actualRef: CFTypeRef?
+    let afterRC = AXUIElementCopyAttributeValue(window, "AXSize" as CFString, &actualRef)
     var actual = CGSize.zero
-    guard AXValueGetValue(actualRef as! AXValue, .cgSize, &actual),
+    let decoded = actualRef.map { AXValueGetValue($0 as! AXValue, .cgSize, &actual) } ?? false
+    print("resize after error=\(afterRC.rawValue) decoded=\(decoded) width=\(actual.width) height=\(actual.height) requestedWidth=\(width) requestedHeight=\(height)")
+    guard setRC == .success, afterRC == .success, decoded,
           abs(actual.width-width) <= 2, abs(actual.height-height) <= 2 else { print("resize dimensions not observed"); exit(1) }
     print("resized \(Int(actual.width))x\(Int(actual.height))")
 case "windowid":
