@@ -27,6 +27,10 @@ def reconcile(raw,probe):
     if native not in ['unknown','notscanned']:raise ValueError('positive native identity disagrees')
     validate_probe(probe)
     return {'nativeIdentity':native,'externalIdentity':probe['identity'],'evidenceRoute':'external-AXUIElement','nativeAccessorPassed':native=='notscanned'}
+def probe_request_path(ack):
+    ack=pathlib.Path(ack);return ack.with_name(ack.name.replace('ack','probe',1))
+def drift_path(ack):
+    ack=pathlib.Path(ack);return ack.with_name(ack.name.replace('ack','drift',1))
 def capture(*,ready,raw,ack,expected,output,inspect=process_identity,observe=None,screenshot=None,source=None):
     ready,raw,ack,output=map(pathlib.Path,[ready,raw,ack,output])
     if output.exists():raise ValueError('output must be fresh')
@@ -46,6 +50,7 @@ def capture(*,ready,raw,ack,expected,output,inspect=process_identity,observe=Non
     observations=[]
     def unchanged(phase):
         if ack.exists() or ready.read_bytes()!=rb or raw.read_bytes()!=rawbytes:raise ValueError('capture handshake changed or acknowledged')
+        if drift_path(ack).exists():raise ValueError('live app state drifted during external observation')
         ident=inspect(anchor['pid'])
         if any(ident[k]!=anchor[k] for k in ['pid','start','executable']):raise ValueError('launched process changed')
         actual_source=source()
@@ -87,6 +92,12 @@ def diagnostic_step78(pin_path, raw_path, producer_ready, ack_path, output):
         if pathlib.Path(producer_ready).read_bytes()!=producer_bytes:raise ValueError('producer ready changed')
         return subprocess.run(['git','rev-parse','HEAD'],check=True,capture_output=True,text=True,timeout=3).stdout.strip()
     def observe(a):
+        # The app only serves its run loop (needed for out-of-process AX) while this
+        # request file exists, and records live-state drift in the drift file.
+        req=probe_request_path(ack_path);req.write_text(a['token'])
+        try:return observe_inner(a)
+        finally:req.unlink(missing_ok=True)
+    def observe_inner(a):
         try:r=subprocess.run(['/tmp/spz-sheet-probe',str(a['pid']),str(a['step']),a['token']],capture_output=True,text=True,timeout=8)
         except subprocess.TimeoutExpired as e:
             def text(v):return v.decode(errors='replace') if isinstance(v,bytes) else (v or '')
