@@ -27,5 +27,12 @@ assert 'NSTextField.self' not in state
 print('PASS collector scope is actual attached sheet, not global labels or intent; truncation refuses')
 
 assert 'owner.attachedSheet === root, owners.count == 1' in s
-assert 'sheets.count == 1' in s
-print('PASS exported tree requires unique owner and its unique attached sheet, no title-only sheet guess')
+assert 'owner.attachedSheet === root, owners.count == 1' in s
+sel=pathlib.Path('Sources/Spacelyzer/AttachedSheetSelection.swift').read_text()
+assert 'AttachedSheetSelection<AXUIElement>.select(' in s and 'owner: owners[0]' in s
+assert 'if let sheet = selection.sheet' in s and 'axVisit(sheet,' in s
+assert 'footer-ax sheet-selection route=' in s
+assert 'if list.count == 1' in sel and 'matches.count == 1' in sel
+assert 's.rc != attributeUnsupported && s.rc != noValue' in sel
+assert 'sheets.count == 1' not in s
+print('PASS exported tree requires unique owner and exactly one attached sheet (AXSheets primary, role-AXSheet fallback only for unsupported/empty), route logged, no title-only sheet guess')
