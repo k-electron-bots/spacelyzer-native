@@ -1,0 +1,38 @@
+{
+  "run": "https://github.com/k-electron-bots/spacelyzer-native/actions/runs/40050466225",
+  "source": "9db328b54ac198ffbe49f66038e48fe9ae6cf0d6",
+  "artifact": "demo-validation-9db328b54ac198ffbe49f66038e48fe9ae6cf0d6",
+  "captures": [
+    {
+      "file": "docs/images/trash-confirmation.png",
+      "artifact": "dist/v1-capture/screenshot-v1-trash-confirm.png",
+      "sha256": "b31950052e2c54b1af5848e5b755602845d1f92a26fc3fa20864afcfcd7f7785",
+      "transformation": "none"
+    },
+    {
+      "file": "docs/images/removal-history.png",
+      "artifact": "dist/v1-capture/screenshot-v1-removal-history.png",
+      "sha256": "42327fba8bf9559741861d74fed5681977d1232f45fb53d94829e0893c29ce72",
+      "transformation": "none"
+    },
+    {
+      "file": "docs/images/trash-done.png",
+      "artifact": "dist/v1-capture/screenshot-v1-trash-done.png",
+      "sha256": "5c2871667b8cff40a69bbfa9ad9ab46e4a02deda6c20b90837bb2b8993b36a76",
+      "transformation": "none"
+    },
+    {
+      "file": "docs/images/exclusions.png",
+      "artifact": "dist/v1-capture/screenshot-v1-exclusions.png",
+      "sha256": "eab889463f23b379dce9fdba97d0598d3e5cf536e059bf6cea4b2d0cff9e503c",
+      "transformation": "none"
+    },
+    {
+      "file": "docs/images/duplicates.png",
+      "artifact": "dist/v1-capture/screenshot-v1-duplicates.png",
+      "sha256": "9a5414a218cb61009cd4c3c4decf36f5ed3aafd39d81acf6babccafb3c6e1953",
+      "transformation": "none"
+    }
+  ],
+  "scope": "Shared CI Mac, disposable Sample fixture, test-only app. Window-only original images, no crops. Wide history and external observed identity failed; no readiness claim."
+}

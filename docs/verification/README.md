@@ -4,13 +4,20 @@ Status as of October 23, 2026. **Not release-ready.** No release, DMG distributi
 
 Older snapshot: [HISTORY-2026-10-06.md](HISTORY-2026-10-06.md). Ledger: [checkpoints.md](checkpoints.md). Open Mac items: [mac-batch-backlog.md](mac-batch-backlog.md).
 
-Latest: [October 23 run evidence and remaining capture failures](2026-10-23-demo-replacement.md). Run 40042043674 passed shipping/test/helper compilation, 166 ordering and 178 UI assertions on the scope correction. Strict capture acceptance still failed: step 78 identity unknown and history missing. Five v1 captures were pixel-validated. This is not a clean run.
+Latest: [combined verification and screenshot evidence](2026-10-23-combined-verification.md).
+Run 40050466225 on `9db328b5` passed native shipping/test/helper compilation,
+166 ordering and 178 UI assertions. All six original v1 captures were inspected,
+including newly visible compact Removal History. The whole run still failed:
+external Not scanned observation returned AXWindows error -25204, and wide
+history resize dimensions were not observed. Five valid cleanup images now
+illustrate the README/tour/safety guide; older overview/Kinds/review/installer
+images remain dated earlier evidence. No new DMG or release.
 
 ## What a Mac has executed
 
 | Area | Run | Result | Limit |
 |---|---|---|---|
-| Current native check execution | [40022177880](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/40022177880) | 178 UI assertions and 166 required ordering checks passed; shipping/test builds passed | Whole run failed strict capture fidelity and v1 capture acceptance; repair is offline-only |
+| Current native check execution | [40050466225](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/40050466225) | 178 UI assertions and 166 required ordering checks passed; shipping/test/helper builds passed; compact history visible | Whole run failed external observed identity and wide-history capture; not release-ready |
 | Functional UI and ordering | [39683697776](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/39683697776) | 178/178 UI assertions, 159/159 ordering checks | Fixture data on a shared CI Mac |
 | Real Trash, undo, identity refusal, name collision, failure recovery | [39843869589](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/39843869589) | 178 PASS / 0 FAIL, including a real Trash move of only the selected fixture; keyboard-focus checks passed | The run failed at artifact upload and the gate, so it is not a clean pass. Demo screenshots 72-81 were stale or blank; that capture bug has a fix |
 | Test-only build with the capture fix | [39858272561](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/39858272561) | Compiled on the Mac | Compile only. The 1M-item scale run in that job did not complete |
@@ -18,7 +25,7 @@ Latest: [October 23 run evidence and remaining capture failures](2026-10-23-demo
 
 ## Open
 
-- Capture acceptance remains open: latest run 40042043674 still rejects step 78 identity and has five pixel-validated v1 captures of six, with history missing. The shipping scope correction compiled on the Mac; remaining AX mechanism failures need diagnosis, not weakened gates. See dated evidence above.
+- Capture acceptance remains open: run 40050466225 has six inspected original v1 captures, but the external sheet observer failed AXWindows (-25204), and the added wide-history resize was not observed. Native `sheetId=unknown` remains separate from the named observed-sheet-v1 criterion, which also failed. Compact history opening is now demonstrated; wide positioning is not. See dated evidence above.
 - The Linux-only 4 KB ancestor anomaly (NOLINKS, seed 100008, 100k) remains OPEN: not reproduced with its recorded parameters on October 23 (retained artifact shows 0 per-node diffs); original raw lost, observation unexplained and unretired. Separately, run-to-run hard-link attribution flips on the parallel backend were found and reproduced (order-dependence; a deterministic-attribution change is a pending owner decision). See checkpoints.md.
 - Three CSV formatting/export-flow/model-wiring checks passed on the CI Mac with injected panel/write seams. Real save-panel/file/import behavior and actual IME input remain unverified. VoiceOver speech is untested and is not a v1 gate.
 - Hard-link sizes are counted once for the whole scan, so a per-folder figure can depend on which link is reached first. This is by design.
