@@ -33,14 +33,16 @@ Read [space, filters and safe removal](space-and-safety.md) before deleting file
 The review groups matching content and shows per-file or keep-one actions.
 Allocated bytes are not necessarily reclaimable space. The screenshot's warning
 explains limits for sparse, compressed and some clone copies. This capture shows
-the review, not a duplicate removal.
+the review, not a duplicate removal. The dialog is fully visible, but the wider
+background app is clipped at the right edge of the CI display.
 
 ## Choose exclusions for the next scan
 ![Exclusions dialog with a path field and an explanation of rescan behavior](../images/exclusions.png)
 
 Exclusions apply when you rescan. Editing this list does not change the numbers
 already on screen. An excluded path the scan never saw is not proof that it is
-absent.
+absent. The dialog is fully visible; the background app is clipped at the right
+edge of the CI display.
 
 ## Review the exact file, then find it in Removal History
 ![Move to Trash confirmation naming Backup 2025.zip and its full fixture path](../images/trash-confirmation.png)

@@ -25,13 +25,15 @@
       "file": "docs/images/exclusions.png",
       "artifact": "dist/v1-capture/screenshot-v1-exclusions.png",
       "sha256": "eab889463f23b379dce9fdba97d0598d3e5cf536e059bf6cea4b2d0cff9e503c",
-      "transformation": "none"
+      "transformation": "none",
+      "display_limit": "Dialog fully visible; background app clipped at right edge of CI display."
     },
     {
       "file": "docs/images/duplicates.png",
       "artifact": "dist/v1-capture/screenshot-v1-duplicates.png",
       "sha256": "9a5414a218cb61009cd4c3c4decf36f5ed3aafd39d81acf6babccafb3c6e1953",
-      "transformation": "none"
+      "transformation": "none",
+      "display_limit": "Dialog fully visible; background app clipped at right edge of CI display."
     }
   ],
   "scope": "Shared CI Mac, disposable Sample fixture, test-only app. Window-only original images, no crops. Wide history and external observed identity failed; no readiness claim."
