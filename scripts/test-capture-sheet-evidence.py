@@ -50,7 +50,7 @@ for scenario in ['orchestrated-good','orchestrated-timeout','orchestrated-replay
    if argv[0]=='git':return type('R',(),{'stdout':'sha-A'})()
    if argv[0]=='/tmp/spz-sheet-probe':
     assert kw['timeout']==8
-    (p/'blocked').write_text('stable')  # stand-in for the app's blocked-wait marker (covered in test-capture-probe-request)
+    (p/'blocked').write_text('stable:'+token)  # stand-in for the app's blocked-wait marker (covered in test-capture-probe-request)
     if scenario=='orchestrated-timeout':raise m.subprocess.TimeoutExpired(argv,8,output=b'partial probe',stderr=b'partial error')
     return type('R',(),{'returncode':0,'stderr':'','stdout':json.dumps(dict(pid=42,step=78,captureToken=token,source='external-AXUIElement',identity='notscanned',scopeCount=1,reason='observed',texts=['Not scanned','These locations were not scanned, so they are not in the totals.'],rows=1,complete=True))})()
    if argv[0]=='screencapture':pathlib.Path(argv[-1]).write_bytes(b'png');return None
