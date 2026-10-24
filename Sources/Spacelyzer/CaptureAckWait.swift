@@ -6,7 +6,7 @@ import Foundation
 /// While the request file exists the wait services the main run loop in short
 /// slices so out-of-process Accessibility requests can be answered, and it checks
 /// a live state fingerprint after every slice. Any change is recorded in a drift
-/// file the runner rejects; the fingerprint comes from the live window and model,
+/// file the runner rejects; after the request is withdrawn it writes a blocked marker; the fingerprint comes from the live window and model,
 /// not from the published state files. Returns true when the ack appeared.
 enum CaptureAckWait {
     struct Hooks {
@@ -17,18 +17,30 @@ enum CaptureAckWait {
         var pump: (TimeInterval) -> Void = { _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval($0)) }
     }
     static func wait(step: Int, deadline: Date, fingerprint: () -> String, hooks: Hooks = Hooks()) -> Bool {
-        let ack = "/tmp/spz-demo-ack-\(step)", probe = "/tmp/spz-demo-probe-\(step)", drift = "/tmp/spz-demo-drift-\(step)"
+        let ack = "/tmp/spz-demo-ack-\(step)", probe = "/tmp/spz-demo-probe-\(step)", drift = "/tmp/spz-demo-drift-\(step)", blocked = "/tmp/spz-demo-blocked-\(step)"
         let baseline = fingerprint()
-        var drifted = false
+        var drifted = false, pumped = false, announcedBlocked = false
+        func check() {
+            let current = fingerprint()
+            if current != baseline, !drifted {
+                drifted = true
+                hooks.write(drift, "baseline=\(baseline)\ncurrent=\(current)\n")
+            }
+        }
         while !hooks.exists(ack) && hooks.now() < deadline {
             if hooks.exists(probe) {
+                pumped = true
                 hooks.pump(0.05)
-                let current = fingerprint()
-                if current != baseline, !drifted {
-                    drifted = true
-                    hooks.write(drift, "baseline=\(baseline)\ncurrent=\(current)\n")
-                }
+                check()
             } else {
+                // Request withdrawn: take one last live comparison, then announce that
+                // the main thread is blocked again. The runner takes the image only
+                // after this marker, so no run-loop slice can follow it.
+                if pumped, !announcedBlocked {
+                    check()
+                    announcedBlocked = true
+                    hooks.write(blocked, drifted ? "drifted" : "stable")
+                }
                 hooks.sleep(0.05)
             }
         }

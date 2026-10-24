@@ -35,7 +35,13 @@ enum DemoInput { @MainActor static var window:W? = W() }
 struct AName { var rawValue="Aqua" }; struct Appearance { var name=AName() }
 enum NSApp { static var effectiveAppearance=Appearance() }
 enum TrailingTab: Hashable { case treemap, kinds, largest, folders }
-final class Model { var removalMessage:String?; var tab:TrailingTab = .treemap; var selected:UInt32?; var outlineRows:[Int]=[] }
+enum FileCategory { case video }
+final class Model { var removalMessage:String?; var tab:TrailingTab = .treemap; var selected:UInt32?; var selectedSet:[UInt32]=[]; var outlineRows:[Int]=[]; var expanded:Set<UInt32>=[]; var filterKind:FileCategory?; var filterMinMB=0; var filterText="" }
+class NSView {}
+final class NSTableView:NSView { var numberOfRows=3 }
+final class Clip { var bounds=CGRect(x:0,y:12,width:1,height:1) }
+final class NSScrollView:NSView { var contentView=Clip() }
+extension DemoInput { @MainActor static func allViews<T:NSView>(of t:T.Type)->[T] { [T]() } }
 @MainActor let model=Model()
 @MainActor func fingerprint()->String {
 '''+fp+'''

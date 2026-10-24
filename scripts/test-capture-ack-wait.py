@@ -31,7 +31,15 @@ case "probe-drift-recorded-once":
 case "probe-removed-returns-to-block":
  reset(); files.insert("/tmp/spz-demo-probe-78")
  let r=CaptureAckWait.wait(step:78,deadline:dl,fingerprint:{fp},hooks:hooks(onPump:{ if pumps==2 {files.remove("/tmp/spz-demo-probe-78")} }, onSleep:{ if sleeps==2 {files.insert("/tmp/spz-demo-ack-78")} }))
- print(r,pumps,sleeps); exit(r && pumps==2 && sleeps==2 ? 0:1)
+ print(r,pumps,sleeps,writes); exit(r && pumps==2 && sleeps==2 && writes["/tmp/spz-demo-blocked-78"]=="stable" && writes.count==1 ? 0:1)
+case "blocked-marker-after-last-check-catches-late-drift":
+ reset(); files.insert("/tmp/spz-demo-probe-78")
+ var removedAt=0
+ let r=CaptureAckWait.wait(step:78,deadline:dl,fingerprint:{fp},hooks:hooks(onPump:{ if pumps==2 {files.remove("/tmp/spz-demo-probe-78"); fp="late"} }, onSleep:{ if sleeps==1 {files.insert("/tmp/spz-demo-ack-78")} }))
+ print(r,writes); exit(r && (writes["/tmp/spz-demo-drift-78"] ?? "").contains("current=late") && writes["/tmp/spz-demo-blocked-78"]=="drifted" ? 0:1)
+case "no-blocked-marker-without-probe":
+ reset(); let r=CaptureAckWait.wait(step:78,deadline:dl,fingerprint:{fp},hooks:hooks(onSleep:{ if sleeps==2 {files.insert("/tmp/spz-demo-ack-78")} }))
+ print(r,writes); exit(r && writes.isEmpty ? 0:1)
 case "timeout-no-ack":
  reset(); let r=CaptureAckWait.wait(step:78,deadline:dl,fingerprint:{fp},hooks:hooks())
  print(r); exit(!r ? 0:1)
@@ -41,7 +49,7 @@ default: exit(2)
 with tempfile.TemporaryDirectory() as t:
  p=pathlib.Path(t);(p/'main.swift').write_text(main);(p/'w.swift').write_text(src)
  subprocess.run([str(swift),'-DSPZ_CI_TESTS',str(p/'main.swift'),str(p/'w.swift'),'-o',str(p/'t')],check=True)
- for sc in ['block-without-probe','probe-pumps-no-drift','probe-drift-recorded-once','probe-removed-returns-to-block','timeout-no-ack']:
+ for sc in ['block-without-probe','probe-pumps-no-drift','probe-drift-recorded-once','probe-removed-returns-to-block','blocked-marker-after-last-check-catches-late-drift','no-blocked-marker-without-probe','timeout-no-ack']:
   r=subprocess.run([str(p/'t'),sc],capture_output=True,text=True)
   assert r.returncode==0,(sc,r.stdout,r.stderr)
   print('PASS',sc,r.stdout.strip().replace('\n',' | '))

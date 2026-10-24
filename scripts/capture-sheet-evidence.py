@@ -29,6 +29,9 @@ def reconcile(raw,probe):
     return {'nativeIdentity':native,'externalIdentity':probe['identity'],'evidenceRoute':'external-AXUIElement','nativeAccessorPassed':native=='notscanned'}
 def probe_request_path(ack):
     ack=pathlib.Path(ack);return ack.with_name(ack.name.replace('ack','probe',1))
+BLOCKED_WAIT_SECONDS=3.0
+def blocked_path(ack):
+    ack=pathlib.Path(ack);return ack.with_name(ack.name.replace('ack','blocked',1))
 def drift_path(ack):
     ack=pathlib.Path(ack);return ack.with_name(ack.name.replace('ack','drift',1))
 def capture(*,ready,raw,ack,expected,output,inspect=process_identity,observe=None,screenshot=None,source=None):
@@ -95,8 +98,16 @@ def diagnostic_step78(pin_path, raw_path, producer_ready, ack_path, output):
         # The app only serves its run loop (needed for out-of-process AX) while this
         # request file exists, and records live-state drift in the drift file.
         req=probe_request_path(ack_path);req.write_text(a['token'])
-        try:return observe_inner(a)
+        try:result=observe_inner(a)
         finally:req.unlink(missing_ok=True)
+        # The app writes the blocked marker only after its last live comparison, once
+        # it is back in the blocking wait. No image or after-probe check proceeds
+        # without it, so a final run-loop slice cannot race the screenshot.
+        marker=blocked_path(ack_path);end=time.monotonic()+BLOCKED_WAIT_SECONDS
+        while not marker.exists():
+            if time.monotonic()>=end:raise ValueError('app did not confirm returning to the blocked wait')
+            time.sleep(0.02)
+        return result
     def observe_inner(a):
         try:r=subprocess.run(['/tmp/spz-sheet-probe',str(a['pid']),str(a['step']),a['token']],capture_output=True,text=True,timeout=8)
         except subprocess.TimeoutExpired as e:

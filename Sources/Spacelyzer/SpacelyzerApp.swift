@@ -76,7 +76,7 @@ struct SpacelyzerApp: App {
                                 let w = DemoInput.window
                                 let sz = w?.contentView?.frame.size ?? .zero
                                 let sheet = w?.attachedSheet.map { ObjectIdentifier($0).hashValue } ?? 0
-                                return "w=\(Int(sz.width)) h=\(Int(sz.height)) sheet=\(sheet) alert=\(model.removalMessage != nil) tab=\(model.tab) sel=\(model.selected ?? 0) rows=\(model.outlineRows.count) appearance=\(NSApp.effectiveAppearance.name.rawValue)"
+                                return "w=\(Int(sz.width)) h=\(Int(sz.height)) sheet=\(sheet) alert=\(model.removalMessage != nil) tab=\(model.tab) sel=\(model.selected.map { Int($0) } ?? -1) selSet=\(model.selectedSet) rows=\(model.outlineRows.count) expanded=\(model.expanded.count) filter=\(String(describing: model.filterKind))/\(model.filterMinMB)/\(model.filterText) tables=\(DemoInput.allViews(of: NSTableView.self).map { $0.numberOfRows }) scroll=\(DemoInput.allViews(of: NSScrollView.self).map { "\(Int($0.contentView.bounds.origin.x)),\(Int($0.contentView.bounds.origin.y))" }) appearance=\(NSApp.effectiveAppearance.name.rawValue)"
                             })
                             if !acked { Perf.log("DEMO CAPTURE ACK TIMEOUT step=\(n)") }
                         }
