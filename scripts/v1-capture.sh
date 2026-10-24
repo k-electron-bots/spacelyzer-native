@@ -112,9 +112,12 @@ if over; then note "SKIPPED trash flow: time budget"; elif step select ax select
         else
           snap trash-dismissed-live; shot trash-done
           # At960wide the button can be in the native toolbar overflow (retained AX snapshot).
+          snap history-before-open
           if ! ax press "Removal history"; then
+            snap history-direct-press-failed
             step history ax choose "more toolbar items" "Removed" || dismissed=0
           fi
+          snap history-after-open
         fi
         # Removal history must show THIS removal's journal entry in the popover, not just open.
         if [ "$dismissed" -eq 1 ]; then

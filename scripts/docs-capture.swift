@@ -125,12 +125,16 @@ case "choose":
     NSRunningApplication(processIdentifier: pid)?.activate()
     usleep(200_000)
     guard let opener = descendants().first(where: { openers.contains(string($0, "AXRole")) && label($0, matches: args[3]) }) else { print("menu button not found: \(args[3])"); exit(1) }
-    guard AXUIElementPerformAction(opener, "AXPress" as CFString) == .success else { print("menu press failed: \(args[3])"); exit(1) }
+    let openError = AXUIElementPerformAction(opener, "AXPress" as CFString)
+    print("choose opener role=\(string(opener, "AXRole")) title=\(string(opener, "AXTitle")) description=\(string(opener, "AXDescription")) value=\(string(opener, "AXValue")) pressError=\(openError.rawValue)")
+    guard openError == .success else { print("menu press failed: \(args[3])"); exit(1) }
     usleep(800_000)
     guard let item = descendants(limit: 8192).first(where: { string($0, "AXRole") == "AXMenuItem" && string($0, "AXTitle") == args[4] }) else {
         print("menu item not found: \(args[4])"); post(key: 53); exit(1)
     }
-    guard AXUIElementPerformAction(item, "AXPress" as CFString) == .success else { print("menu item press failed: \(args[4])"); exit(1) }
+    let itemError = AXUIElementPerformAction(item, "AXPress" as CFString)
+    print("choose item role=\(string(item, "AXRole")) title=\(string(item, "AXTitle")) description=\(string(item, "AXDescription")) value=\(string(item, "AXValue")) pressError=\(itemError.rawValue)")
+    guard itemError == .success else { print("menu item press failed: \(args[4])"); exit(1) }
 case "frame":
     guard args.count == 4 else { exit(2) }
     guard let el = descendants().first(where: { label($0, matches: args[3]) }),

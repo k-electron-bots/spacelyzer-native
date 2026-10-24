@@ -4,7 +4,7 @@ Status as of October 23, 2026. **Not release-ready.** No release, DMG distributi
 
 Older snapshot: [HISTORY-2026-10-06.md](HISTORY-2026-10-06.md). Ledger: [checkpoints.md](checkpoints.md). Open Mac items: [mac-batch-backlog.md](mac-batch-backlog.md).
 
-Latest: [October 23 run evidence and follow-up failure](2026-10-23-demo-replacement.md). Run 40022177880 passed native checks but failed capture acceptance. Repair run 40027695341 then failed shipping Swift compilation; its test app, demo and ordering never ran. The conditional-scope correction is offline-only.
+Latest: [October 23 run evidence and remaining capture failures](2026-10-23-demo-replacement.md). Run 40042043674 passed shipping/test/helper compilation, 166 ordering and 178 UI assertions on the scope correction. Strict capture acceptance still failed: step 78 identity unknown and history missing. Five v1 captures were pixel-validated. This is not a clean run.
 
 ## What a Mac has executed
 
@@ -18,7 +18,7 @@ Latest: [October 23 run evidence and follow-up failure](2026-10-23-demo-replacem
 
 ## Open
 
-- Capture acceptance remains open: run 40022177880 rejected step 78 identity and supplied four valid v1 captures of six. The reviewed repair needs native validation and pixel review; see the dated evidence above.
+- Capture acceptance remains open: latest run 40042043674 still rejects step 78 identity and has five pixel-validated v1 captures of six, with history missing. The shipping scope correction compiled on the Mac; remaining AX mechanism failures need diagnosis, not weakened gates. See dated evidence above.
 - The Linux-only 4 KB ancestor anomaly (NOLINKS, seed 100008, 100k) remains OPEN: not reproduced with its recorded parameters on October 23 (retained artifact shows 0 per-node diffs); original raw lost, observation unexplained and unretired. Separately, run-to-run hard-link attribution flips on the parallel backend were found and reproduced (order-dependence; a deterministic-attribution change is a pending owner decision). See checkpoints.md.
 - Three CSV formatting/export-flow/model-wiring checks passed on the CI Mac with injected panel/write seams. Real save-panel/file/import behavior and actual IME input remain unverified. VoiceOver speech is untested and is not a v1 gate.
 - Hard-link sizes are counted once for the whole scan, so a per-folder figure can depend on which link is reached first. This is by design.

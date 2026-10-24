@@ -174,4 +174,8 @@ r = run({'STICKYRESULT':'1', 'OKSTUCK':'1'})
 ck('negative: OK does not dismiss result -> no history shot and explicit failure', r[0]==1 and 'STEP-FAIL result-dismiss' in r[1] and 'screenshot-v1-removal-history.png' not in r[3] and 'screenshot-v1-trash-done.png' not in r[3], r[:2])
 r = run({'AXUNAVAILABLE':'1'})
 ck('negative: inaccessible AX does not prove dismissal or authorize done/history shots', r[0]==1 and 'screenshot-v1-trash-done.png' not in r[3] and 'screenshot-v1-removal-history.png' not in r[3], r[:2])
+r = run({'HISTORYOVERFLOW':'1','NOHISTORY':'1'})
+# The declared stub's overflow branch models successful opening only. Snapshot
+# wiring is checked below independently; this is not evidence for native opening.
+ck('diagnostic history boundaries retained: before/direct-failed/after-open', all('v1-snapshot-'+n+'.txt' in r[5] for n in ['history-before-open','history-direct-press-failed','history-after-open']), r[5])
 print('\n%d failed' % len(fails)); sys.exit(1 if fails else 0)

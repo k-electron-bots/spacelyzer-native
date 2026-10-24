@@ -3261,21 +3261,25 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
             }
         }
         var windowsRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(selfAX, kAXWindowsAttribute as CFString, &windowsRef) == .success,
-           let axWindows = windowsRef as? [AXUIElement] {
+        let windowsError = AXUIElementCopyAttributeValue(selfAX, kAXWindowsAttribute as CFString, &windowsRef)
+        Perf.log("footer-ax windows error=\(windowsError.rawValue) arrayReadable=\(windowsRef is [AXUIElement]) attachedRoute=\(owner != nil)")
+        if windowsError == .success, let axWindows = windowsRef as? [AXUIElement] {
             if let owner {
                 // Attached sheets are not reliably top-level AXWindows. Match the
                 // unique owning window, then its unique actual AXSheets child.
                 // An ambiguous title or multiple sheets supplies no exported evidence.
                 let owners = axWindows.filter { element in
                     var title: CFTypeRef?
-                    AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &title)
-                    return (title as? String) == owner.title
+                    let titleError = AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &title)
+                    Perf.log("footer-ax owner-candidate titleError=\(titleError.rawValue) title=\((title as? String ?? "").debugDescription) wanted=\(owner.title.debugDescription)")
+                    return titleError == .success && (title as? String) == owner.title
                 }
+                Perf.log("footer-ax owner-selection attachedPairCurrent=\(owner.attachedSheet === root) matches=\(owners.count)")
                 if owner.attachedSheet === root, owners.count == 1 {
                     var sheetsRef: CFTypeRef?
-                    if AXUIElementCopyAttributeValue(owners[0], "AXSheets" as CFString, &sheetsRef) == .success,
-                       let sheets = sheetsRef as? [AXUIElement], sheets.count == 1 {
+                    let sheetsError = AXUIElementCopyAttributeValue(owners[0], "AXSheets" as CFString, &sheetsRef)
+                    Perf.log("footer-ax sheet-selection error=\(sheetsError.rawValue) arrayReadable=\(sheetsRef is [AXUIElement]) count=\((sheetsRef as? [AXUIElement])?.count ?? -1)")
+                    if sheetsError == .success, let sheets = sheetsRef as? [AXUIElement], sheets.count == 1 {
                         axWalkAvailable = true
                         axVisit(sheets[0], depth: 0, edge: "axuielement-attached-sheet")
                     }
@@ -3291,7 +3295,7 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
             }
         }
         if !axWalkAvailable {
-            Perf.log("footer-ax axuielement self-walk unavailable (window list unreadable or footer window not found by title); NSObject-graph entries only, prior verdict preserved")
+            Perf.log("footer-ax axuielement self-walk unavailable; inspect windows/owner-selection/sheet-selection diagnostics; NSObject-graph entries only, no exported-AX identity established")
         }
         Perf.log("footer-ax complete nodes=\(entries.count) discovered=\(discovered) rejectedBranches=\(rejected) truncated=\(truncated) axuielementWalk=\(axWalkAvailable); informal attribute accessors plus same-PID AX server reads, no authored substitution")
         return Result(entries: entries, truncated: truncated, discovered: discovered, rejected: rejected)
