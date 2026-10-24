@@ -48,4 +48,18 @@ future failure can reveal a root cause; missing observability remains explicit.
 
 ## Wide history: in-session size and window-id capture (candidate, native-unverified)
 
-Run 40098663789: AX setAXSize asked 1280x800 and the window stayed 992x665 (screen 1024x768, visible 1024x677); a rect capture of a 1280-wide window yields a display-clipped 992-wide image. The candidate keeps the same PID and history entry, asks the running app (CI-only, `SPZ_SIZE_REQUESTS=1`) to size itself, and judges the app's own report: frame width must be 1280 +-2; frame height must be min(requested, visible height) +-2. Images are taken per window by id (`screencapture -l`); the main-window PNG width must equal the frame width at 1x or 2x, and a popover window image must exist. Whether the OS renders off-display window parts for `-l` is not verified.
+Run 40098663789: AX setAXSize asked 1280x800 and the window stayed 992x665 (screen 1024x768, visible 1024x677). A rect capture of a 1280-wide window gives a display-clipped 992-wide image.
+
+The candidate keeps the same PID and history entry. The cleanup session is launched with `SPZ_SIZE_REQUESTS=1`; a CI-only responder sizes the main window through the app's own path and reports pid, token, window count, sheet state, frame and visible height. Required wide stages, each judged against the REQUESTED 1280 (never against another measured value):
+
+- `resize`: app report frame width 1280 +-2; frame height min(800, visible height) +-2 (height rule pending review); same pid, echoed token, one ordinary window, no sheet.
+- `bounds-width`: WindowServer bounds width of the main window 1280 +-2.
+- `image` / `image-width`: `screencapture -l <main window id>`; PNG width 1280 or 2560 +-2.
+- `image-content`: SMOKE check only (right-most 200 columns hold at least 8 distinct colours). It is not content proof; native pixel review stays the gate.
+- `popover-image` / `popover-nonempty`: a second window image exists.
+- `content-after`: AX still sees "Backup 2025.zip" after the images were taken.
+- `bound-windows`: main and popover window ids are listed both before and after the captures.
+
+The end state is captured only when all of these passed. Unverified natively: that `-l` renders the off-display part, that the popover is listed and capturable, and that the history button stays AX-pressable off-display.
+
+Test-suite execution evidence: scripts/test-v1-capture.py has its structural guard (single top-level exit, last statement) at the top and an executed-check floor; scripts/test-suite-exec-guard.py proves a mutated suite with an early exit is rejected. Both run in the Linux preflight.

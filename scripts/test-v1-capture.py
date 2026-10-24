@@ -3,9 +3,14 @@
 Proves the control flow only (ordering, independence of shots, refusal to confirm a removal unless the confirmation alert is present,
 FDA layout check verdicts). It is NOT a Mac result: real AX menus, sheets, popovers and pixels are unverified until a Mac run."""
 import os, subprocess, sys, tempfile, shutil
+# Structural guard FIRST (fails in milliseconds): a dead check block after an early exit once reported green unexecuted.
+lines = [l for l in open(__file__).read().splitlines() if l.strip()]
+assert [l for l in lines if l.startswith('sys.exit(')] == [lines[-1]], 'the verdict exit must be the only top-level exit and the last statement'
 R = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 fails = []; DUP = []
+EXECUTED = [0]; MIN_EXECUTED = 53  # floor: fewer executed checks means a block was skipped or became dead code
 def ck(n, ok, d=''):
+    EXECUTED[0] += 1
     print(('ok   ' if ok else 'FAIL ') + n + ('' if ok else ' :: ' + str(d))); (ok or fails.append(n))
 def run(env_extra):
     t = tempfile.mkdtemp(); os.makedirs(t + '/stubs'); os.makedirs(t + '/scripts')
@@ -236,7 +241,6 @@ for mode in ['WIDERESIZEFAIL','WIDENOOPEN']:
  ck('wide-stage refusal '+mode+' retains all6original shots but cannot COMPLETE',r[0]==1 and 'WIDE-HISTORY OK:' not in r[1] and 'screenshot-v1-removal-history-wide.png' not in r[3] and 'screenshot-v1-removal-history.png' in r[3] and 'STEP-FAIL history-wide' in r[1],r[:2])
 r=run({'EMPTYWIDE':'1'})
 ck('zero-byte wideimage rc0 cannot pass aggregate; originalsix andFDA retained',r[0]==1 and not r[6]['phase-summary']['complete'] and r[6]['phase-summary']['endstates']['removal-history-wide']['status']=='blocked' and 'FDA-LAYOUT OK' in r[1] and len(r[3])==8,r[:2])
-print('\n%d failed' % len(fails)); sys.exit(1 if fails else 0)
 
 # --- in-session size path + window-id capture gate (Linux model only; native behavior unverified) ---
 r = run({'CLIPPEDWIDE': '1'})
@@ -255,3 +259,8 @@ ck('MUTATION: right-hand strip of the wide image is blank fill -> image-content 
 r = run({'NARROWWS': '1'})
 ck('MUTATION: windowserver bounds and image both 992 while the app report says 1280 (agreement on a narrower frame) -> never COMPLETE, judged against the requested 1280',
    r[0] == 1 and 'WIDE-HISTORY OK:' not in r[1] and r[6]['phase-summary']['endstates']['removal-history-wide']['status'] == 'blocked', r[1][-400:])
+
+# Execution-evidence guard: the final verdict must be the LAST statement, so no check can sit after the exit
+# (a dead mutation block once reported green without running). Counts executed checks; the preflight requires a floor.
+print('\n%d checks executed, %d failed' % (EXECUTED[0], len(fails)))
+sys.exit(1 if fails or EXECUTED[0] < MIN_EXECUTED else 0)

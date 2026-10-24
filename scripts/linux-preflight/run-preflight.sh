@@ -50,6 +50,9 @@ sed 's/ as CFString//g; s/^import Foundation$/import Foundation\nimport CoreFoun
 "$SWIFTC" -typecheck -I "$W/m" "$W/axclient3b.swift" > "$W/l3b2.log" 2>&1 && echo "PASS L3b-realcf ax-client" || { echo "FAIL L3b-realcf ax-client"; cat "$W/l3b2.log"; rc=1; }
 SWIFT_BIN="$(dirname "$SWIFTC")" python3 scripts/test-session-size-compile.py > "$W/session-size-compile.log" 2>&1 && { echo "PASS session-size-compile-controls"; cat "$W/session-size-compile.log"; } || { echo "FAIL session-size-compile-controls"; cat "$W/session-size-compile.log"; rc=1; }
 python3 scripts/test-session-resize.py > "$W/session-resize.log" 2>&1 && { echo "PASS session-resize-controls"; cat "$W/session-resize.log"; } || { echo "FAIL session-resize-controls"; cat "$W/session-resize.log"; rc=1; }
+python3 scripts/test-suite-exec-guard.py > "$W/exec-guard.log" 2>&1 && { echo "PASS suite-execution-guard"; cat "$W/exec-guard.log"; } || { echo "FAIL suite-execution-guard"; cat "$W/exec-guard.log"; rc=1; }
+( python3 scripts/test-v1-capture.py > "$W/v1-capture-suite.log" 2>&1; echo $? > "$W/v1-capture-suite.rc" ) &   # slow suite runs in parallel; collected below
+V1PID=$!
 python3 scripts/test-capture-stages.py > "$W/stage-controls.log" 2>&1 && { echo "PASS capture-stage-fault-controls"; cat "$W/stage-controls.log"; } || { echo "FAIL capture-stage-fault-controls"; cat "$W/stage-controls.log"; rc=1; }
 SWIFT_BIN="$(dirname "$SWIFTC")" python3 scripts/test-capture-ack-wait.py > "$W/ack-wait.log" 2>&1 && { echo "PASS ack-wait-controls"; cat "$W/ack-wait.log"; } || { echo "FAIL ack-wait-controls"; cat "$W/ack-wait.log"; rc=1; }
 SWIFT_BIN="$(dirname "$SWIFTC")" python3 scripts/test-capture-probe-request.py > "$W/probe-request.log" 2>&1 && { echo "PASS probe-request-controls"; cat "$W/probe-request.log"; } || { echo "FAIL probe-request-controls"; cat "$W/probe-request.log"; rc=1; }
@@ -76,5 +79,6 @@ SWIFT_BIN="$(dirname "$SWIFTC")" python3 scripts/test-sheet-build-modes.py > "$W
 SWIFT_BIN="$(dirname "$SWIFTC")" python3 scripts/test-conditional-type-scope.py > "$W/l5.log" 2>&1 && { echo "PASS L5-conditional-nominal-scope"; cat "$W/l5.log"; } || { echo "FAIL L5-conditional-nominal-scope"; cat "$W/l5.log"; rc=1; }
 # HONEST LIMIT: stub SDKs are hand-written; native macOS SDK behavior, availability and AX semantics stay unproven
 # until a Mac run. This gate proves the helpers are free of Linux-catchable compile errors - nothing more.
+wait $V1PID; if [ "$(cat "$W/v1-capture-suite.rc" 2>/dev/null)" = 0 ]; then echo "PASS v1-capture-suite"; tail -3 "$W/v1-capture-suite.log"; else echo "FAIL v1-capture-suite"; tail -20 "$W/v1-capture-suite.log"; rc=1; fi
 [ $rc -eq 0 ] && echo "PREFLIGHT GREEN: specified syntax, helper-stub, CF-idiom and conditional-scope controls passed; see printed exclusions. NOT full-app, native SDK, member/API, actor, runtime or pixel proof." || echo "PREFLIGHT FAILED"
 exit $rc
