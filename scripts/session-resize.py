@@ -70,7 +70,54 @@ def judge_png(width_px, frame_w):
     ok = any(abs(width_px - frame_w * k) <= TOL for k in (1, 2))
     return ok, 'png width %s vs window frame width %s (1x or 2x +-%s): %s' % (width_px, frame_w, TOL, 'OK' if ok else 'CLIPPED/WRONG')
 
+def png_pixels(path):
+    """Decode an 8-bit non-interlaced RGB/RGBA PNG to (w, h, rows of pixel bytes). None if unsupported."""
+    import zlib
+    b = open(path, 'rb').read()
+    if b[:8] != b'\x89PNG\r\n\x1a\n': return None
+    pos, idat, hdr = 8, b'', None
+    while pos + 8 <= len(b):
+        n = int.from_bytes(b[pos:pos+4], 'big'); typ = b[pos+4:pos+8]; body = b[pos+8:pos+8+n]; pos += 12 + n
+        if typ == b'IHDR': hdr = body
+        elif typ == b'IDAT': idat += body
+    if not hdr: return None
+    w, h, depth, ctype, _, _, inter = int.from_bytes(hdr[0:4], 'big'), int.from_bytes(hdr[4:8], 'big'), hdr[8], hdr[9], hdr[10], hdr[11], hdr[12]
+    if depth != 8 or inter != 0 or ctype not in (2, 6): return None
+    bpp = 3 if ctype == 2 else 4; stride = w * bpp
+    raw = zlib.decompress(idat); rows, prev, i = [], bytearray(stride), 0
+    for _ in range(h):
+        f = raw[i]; line = bytearray(raw[i+1:i+1+stride]); i += 1 + stride
+        for x in range(stride):
+            a = line[x-bpp] if x >= bpp else 0; up = prev[x]; c = prev[x-bpp] if x >= bpp else 0
+            if f == 1: line[x] = (line[x] + a) & 255
+            elif f == 2: line[x] = (line[x] + up) & 255
+            elif f == 3: line[x] = (line[x] + (a + up) // 2) & 255
+            elif f == 4:
+                pa, pb, pc = abs(up - c), abs(a - c), abs(a + up - 2 * c)
+                line[x] = (line[x] + (a if pa <= pb and pa <= pc else up if pb <= pc else c)) & 255
+        rows.append(line); prev = line
+    return w, h, rows, bpp
+
+def judge_content(path, strip=200, need=8):
+    """Rendered-content proof for a genuinely wide image: the right-most `strip` pixel columns (the part past a 1024pt
+    display) must hold real rendering, not blank fill: at least `need` distinct colours."""
+    d = png_pixels(path)
+    if d is None: return False, 'png not decodable (need 8-bit RGB/RGBA)'
+    w, h, rows, bpp = d; x0 = max(0, w - strip); colours = set()
+    for r in rows: colours.update(bytes(r[x*bpp:x*bpp+3]) for x in range(x0, w))
+    ok = len(colours) >= need
+    return ok, 'right-most %d columns of %dx%d image hold %d distinct colours (need >= %d): %s' % (w - x0, w, h, len(colours), need, 'OK' if ok else 'BLANK/UNRENDERED')
+
+def judge_same_windows(before, after, main_id, pop_id):
+    ids = lambda t: {int(l.split()[0]) for l in t.splitlines() if l.strip()}
+    a, b = ids(before), ids(after); ok = {main_id, pop_id} <= a and {main_id, pop_id} <= b
+    return ok, 'main %s and popover %s present before and after capture: %s' % (main_id, pop_id, ok)
+
 if __name__ == '__main__':
+    if len(sys.argv) == 3 and sys.argv[1] == '--png-content':
+        ok, msg = judge_content(sys.argv[2]); print(msg); sys.exit(0 if ok else 1)
+    if len(sys.argv) == 6 and sys.argv[1] == '--same-windows':
+        ok, msg = judge_same_windows(open(sys.argv[2]).read(), open(sys.argv[3]).read(), int(sys.argv[4]), int(sys.argv[5])); print(msg); sys.exit(0 if ok else 1)
     if len(sys.argv) == 4 and sys.argv[1] == '--png-width':
         ok, msg = judge_png(png_width(sys.argv[2]), float(sys.argv[3])); print(msg); sys.exit(0 if ok else 1)
     sys.exit(main(sys.argv))

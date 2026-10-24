@@ -25,8 +25,8 @@ import Foundation
                 handled = String(parts[0])
                 let ordinary = NSApp.windows.filter { $0.isVisible && !$0.isSheet && !($0 is NSPanel) && $0.canBecomeMain }
                 if let window = DemoInput.window, ordinary.count == 1 {
-                    let chrome = window.frame.height - window.contentLayoutRect.height
-                    let visibleH = window.screen?.visibleFrame.height ?? dims[1]
+                    let chrome = Double(window.frame.height - window.contentLayoutRect.height)
+                    let visibleH = Double(window.screen?.visibleFrame.height ?? CGFloat(dims[1]))
                     DemoInput.setContentSizeExact(window, NSSize(width: dims[0], height: min(dims[1], visibleH) - chrome))
                 }
                 try? await Task.sleep(nanoseconds: 500_000_000)
@@ -34,9 +34,9 @@ import Foundation
                 let report: [String: Any] = [
                     "token": String(parts[0]), "pid": Int(pid), "ordinaryWindowCount": ordinary.count,
                     "sheetAttached": window?.attachedSheet != nil,
-                    "frameWidth": window?.frame.width ?? 0, "frameHeight": window?.frame.height ?? 0,
-                    "visibleHeight": window?.screen?.visibleFrame.height ?? 0,
-                    "visibleWidth": window?.screen?.visibleFrame.width ?? 0,
+                    "frameWidth": Double(window?.frame.width ?? 0), "frameHeight": Double(window?.frame.height ?? 0),
+                    "visibleHeight": Double(window?.screen?.visibleFrame.height ?? 0),
+                    "visibleWidth": Double(window?.screen?.visibleFrame.width ?? 0),
                 ]
                 if let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]) {
                     try? data.write(to: URL(fileURLWithPath: res), options: .atomic)

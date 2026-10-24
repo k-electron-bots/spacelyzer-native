@@ -85,11 +85,17 @@ def wide(helper,pid,out,bound):
    s.run('image',['screencapture','-x','-o','-l',main[0],img],needs=['content','resize'],timeout=3)
    s.run('image-nonempty',['test','-s',img],needs=['image'],timeout=1)
    s.run('image-width',[sys.executable,'scripts/session-resize.py','--png-width',img,main[4]],needs=['image-nonempty'],timeout=2,stdout_path=out/'history-wide-image-width.txt')
+   s.run('image-content',[sys.executable,'scripts/session-resize.py','--png-content',img],needs=['image-width'],timeout=3,stdout_path=out/'history-wide-image-content.txt')
    pop=out/'screenshot-v1-removal-history-wide-popover.png'
    if others:
     top=max(others,key=lambda r:r[4]*r[5])
     s.run('popover-image',['screencapture','-x','-o','-l',top[0],pop],needs=['image'],timeout=3)
     s.run('popover-nonempty',['test','-s',pop],needs=['popover-image'],timeout=1)
+    # The pictures only count if the history entry was still shown when they were taken and both windows are the
+    # same ones listed before the captures; a non-empty popover file alone proves neither.
+    s.run('content-after',ax('sheettext','Backup 2025.zip'),needs=['popover-nonempty'],timeout=2,stdout_path=out/'history-wide-content-after.txt')
+    s.run('windows-after',ax('windowinfo'),needs=['popover-nonempty'],timeout=2,stdout_path=out/'history-wide-windows-after.txt')
+    s.run('bound-windows',[sys.executable,'scripts/session-resize.py','--same-windows',s.output/'windows-stdout.txt',out/'history-wide-windows-after.txt',main[0],top[0]],needs=['windows-after'],timeout=2,stdout_path=out/'history-wide-bound-windows.txt')
    else:s.blocked('popover-image',['no-popover-window-in-list'])
   except ValueError as e:
    s.blocked('image',['invalid-window-list']);(s.output/'windows-invalid.txt').write_text(str(e))
@@ -97,7 +103,7 @@ def wide(helper,pid,out,bound):
  # Escape is allowed only after an open action returned success, not blind input
  # from a stage that never opened. Diagnostic snapshots remain independent.
  s.run('dismiss',ax('escape'),needs=[opened],timeout=2)
- return s.finish(['resize','content','image','image-nonempty','image-width','popover-image','popover-nonempty','dismiss'])
+ return s.finish(['resize','content','image','image-nonempty','image-width','image-content','popover-image','popover-nonempty','content-after','bound-windows','dismiss'])
 
 if __name__=='__main__':
  if len(sys.argv)==6 and sys.argv[1]=='wide':sys.exit(not wide(*sys.argv[2:]))

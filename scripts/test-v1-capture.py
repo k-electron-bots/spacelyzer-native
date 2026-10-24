@@ -18,7 +18,12 @@ def run(env_extra):
 for a; do l="$a"; done
 [ -n "$EMPTYWIDE" ] && [[ "$l" == *removal-history-wide.png ]] && { : > "$l"; exit 0; }
 if [[ "$l" == *removal-history-wide.png ]]; then W=1280; [ -n "$CLIPPEDWIDE" ] && W=992
-  python3 -c "import sys;w=int(sys.argv[1]);open(sys.argv[2],'wb').write(b'\\x89PNG\\r\\n\\x1a\\n'+(13).to_bytes(4,'big')+b'IHDR'+w.to_bytes(4,'big')+(700).to_bytes(4,'big'))" $W "$l"; exit 0; fi
+  python3 -c "
+import struct,sys,zlib
+w=int(sys.argv[1]);h=24;blank=bool(sys.argv[3])
+rows=b''.join(b'\\x00'+b''.join(bytes((120,120,120)) if blank else bytes(((x*3)%256,(y*9)%256,(x+y)%256)) for x in range(w)) for y in range(h))
+c=lambda t,d:struct.pack('>I',len(d))+t+d+struct.pack('>I',zlib.crc32(t+d))
+open(sys.argv[2],'wb').write(b'\\x89PNG\\r\\n\\x1a\\n'+c(b'IHDR',struct.pack('>IIBBBBB',w,h,8,2,0,0,0))+c(b'IDAT',zlib.compress(rows))+c(b'IEND',b''))" $W "$l" "$BLANKWIDE"; exit 0; fi
 echo png > "$l"
 ''')
     open(t + '/helper', 'w').write('''#!/bin/bash
@@ -242,3 +247,7 @@ ck('MUTATION: app reports 992x665 (run 40098663789 geometry) -> resize fails, de
    r[0] == 1 and 'removal-history-wide' in r[1].split('V1-CAPTURE INCOMPLETE')[-1] and 'do NOT include the wide history shot' in r[1] and 'screenshot-v1-removal-history-wide.png' not in r[3], r[1][-700:])
 r = run({})
 ck('happy path summary: COMPLETE line names 7 of 7 required end states', '7 of 7 required end states' in r[1], r[1][-400:])
+
+r = run({'BLANKWIDE': '1'})
+ck('MUTATION: right-hand strip of the wide image is blank fill -> image-content fails, wide end state not captured, never COMPLETE',
+   r[0] == 1 and 'WIDE-HISTORY OK:' not in r[1] and r[6]['phase-summary']['endstates']['removal-history-wide']['status'] == 'blocked', r[1][-500:])

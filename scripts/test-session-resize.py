@@ -25,6 +25,16 @@ ck('1280px image of a 1280 window PASSES', m.judge_png(m.png_width(png(1280)), 1
 ck('2560px (2x) image of a 1280 window PASSES', m.judge_png(m.png_width(png(2560)), 1280)[0])
 ck('992px clipped image of a 1280 window FAILS', not m.judge_png(m.png_width(png(992)), 1280)[0])
 ck('non-PNG FAILS', not m.judge_png(None, 1280)[0])
+import zlib
+def mkpng(w, blank, h=12):
+    c = lambda t, d: struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d))
+    rows = b''.join(b'\x00' + b''.join(bytes((9, 9, 9)) if blank else bytes(((x * 3) % 256, (y * 9) % 256, (x + y) % 256)) for x in range(w)) for y in range(h))
+    t = pathlib.Path(tempfile.mkdtemp()) / 'c.png'
+    t.write_bytes(b'\x89PNG\r\n\x1a\n' + c(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)) + c(b'IDAT', zlib.compress(rows)) + c(b'IEND', b'')); return t
+ck('rendered right strip (varied pixels) PASSES the content proof', m.judge_content(mkpng(1280, False))[0])
+ck('blank right strip FAILS the content proof (unrendered off-display area)', not m.judge_content(mkpng(1280, True))[0])
+ck('same windows before and after capture PASS', m.judge_same_windows('11 0 1 1 1 1\n12 3 1 1 1 1', '12 3 1 1 1 1\n11 0 1 1 1 1', 11, 12)[0])
+ck('popover window gone after capture FAILS the binding', not m.judge_same_windows('11 0 1 1 1 1\n12 3 1 1 1 1', '11 0 1 1 1 1', 11, 12)[0])
 src = pathlib.Path('Sources/Spacelyzer/SessionSizeRequest.swift').read_text()
 ck('app responder is CI-only, env-gated, reports pid+token+frame, uses the app sizing path', src.startswith('#if SPZ_CI_TESTS') and 'SPZ_SIZE_REQUESTS' in src and 'setContentSizeExact' in src and '"token"' in src and '"pid"' in src)
 ck('responder started from the app only under SPZ_CI_TESTS and requested only by the cleanup session', 'SessionSizeRequest.start' in pathlib.Path('Sources/Spacelyzer/SpacelyzerApp.swift').read_text() and pathlib.Path('scripts/v1-capture-phase.sh').read_text().count('SPZ_SIZE_REQUESTS=1') == 1)

@@ -33,7 +33,7 @@ def run(app,output):
   wide_ok=True
   if name=='removal-history-wide':
    try:
-    ws={x['id']:x['status'] for x in json.loads((out/'wide-stages'/'stages.json').read_text())['stages']};wide_ok=all(ws.get(k)=='passed' for k in ['resize','image-width','popover-nonempty'])
+    ws={x['id']:x['status'] for x in json.loads((out/'wide-stages'/'stages.json').read_text())['stages']};wide_ok=all(ws.get(k)=='passed' for k in ['resize','image-width','image-content','popover-nonempty','content-after','bound-windows'])
    except Exception:wide_ok=False
   if image.exists() and image.stat().st_size>0 and wide_ok:endstates[name]=dict(status='captured-unreviewed',artifact=str(image),phase=phase)
   else:endstates[name]=dict(status='blocked',blockedBy=[phase],phaseStatus=phase_record['status'],reason='required visible end state not captured',causalFailures=[x for x in (out/('v1-phase-'+phase+'-status.txt')).read_text().splitlines() if x.startswith(('FAIL','STEP-FAIL','SKIPPED'))] if (out/('v1-phase-'+phase+'-status.txt')).exists() else [phase_record.get('reason','phase not executed or timed out')])
