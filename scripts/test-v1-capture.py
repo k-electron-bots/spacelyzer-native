@@ -9,12 +9,12 @@ def ck(n, ok, d=''):
     print(('ok   ' if ok else 'FAIL ') + n + ('' if ok else ' :: ' + str(d))); (ok or fails.append(n))
 def run(env_extra):
     t = tempfile.mkdtemp(); os.makedirs(t + '/stubs'); os.makedirs(t + '/scripts')
-    for f in ['v1-capture.sh', 'run-bounded.py','capture-history-wide.sh']: shutil.copy(R + '/scripts/' + f, t + '/scripts/' + f)
+    for f in ['v1-capture.sh', 'run-bounded.py','capture-history-wide.sh','capture-stages.py','v1-capture-phase.sh','run-v1-capture.py']: shutil.copy(R + '/scripts/' + f, t + '/scripts/' + f)
     open(t + '/scripts/make-docs-fixture.sh', 'w').write('#!/bin/bash\nmkdir -p "$1"; echo x > "$1/f"\n')
     open(t + '/stubs/pkill', 'w').write('#!/bin/bash\nexit 0\n')
     open(t + '/stubs/open', 'w').write('#!/bin/bash\necho "open $*" >> "$LOG"\nexit 0\n')
     open(t + '/stubs/pgrep', 'w').write('#!/bin/bash\necho 123\n')
-    open(t + '/stubs/screencapture', 'w').write('#!/bin/bash\nfor a; do l="$a"; done; echo png > "$l"\n')
+    open(t + '/stubs/screencapture', 'w').write('#!/bin/bash\nfor a; do l="$a"; done; [ -n "$EMPTYWIDE" ] && [[ "$l" == *removal-history-wide.png ]] && { : > "$l"; exit 0; }; echo png > "$l"\n')
     open(t + '/helper', 'w').write('''#!/bin/bash
 # Faithful scope model of docs-capture.swift: hastext sees the WHOLE tree (background + any dialog); sheettext sees
 # only the foreground dialog/popover's own text ($STATE/dialog). The background ALWAYS carries the fixture file's full
@@ -24,6 +24,7 @@ DIALOGTARGET="$SAMPLE/Archives/Backup 2025.zip"
 [ -n "$WRONGTARGET" ] && DIALOGTARGET="/tmp/other/Backup 2025.zip"
 [ -n "$LISTROWPATH" ] && DIALOGTARGET="$SAMPLE/Archives"
 case "$2" in
+ geometry) echo "screen frame=1024x768 visibleFrame=1024x700"; exit 0;;
  resize) [ -n "$WIDERESIZEFAIL" ] && exit 1; touch "$STATE/wide"; echo 'resized 1280x800'; exit 0;;
  rect) [ -f "$STATE/wide" ] && echo "0,0,1280,800" || echo "0,0,960,600";;
  hastext) grep -q -- "$3" "$STATE/background" "$STATE/dialog" 2>/dev/null || exit 1;;
@@ -66,20 +67,22 @@ esac
     open(t + '/log', 'w').close()
     rc = subprocess.run(['bash', 'scripts/v1-capture.sh', '/x/App.app', t + '/out'], cwd=t, env=env, capture_output=True).returncode
     dup = os.path.exists(t + '/S/Documents/Reports/Annual Summary.pdf') and os.path.exists(t + '/S/Downloads/Annual Summary (1).pdf') and open(t + '/S/Documents/Reports/Annual Summary.pdf', 'rb').read() == open(t + '/S/Downloads/Annual Summary (1).pdf', 'rb').read() and os.path.getsize(t + '/S/Downloads/Annual Summary (1).pdf') == 7340032
-    DUP.append(dup)
+    if env_extra.get('V1_BUDGET')!='-1':DUP.append(dup)
     status = open(t + '/out/v1-capture-status.txt').read(); log = open(t + '/log').read().split('\n')
     shots = sorted(f for f in os.listdir(t + '/out') if f.startswith('screenshot-v1-')); dumps = [f for f in os.listdir(t + '/out') if f.startswith('v1-dump-')]
     snaps = [f for f in os.listdir(t + '/out') if f.startswith('v1-snapshot-')]
     snap_bodies = {f: open(t + '/out/' + f).read() for f in snaps}
+    import json
+    snap_bodies['phase-summary']=json.load(open(t+'/out/phase-stages/stages.json'))
     shutil.rmtree(t); return rc, status, log, shots, dumps, snaps, snap_bodies
 CONFIRM = '%d press Move to Trash'.replace('%d', '123')
 # static wiring of the REAL helper (the stub above only MODELS it): sheettext must search dialog/sheet/popover scopes only
 helper_src = open(R + '/scripts/docs-capture.swift').read()
-script_src = open(R + '/scripts/v1-capture.sh').read()
+script_src = open(R + '/scripts/v1-capture-phase.sh').read()
 i = helper_src.find('case "sheettext"'); body = helper_src[i:i + 4200] if i != -1 else ''
 ck('helper wiring: sheettext exists, scopes to AXSheet/AXPopover/dialog-subrole windows only, fails closed when no scope matches',
    i != -1 and '"AXSheet"' in body and '"AXPopover"' in body and '"AXSystemDialog"' in body and 'guard collapsed.count == 1' in body, i)
-script_src = open(R + '/scripts/v1-capture.sh').read()
+script_src = open(R + '/scripts/v1-capture-phase.sh').read()
 ck('helper wiring: sheettext collapses ancestor/descendant duplicate scopes (one panel counted once), then requires EXACTLY ONE independent foreground scope (a stale background dialog cannot launder an end state)',
    'AXParent' in body and 'collapsed.count == 1' in body, None)
 # CF-cast compile guard (run 39961036509: `as? AXUIElement` is a HARD compile error on the real toolchain -
@@ -139,7 +142,7 @@ for k, v in [('FIELDY', '60'), ('NOMENU', '1'), ('NOALERT', '1')]:
 rc, st, log, shots, dumps, snaps, bodies = run({})
 opens = [l for l in log if l.startswith('open ')]
 ck('exclusions/duplicates run on a 1280x800 instance (960x600 collapses the Scan menu into "more toolbar items"), the Trash flow and FDA shot stay at 960x600',
-   len(opens) >= 3 and 'SPZ_WINDOW_SIZE=1280x800' in opens[0] and 'SPZ_WINDOW_SIZE=960x600' in opens[1] and 'SPZ_WINDOW_SIZE=960x600' in opens[2], opens)
+   len(opens) >= 4 and 'SPZ_WINDOW_SIZE=1280x800' in opens[0] and 'SPZ_WINDOW_SIZE=1280x800' in opens[1] and 'SPZ_WINDOW_SIZE=960x600' in opens[2] and 'SPZ_WINDOW_SIZE=960x600' in opens[3], opens)
 rc, st, log, shots, dumps, snaps, bodies = run({'PRESSDISMISS': '1'})
 ck('AXPress error after the alert really dismissed (element invalidated mid-action): outcome verified fail-closed, Trash flow completes, rc 0',
    rc == 0 and 'outcome verified' in st and 'screenshot-v1-trash-done.png' in shots and 'screenshot-v1-removal-history.png' in shots and 'STEP-FAIL' not in st, (rc, st, shots))
@@ -169,7 +172,7 @@ ck('MUTATION: dialog names the Archives FOLDER while the background Largest row 
 rc, st, log, shots, dumps, snaps, bodies = run({'STALERESULT': '1'})
 ck('MUTATION: press errors and only a STALE generic result text (no confirm happened) is visible -> the scoped postcondition refuses, STEP-FAIL, rc 1',
    rc == 1 and 'STEP-FAIL trash-result' in st and 'outcome verified' not in st and 'screenshot-v1-trash-done.png' not in shots, (rc, log, st, shots))
-r = run({'V1_BUDGET': '-1'}); ck('FAIL-CLOSED: exhausted time budget skips shots, rc 1, INCOMPLETE', r[0] == 1 and 'SKIPPED' in r[1] and 'INCOMPLETE' in r[1], r[:2])
+r = run({'V1_BUDGET': '-1'}); ck('FAIL-CLOSED: exhausted time budget skips shots, rc 1, INCOMPLETE', r[0] == 1 and 'capture-deadline' in r[1] and 'INCOMPLETE' in r[1], r[:2])
 ck('capture-owned fixture copy holds an identical non-zero 7 MB duplicate pair in every run', DUP and all(DUP), DUP)
 r = run({'STICKYRESULT':'1', 'HISTORYOVERFLOW':'1'})
 ck('declared model only: Escape-resistant result + successful overflow popover uses OK/dismissal then menu, all6shots', r[0]==0 and 'screenshot-v1-removal-history.png' in r[3] and 'dialog-state: ABSENT' in r[6].get('v1-snapshot-trash-dismissed-live.txt', ''), r[:2])
@@ -189,11 +192,18 @@ r=run({})
 opens=[x for x in r[2] if x.startswith('open ')]
 wideidx=next(i for i,x in enumerate(r[2]) if 'resize 1280 800' in x)
 fdaidx=next(i for i,x in enumerate(r[2]) if x.startswith('open ') and 'SPZ_DEMO_FDA_REFUSED=1' in x)
-ck('wide capture same PID/session: resize after compact history, before FDA relaunch, no second removal',len(opens)==3 and wideidx<fdaidx and sum(x=='123 press Move to Trash' for x in r[2])==1 and 'dialog-state: LIVE' in r[6].get('v1-snapshot-history-wide-live.txt',''),r[2])
+ck('wide capture same PID/session: resize after compact history, before FDA relaunch, no second removal',len(opens)==4 and wideidx<fdaidx and sum(x=='123 press Move to Trash' for x in r[2])==1 and 'dialog-state: LIVE' in r[6].get('v1-snapshot-history-wide-live.txt',''),r[2])
 wide_source=open(R+'/scripts/capture-history-wide.sh').read()
-ck('wide stage budget invariant: entire20s wrapper requires20s remaining inside original165s; six original shot count unchanged', 'START + 20' in script_src and '"$BOUND" 20 bash scripts/capture-history-wide.sh' in script_src and 'BUDGET="${V1_BUDGET:-165}"' in script_src and '[ "$oks" -ne 6 ]' in script_src)
+ck('wide stage budget invariant: entire20s wrapper requires20s remaining inside original165s; six original shot count unchanged', 'START + 20' in script_src and '"$BOUND" 20 bash scripts/capture-history-wide.sh' in script_src and 'BUDGET="${V1_BUDGET:-165}"' in script_src and "oks==6" in open(R+'/scripts/run-v1-capture.py').read())
 ck('actual resize helper verifies unique ordinary window and observed dimensions, not set-return success alone', 'case "resize":' in helper_src and 'mainWindows.count == 1' in helper_src and 'AXStandardWindow' in helper_src and 'abs(actual.width-width) <= 2' in helper_src and 'abs(actual.height-height) <= 2' in helper_src)
+r=run({'NOOPEN':'1','WIDERESIZEFAIL':'1'})
+summary=r[6]['phase-summary']
+ck('real multi-fault path: exclusions failure does not hide cleanup wide failure or independentFDA; both failures retained/finalred',r[0]==1 and 'STEP-FAIL exclusions-content' in r[1] and 'STEP-FAIL history-wide' in r[1] and 'screenshot-v1-fda-banner.png' in r[3] and set(summary['failed'])=={'exclusions','cleanup'} and summary['endstates']['exclusions']['status']=='blocked',r[:2])
+r=run({'NOALERT':'1','NOOPEN':'1'})
+ck('real prerequisite refusal: no confirmation means no destructive confirm/history, independentduplicates/FDA stillcaptured, blockedendstatesnotfakepassed',r[0]==1 and CONFIRM not in r[2] and 'screenshot-v1-duplicates.png' in r[3] and 'screenshot-v1-fda-banner.png' in r[3] and r[6]['phase-summary']['endstates']['removal-history']['status']=='blocked',r[:2])
 for mode in ['WIDERESIZEFAIL','WIDENOOPEN']:
  r=run({mode:'1'})
  ck('wide-stage refusal '+mode+' retains all6original shots but cannot COMPLETE',r[0]==1 and 'WIDE-HISTORY OK:' not in r[1] and 'screenshot-v1-removal-history-wide.png' not in r[3] and 'screenshot-v1-removal-history.png' in r[3] and 'STEP-FAIL history-wide' in r[1],r[:2])
+r=run({'EMPTYWIDE':'1'})
+ck('zero-byte wideimage rc0 cannot pass aggregate; originalsix andFDA retained',r[0]==1 and not r[6]['phase-summary']['complete'] and r[6]['phase-summary']['endstates']['removal-history-wide']['status']=='blocked' and 'FDA-LAYOUT OK' in r[1] and len(r[3])==7,r[:2])
 print('\n%d failed' % len(fails)); sys.exit(1 if fails else 0)

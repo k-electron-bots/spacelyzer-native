@@ -15,16 +15,19 @@ struct SheetProbeResult: Codable {
     var reason = "not inspected"
     var scopeCount = 0
     var texts: [String] = []
+    var diagnostics: [String] = []
 }
 func probeSheet(pid: Int32, step: Int, token: String) -> SheetProbeResult {
     var result = SheetProbeResult(pid: pid, step: step, captureToken: token)
     guard pid > 0, step > 0, !token.isEmpty else { result.reason = "invalid anchor"; return result }
+    result.diagnostics.append("targetPID=\(pid) clientPID=\(getpid()) trusted=\(AXIsProcessTrusted()) step=\(step)")
     guard AXIsProcessTrusted() else { result.reason = "AX trust unavailable"; return result }
     let app = AXUIElementCreateApplication(pid)
     var error = ""
     func read(_ node: AXUIElement, _ key: String, optional: Bool = false) -> CFTypeRef? {
         var value: CFTypeRef?
         let rc = AXUIElementCopyAttributeValue(node, key as CFString, &value)
+        if result.diagnostics.count < 128 && rc != .success { result.diagnostics.append("operation=\(key) error=\(rc.rawValue) optional=\(optional)") }
         if rc == .success { return value }
         if optional && (rc == .attributeUnsupported || rc == .noValue) { return nil }
         error = "attribute \(key) error \(rc.rawValue)"; return nil
@@ -45,7 +48,18 @@ func probeSheet(pid: Int32, step: Int, token: String) -> SheetProbeResult {
         return array
     }
     let windows = array(app, "AXWindows")
-    guard error.isEmpty, !windows.isEmpty else { result.reason = error.isEmpty ? "no windows" : error; return result }
+    if !error.isEmpty || windows.isEmpty {
+        // Preserve the first actual failure. Independent read-only app attributes
+        // may distinguish a specific AXWindows failure from all AX being absent.
+        // These diagnostics never establish observed sheet content.
+        let primary = error.isEmpty ? "no windows" : error
+        for key in ["AXRole", "AXTitle", "AXFocusedWindow", "AXMainWindow", "AXChildren"] {
+            var value: CFTypeRef?
+            let rc = AXUIElementCopyAttributeValue(app, key as CFString, &value)
+            result.diagnostics.append("fallback operation=\(key) error=\(rc.rawValue) type=\(value.map { CFGetTypeID($0) } ?? 0)")
+        }
+        result.reason = primary; return result
+    }
     // Every visited node has the same verified process; parent indexes retain
     // actual topology without asking AXParent to guess or select another window.
     var nodes: [(element: AXUIElement, parent: Int?, depth: Int, role: String, texts: [String])] = []
