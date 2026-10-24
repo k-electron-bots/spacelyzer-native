@@ -55,6 +55,8 @@ SWIFT_BIN="$(dirname "$SWIFTC")" python3 scripts/test-history-presentation.py > 
 sed 's/ as CFString//g; s/^import Foundation$/import Foundation\nimport CoreFoundation/' scripts/sheet-probe.swift > "$W/sheetprobe.swift"
 "$SWIFTC" -typecheck -I "$W/m" "$W/sheetprobe.swift" > "$W/sheetprobe.log" 2>&1 && echo "PASS L3c-realcf sheet-probe" || { echo "FAIL L3c-realcf sheet-probe"; cat "$W/sheetprobe.log"; rc=1; }
 SWIFT_BIN="$(dirname "$SWIFTC")" python3 scripts/test-sheet-probe.py > "$W/probe-controls.log" 2>&1 && { echo "PASS external-sheet-graph-controls"; cat "$W/probe-controls.log"; } || { echo "FAIL external-sheet-graph-controls"; cat "$W/probe-controls.log"; rc=1; }
+python3 scripts/test-observed-gate-mutations.py > "$W/observed-mutations.log" 2>&1 && { echo "PASS observed-sheet-v1-mutations"; cat "$W/observed-mutations.log"; } || { echo "FAIL observed-sheet-v1-mutations"; cat "$W/observed-mutations.log"; rc=1; }
+python3 scripts/test-observed-demo-state.py > "$W/observed-controls.log" 2>&1 && { echo "PASS observed-sheet-v1-gate-controls"; cat "$W/observed-controls.log"; } || { echo "FAIL observed-sheet-v1-gate-controls"; cat "$W/observed-controls.log"; rc=1; }
 python3 scripts/test-capture-sheet-evidence.py > "$W/binding-controls.log" 2>&1 && { echo "PASS external-sheet-binding-controls"; cat "$W/binding-controls.log"; } || { echo "FAIL external-sheet-binding-controls"; cat "$W/binding-controls.log"; rc=1; }
 # Layer 4 - preserve the REAL stateLine and observer conditional layout in BOTH
 # shipping/test configurations. Isolated function extraction alone missed this

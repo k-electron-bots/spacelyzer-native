@@ -1,22 +1,25 @@
-# Proposed observed sheet acceptance rule (NOT IMPLEMENTED)
+# Local observed-sheet-v1 acceptance candidate (NOT LANDED)
 
-Current policy remains diagnostic-only. `check-demo-state.py` is unchanged;
-raw `sheetId=unknown` still fails. This document proposes a new engineering
-criterion for review, not a claim that the existing native accessor passed.
+Published policy remains diagnostic-only. This LOCAL candidate implements the
+explicit new observed-sheet-v1 rule for engineering review. The standalone
+native check still fails raw `sheetId=unknown`. Workflow assertions now invoke
+the named observed gate, not silent error suppression. This is not a claim
+that the existing native accessor passed.
 
 ## Exact proposed distinction
 
 Report two separate results:
 
 - Native accessor: the raw value, including `unknown`, never rewritten.
-- Observed sheet identity: native observed identity or a separately bound,
-  complete external AX observation satisfying the same intended-sheet criterion.
+- Observed sheet identity: native observed identity corroborated by a separately bound, complete external AX observation
+  satisfying the intended-sheet criterion. Both native agreement and unknown
+  require the witness under the candidate rule.
 
 An unknown native accessor is not contrary identity evidence. A positive native
 identity other than Not scanned is contrary evidence and must refuse. The new
 route could establish observed Not scanned identity while explicitly leaving
 the native accessor unverified. This is an acceptance rule change and requires
-engineering review and actual gate tests before implementation or landing.
+engineering review before landing. Actual gate tests are implemented below.
 
 ## Proposed required external evidence
 
@@ -37,7 +40,7 @@ loaded-content requirements remain. Additionally require:
 4. Uploaded original raw bytes, external JSON, capture image and complete binding
    manifest. Recompute raw/image hashes; verify external JSON identity and all
    bound identifiers rather than trusting a summary flag in binding.json.
-   The existing manifest currently hashes raw/image, not external JSON: the
+   The published manifest hashes raw/image, not external JSON: the
    implemented gate would also need to hash/bind the external bytes and source
    provenance consistently. This is a new required implementation detail.
 5. Gate consumes the exact externally captured image, not an unrelated normal
@@ -71,3 +74,28 @@ formatting or real Not scanned text/row export. A later native attempt needs the
 actual export, matching process/source/token/image records and pixel review.
 History must independently open the existing visible history popover with the
 just-removed entry. None of this establishes it by intent or model state.
+
+
+## Local implementation and executed evidence
+
+The actual `check-observed-demo-state.py` gate invokes shared legacy window,
+size, sheet, alert and row checks, with an explicit identity callback. It does
+not filter native error strings. `verify_observed_evidence` recomputes raw,
+external JSON and image hashes, validates all caller pins/copies/anchor fields,
+three pre/post observations, and a unique complete supervisor. Both workflow
+copies install the exact bound image before ack, then run the observed gate
+with checkout SHA and launched executable as caller pins. They retain the
+standalone native failure report separately. No history criterion changes.
+
+Executed synthetic artifact tests run the real binding and actual gate against
+hostile bytes, including validly rehashed bad observed content. Sixteen targeted
+production-check removal mutations are caught by the real hostile suite. These
+are executable logic controls, not native AX export proof or an authenticity
+signature: a fully compromised producer able to forge all files is out of scope.
+Pre/post observations are captured by the trusted runner while unacknowledged;
+the later artifact gate validates their consistency, not current process life
+after the demo has ended.
+
+The history candidate remains separate, local and visually unverified. Its
+root-bound popover could change position at narrow AND wide widths; presentation
+UX and pixels need review before any landing/readiness decision.

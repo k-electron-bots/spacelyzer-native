@@ -15,7 +15,7 @@ for scenario in ['good','step','token','source','pid','start','executable','rawh
   def observe(a):
    if scenario=='timeout':raise TimeoutError('bounded external probe timed out')
    if scenario=='raw-after-probe':raw.write_text('changed')
-   return dict(pid=42,step=78,captureToken=token+'wrong' if scenario=='probe-token' else token,source='external-AXUIElement',identity='notscanned',rows=1,complete=scenario!='unreadable')
+   return dict(pid=42,step=78,captureToken=token+'wrong' if scenario=='probe-token' else token,source='external-AXUIElement',identity='notscanned',scopeCount=1,reason='observed',texts=['Not scanned','These locations were not scanned, so they are not in the totals.'],rows=1,complete=scenario!='unreadable')
   def screenshot(path):
    path.write_bytes(b'png');shot[0]=True
    if scenario=='raw-after-shot':raw.write_text('changed')
@@ -51,7 +51,7 @@ for scenario in ['orchestrated-good','orchestrated-timeout','orchestrated-replay
    if argv[0]=='/tmp/spz-sheet-probe':
     assert kw['timeout']==8
     if scenario=='orchestrated-timeout':raise m.subprocess.TimeoutExpired(argv,8,output=b'partial probe',stderr=b'partial error')
-    return type('R',(),{'returncode':0,'stderr':'','stdout':json.dumps(dict(pid=42,step=78,captureToken=token,source='external-AXUIElement',identity='notscanned',rows=1,complete=True))})()
+    return type('R',(),{'returncode':0,'stderr':'','stdout':json.dumps(dict(pid=42,step=78,captureToken=token,source='external-AXUIElement',identity='notscanned',scopeCount=1,reason='observed',texts=['Not scanned','These locations were not scanned, so they are not in the totals.'],rows=1,complete=True))})()
    if argv[0]=='screencapture':pathlib.Path(argv[-1]).write_bytes(b'png');return None
    raise AssertionError(argv)
   original=m.subprocess.run;m.subprocess.run=run

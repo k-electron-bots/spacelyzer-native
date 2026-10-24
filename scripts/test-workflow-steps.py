@@ -91,6 +91,9 @@ def subst(body, w):
     body = body.replace('/tmp/spz-docs-capture', w + '/tmp/spz-docs-capture')
     body = body.replace('/tmp/spz-assertions.txt', w + '/tmp/spz-assertions.txt').replace('/tmp/spz-timing.txt', w + '/tmp/spz-timing.txt')
     body = body.replace('python3 scripts/check-demo-state.py /tmp 81', 'python3 ' + REPO + '/scripts/check-demo-state.py ' + w + '/tmp 81')
+    body = body.replace('python3 scripts/check-observed-demo-state.py /tmp 81','python3 scripts/check-observed-demo-state.py '+w+'/tmp 81')
+    body = body.replace('/tmp/spz-capture-process-pin.json',w+'/tmp/spz-capture-process-pin.json')
+    body = body.replace('"$(git rev-parse HEAD)"','sha-A').replace('"$PWD/dist-test/Spacelyzer.app/Contents/MacOS/Spacelyzer"','/app/A')
     body = body.replace('bash scripts/make-docs-fixture.sh "$HOME/Sample"', 'mkdir -p "$HOME/Sample"')
     return body
 
@@ -156,6 +159,7 @@ def asserts_cases():
             intended_sheet = i == 78 and i not in no_main
             sid = 'removal-result' if al else ('notscanned' if intended_sheet else 'none'); rows = 3 if intended_sheet else 0
             open(f'{w}/tmp/spz-demo-state-{i}', 'w').write(f'step={i} main={"false" if i in no_main else "true"} w=1280 h=800 sheet={str(al or intended_sheet or i in no_main).lower()} keyIsSheet={str(intended_sheet or i in no_main).lower()} alertModel={str(al or i in no_main).lower()} sheetId={sid} sheetRows={rows} appearance=x\n')
+        subprocess.run([sys.executable,REPO+'/scripts/observed-test-fixture.py',w,w+'/tmp'],check=True)
         return w
     for opts in ('-e', '-eo pipefail'):
         for name, kw, want_fail in [('178 PASS, all screenshots', {}, False), ('177 results', {'n': 177}, True), ('178 results, one FAIL', {'f': 1}, True),
@@ -376,6 +380,8 @@ def demo_cases():
         body = launch.replace('/tmp/spz-', w + '/tmp/spz-').replace('python3 scripts/capture-interactions.py &', 'true &')
         rc, out = run_step(body, w, opts, e)
         ab = asserts.replace('/tmp/spz-', w + '/tmp/spz-').replace('python3 scripts/check-demo-state.py /tmp 81', 'python3 ' + REPO + '/scripts/check-demo-state.py ' + w + '/tmp 81')
+        subprocess.run([sys.executable,REPO+'/scripts/observed-test-fixture.py',w,w+'/tmp'],check=True)
+        ab=ab.replace('python3 scripts/check-observed-demo-state.py /tmp 81','python3 scripts/check-observed-demo-state.py '+w+'/tmp 81').replace('"$(git rev-parse HEAD)"','sha-A').replace('"$PWD/dist-test/Spacelyzer.app/Contents/MacOS/Spacelyzer"','/app/A')
         rc2, out2 = run_step(ab, w, opts, e)
         timing = open(w + '/dist/ui-timing.txt').read() if os.path.exists(w + '/dist/ui-timing.txt') else None
         shots = len([f for f in os.listdir(w + '/dist') if f.startswith('screenshot-demo-')])
