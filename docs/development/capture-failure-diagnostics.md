@@ -45,3 +45,7 @@ no invalid destructive action runs, missing history is blocked, timeout keeps
 partial stdout, and the final gate stays red. This is real runner logic proof,
 not a native SDK, AX, SwiftUI, geometry or pixel result. No promise that every
 future failure can reveal a root cause; missing observability remains explicit.
+
+## Wide history: in-session size and window-id capture (candidate, native-unverified)
+
+Run 40098663789: AX setAXSize asked 1280x800 and the window stayed 992x665 (screen 1024x768, visible 1024x677); a rect capture of a 1280-wide window yields a display-clipped 992-wide image. The candidate keeps the same PID and history entry, asks the running app (CI-only, `SPZ_SIZE_REQUESTS=1`) to size itself, and judges the app's own report: frame width must be 1280 +-2; frame height must be min(requested, visible height) +-2. Images are taken per window by id (`screencapture -l`); the main-window PNG width must equal the frame width at 1x or 2x, and a popover window image must exist. Whether the OS renders off-display window parts for `-l` is not verified.

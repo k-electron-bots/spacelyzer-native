@@ -137,6 +137,18 @@ case "select":
     guard let table = descendants().first(where: { string($0, "AXRole") == "AXTable" || string($0, "AXRole") == "AXOutline" }),
           let rows = read(table, "AXRows") as? [AXUIElement], index < rows.count else { print("no row \(args[3])"); exit(1) }
     guard AXUIElementSetAttributeValue(rows[index], "AXSelected" as CFString, kCFBooleanTrue) == .success else { print("select failed"); exit(1) }
+case "windowinfo":
+    // One line per on-screen window of the target: "id layer x y w h". Bounds are the window's own extent and may
+    // extend past the display; a rect capture is clipped to the display, a window-id capture is not.
+    let winfo = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
+    var wcount = 0
+    for w in winfo where (w[kCGWindowOwnerPID as String] as? Int32) == pid {
+        guard let id = w[kCGWindowNumber as String] as? Int, let b = w[kCGWindowBounds as String] as? [String: Double],
+              let width = b["Width"], let height = b["Height"], width >= 50, height >= 50, (w[kCGWindowAlpha as String] as? Double ?? 1) > 0 else { continue }
+        print("\(id) \(w[kCGWindowLayer as String] as? Int ?? 0) \(Int(b["X"] ?? 0)) \(Int(b["Y"] ?? 0)) \(Int(width)) \(Int(height))")
+        wcount += 1
+    }
+    guard wcount > 0 else { print("no window"); exit(1) }
 case "rect":
     let info = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
     var minX = Double.greatestFiniteMagnitude, minY = Double.greatestFiniteMagnitude, maxX = -Double.greatestFiniteMagnitude, maxY = -Double.greatestFiniteMagnitude

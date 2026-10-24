@@ -21,6 +21,9 @@ struct SpacelyzerApp: App {
                     #if SPZ_CI_TESTS && SPZ_CI_PERF   // optional measurement mode; compiled only when the perf flag is passed to a test build
                     if env["SPZ_CHECKS"] == "perf" { await PerfDriver.run(model: model, env: env) }   // never returns
                     #endif
+                    #if SPZ_CI_TESTS
+                    SessionSizeRequest.start(env: env)
+                    #endif
                     #if SPZ_CI_TESTS && SPZ_CI_SHOTS   // experimental render-derived 2x capture server; compiled only when the shots flag is passed to a test build
                     if let shotDir = env["SPZ_SHOT_DIR"], shotDir.hasPrefix("/") { ShotServer.start(dir: shotDir) }
                     #endif

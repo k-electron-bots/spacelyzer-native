@@ -100,7 +100,7 @@ cleanup)
 # outline's largest FOLDER (run 39947043378 trashed the whole Archives folder instead of one file).
 # Back to 960x600 (the docs size for this flow; the FDA layout check is defined at 960x600).
 pkill Spacelyzer; nap 2
-open -n "$APP" --env SPZ_WINDOW_SIZE=960x600 --env SPZ_AUTOSCAN="$SAMPLE"
+open -n "$APP" --env SPZ_WINDOW_SIZE=960x600 --env SPZ_SIZE_REQUESTS=1 --env SPZ_AUTOSCAN="$SAMPLE"
 for _ in $(seq 1 10); do PID=$(pgrep -n -f "$APP/Contents/MacOS/Spacelyzer"); [ -n "$PID" ] && break; nap 1; done
 [ -n "$PID" ] || { note "FAIL app did not relaunch for the Trash flow"; exit 1; }
 for _ in $(seq 1 30); do ax hastext " items" >/dev/null 2>&1 && break; nap 1; done

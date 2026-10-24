@@ -61,7 +61,7 @@ def wide(helper,pid,out,bound):
  # Read-only observations do not depend on presentation success.
  s.run('geometry-before',ax('geometry'),timeout=2)
  s.run('no-panel',ax('nosheet'),timeout=2)
- s.run('resize',ax('resize','1280','800'),needs=['no-panel'],timeout=3,stdout_path=out/'history-wide-resize.txt')
+ s.run('resize',[sys.executable,'scripts/session-resize.py',pid,'1280','800'],needs=['no-panel'],timeout=3,stdout_path=out/'history-wide-resize.txt')
  s.run('geometry-after',ax('geometry'),timeout=2)
  s.run('snapshot-after-resize',ax('snapshot'),timeout=2,stdout_path=out/'v1-snapshot-history-wide-before.txt')
  direct=s.run('open-direct',ax('press','Removal history'),needs=['resize'],timeout=2)
@@ -71,20 +71,33 @@ def wide(helper,pid,out,bound):
  opened='open-direct' if direct else 'open-overflow'
  s.run('content',ax('sheettext','Backup 2025.zip'),needs=[opened],timeout=2,stdout_path=out/'history-wide-content.txt')
  s.run('snapshot-live',ax('snapshot'),timeout=2,stdout_path=out/'v1-snapshot-history-wide-live.txt')
- rect=s.run('capture-rect',ax('rect'),needs=['content'],timeout=2)
- if rect:
+ # A rect capture is clipped to the display (run 40098663789: a 1280-wide window gave a 992-wide image), so the
+ # wide images come from per-window id captures, then the actual PNG width is judged against the observed frame.
+ wins=s.run('windows',ax('windowinfo'),needs=['content'],timeout=2)
+ if wins:
   try:
-   values=(s.output/'capture-rect-stdout.txt').read_text().strip().split(',')
-   if len(values)!=4 or any(not x.lstrip('-').isdigit() for x in values) or any(int(x)<=0 for x in values[2:]):raise ValueError('malformed capture rectangle')
-   s.run('image',['screencapture','-x','-R',','.join(values),out/'screenshot-v1-removal-history-wide.png'],needs=['content','resize'],timeout=2)
-   s.run('image-nonempty',['test','-s',out/'screenshot-v1-removal-history-wide.png'],needs=['image'],timeout=1)
+   rows=[tuple(int(v) for v in l.split()) for l in (s.output/'windows-stdout.txt').read_text().splitlines() if l.strip()]
+   if not rows or any(len(r)!=6 or r[4]<=0 or r[5]<=0 for r in rows):raise ValueError('malformed window list')
+   main=max((r for r in rows if r[1]==0),key=lambda r:r[4]*r[5],default=None)
+   if main is None:raise ValueError('no layer-0 main window in list')
+   others=[r for r in rows if r!=main]
+   img=out/'screenshot-v1-removal-history-wide.png'
+   s.run('image',['screencapture','-x','-o','-l',main[0],img],needs=['content','resize'],timeout=3)
+   s.run('image-nonempty',['test','-s',img],needs=['image'],timeout=1)
+   s.run('image-width',[sys.executable,'scripts/session-resize.py','--png-width',img,main[4]],needs=['image-nonempty'],timeout=2,stdout_path=out/'history-wide-image-width.txt')
+   pop=out/'screenshot-v1-removal-history-wide-popover.png'
+   if others:
+    top=max(others,key=lambda r:r[4]*r[5])
+    s.run('popover-image',['screencapture','-x','-o','-l',top[0],pop],needs=['image'],timeout=3)
+    s.run('popover-nonempty',['test','-s',pop],needs=['popover-image'],timeout=1)
+   else:s.blocked('popover-image',['no-popover-window-in-list'])
   except ValueError as e:
-   s.blocked('image',['invalid-capture-rectangle']);(s.output/'capture-rect-invalid.txt').write_text(str(e))
- else:s.blocked('image',['capture-rect'])
+   s.blocked('image',['invalid-window-list']);(s.output/'windows-invalid.txt').write_text(str(e))
+ else:s.blocked('image',['windows'])
  # Escape is allowed only after an open action returned success, not blind input
  # from a stage that never opened. Diagnostic snapshots remain independent.
  s.run('dismiss',ax('escape'),needs=[opened],timeout=2)
- return s.finish(['resize','content','image','image-nonempty','dismiss'])
+ return s.finish(['resize','content','image','image-nonempty','image-width','popover-image','popover-nonempty','dismiss'])
 
 if __name__=='__main__':
  if len(sys.argv)==6 and sys.argv[1]=='wide':sys.exit(not wide(*sys.argv[2:]))

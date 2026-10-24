@@ -9,12 +9,18 @@ def ck(n, ok, d=''):
     print(('ok   ' if ok else 'FAIL ') + n + ('' if ok else ' :: ' + str(d))); (ok or fails.append(n))
 def run(env_extra):
     t = tempfile.mkdtemp(); os.makedirs(t + '/stubs'); os.makedirs(t + '/scripts')
-    for f in ['v1-capture.sh', 'run-bounded.py','capture-history-wide.sh','capture-stages.py','v1-capture-phase.sh','run-v1-capture.py']: shutil.copy(R + '/scripts/' + f, t + '/scripts/' + f)
+    for f in ['v1-capture.sh', 'run-bounded.py','capture-history-wide.sh','capture-stages.py','v1-capture-phase.sh','run-v1-capture.py','session-resize.py']: shutil.copy(R + '/scripts/' + f, t + '/scripts/' + f)
     open(t + '/scripts/make-docs-fixture.sh', 'w').write('#!/bin/bash\nmkdir -p "$1"; echo x > "$1/f"\n')
     open(t + '/stubs/pkill', 'w').write('#!/bin/bash\nexit 0\n')
     open(t + '/stubs/open', 'w').write('#!/bin/bash\necho "open $*" >> "$LOG"\nexit 0\n')
     open(t + '/stubs/pgrep', 'w').write('#!/bin/bash\necho 123\n')
-    open(t + '/stubs/screencapture', 'w').write('#!/bin/bash\nfor a; do l="$a"; done; [ -n "$EMPTYWIDE" ] && [[ "$l" == *removal-history-wide.png ]] && { : > "$l"; exit 0; }; echo png > "$l"\n')
+    open(t + '/stubs/screencapture', 'w').write('''#!/bin/bash
+for a; do l="$a"; done
+[ -n "$EMPTYWIDE" ] && [[ "$l" == *removal-history-wide.png ]] && { : > "$l"; exit 0; }
+if [[ "$l" == *removal-history-wide.png ]]; then W=1280; [ -n "$CLIPPEDWIDE" ] && W=992
+  python3 -c "import sys;w=int(sys.argv[1]);open(sys.argv[2],'wb').write(b'\\x89PNG\\r\\n\\x1a\\n'+(13).to_bytes(4,'big')+b'IHDR'+w.to_bytes(4,'big')+(700).to_bytes(4,'big'))" $W "$l"; exit 0; fi
+echo png > "$l"
+''')
     open(t + '/helper', 'w').write('''#!/bin/bash
 # Faithful scope model of docs-capture.swift: hastext sees the WHOLE tree (background + any dialog); sheettext sees
 # only the foreground dialog/popover's own text ($STATE/dialog). The background ALWAYS carries the fixture file's full
@@ -26,6 +32,7 @@ DIALOGTARGET="$SAMPLE/Archives/Backup 2025.zip"
 case "$2" in
  geometry) echo "screen frame=1024x768 visibleFrame=1024x700"; exit 0;;
  resize) [ -n "$WIDERESIZEFAIL" ] && exit 1; touch "$STATE/wide"; echo 'resized 1280x800'; exit 0;;
+ windowinfo) echo "11 0 32 42 1280 700"; echo "12 3 900 100 300 200";;
  rect) [ -f "$STATE/wide" ] && echo "0,0,1280,800" || echo "0,0,960,600";;
  hastext) grep -q -- "$3" "$STATE/background" "$STATE/dialog" 2>/dev/null || exit 1;;
  nosheet) [ -n "$AXUNAVAILABLE" ] && exit 1; [ ! -f "$STATE/dialog" ]; exit $?;;
@@ -65,7 +72,25 @@ esac
     os.chmod(t + '/helper', 0o755)
     env = dict(os.environ, PATH=t + '/stubs:' + os.environ['PATH'], LOG=t + '/log', STATE=t + '/state', HELPER=t + '/helper', SAMPLE=t + '/S', V1_FAST='1', **env_extra)
     open(t + '/log', 'w').close()
+    # Stand-in for the app's in-session size responder (the real one is Swift, native-unverified). WIDERESIZEFAIL makes
+    # it report what run 40098663789 observed (992x665 on a 1024x768 screen); otherwise a 1280-wide window clipped to the
+    # 700pt visible height reported by the stub geometry.
+    open(t + '/responder.py', 'w').write('''import json,os,sys,time
+d=sys.argv[1];end=time.time()+25
+while time.time()<end:
+    try:
+        tok=open(d+"/spz-size-request-123").read().split()[0]
+    except Exception:
+        time.sleep(0.05);continue
+    w,h=(992,665) if os.environ.get("WIDERESIZEFAIL") else (1280,700)
+    json.dump(dict(token=tok,pid=123,ordinaryWindowCount=1,sheetAttached=False,frameWidth=w,frameHeight=h,visibleHeight=700,visibleWidth=1024),open(d+"/spz-size-result-123","w"))
+    open(d+"/state/wide","w").close()
+    time.sleep(0.2)
+''')
+    env.update(SPZ_SIZE_DIR=t, SPZ_SIZE_WAIT='1')
+    responder = subprocess.Popen([sys.executable, t + '/responder.py', t], env=env)
     rc = subprocess.run(['bash', 'scripts/v1-capture.sh', '/x/App.app', t + '/out'], cwd=t, env=env, capture_output=True).returncode
+    responder.kill()
     dup = os.path.exists(t + '/S/Documents/Reports/Annual Summary.pdf') and os.path.exists(t + '/S/Downloads/Annual Summary (1).pdf') and open(t + '/S/Documents/Reports/Annual Summary.pdf', 'rb').read() == open(t + '/S/Downloads/Annual Summary (1).pdf', 'rb').read() and os.path.getsize(t + '/S/Downloads/Annual Summary (1).pdf') == 7340032
     if env_extra.get('V1_BUDGET')!='-1':DUP.append(dup)
     status = open(t + '/out/v1-capture-status.txt').read(); log = open(t + '/log').read().split('\n')
@@ -113,7 +138,7 @@ ck('script wiring: every dialog-dependent check is sheet-scoped (confirmation ti
    'sheettext "Move to Trash?"' in script_src and 'sheettext "$SAMPLE/Archives/Backup 2025.zip"' in script_src and 'sheettext "Moved Backup 2025.zip"' in script_src
    and 'sheettext "groups ·"' in script_src and 'hastext "Backup 2025.zip"' not in script_src and 'hastext "Move to Trash?"' not in script_src and 'hastext "Moved Backup 2025.zip"' not in script_src, None)
 rc, st, log, shots, dumps, snaps, bodies = run({})
-ck('happy path: all6original shots plus required wide history, done, rc0', rc == 0 and shots == ['screenshot-v1-duplicates.png', 'screenshot-v1-exclusions.png', 'screenshot-v1-fda-banner.png', 'screenshot-v1-removal-history-wide.png', 'screenshot-v1-removal-history.png', 'screenshot-v1-trash-confirm.png', 'screenshot-v1-trash-done.png'] and 'FDA-LAYOUT OK' in st, (rc, shots, st))
+ck('happy path: all6original shots plus required wide history, done, rc0', rc == 0 and shots == ['screenshot-v1-duplicates.png', 'screenshot-v1-exclusions.png', 'screenshot-v1-fda-banner.png', 'screenshot-v1-removal-history-wide-popover.png', 'screenshot-v1-removal-history-wide.png', 'screenshot-v1-removal-history.png', 'screenshot-v1-trash-confirm.png', 'screenshot-v1-trash-done.png'] and 'FDA-LAYOUT OK' in st, (rc, shots, st))
 ck('live snapshots executed: all 8 stage snapshots written; dialog surfaces captured WHILE LIVE (never after dismissal); the selected-target snapshot is pre-dialog',
    all(f'v1-snapshot-{n}.txt' in snaps for n in ['exclusions-live', 'duplicates-live', 'select-target', 'trash-confirm-live', 'trash-after-press', 'trash-result-live', 'history-live', 'fda-live'])
    and all('dialog-state: LIVE' in bodies.get(f'v1-snapshot-{n}.txt', '') for n in ['exclusions-live', 'duplicates-live', 'trash-confirm-live', 'trash-result-live', 'history-live'])
@@ -190,7 +215,7 @@ ck('actual run40042043674 failure-shape control: direct history absent, overflow
    (r[0],r[1],r[3]))
 r=run({})
 opens=[x for x in r[2] if x.startswith('open ')]
-wideidx=next(i for i,x in enumerate(r[2]) if 'resize 1280 800' in x)
+wideidx=next(i for i,x in enumerate(r[2]) if 'windowinfo' in x)
 fdaidx=next(i for i,x in enumerate(r[2]) if x.startswith('open ') and 'SPZ_DEMO_FDA_REFUSED=1' in x)
 ck('wide capture same PID/session: resize after compact history, before FDA relaunch, no second removal',len(opens)==4 and wideidx<fdaidx and sum(x=='123 press Move to Trash' for x in r[2])==1 and 'dialog-state: LIVE' in r[6].get('v1-snapshot-history-wide-live.txt',''),r[2])
 wide_source=open(R+'/scripts/capture-history-wide.sh').read()
@@ -205,5 +230,15 @@ for mode in ['WIDERESIZEFAIL','WIDENOOPEN']:
  r=run({mode:'1'})
  ck('wide-stage refusal '+mode+' retains all6original shots but cannot COMPLETE',r[0]==1 and 'WIDE-HISTORY OK:' not in r[1] and 'screenshot-v1-removal-history-wide.png' not in r[3] and 'screenshot-v1-removal-history.png' in r[3] and 'STEP-FAIL history-wide' in r[1],r[:2])
 r=run({'EMPTYWIDE':'1'})
-ck('zero-byte wideimage rc0 cannot pass aggregate; originalsix andFDA retained',r[0]==1 and not r[6]['phase-summary']['complete'] and r[6]['phase-summary']['endstates']['removal-history-wide']['status']=='blocked' and 'FDA-LAYOUT OK' in r[1] and len(r[3])==7,r[:2])
+ck('zero-byte wideimage rc0 cannot pass aggregate; originalsix andFDA retained',r[0]==1 and not r[6]['phase-summary']['complete'] and r[6]['phase-summary']['endstates']['removal-history-wide']['status']=='blocked' and 'FDA-LAYOUT OK' in r[1] and len(r[3])==8,r[:2])
 print('\n%d failed' % len(fails)); sys.exit(1 if fails else 0)
+
+# --- in-session size path + window-id capture gate (Linux model only; native behavior unverified) ---
+r = run({'CLIPPEDWIDE': '1'})
+ck('MUTATION: a clipped 992-wide wide image (the rect-capture shape from run 40098663789) cannot COMPLETE and its endstate is not captured',
+   r[0] == 1 and 'WIDE-HISTORY OK:' not in r[1] and 'V1-CAPTURE COMPLETE' not in r[1] and r[6]['phase-summary']['endstates']['removal-history-wide']['status'] == 'blocked', (r[0], r[1][-600:]))
+r = run({'WIDERESIZEFAIL': '1'})
+ck('MUTATION: app reports 992x665 (run 40098663789 geometry) -> resize fails, dependents BLOCKED, wide image absent, INCOMPLETE names the missing wide state and says the six originals exclude it',
+   r[0] == 1 and 'removal-history-wide' in r[1].split('V1-CAPTURE INCOMPLETE')[-1] and 'do NOT include the wide history shot' in r[1] and 'screenshot-v1-removal-history-wide.png' not in r[3], r[1][-700:])
+r = run({})
+ck('happy path summary: COMPLETE line names 7 of 7 required end states', '7 of 7 required end states' in r[1], r[1][-400:])
