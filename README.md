@@ -20,6 +20,14 @@ See what is using your disk. A native macOS disk-space analyzer with a SwiftUI i
 - Export the Largest list as a CSV file (built, awaiting Mac verification).
 - Skip chosen locations with exclusions; the Not scanned list shows what was skipped and why.
 
+![Removal History showing a sample file moved to Trash and its Put Back action](docs/images/removal-history.png)
+
+Removal History lists this session's removals. This compact-window capture is from
+[run 40050466225](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/40050466225)
+on a shared CI Mac with disposable sample files. It shows the history, not proof
+that Put Back was exercised in this capture. Wide-window history and the automated
+Not scanned identity check still failed in that run. [Current evidence](docs/verification/2026-10-23-combined-verification.md).
+
 Sizes describe allocated disk space, with hard links counted once. Scans stay on your Mac; the app has no networking code.
 
 ## Install
