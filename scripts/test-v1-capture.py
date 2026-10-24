@@ -17,7 +17,7 @@ def run(env_extra):
     open(t + '/stubs/screencapture', 'w').write('''#!/bin/bash
 for a; do l="$a"; done
 [ -n "$EMPTYWIDE" ] && [[ "$l" == *removal-history-wide.png ]] && { : > "$l"; exit 0; }
-if [[ "$l" == *removal-history-wide.png ]]; then W=1280; [ -n "$CLIPPEDWIDE" ] && W=992
+if [[ "$l" == *removal-history-wide.png ]]; then W=1280; [ -n "$CLIPPEDWIDE" ] && W=992; [ -n "$NARROWWS" ] && W=992
   python3 -c "
 import struct,sys,zlib
 w=int(sys.argv[1]);h=24;blank=bool(sys.argv[3])
@@ -37,7 +37,7 @@ DIALOGTARGET="$SAMPLE/Archives/Backup 2025.zip"
 case "$2" in
  geometry) echo "screen frame=1024x768 visibleFrame=1024x700"; exit 0;;
  resize) [ -n "$WIDERESIZEFAIL" ] && exit 1; touch "$STATE/wide"; echo 'resized 1280x800'; exit 0;;
- windowinfo) echo "11 0 32 42 1280 700"; echo "12 3 900 100 300 200";;
+ windowinfo) if [ -n "$NARROWWS" ]; then echo "11 0 32 42 992 700"; else echo "11 0 32 42 1280 700"; fi; echo "12 3 900 100 300 200";;
  rect) [ -f "$STATE/wide" ] && echo "0,0,1280,800" || echo "0,0,960,600";;
  hastext) grep -q -- "$3" "$STATE/background" "$STATE/dialog" 2>/dev/null || exit 1;;
  nosheet) [ -n "$AXUNAVAILABLE" ] && exit 1; [ ! -f "$STATE/dialog" ]; exit $?;;
@@ -251,3 +251,7 @@ ck('happy path summary: COMPLETE line names 7 of 7 required end states', '7 of 7
 r = run({'BLANKWIDE': '1'})
 ck('MUTATION: right-hand strip of the wide image is blank fill -> image-content fails, wide end state not captured, never COMPLETE',
    r[0] == 1 and 'WIDE-HISTORY OK:' not in r[1] and r[6]['phase-summary']['endstates']['removal-history-wide']['status'] == 'blocked', r[1][-500:])
+
+r = run({'NARROWWS': '1'})
+ck('MUTATION: windowserver bounds and image both 992 while the app report says 1280 (agreement on a narrower frame) -> never COMPLETE, judged against the requested 1280',
+   r[0] == 1 and 'WIDE-HISTORY OK:' not in r[1] and r[6]['phase-summary']['endstates']['removal-history-wide']['status'] == 'blocked', r[1][-400:])

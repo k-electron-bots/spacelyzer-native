@@ -67,8 +67,8 @@ def png_width(path):
 def judge_png(width_px, frame_w):
     """The image must show the whole window: pixel width equals the window frame width at 1x or 2x (+-2)."""
     if width_px is None: return False, 'png width unreadable'
-    ok = any(abs(width_px - frame_w * k) <= TOL for k in (1, 2))
-    return ok, 'png width %s vs window frame width %s (1x or 2x +-%s): %s' % (width_px, frame_w, TOL, 'OK' if ok else 'CLIPPED/WRONG')
+    ok = any(abs(width_px - frame_w * k) <= TOL for k in (1, 2))  # frame_w is the REQUESTED width, never a measured one
+    return ok, 'png width %s vs requested width %s (1x or 2x +-%s): %s' % (width_px, frame_w, TOL, 'OK' if ok else 'CLIPPED/WRONG')
 
 def png_pixels(path):
     """Decode an 8-bit non-interlaced RGB/RGBA PNG to (w, h, rows of pixel bytes). None if unsupported."""
@@ -106,7 +106,17 @@ def judge_content(path, strip=200, need=8):
     w, h, rows, bpp = d; x0 = max(0, w - strip); colours = set()
     for r in rows: colours.update(bytes(r[x*bpp:x*bpp+3]) for x in range(x0, w))
     ok = len(colours) >= need
-    return ok, 'right-most %d columns of %dx%d image hold %d distinct colours (need >= %d): %s' % (w - x0, w, h, len(colours), need, 'OK' if ok else 'BLANK/UNRENDERED')
+    return ok, 'SMOKE check only, native pixel review remains the gate: right-most %d columns of %dx%d image hold %d distinct colours (need >= %d): %s' % (w - x0, w, h, len(colours), need, 'OK' if ok else 'BLANK/UNRENDERED')
+
+def judge_bounds(windows_text, main_id, req_w):
+    """WindowServer's own bounds for the main window must be the REQUESTED width, independent of the app's report
+    and of the image, so no two sources can agree on a narrower frame."""
+    for l in windows_text.splitlines():
+        f = l.split()
+        if len(f) == 6 and int(f[0]) == main_id:
+            ok = abs(float(f[4]) - req_w) <= TOL
+            return ok, 'windowserver bounds width %s vs requested %s (+-%s): %s' % (f[4], req_w, TOL, 'OK' if ok else 'NOT WIDE')
+    return False, 'main window %s not in windowserver list' % main_id
 
 def judge_same_windows(before, after, main_id, pop_id):
     ids = lambda t: {int(l.split()[0]) for l in t.splitlines() if l.strip()}
@@ -114,6 +124,8 @@ def judge_same_windows(before, after, main_id, pop_id):
     return ok, 'main %s and popover %s present before and after capture: %s' % (main_id, pop_id, ok)
 
 if __name__ == '__main__':
+    if len(sys.argv) == 5 and sys.argv[1] == '--bounds-width':
+        ok, msg = judge_bounds(open(sys.argv[2]).read(), int(sys.argv[3]), float(sys.argv[4])); print(msg); sys.exit(0 if ok else 1)
     if len(sys.argv) == 3 and sys.argv[1] == '--png-content':
         ok, msg = judge_content(sys.argv[2]); print(msg); sys.exit(0 if ok else 1)
     if len(sys.argv) == 6 and sys.argv[1] == '--same-windows':

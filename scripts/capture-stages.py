@@ -82,9 +82,10 @@ def wide(helper,pid,out,bound):
    if main is None:raise ValueError('no layer-0 main window in list')
    others=[r for r in rows if r!=main]
    img=out/'screenshot-v1-removal-history-wide.png'
-   s.run('image',['screencapture','-x','-o','-l',main[0],img],needs=['content','resize'],timeout=3)
+   s.run('bounds-width',[sys.executable,'scripts/session-resize.py','--bounds-width',s.output/'windows-stdout.txt',main[0],'1280'],needs=['windows'],timeout=2,stdout_path=out/'history-wide-bounds-width.txt')
+   s.run('image',['screencapture','-x','-o','-l',main[0],img],needs=['content','resize','bounds-width'],timeout=3)
    s.run('image-nonempty',['test','-s',img],needs=['image'],timeout=1)
-   s.run('image-width',[sys.executable,'scripts/session-resize.py','--png-width',img,main[4]],needs=['image-nonempty'],timeout=2,stdout_path=out/'history-wide-image-width.txt')
+   s.run('image-width',[sys.executable,'scripts/session-resize.py','--png-width',img,'1280'],needs=['image-nonempty'],timeout=2,stdout_path=out/'history-wide-image-width.txt')
    s.run('image-content',[sys.executable,'scripts/session-resize.py','--png-content',img],needs=['image-width'],timeout=3,stdout_path=out/'history-wide-image-content.txt')
    pop=out/'screenshot-v1-removal-history-wide-popover.png'
    if others:
@@ -103,7 +104,7 @@ def wide(helper,pid,out,bound):
  # Escape is allowed only after an open action returned success, not blind input
  # from a stage that never opened. Diagnostic snapshots remain independent.
  s.run('dismiss',ax('escape'),needs=[opened],timeout=2)
- return s.finish(['resize','content','image','image-nonempty','image-width','image-content','popover-image','popover-nonempty','content-after','bound-windows','dismiss'])
+ return s.finish(['resize','content','image','image-nonempty','bounds-width','image-width','image-content','popover-image','popover-nonempty','content-after','bound-windows','dismiss'])
 
 if __name__=='__main__':
  if len(sys.argv)==6 and sys.argv[1]=='wide':sys.exit(not wide(*sys.argv[2:]))
