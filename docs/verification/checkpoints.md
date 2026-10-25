@@ -343,3 +343,10 @@ A SEPARATE finding came out of the hunt (do not conflate): on the default (paral
 ## October 23 combined verification: source 9db328b5
 
 [Run40050466225](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/40050466225) passed native builds,166ordering and178UI, and visibly opened compact history. Whole run failed external AXWindows(-25204) and unobserved wide resize dimensions. Six original v1 images inspected; five cleanup images refresh README/tour/safety with exact provenance. [Evidence and remaining limits](2026-10-23-combined-verification.md). No retry/release/DMG.
+
+## October 24 native run 40098663789 and wide-capture correction
+
+[Run 40098663789](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/40098663789) on `ca736b6`: 178 UI assertions and 166 ordering checks passed, the external sheet capture recovered, and all six original v1 shots were produced. The whole run failed on wide history only: the window measured 992x665 on a 1024x768 runner (visible 1024x677), so a 1280-wide capture was not possible. Evidence for this run stands alone and is not pooled with 40050466225.
+
+`7ddc832` (main, tree `a5155b09`) lands the correction: in-app size responder (`SPZ_SIZE_REQUESTS=1`), `windowinfo`, window-id `screencapture -l`, and stage checks for resize, bounds width, image width, popover and bound windows. Linux preflight 210 PASS / 0 FAIL with stubs. Not native-verified. Runs 40105344288, 40108846372 and 40130926991 on `7ddc832` are queued with no job started as of this entry; 40095622778 (`ca736b6`) is also still queued. Not release-ready. No release or DMG.
+
