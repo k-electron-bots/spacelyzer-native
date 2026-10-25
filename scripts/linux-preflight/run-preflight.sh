@@ -23,7 +23,7 @@ cp scripts/docs-capture.swift "$W/mut-parse.swift"; printf 'func broken(\n' >> "
 "$SWIFTC" -parse "$W/mut-parse.swift" > /dev/null 2>&1 && { echo "FAIL L0-non-vacuity: syntax breakage not caught"; rc=1; } || echo "PASS L0-non-vacuity"
 # Layer 1 - idiom lint on the real helper sources (no toolchain): no single-value CF/AX conditional downcast,
 # no bool literal as CFTypeRef (the two Mac-compile-risk idioms; both burned or were unproven in run 39961036509).
-if bash "$P/cf-idiom-lint.sh" scripts/docs-capture.swift scripts/ax-client.swift > "$W/lint.log" 2>&1; then
+if bash "$P/cf-idiom-lint.sh" scripts/docs-capture.swift scripts/ax-client.swift scripts/ship-ui.swift > "$W/lint.log" 2>&1; then
   echo "PASS L1-idiom-lint"
 else
   echo "FAIL L1-idiom-lint"; cat "$W/lint.log"; rc=1

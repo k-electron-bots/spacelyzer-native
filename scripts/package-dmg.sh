@@ -5,11 +5,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 VERSION="${1:?version}"
 IDENTITY="${2:--}"
+# Output folder; the ship-candidate run sets SPZ_DIST so packaging cannot delete the demo evidence in dist/.
+DIST="${SPZ_DIST:-dist}"
 bash scripts/shipping-swift.sh -c release --arch arm64 --arch x86_64
 BIN="$(bash scripts/shipping-swift.sh -c release --arch arm64 --arch x86_64 --show-bin-path)/Spacelyzer"
 bash scripts/check-no-ci-symbols.sh build/lib/libspacelyzer_engine.a "$BIN"
-APP="dist/Spacelyzer.app"
-rm -rf dist && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+APP="$DIST/Spacelyzer.app"
+rm -rf "$DIST" && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Spacelyzer"
 sed "s/__VERSION__/$VERSION/g" Resources/Info.plist > "$APP/Contents/Info.plist"
 if [[ -d Resources/AppIcon.iconset ]]; then
@@ -24,8 +26,8 @@ codesign --force --deep --options runtime --timestamp=none --sign "$IDENTITY" \
   --entitlements Resources/Spacelyzer.entitlements "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 codesign -dv --verbose=2 "$APP" 2>&1 | grep -E "Authority|Signature|TeamIdentifier|Identifier" || true
-mkdir -p dist/dmg && cp -R "$APP" dist/dmg/
-ln -s /Applications dist/dmg/Applications
+mkdir -p "$DIST/dmg" && cp -R "$APP" "$DIST/dmg/"
+ln -s /Applications "$DIST/dmg/Applications"
 # Install-window art + Finder layout: 660x400 window, icon size 128,
 # Spacelyzer.app at (190,185), Applications alias at (470,185).
 BG="Resources/dmg-background.png"
@@ -34,11 +36,11 @@ if [[ ! -f "$BG" || ! -f "$BG2X" ]]; then
   echo "error: missing DMG background ($BG and/or $BG2X)" >&2
   exit 1
 fi
-RW="dist/Spacelyzer-$VERSION-rw.dmg"
+RW="$DIST/Spacelyzer-$VERSION-rw.dmg"
 VOLUME="Spacelyzer $VERSION"
-hdiutil create -volname "$VOLUME" -srcfolder dist/dmg -ov -format UDRW "$RW"
+hdiutil create -volname "$VOLUME" -srcfolder "$DIST/dmg" -ov -format UDRW "$RW"
 hdiutil attach -readwrite -noverify "$RW" >/dev/null
-MOUNT="/Volumes/$VOLUME"
+MOUNT="${SPZ_DMG_MOUNT_ROOT:-/Volumes}/$VOLUME"
 trap 'hdiutil detach "$MOUNT" -force 2>/dev/null || true' EXIT
 mkdir -p "$MOUNT/.background"
 cp "$BG" "$MOUNT/.background/background.png"
@@ -67,6 +69,6 @@ sync
 sleep 2
 hdiutil detach "$MOUNT" >/dev/null
 trap - EXIT
-hdiutil convert "$RW" -format UDZO -ov -o "dist/Spacelyzer-$VERSION.dmg"
+hdiutil convert "$RW" -format UDZO -ov -o "$DIST/Spacelyzer-$VERSION.dmg"
 rm "$RW"
-shasum -a 256 "dist/Spacelyzer-$VERSION.dmg" | tee "dist/Spacelyzer-$VERSION.dmg.sha256"
+( cd "$DIST" && shasum -a 256 "Spacelyzer-$VERSION.dmg" | tee "Spacelyzer-$VERSION.dmg.sha256" )
