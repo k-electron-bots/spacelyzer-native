@@ -46,7 +46,9 @@ partial stdout, and the final gate stays red. This is real runner logic proof,
 not a native SDK, AX, SwiftUI, geometry or pixel result. No promise that every
 future failure can reveal a root cause; missing observability remains explicit.
 
-## Wide history: in-session size and window-id capture (candidate, native-unverified)
+## Wide history: in-session size and window-id capture
+
+Status update, October 25: this approach ran natively. Run 40201792105 (`4f923a78`) failed only `image-content`: the window-id capture was transparent (alpha 0) past x=992, the display edge, so a fixed right-strip colour check could not pass. The current design (`b20b15a3`, `10632303`) judges two on-display captures by alpha and WindowServer bounds, with a window move to x=-256 for the second. Run 40218097822 passed all 39 wide stages and the gate. The text below is the original candidate description and is kept for history; the `image-content` stage and the single full-width image it assumed were replaced.
 
 Run 40098663789: AX setAXSize asked 1280x800 and the window stayed 992x665 (screen 1024x768, visible 1024x677). A rect capture of a 1280-wide window gives a display-clipped 992-wide image.
 

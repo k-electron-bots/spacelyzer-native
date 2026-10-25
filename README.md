@@ -26,7 +26,7 @@ Removal History lists this session's removals. This compact-window capture is fr
 [run 40050466225](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/40050466225)
 on a shared CI Mac with disposable sample files. It shows the history, not proof
 that Put Back was exercised in this capture. Wide-window history and the automated
-Not scanned identity check still failed in that run. A later run, 40098663789, recovered the Not scanned capture but still failed wide-window history (the window measured narrower than 1280); a correction is landed but not yet run on a Mac. [Current evidence](docs/verification/2026-10-23-combined-verification.md).
+Not scanned identity check still failed in that run. Later runs fixed this: in run 40218097822 (October 25, all steps and the evidence gate green) the wide-window history was captured as two on-display captures of a 1280-wide window (not a full-width image); screenshots still need human pixel review. [Current evidence](docs/verification/2026-10-23-combined-verification.md).
 
 Sizes describe allocated disk space, with hard links counted once. Scans stay on your Mac; the app has no networking code.
 

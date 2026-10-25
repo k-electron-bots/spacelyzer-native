@@ -348,5 +348,15 @@ A SEPARATE finding came out of the hunt (do not conflate): on the default (paral
 
 [Run 40098663789](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/40098663789) on `ca736b6`: 178 UI assertions and 166 ordering checks passed, the external sheet capture recovered, and all six original v1 shots were produced. The whole run failed on wide history only: the window measured 992x665 on a 1024x768 runner (visible 1024x677), so a 1280-wide capture was not possible. Evidence for this run stands alone and is not pooled with 40050466225.
 
-`7ddc832` (main, tree `a5155b09`) lands the correction: in-app size responder (`SPZ_SIZE_REQUESTS=1`), `windowinfo`, window-id `screencapture -l`, and stage checks for resize, bounds width, image width, popover and bound windows. Linux preflight 210 PASS / 0 FAIL with stubs. Not native-verified. Runs 40105344288, 40108846372 and 40130926991 on `7ddc832` are queued with no job started as of this entry; 40095622778 (`ca736b6`) is also still queued. Not release-ready. No release or DMG.
+Superseded by the October 25 entry below (the correction ran natively and was redesigned). `7ddc832` (main, tree `a5155b09`) lands the correction: in-app size responder (`SPZ_SIZE_REQUESTS=1`), `windowinfo`, window-id `screencapture -l`, and stage checks for resize, bounds width, image width, popover and bound windows. Linux preflight 210 PASS / 0 FAIL with stubs. Not native-verified. Runs 40105344288, 40108846372 and 40130926991 on `7ddc832` are queued with no job started as of this entry; 40095622778 (`ca736b6`) is also still queued. Not release-ready. No release or DMG.
 
+## October 25 native runs: wide-capture redesign and first green run
+
+Each run's evidence stands alone.
+
+- [Run 40201792105](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/40201792105) on `4f923a78`: failed only `image-content`. The window-id capture was alpha 0 past x=992, and the `-l` popover capture matched the main window byte for byte. Judged environment-limited, not an app defect.
+- Landed after it: `2e770684` (25-min job clock), `296c7082`, `b20b15a3` (two on-display captures judged by alpha and WindowServer bounds, a window move helper, popover `-R` rect captures, restore check).
+- [Run 40216368791](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/40216368791) on `b20b15a3`: all 39 wide stages passed natively and 7 of 7 v1 end states were captured, but the gate failed. The required ordering segment was refused ("requires 690s remaining, has 574.4s") because it ran last under the shortened clock. No ordering checks ran in that run.
+- `10632303`: the ordering segment now runs right after the state reset, before the long UI steps; the 690s requirement is unchanged.
+- [Run 40218097822](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/40218097822) on `10632303`: all 21 steps and the evidence gate green. 178 UI assertions (0 failed), 166 ordering checks each exactly once, 7 of 7 v1 end states, 39 of 39 wide stages (window moved to x=-256, popover followed, two on-display captures cover 0..1280). CI evidence on a shared Mac; screenshots still need human pixel review. Not release-ready; no release or DMG.
+- Runs 40212736519, 40130926991, 40108846372, 40105344288 and 40095622778 were still queued with no job started at the time of this entry.
