@@ -50,13 +50,13 @@ for mode in ['launch-failure','crash','timeout','failed-result','missing-result'
         assert (p/'output/stderr.log').read_text()=='retained diagnostic\n'
         assert (p/'output/results').is_dir()
 print('PASS fake-open launch failure, crash, timeout, failed/missing result retain partial artifacts')
-# Wiring: prior evidence uploaded first, ordering required even when refused/skipped,
+# Wiring: ordering runs after reset and before the long UI steps (its own artifact is uploaded right away), ordering required even when refused/skipped,
 # and ordering's own artifact always attempted with a bounded upload budget.
 import yaml
 workflow=yaml.safe_load(pathlib.Path('.github/workflows/demo-only.yml').read_text())
 steps=workflow['jobs']['macos']['steps'];ids={x.get('id'):x for x in steps}
 order=[x.get('id') for x in steps]
-assert order.index('demo_artifact')<order.index('ordering')<order.index('ordering_artifact')
+assert order.index('reset')<order.index('ordering')<order.index('ordering_artifact')<order.index('ui_launch')<order.index('demo_artifact')
 assert ids['ordering_artifact']['if']=='${{ always() }}' and ids['ordering_artifact']['timeout-minutes']==2
 assert workflow['jobs']['macos']['timeout-minutes']==25
 assert 'SPZ_JOB_DEADLINE_EPOCH - 780' in pathlib.Path('.github/workflows/demo-only.yml').read_text()

@@ -6,7 +6,7 @@ name: Demo-validation (lean)
 # Purpose: one Mac run of the FULL 81-step scripted demo (steps 71-81 need the earlier steps) on the TEST-ONLY app, with the per-step state records
 # (scripts/check-demo-state.py) and the retained UI assertions, to validate the capture/state fix by pixels and state. The build, reset, demo-launch and
 # assertion steps are copied verbatim from ci.yml (scripts/test-demo-only-workflow.py compares them), with only input references resolved to the
-# technical_hardening values. Required current ordering driver follows early demo upload with absolute-deadline admission. No Rust test suite, bulk-vs-portable run, 1M scale segment, DMG, signing, docs captures or release.
+# technical_hardening values. Required current ordering driver runs right after the state reset and before the long UI steps, with absolute-deadline admission. No Rust test suite, bulk-vs-portable run, 1M scale segment, DMG, signing, docs captures or release.
 on:
   workflow_dispatch:
 
@@ -282,6 +282,22 @@ jobs:
           [ ! -e "$HOME/Library/Saved Application State/$DOM.savedState" ] || fail "saved window state still present"
           echo "RESET VERIFIED: no process, domain absent, plist absent, saved state absent" >> "$EV"
           cat "$EV"
+      - name: Required ordering segment (incomplete is failure, never optional)
+        id: ordering
+        if: ${{ always() && steps.testbuild.outcome == 'success' && steps.reset.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 7
+        run: |
+          python3 scripts/run-demo-ordering.py --app dist-test/Spacelyzer.app --output dist/ordering --job-deadline "$SPZ_JOB_DEADLINE_EPOCH"
+      - uses: actions/upload-artifact@v4
+        id: ordering_artifact
+        if: ${{ always() }}
+        timeout-minutes: 2
+        with:
+          name: demo-ordering-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: dist/ordering/
       - name: Launch app and screenshot (informational)
         id: ui_launch
         if: ${{ steps.reset.outcome == 'success' && steps.testbuild.outcome == 'success' }}
@@ -488,22 +504,6 @@ jobs:
             dist/v1-capture/
             dist/demo-state/
             diag-out/
-      - name: Required ordering segment (incomplete is failure, never optional)
-        id: ordering
-        if: ${{ always() && steps.testbuild.outcome == 'success' && steps.reset.outcome == 'success' }}
-        continue-on-error: true
-        timeout-minutes: 7
-        run: |
-          python3 scripts/run-demo-ordering.py --app dist-test/Spacelyzer.app --output dist/ordering --job-deadline "$SPZ_JOB_DEADLINE_EPOCH"
-      - uses: actions/upload-artifact@v4
-        id: ordering_artifact
-        if: ${{ always() }}
-        timeout-minutes: 2
-        with:
-          name: demo-ordering-${{ github.sha }}
-          if-no-files-found: error
-          retention-days: 14
-          path: dist/ordering/
       - name: Demo-validation evidence gate (fails unless every step succeeded; PNG pixels still need inspection)
         if: ${{ always() }}
         run: |
