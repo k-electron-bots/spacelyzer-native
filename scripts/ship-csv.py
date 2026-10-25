@@ -4,7 +4,7 @@ real Export CSV toolbar button, drives the real NSSavePanel through accessibilit
 Cancel writes nothing. Mac execution is not proved by Linux tests."""
 import argparse, csv, io, os, pathlib, random, shutil, subprocess, sys, tempfile, time
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from ship_common import Checks, Fail, HelperUI, find, guarded_key, guarded_type, pid_of, poll, real_frontmost, stop_apps
+from ship_common import ALLOWED_FRONTMOST, Checks, Fail, HelperUI, find, guarded_key, pid_of, poll, real_activate, real_clip, real_frontmost, stop_apps
 
 REQUIRED = ['csv-ax-trusted', 'csv-app-launched', 'csv-largest-tab-selected', 'csv-toolbar-not-overflowed', 'csv-export-enabled', 'csv-panel-opened', 'csv-panel-saved',
             'csv-file-written', 'csv-utf8-no-bom-crlf', 'csv-header', 'csv-ranks-and-order', 'csv-roundtrip-names',
@@ -16,6 +16,25 @@ FIXTURE = [('big,comma.bin', 9 * MB), ('say "hi".bin', 8 * MB), ('caf\u00e9-\u65
            ('line\nbreak.bin', 6 * MB), ('=formula.bin', 5 * MB), ('plain.bin', 4 * MB)]
 PANEL_NEEDLE_FIELD = 'saveAsNameTextField'
 KEY_A = 0
+KEY_V = 9
+KEY_G = 5
+KEY_RETURN = 36
+# US-layout virtual keycodes (real keys, no unicode override). The temp path is ASCII: letters, digits, / . - _
+_LETTERS = {'a': 0, 's': 1, 'd': 2, 'f': 3, 'h': 4, 'g': 5, 'z': 6, 'x': 7, 'c': 8, 'v': 9, 'b': 11, 'q': 12, 'w': 13, 'e': 14, 'r': 15, 'y': 16, 't': 17,
+            'o': 31, 'u': 32, 'i': 34, 'p': 35, 'l': 37, 'j': 38, 'k': 40, 'n': 45, 'm': 46}
+_DIGITS = {'1': 18, '2': 19, '3': 20, '4': 21, '6': 22, '5': 23, '9': 25, '7': 26, '8': 28, '0': 29}
+KEYCODES = {**_LETTERS, **_DIGITS, '-': 27, '/': 44, '.': 47}
+
+
+def keys_for(text):
+    """[(keycode, mods)] for an ASCII string on a US layout, or None when a character has no mapped key."""
+    out = []
+    for ch in text:
+        if ch in KEYCODES: out.append((KEYCODES[ch], ()))
+        elif ch.isalpha() and ch.lower() in KEYCODES and ch.isascii(): out.append((KEYCODES[ch.lower()], ('shift',)))
+        elif ch == '_': out.append((KEYCODES['-'], ('shift',)))
+        else: return None
+    return out
 
 
 def make_fixture(root, rng=random.Random(7)):
@@ -68,7 +87,12 @@ def judge_csv(raw, root):
 
 
 def panel_gone(nodes):
-    return not any(n.get('role') == 'AXWindow' and n.get('subrole') == 'AXDialog' for n in nodes) and not any(n.get('role') == 'AXSheet' for n in nodes)
+    """The Save panel is gone when its name field and any dialog window are gone. An alert sheet is NOT a panel."""
+    return find(nodes, 'AXTextField', PANEL_NEEDLE_FIELD) is None and not any(n.get('role') == 'AXWindow' and n.get('subrole') == 'AXDialog' for n in nodes)
+
+
+def has_alert(nodes):
+    return any(n.get('role') == 'AXSheet' for n in nodes)
 
 
 def status_text(nodes, limit=500):
@@ -82,11 +106,18 @@ def new_csvs(dest, docs, pre):
             'documents': sorted(x.name for x in pathlib.Path(docs).glob('*.csv') if str(x) not in pre) if pathlib.Path(docs).exists() else []}
 
 
-def drive_panel(ui, pid, target, checks, prefix, out, clock=time.time, sleep=time.sleep, wait=20, frontmost=real_frontmost):
-    """Press Export, wait for the Save panel, put `target` in the name field. Returns the panel nodes (or None)."""
+def read_back(ui, pid):
+    f = find(ui.tree(pid), 'AXTextField', PANEL_NEEDLE_FIELD)
+    return (f or {}).get('value')
+
+
+def drive_panel(ui, pid, target, checks, prefix, out, clock=time.time, sleep=time.sleep, wait=20, frontmost=real_frontmost, clip=real_clip, dest=None):
+    """Press Export, wait for the Save panel, put `target` in the name field with a ladder: click, Cmd-A (real keycode), paste (Cmd-V),
+    then real US-layout keys, then (save leg only, when dest is given) Cmd-Shift-G go-to-folder keeping the default name. Each rung is
+    skipped once the read-back equals the target. Returns (panel nodes, expected file path) or (None, None)."""
     ex = ui.press(pid, 'AXButton', '=' + EXPORT_DESC)
     if not ex.get('found') or ex.get('axError') != 0:
-        checks.bad(f'{prefix}-panel-opened', f'press export failed {ex}'); return None
+        checks.bad(f'{prefix}-panel-opened', f'press export failed {ex}'); return None, None
     def panel():
         nodes = ui.tree(pid)
         f = find(nodes, 'AXTextField', PANEL_NEEDLE_FIELD)
@@ -95,26 +126,64 @@ def drive_panel(ui, pid, target, checks, prefix, out, clock=time.time, sleep=tim
     if not got:
         nodes = ui.tree(pid)
         (out / f'{prefix}-no-panel-tree.jsonl').write_text('\n'.join(map(repr, nodes)))
-        checks.bad(f'{prefix}-panel-opened', 'no Save panel name field appeared'); return None
+        checks.bad(f'{prefix}-panel-opened', 'no Save panel name field appeared'); return None, None
     nodes, field = got
     (out / f'{prefix}-panel-tree.jsonl').write_text('\n'.join(map(repr, nodes)))
     checks.ok(f'{prefix}-panel-opened', f"field={field.get('id')}")
-    # Run 40229545863: an AX value write to the name field did not commit into the panel's text system (Save used the default name).
-    # So: focus the field, select all, and TYPE the full path through the session tap, then read the field back.
+    default_name = str(field.get('value') or '')
     bad_name = f'{prefix}-panel-saved' if prefix == 'csv' else f'{prefix}-wrote-nothing'
-    fo = ui.focus_el(pid, 'AXTextField', PANEL_NEEDLE_FIELD)
-    checks.note(f'{prefix}-name-focus', f"found={fo.get('found')} axError={fo.get('axError')}")
-    a, a_path, a_front = guarded_key(ui, pid, KEY_A, ('cmd',), True, frontmost)
+    # Rung 1: a real click into the field (AXFocused alone may not make it first responder in the remote panel view).
+    ck = ui.click_el(pid, 'AXTextField', PANEL_NEEDLE_FIELD)
+    sleep(.3)
+    checks.note(f'{prefix}-name-click', f"found={ck.get('found')} clicked={ck.get('clicked')} point=({ck.get('x')},{ck.get('y')}) frontmost={frontmost()!r}")
+    def select_all():
+        a, _, fm = guarded_key(ui, pid, KEY_A, ('cmd',), True, frontmost)
+        return a, fm
+    a, fm = select_all()
     if a.get('refused') is not None:
-        checks.bad(bad_name, f"refused: frontmost={a.get('refused')!r}, nothing posted"); return None
-    t, t_front = guarded_type(ui, pid, target, frontmost)
-    want = len(target.encode('utf-16-le')) // 2
-    if t.get('refused') is not None or t.get('units') != want:
-        checks.bad(bad_name, f"typing failed units={t.get('units')} want={want} refused={t.get('refused')!r} frontmost={t_front!r}"); return None
-    sleep(.5)
-    back = find(ui.tree(pid), 'AXTextField', PANEL_NEEDLE_FIELD)
-    checks.note(f'{prefix}-name-readback', f"typed={target!r} field_value={(back or {}).get('value')!r} path=session-tap frontmost={t_front!r}")
-    return nodes
+        checks.bad(bad_name, f"refused: frontmost={a.get('refused')!r}, nothing posted"); return None, None
+    # Rung 2: paste the path with real keycodes (Cmd-V).
+    method, value = 'paste', None
+    try:
+        clip(target)
+        v, _, fm = guarded_key(ui, pid, KEY_V, ('cmd',), True, frontmost)
+        if v.get('refused') is not None:
+            checks.bad(bad_name, f"refused: frontmost={v.get('refused')!r}, nothing posted"); return None, None
+    except (OSError, subprocess.SubprocessError) as e:
+        checks.note(f'{prefix}-name-paste-error', repr(e)[:160])
+    sleep(.5); value = read_back(ui, pid)
+    checks.note(f'{prefix}-name-readback', f'method=paste typed={target!r} field_value={value!r} frontmost={fm!r}')
+    # Rung 3: real US-layout keys, only if the paste did not land.
+    if value != target:
+        seq = keys_for(target)
+        if seq is None:
+            checks.note(f'{prefix}-name-readback', 'method=keys skipped: a character has no mapped US keycode')
+        else:
+            a, fm = select_all()
+            fm2 = frontmost()
+            if a.get('refused') is not None or fm2 not in ALLOWED_FRONTMOST:
+                checks.bad(bad_name, f"refused: frontmost={a.get('refused') or fm2!r}, nothing posted"); return None, None
+            posted = 0
+            for code, mods in seq: posted += ui.key_tap(pid, code, *mods).get('eventsPosted', 0)
+            sleep(.5); value = read_back(ui, pid)
+            checks.note(f'{prefix}-name-readback', f'method=keys events={posted} typed={target!r} field_value={value!r} frontmost={frontmost()!r}')
+    expected = target
+    # Rung 4 (save leg only): go to the destination folder with Cmd-Shift-G and keep the default name. The filename is a harness choice;
+    # the bytes are judged the same way.
+    if value != target and dest is not None:
+        try:
+            g, _, gf = guarded_key(ui, pid, KEY_G, ('cmd', 'shift'), True, frontmost)
+            if g.get('refused') is None:
+                sleep(1.0); clip(str(dest))
+                guarded_key(ui, pid, KEY_A, ('cmd',), True, frontmost); guarded_key(ui, pid, KEY_V, ('cmd',), True, frontmost); sleep(.5)
+                guarded_key(ui, pid, KEY_RETURN, (), True, frontmost); sleep(1.0)
+                expected = str(pathlib.Path(dest) / (default_name if default_name.endswith('.csv') else default_name + '.csv'))
+                checks.note(f'{prefix}-name-goto', f'go-to-folder dest={str(dest)!r} default_name={default_name!r} expected={expected!r} field_value={read_back(ui, pid)!r}')
+            else:
+                checks.note(f'{prefix}-name-goto', f"refused: frontmost={g.get('refused')!r}")
+        except (OSError, subprocess.SubprocessError) as e:
+            checks.note(f'{prefix}-name-goto', f'error {e!r}'[:200])
+    return nodes, expected
 
 
 EXPORT_DESC = 'Export CSV'   # the REAL AX description seen on the Mac (run 40226372270 tree); the accessibilityLabel text is not what AX reports
@@ -149,7 +218,22 @@ def select_largest(ui, pid, checks, out, clock=time.time, sleep=time.sleep):
     return checks.check('csv-largest-tab-selected', ok, f"role={node['role']} press={r.get('axError')} found={r.get('found')}")
 
 
-def run(app, ui, out, launch, clock=time.time, sleep=time.sleep, root=None, frontmost=real_frontmost, strays=None):
+def dismiss_alert(ui, pid, checks, label, clock, sleep, frontmost, wait=8):
+    """Wait up to `wait`s for an alert sheet, record its text, dismiss it via the sheet's default button (Return as a guarded fallback)
+    and wait until the sheet is gone. Returns True when no alert is left."""
+    seen = poll(lambda: (lambda n: n if has_alert(n) else None)(ui.tree(pid)), wait, .5, clock, sleep)
+    if not seen:
+        checks.note(f'{label}-alert', 'no alert sheet appeared'); return True
+    checks.note(f'{label}-alert', f'text={status_text(seen)!r}')
+    r = ui.press_sheet(pid); fallback = 0
+    if not r.get('found') or r.get('axError') != 0:
+        fallback = guarded_key(ui, pid, KEY_RETURN, (), True, frontmost)[0].get('eventsPosted', 0)
+    gone = poll(lambda: not has_alert(ui.tree(pid)), 5, .5, clock, sleep)
+    checks.note(f'{label}-alert-dismissed', f"gone={bool(gone)} sheet_press={r.get('axError')} found={r.get('found')} returnFallbackEvents={fallback}")
+    return bool(gone)
+
+
+def run(app, ui, out, launch, clock=time.time, sleep=time.sleep, root=None, frontmost=real_frontmost, strays=None, clip=real_clip, activate=real_activate):
     out = pathlib.Path(out); out.mkdir(parents=True, exist_ok=True)
     checks = Checks(REQUIRED)
     work = pathlib.Path(tempfile.mkdtemp(prefix='spz-csv-'))
@@ -172,7 +256,8 @@ def run(app, ui, out, launch, clock=time.time, sleep=time.sleep, root=None, fron
         if not checks.check('csv-export-enabled', enabled, 'toolbar button enabled after the scan'):
             (out / 'no-export-tree.jsonl').write_text('\n'.join(map(repr, ui.tree(pid)))); return checks
         target = dest / 'export.csv'
-        nodes = drive_panel(ui, pid, str(target), checks, 'csv', out, clock, sleep, frontmost=frontmost)
+        nodes, target = drive_panel(ui, pid, str(target), checks, 'csv', out, clock, sleep, frontmost=frontmost, clip=clip, dest=dest)
+        target = pathlib.Path(target) if target else dest / 'export.csv'
         if nodes is not None:
             sv = ui.press(pid, 'AXButton', 'Save')
             pressed = bool(sv.get('found')) and sv.get('axError') == 0
@@ -182,7 +267,8 @@ def run(app, ui, out, launch, clock=time.time, sleep=time.sleep, root=None, fron
             checks.check('csv-panel-saved', pressed or fallback > 0, f"save press={sv.get('axError')} found={sv.get('found')} fallbackKeyEvents={fallback}")
             sleep(1.5); post = ui.tree(pid)
             (out / 'csv-post-save-tree.jsonl').write_text('\n'.join(map(repr, post)))
-            checks.note('csv-post-save', f"panel_closed={panel_gone(post)} main_window_text={status_text(post)!r}")
+            checks.note('csv-post-save', f"panel_closed={panel_gone(post)} alert_present={has_alert(post)} main_window_text={status_text(post)!r}")
+            dismiss_alert(ui, pid, checks, 'csv-post-save', clock, sleep, frontmost)
             wrote = poll(lambda: target.is_file() and target.stat().st_size > 0 and target, 20, .5, clock, sleep)
             created = [str(x) for x in strays if x.exists() and str(x) not in pre]
             checks.note('csv-new-csv-files', f'{new_csvs(dest, docs, pre)}')
@@ -193,7 +279,11 @@ def run(app, ui, out, launch, clock=time.time, sleep=time.sleep, root=None, fron
         # Cancel path: a second panel, a distinct target, then Cancel. Nothing may be written.
         snap = {str(x) for x in strays if x.exists()}     # strays that exist before the cancel leg are not blamed on it
         ctarget = dest / 'cancelled.csv'
-        nodes = drive_panel(ui, pid, str(ctarget), checks, 'csv-cancel', out, clock, sleep, wait=20, frontmost=frontmost)
+        # The leftover export alert made Finder frontmost in run 40232750584: clear any alert and re-activate the app first.
+        left = has_alert(ui.tree(pid)) and not dismiss_alert(ui, pid, checks, 'csv-pre-cancel', clock, sleep, frontmost, wait=2)
+        act = activate(pid); sleep(1)
+        checks.note('csv-pre-cancel-state', f'alert_gone={not (left or has_alert(ui.tree(pid)))} {act}')
+        nodes, _ = drive_panel(ui, pid, str(ctarget), checks, 'csv-cancel', out, clock, sleep, wait=20, frontmost=frontmost, clip=clip)
         if nodes is not None:
             cx = ui.press(pid, 'AXButton', 'Cancel')
             if not cx.get('found'): guarded_key(ui, pid, 53, (), True, frontmost)   # Escape

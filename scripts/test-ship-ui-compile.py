@@ -43,15 +43,33 @@ final class CGEvent { var flags: CGEventFlags = []
   func keyboardSetUnicodeString(stringLength: Int, unicodeString: UnsafePointer<UInt16>?) { if let u = unicodeString { print("{\\"stub\\":\\"uni\\",\\"u\\":\\(u.pointee)}") } }
   func post(tap: CGEventTapLocation) { print("{\\"stub\\":\\"tap\\",\\"flags\\":\\(flags.rawValue)}") } }
 enum CGEventTapLocation { case cgSessionEventTap }
+struct CGPoint { var x: Double; var y: Double; static let zero = CGPoint(x: 0, y: 0) }
+struct CGSize { var width: Double; var height: Double; static let zero = CGSize(width: 0, height: 0) }
+extension CGPoint { init(x: Double, y: Double, _ u: Int) { self.x = x; self.y = y } }
+enum AXValueType { case cgPoint, cgSize }
+final class AXValue { let p: CGPoint?; let sz: CGSize?; init(p: CGPoint) { self.p = p; sz = nil }; init(s: CGSize) { sz = s; p = nil } }
+let kAXPositionAttribute = "AXPosition", kAXSizeAttribute = "AXSize"
+func AXValueGetValue(_ v: AXValue, _ t: AXValueType, _ out: UnsafeMutableRawPointer) -> Bool {
+  if t == .cgPoint, let p = v.p { out.assumingMemoryBound(to: CGPoint.self).pointee = p; return true }
+  if t == .cgSize, let s = v.sz { out.assumingMemoryBound(to: CGSize.self).pointee = s; return true }
+  return false }
+enum CGEventType { case leftMouseDown, leftMouseUp }
+enum CGMouseButton { case left }
+extension CGEvent {
+  convenience init?(mouseEventSource: AnyObject?, mouseType: CGEventType, mouseCursorPosition: CGPoint, mouseButton: CGMouseButton) {
+    self.init(keyboardEventSource: nil, virtualKey: 0, keyDown: true); print("{\\"stub\\":\\"mouse\\",\\"x\\":\\(mouseCursorPosition.x),\\"y\\":\\(mouseCursorPosition.y)}") } }
 '''
 # Harness: the helper text is its top-level script; the stub fake tree is built by a prelude selected by SHIP_FAKE.
 prelude = '''
 if let m = ProcessInfo.processInfo.environment["SHIP_FAKE"] {
   let save = AXUIElement(["AXRole": "AXButton", "AXTitle": "Save"])
-  let name = AXUIElement(["AXRole": "AXTextField", "AXIdentifier": "saveAsNameTextField", "AXValue": "spacelyzer-largest.csv"])
+  let name = AXUIElement(["AXRole": "AXTextField", "AXIdentifier": "saveAsNameTextField", "AXValue": "spacelyzer-largest.csv", "AXPosition": AXValue(p: CGPoint(x: 100, y: 200)), "AXSize": AXValue(s: CGSize(width: 40, height: 20))])
   let panel = AXUIElement(["AXRole": "AXWindow", "AXSubrole": "AXDialog", "AXTitle": "Save"], [name, save])
+  let sheetBtn = AXUIElement(["AXRole": "AXButton", "AXTitle": "OK"])
+  let sheet = AXUIElement(["AXRole": "AXSheet", "AXDescription": "alert"], [sheetBtn])
+  name.kids = []
   let exp = AXUIElement(["AXRole": "AXButton", "AXDescription": "Export the Largest list as CSV", "AXEnabled": m != "disabled"])
-  fake = AXUIElement(["AXRole": "AXApplication"], [AXUIElement(["AXRole": "AXWindow", "AXTitle": "Spacelyzer"], [exp]), panel])
+  fake = AXUIElement(["AXRole": "AXApplication"], [AXUIElement(["AXRole": "AXWindow", "AXTitle": "Spacelyzer"], [exp, sheet]), panel])
   focusedFake = exp
   trusted = m != "untrusted"
 }
@@ -65,7 +83,7 @@ with tempfile.TemporaryDirectory() as d:
         env = dict(os.environ, SHIP_FAKE=mode)
         p = subprocess.run([str(d / 'ui'), *a], capture_output=True, text=True, env=env)
         return p.returncode, [json.loads(l) for l in p.stdout.splitlines() if l.strip().startswith('{')]
-    rc, o = run('ok', 'tree', '42'); assert rc == 0 and o[-1] == {'cmd': 'tree', 'nodes': 6}, o
+    rc, o = run('ok', 'tree', '42'); assert rc == 0 and o[-1] == {'cmd': 'tree', 'nodes': 8}, o
     assert any(x.get('desc') == 'Export the Largest list as CSV' for x in o)
     rc, o = run('ok', 'press', '42', 'AXButton', 'Export the Largest'); assert o[-1]['found'] and o[-1]['axError'] == 0, o
     rc, o = run('ok', 'press', '42', 'AXButton', '=Largest'); assert o[-1]['found'] is False, o   # exact: not the Export button
@@ -78,6 +96,11 @@ with tempfile.TemporaryDirectory() as d:
     assert [x['u'] for x in o if x.get('stub') == 'uni'] == [x for x in (97, 97, 47, 47, 233, 233)], o
     assert sum(1 for x in o if x.get('stub') == 'tap') == 6 and not any(x.get('stub') == 'post' for x in o), o
     rc, o = run('ok', 'focusel', '42', 'AXTextField', 'saveAsNameTextField'); assert o[-1]['found'] and o[-1]['axError'] == 0, o
+    rc, o = run('ok', 'clickel', '42', 'AXTextField', 'saveAsNameTextField'); assert o[-1] == {'cmd': 'clickel', 'found': True, 'clicked': True, 'x': 120.0, 'y': 210.0}, o
+    assert [(x['x'], x['y']) for x in o if x.get('stub') == 'mouse'] == [(120.0, 210.0)] * 2 and sum(1 for x in o if x.get('stub') == 'tap') == 2, o
+    rc, o = run('ok', 'clickel', '42', 'AXButton', 'Nope'); assert o[-1]['found'] is False and o[-1]['clicked'] is False, o
+    rc, o = run('ok', 'clickel', '42', 'AXButton', 'Export'); assert o[-1]['found'] and not o[-1]['clicked'], o   # no position: nothing clicked
+    rc, o = run('ok', 'presssheet', '42'); assert o[-1] == {'cmd': 'presssheet', 'sheet': True, 'found': True, 'axError': 0}, o
     rc, o = run('ok', 'key', '42', '53'); assert sum(1 for x in o if x.get('stub') == 'post') == 2 and not any(x.get('stub') == 'tap' for x in o), o
     rc, o = run('ok', 'key', '42', '31', 'cmd', 'shift'); assert o[-1]['eventsPosted'] == 2 and o[-1]['flags'] == 'cmd+shift', o
     assert any(x.get('stub') == 'post' and x['flags'] == 3 for x in o), o

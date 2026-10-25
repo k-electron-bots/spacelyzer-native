@@ -78,6 +78,12 @@ class HelperUI:
     def type_text(self, pid, text):
         """Type real characters through the session event tap into the focused field."""
         rc, rows = self._run('typetext', pid, text); return rows[-1] if rows else {'units': 0, 'rc': rc}
+    def click_el(self, pid, role, needle):
+        """Real left click at the center of the matched element through the session event tap."""
+        rc, rows = self._run('clickel', pid, role, needle); return rows[-1] if rows else {'found': False, 'clicked': False, 'rc': rc}
+    def press_sheet(self, pid):
+        """Press the first button inside the first AXSheet (an alert's default button)."""
+        rc, rows = self._run('presssheet', pid); return rows[-1] if rows else {'found': False, 'rc': rc}
     def key_tap(self, pid, code, *mods):
         """Post through the session event tap (goes to the frontmost app, including a remote Open/Save panel), not to the app pid."""
         rc, rows = self._run('keytap', pid, code, *mods); return rows[-1] if rows else {'eventsPosted': 0, 'rc': rc}
@@ -134,3 +140,13 @@ def guarded_type(ui, pid, text, frontmost):
     name = frontmost()
     if name not in ALLOWED_FRONTMOST: return {'units': 0, 'refused': name}, name
     return ui.type_text(pid, text), name
+
+
+def real_activate(pid):
+    r = subprocess.run(['osascript', '-e', f'tell application "System Events" to set frontmost of (first process whose unix id is {pid}) to true'], capture_output=True, text=True, timeout=20)
+    f = subprocess.run(['osascript', '-e', 'tell application "System Events" to get name of first process whose frontmost is true'], capture_output=True, text=True, timeout=20)
+    return f'activate rc={r.returncode} err={r.stderr.strip()[:120]!r} frontmost={f.stdout.strip()!r}'
+
+
+def real_clip(text):
+    subprocess.run(['pbcopy'], input=text.encode('utf-8'), check=True, timeout=10)
