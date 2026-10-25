@@ -105,3 +105,12 @@ assert any("input-escape-closes-panel" in x and "REFUSED" in x and "Terminal" in
 g, p = drive(); assert g, p
 assert "path=session-tap frontmost='Spacelyzer'" in str(drive.checks.rows) and "path=pid frontmost='Spacelyzer'" in str(drive.checks.rows), drive.checks.rows
 print('PASS input guard: no key is posted unless Spacelyzer is frontmost (all-refused and frontmost-changes-mid-run both red with zero Escape/Tab posts); every check detail records the delivery path and the frontmost name')
+
+# Widened guard: exactly 'Spacelyzer' or 'Open and Save Panel Service (Spacelyzer)'; nothing else (no substring, prefix or case variant).
+g, p = drive(front=lambda: 'Open and Save Panel Service (Spacelyzer)'); assert g, p
+assert ('tap', m.KEY_ESC) in drive.ui.log
+for bad in ('Open and Save Panel Service', 'Open and Save Panel Service (Spacelyzer) ', 'open and save panel service (spacelyzer)', 'Spacelyzer Helper',
+            'Open and Save Panel Service (Other)', 'Spacelyzer2', ''):
+    g, p = drive(front=lambda b=bad: b); assert not g and drive.ui.log == [], (bad, p, drive.ui.log)
+assert sc.ALLOWED_FRONTMOST == ('Spacelyzer', 'Open and Save Panel Service (Spacelyzer)')
+print('PASS input guard widening: the exact panel-service name is allowed (green); 7 near-miss names (substring, prefix, trailing space, case, other app, empty) are refused with zero posts')

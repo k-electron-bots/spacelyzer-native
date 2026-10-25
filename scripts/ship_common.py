@@ -104,6 +104,8 @@ def stop_apps(run=subprocess.run, sleep=time.sleep):
 
 
 APP_NAME = 'Spacelyzer'
+# Exact names only (no substring or prefix): the app itself, or its remote Open/Save panel service while a panel is up.
+ALLOWED_FRONTMOST = ('Spacelyzer', 'Open and Save Panel Service (Spacelyzer)')
 
 
 def real_frontmost():
@@ -117,6 +119,6 @@ def guarded_key(ui, pid, code, mods, tap, frontmost):
     Returns (result, path, frontmost_name); result is {'eventsPosted': 0, 'refused': name} and nothing is posted when refused."""
     name = frontmost()
     path = 'session-tap' if tap else 'pid'
-    if name != APP_NAME: return {'eventsPosted': 0, 'refused': name}, path, name
+    if name not in ALLOWED_FRONTMOST: return {'eventsPosted': 0, 'refused': name}, path, name
     r = ui.key_tap(pid, code, *mods) if tap else ui.key(pid, code, *mods)
     return r, path, name
