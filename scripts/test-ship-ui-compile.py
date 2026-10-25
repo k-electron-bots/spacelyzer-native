@@ -19,6 +19,7 @@ typealias pid_t_ = Int32
 final class AXUIElement { let a: [String: Any]; var kids: [AXUIElement]; init(_ a: [String: Any], _ k: [AXUIElement] = []) { self.a = a; kids = k }
   var pressed = false; var setValue: String? }
 struct AXError: Equatable { var rawValue: Int32; static let success = AXError(rawValue: 0); static let noValue = AXError(rawValue: -25212) }
+let kCFBooleanTrue: CFTypeRef = NSNumber(value: true)
 let kAXEnabledAttribute = "AXEnabled", kAXFocusedAttribute = "AXFocused", kAXValueAttribute = "AXValue", kAXRoleAttribute = "AXRole"
 let kAXSubroleAttribute = "AXSubrole", kAXTitleAttribute = "AXTitle", kAXDescriptionAttribute = "AXDescription", kAXIdentifierAttribute = "AXIdentifier"
 let kAXChildrenAttribute = "AXChildren", kAXPressAction = "AXPress", kAXFocusedUIElementAttribute = "AXFocusedUIElement"
@@ -39,6 +40,7 @@ struct CGEventFlags: OptionSet { let rawValue: UInt64; static let maskCommand = 
 final class CGEvent { var flags: CGEventFlags = []
   init?(keyboardEventSource: AnyObject?, virtualKey: UInt16, keyDown: Bool) {}
   func postToPid(_ p: Int32) { print("{\\"stub\\":\\"post\\",\\"flags\\":\\(flags.rawValue)}") }
+  func keyboardSetUnicodeString(stringLength: Int, unicodeString: UnsafePointer<UInt16>?) { if let u = unicodeString { print("{\\"stub\\":\\"uni\\",\\"u\\":\\(u.pointee)}") } }
   func post(tap: CGEventTapLocation) { print("{\\"stub\\":\\"tap\\",\\"flags\\":\\(flags.rawValue)}") } }
 enum CGEventTapLocation { case cgSessionEventTap }
 '''
@@ -72,6 +74,10 @@ with tempfile.TemporaryDirectory() as d:
     rc, o = run('ok', 'set', '42', 'AXTextField', 'saveAsNameTextField', '/tmp/x.csv'); assert o[-1]['found'], o
     rc, o = run('ok', 'focus', '42'); assert o[-1]['node']['desc'].startswith('Export'), o
     rc, o = run('ok', 'keytap', '42', '53'); assert o[-1]['cmd'] == 'keytap' and o[-1]['eventsPosted'] == 2 and sum(1 for x in o if x.get('stub') == 'tap') == 2 and not any(x.get('stub') == 'post' for x in o), o
+    rc, o = run('ok', 'typetext', '42', 'a/é'); assert o[-1] == {'cmd': 'typetext', 'units': 3}, o
+    assert [x['u'] for x in o if x.get('stub') == 'uni'] == [x for x in (97, 97, 47, 47, 233, 233)], o
+    assert sum(1 for x in o if x.get('stub') == 'tap') == 6 and not any(x.get('stub') == 'post' for x in o), o
+    rc, o = run('ok', 'focusel', '42', 'AXTextField', 'saveAsNameTextField'); assert o[-1]['found'] and o[-1]['axError'] == 0, o
     rc, o = run('ok', 'key', '42', '53'); assert sum(1 for x in o if x.get('stub') == 'post') == 2 and not any(x.get('stub') == 'tap' for x in o), o
     rc, o = run('ok', 'key', '42', '31', 'cmd', 'shift'); assert o[-1]['eventsPosted'] == 2 and o[-1]['flags'] == 'cmd+shift', o
     assert any(x.get('stub') == 'post' and x['flags'] == 3 for x in o), o

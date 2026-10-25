@@ -73,6 +73,11 @@ class HelperUI:
         rc, rows = self._run('focus', pid); return rows[-1] if rows else {}
     def key(self, pid, code, *mods):
         rc, rows = self._run('key', pid, code, *mods); return rows[-1] if rows else {'eventsPosted': 0, 'rc': rc}
+    def focus_el(self, pid, role, needle):
+        rc, rows = self._run('focusel', pid, role, needle); return rows[-1] if rows else {'found': False, 'rc': rc}
+    def type_text(self, pid, text):
+        """Type real characters through the session event tap into the focused field."""
+        rc, rows = self._run('typetext', pid, text); return rows[-1] if rows else {'units': 0, 'rc': rc}
     def key_tap(self, pid, code, *mods):
         """Post through the session event tap (goes to the frontmost app, including a remote Open/Save panel), not to the app pid."""
         rc, rows = self._run('keytap', pid, code, *mods); return rows[-1] if rows else {'eventsPosted': 0, 'rc': rc}
@@ -122,3 +127,10 @@ def guarded_key(ui, pid, code, mods, tap, frontmost):
     if name not in ALLOWED_FRONTMOST: return {'eventsPosted': 0, 'refused': name}, path, name
     r = ui.key_tap(pid, code, *mods) if tap else ui.key(pid, code, *mods)
     return r, path, name
+
+
+def guarded_type(ui, pid, text, frontmost):
+    """Type text through the session tap ONLY while the app (or its panel service) is frontmost. Returns (result, frontmost_name)."""
+    name = frontmost()
+    if name not in ALLOWED_FRONTMOST: return {'units': 0, 'refused': name}, name
+    return ui.type_text(pid, text), name

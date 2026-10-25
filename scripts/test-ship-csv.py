@@ -49,7 +49,7 @@ class Clock:
 
 class FakeUI:
     def __init__(s, root_holder, **k):
-        s.k = k; s.h = root_holder; s.polls = 0; s.largest = False; s.panel = False; s.target = None; s.pressed = []
+        s.k = k; s.h = root_holder; s.polls = 0; s.largest = False; s.panel = False; s.target = None; s.pressed = []; s.name = None; s.selected = False; s.typed = []; s.sdir = k.pop('sdir', None); s.k = k
     def trusted(s): return s.k.get('trusted', True)
     def tree(s, pid):
         s.polls += 1
@@ -67,34 +67,48 @@ class FakeUI:
         if needle.lstrip('=').startswith('Export'): s.panel = True; return {'found': True, 'axError': 0}
         if needle.lstrip('=') == 'Save':
             if s.k.get('save_not_found'): return {'found': False}
-            if not s.k.get('save_writes_nothing') and s.target: pathlib.Path(s.target).write_bytes(s.h['raw']())
+            if not s.k.get('save_writes_nothing'): s.write_saved()
             s.panel = False; return {'found': True, 'axError': 0}
         if needle == 'Cancel':
-            if s.k.get('cancel_writes') and s.target: pathlib.Path(s.target).write_bytes(b'x')
-            s.panel = False; return {'found': True, 'axError': 0}
+            if s.k.get('cancel_writes'): s.write_saved(b'x', cancel=True)
+            s.panel = False; s.name = None; s.selected = False; return {'found': True, 'axError': 0}
         return {'found': False}
-    def set_(s, pid, role, needle, value): s.target = value; return {'found': True, 'axError': 0}
+    def set_(s, pid, role, needle, value): s.target = value; return {'found': True, 'axError': 0}   # an AX value write does NOT commit (run 40229545863)
+    def focus_el(s, pid, role, needle): return {'found': True, 'axError': 0}
+    def type_text(s, pid, text):
+        s.typed.append(text)
+        s.name = text if s.selected else 'spacelyzer-largest.csv' + text    # without Cmd-A the typing lands after the default name
+        return {'cmd': 'typetext', 'units': len(text.encode('utf-16-le')) // 2}
+    def write_saved(s, data=None, cancel=False):
+        ok = s.name and os.path.isabs(s.name) and not s.name.endswith('spacelyzer-largest.csv' + (s.typed[-1] if s.typed else ''))
+        dest = pathlib.Path(s.name) if ok else pathlib.Path(s.sdir) / ('cancelled.csv' if cancel else 'spacelyzer-largest.csv')   # default name in the default folder
+        dest.write_bytes(data if data is not None else s.h['raw']())
     def key_tap(s, pid, code, *mods): return s.key(pid, code, *mods)
     def key(s, pid, code, *mods):
-        if code == 36 and s.target and not s.k.get('save_writes_nothing'): pathlib.Path(s.target).write_bytes(s.h['raw']()); s.panel = False
+        if code == m.KEY_A and 'cmd' in mods: s.selected = True
+        if code == 36 and not s.k.get('save_writes_nothing'): s.write_saved(); s.panel = False
         return {'eventsPosted': 2}
 
 def drive(**k):
     holder = {}
     def launch(app, fixture): holder['raw'] = lambda: make_csv(fixture, **holder.get('csvkw', {}))
     holder['csvkw'] = k.pop('csv', {})
-    ui = FakeUI(holder, **k); clk = Clock()
+    sd = tempfile.mkdtemp(); front = k.pop('front', 'Spacelyzer')
+    ui = FakeUI(holder, sdir=sd, **k); clk = Clock()
     m.pid_of = lambda *a, **kw: 4242; m.stop_apps = lambda *a, **kw: None
     sc.pid_of = m.pid_of
     with tempfile.TemporaryDirectory() as o:
-        c = m.run('app', ui, o, launch, clock=clk, sleep=clk.sleep, frontmost=lambda: 'Spacelyzer')
+        c = m.run('app', ui, o, launch, clock=clk, sleep=clk.sleep, frontmost=lambda: front, strays=[pathlib.Path(sd) / n for n in ('spacelyzer-largest.csv', 'export.csv', 'cancelled.csv')])
+        drive.checks = c
         good, problems = c.verdict()
         c.write(o)
         assert (pathlib.Path(o) / 'result.txt').read_text().startswith('PASS' if good else 'FAIL')
         return good, problems, ui
 
 g, p, ui = drive(); assert g, p
-assert 'Cancel' in ui.pressed
+assert 'Cancel' in ui.pressed and len(ui.typed) == 2 and all(os.path.isabs(t) for t in ui.typed), ui.typed
+assert all(k in str(drive.checks.rows) for k in ('csv-name-readback', 'csv-post-save', 'csv-new-csv-files', 'csv-cancel-panel-closed')), drive.checks.rows
+assert 'csv-name-readback' in str(drive.checks.rows) and 'path=session-tap' in str(drive.checks.rows)
 for name, kw, needle in [
     ('untrusted', dict(trusted=False), 'csv-ax-trusted'),
     ('Export carries the old wrong description', dict(export_desc='Export the Largest list as CSV'), 'csv-toolbar-not-overflowed'), ('toolbar overflow hides Export', dict(no_export_button=True), 'csv-toolbar-not-overflowed'), ('no Largest control', dict(no_tab=True), 'csv-largest-tab-selected'), ('Largest press fails', dict(tab_press_fails=True), 'csv-largest-tab-selected'), ('export never enabled', dict(never_enabled=True), 'csv-export-enabled'),
@@ -117,3 +131,23 @@ m.real_launch('A.app', '/tmp/fx')
 assert 'SPZ_WINDOW_SIZE=1280x800' in calls[0] and 'SPZ_AUTOSCAN=/tmp/fx' in calls[0], calls
 assert 'csv-toolbar-not-overflowed' in m.REQUIRED
 print('PASS csv: the real launch sets SPZ_WINDOW_SIZE=1280x800; an Export button collapsed into the toolbar overflow goes red on the new required check csv-toolbar-not-overflowed')
+
+# Run 40229545863 failure, modeled: an AX value write does not commit, so Save writes the default name in the default folder.
+real_gt, real_gk = m.guarded_type, m.guarded_key
+m.guarded_type = lambda ui, pid, text, fm: (ui.set_(pid, 'AXTextField', 'x', text) and {'units': len(text.encode('utf-16-le')) // 2}, 'Spacelyzer')
+g, p, ui = drive(); assert not g and any('csv-file-written' in x for x in p), p
+assert 'csv-stray-files' in str(drive.checks.rows) and 'spacelyzer-largest.csv' in str(drive.checks.rows), drive.checks.rows   # the diagnostic names where the file went
+m.guarded_type = real_gt
+m.guarded_key = lambda *a, **k: ({'eventsPosted': 2}, 'session-tap', 'Spacelyzer')            # driver mutation: no select-all, typing lands after the default name
+g, p, ui = drive(); assert not g and any('csv-file-written' in x for x in p), p
+m.guarded_key = real_gk
+g, p, ui = drive(front='Finder'); assert not g and ui.typed == [] and any('csv-panel-saved' in x and 'refused' in x for x in p), (p, ui.typed)
+g, p, ui = drive(cancel_writes=True); assert not g and any('csv-cancel-wrote-nothing' in x for x in p), p
+g, p, ui = drive(front='Open and Save Panel Service (Spacelyzer)'); assert g, p
+print('PASS csv entry: the target is typed through the session tap after focus and select-all and read back; an AX-set-only driver and a no-select-all driver both go red with the stray-file diagnostic naming the default-folder file; not-frontmost types nothing; a cancel that writes anywhere is red; the panel-service frontmost name is allowed')
+
+# Diagnostics are non-gating NOTEs: pure helpers, and no new required names.
+assert m.panel_gone([{'role': 'AXWindow', 'subrole': 'AXStandardWindow'}]) and not m.panel_gone([{'role': 'AXWindow', 'subrole': 'AXDialog'}]) and not m.panel_gone([{'role': 'AXSheet'}])
+assert 'Export failed' in m.status_text([{'role': 'AXStaticText', 'value': 'Export failed: x'}, {'role': 'AXButton', 'title': 'Save'}]) and 'Save' not in m.status_text([{'role': 'AXButton', 'title': 'Save'}])
+assert m.REQUIRED == ['csv-ax-trusted', 'csv-app-launched', 'csv-largest-tab-selected', 'csv-toolbar-not-overflowed', 'csv-export-enabled', 'csv-panel-opened', 'csv-panel-saved', 'csv-file-written', 'csv-utf8-no-bom-crlf', 'csv-header', 'csv-ranks-and-order', 'csv-roundtrip-names', 'csv-sizes-plausible', 'csv-formula-row-marked', 'csv-cancel-panel-opened', 'csv-cancel-wrote-nothing'], m.REQUIRED
+print('PASS csv diagnostics: post-save panel-closed plus main-window text, new *.csv in dest and Documents, cancel-panel-closed are NOTEs; the required names are unchanged')

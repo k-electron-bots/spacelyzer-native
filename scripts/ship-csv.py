@@ -4,7 +4,7 @@ real Export CSV toolbar button, drives the real NSSavePanel through accessibilit
 Cancel writes nothing. Mac execution is not proved by Linux tests."""
 import argparse, csv, io, os, pathlib, random, shutil, subprocess, sys, tempfile, time
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from ship_common import Checks, Fail, HelperUI, find, guarded_key, pid_of, poll, real_frontmost, stop_apps
+from ship_common import Checks, Fail, HelperUI, find, guarded_key, guarded_type, pid_of, poll, real_frontmost, stop_apps
 
 REQUIRED = ['csv-ax-trusted', 'csv-app-launched', 'csv-largest-tab-selected', 'csv-toolbar-not-overflowed', 'csv-export-enabled', 'csv-panel-opened', 'csv-panel-saved',
             'csv-file-written', 'csv-utf8-no-bom-crlf', 'csv-header', 'csv-ranks-and-order', 'csv-roundtrip-names',
@@ -15,6 +15,7 @@ MB = 1024 * 1024
 FIXTURE = [('big,comma.bin', 9 * MB), ('say "hi".bin', 8 * MB), ('caf\u00e9-\u65e5\u672c.bin', 7 * MB),
            ('line\nbreak.bin', 6 * MB), ('=formula.bin', 5 * MB), ('plain.bin', 4 * MB)]
 PANEL_NEEDLE_FIELD = 'saveAsNameTextField'
+KEY_A = 0
 
 
 def make_fixture(root, rng=random.Random(7)):
@@ -66,7 +67,22 @@ def judge_csv(raw, root):
     return out
 
 
-def drive_panel(ui, pid, target, checks, prefix, out, clock=time.time, sleep=time.sleep, wait=20):
+def panel_gone(nodes):
+    return not any(n.get('role') == 'AXWindow' and n.get('subrole') == 'AXDialog' for n in nodes) and not any(n.get('role') == 'AXSheet' for n in nodes)
+
+
+def status_text(nodes, limit=500):
+    """Visible text a non-gating diagnostic can quote: static texts, alerts and sheet titles from the tree."""
+    bits = [str(n.get('value') or n.get('title') or '') for n in nodes if n.get('role') in ('AXStaticText', 'AXSheet', 'AXAlert') and (n.get('value') or n.get('title'))]
+    return ' | '.join(b.replace('\n', ' ')[:120] for b in bits)[:limit]
+
+
+def new_csvs(dest, docs, pre):
+    return {'dest': sorted(x.name for x in pathlib.Path(dest).glob('*.csv')) if pathlib.Path(dest).exists() else [],
+            'documents': sorted(x.name for x in pathlib.Path(docs).glob('*.csv') if str(x) not in pre) if pathlib.Path(docs).exists() else []}
+
+
+def drive_panel(ui, pid, target, checks, prefix, out, clock=time.time, sleep=time.sleep, wait=20, frontmost=real_frontmost):
     """Press Export, wait for the Save panel, put `target` in the name field. Returns the panel nodes (or None)."""
     ex = ui.press(pid, 'AXButton', '=' + EXPORT_DESC)
     if not ex.get('found') or ex.get('axError') != 0:
@@ -83,9 +99,21 @@ def drive_panel(ui, pid, target, checks, prefix, out, clock=time.time, sleep=tim
     nodes, field = got
     (out / f'{prefix}-panel-tree.jsonl').write_text('\n'.join(map(repr, nodes)))
     checks.ok(f'{prefix}-panel-opened', f"field={field.get('id')}")
-    s = ui.set_(pid, 'AXTextField', PANEL_NEEDLE_FIELD, target)
-    if not s.get('found') or s.get('axError') != 0:
-        checks.bad(f'{prefix}-panel-saved' if prefix == 'csv' else f'{prefix}-wrote-nothing', f'set name failed {s}'); return None
+    # Run 40229545863: an AX value write to the name field did not commit into the panel's text system (Save used the default name).
+    # So: focus the field, select all, and TYPE the full path through the session tap, then read the field back.
+    bad_name = f'{prefix}-panel-saved' if prefix == 'csv' else f'{prefix}-wrote-nothing'
+    fo = ui.focus_el(pid, 'AXTextField', PANEL_NEEDLE_FIELD)
+    checks.note(f'{prefix}-name-focus', f"found={fo.get('found')} axError={fo.get('axError')}")
+    a, a_path, a_front = guarded_key(ui, pid, KEY_A, ('cmd',), True, frontmost)
+    if a.get('refused') is not None:
+        checks.bad(bad_name, f"refused: frontmost={a.get('refused')!r}, nothing posted"); return None
+    t, t_front = guarded_type(ui, pid, target, frontmost)
+    want = len(target.encode('utf-16-le')) // 2
+    if t.get('refused') is not None or t.get('units') != want:
+        checks.bad(bad_name, f"typing failed units={t.get('units')} want={want} refused={t.get('refused')!r} frontmost={t_front!r}"); return None
+    sleep(.5)
+    back = find(ui.tree(pid), 'AXTextField', PANEL_NEEDLE_FIELD)
+    checks.note(f'{prefix}-name-readback', f"typed={target!r} field_value={(back or {}).get('value')!r} path=session-tap frontmost={t_front!r}")
     return nodes
 
 
@@ -121,10 +149,13 @@ def select_largest(ui, pid, checks, out, clock=time.time, sleep=time.sleep):
     return checks.check('csv-largest-tab-selected', ok, f"role={node['role']} press={r.get('axError')} found={r.get('found')}")
 
 
-def run(app, ui, out, launch, clock=time.time, sleep=time.sleep, root=None, frontmost=real_frontmost):
+def run(app, ui, out, launch, clock=time.time, sleep=time.sleep, root=None, frontmost=real_frontmost, strays=None):
     out = pathlib.Path(out); out.mkdir(parents=True, exist_ok=True)
     checks = Checks(REQUIRED)
     work = pathlib.Path(tempfile.mkdtemp(prefix='spz-csv-'))
+    docs = pathlib.Path.home() / 'Documents'
+    strays = strays if strays is not None else [docs / n for n in ('spacelyzer-largest.csv', 'export.csv', 'cancelled.csv')]
+    pre = {str(x) for x in strays if x.exists()}
     try:
         fixture = make_fixture(work / 'fixture'); dest = work / 'dest'; dest.mkdir()
         if not checks.check('csv-ax-trusted', ui.trusted(), 'AXIsProcessTrusted'): return checks
@@ -141,7 +172,7 @@ def run(app, ui, out, launch, clock=time.time, sleep=time.sleep, root=None, fron
         if not checks.check('csv-export-enabled', enabled, 'toolbar button enabled after the scan'):
             (out / 'no-export-tree.jsonl').write_text('\n'.join(map(repr, ui.tree(pid)))); return checks
         target = dest / 'export.csv'
-        nodes = drive_panel(ui, pid, str(target), checks, 'csv', out, clock, sleep)
+        nodes = drive_panel(ui, pid, str(target), checks, 'csv', out, clock, sleep, frontmost=frontmost)
         if nodes is not None:
             sv = ui.press(pid, 'AXButton', 'Save')
             pressed = bool(sv.get('found')) and sv.get('axError') == 0
@@ -149,21 +180,35 @@ def run(app, ui, out, launch, clock=time.time, sleep=time.sleep, root=None, fron
             if not pressed:
                 fallback = guarded_key(ui, pid, 36, (), True, frontmost)[0].get('eventsPosted', 0)   # Return as the fallback for a default button the AX press could not reach
             checks.check('csv-panel-saved', pressed or fallback > 0, f"save press={sv.get('axError')} found={sv.get('found')} fallbackKeyEvents={fallback}")
+            sleep(1.5); post = ui.tree(pid)
+            (out / 'csv-post-save-tree.jsonl').write_text('\n'.join(map(repr, post)))
+            checks.note('csv-post-save', f"panel_closed={panel_gone(post)} main_window_text={status_text(post)!r}")
             wrote = poll(lambda: target.is_file() and target.stat().st_size > 0 and target, 20, .5, clock, sleep)
+            created = [str(x) for x in strays if x.exists() and str(x) not in pre]
+            checks.note('csv-new-csv-files', f'{new_csvs(dest, docs, pre)}')
+            if not wrote: checks.note('csv-stray-files', f'no file at the target; files that appeared in the default location instead: {created}')
             if checks.check('csv-file-written', wrote, str(target)):
                 raw = target.read_bytes(); shutil.copy2(target, out / 'export.csv')
                 for k, (ok, d) in judge_csv(raw, fixture).items(): checks.check(k, ok, d)
         # Cancel path: a second panel, a distinct target, then Cancel. Nothing may be written.
+        snap = {str(x) for x in strays if x.exists()}     # strays that exist before the cancel leg are not blamed on it
         ctarget = dest / 'cancelled.csv'
-        nodes = drive_panel(ui, pid, str(ctarget), checks, 'csv-cancel', out, clock, sleep, wait=20)
+        nodes = drive_panel(ui, pid, str(ctarget), checks, 'csv-cancel', out, clock, sleep, wait=20, frontmost=frontmost)
         if nodes is not None:
             cx = ui.press(pid, 'AXButton', 'Cancel')
             if not cx.get('found'): guarded_key(ui, pid, 53, (), True, frontmost)   # Escape
             sleep(2)
-            checks.check('csv-cancel-wrote-nothing', not ctarget.exists(), f'exists={ctarget.exists()}')
+            after = ui.tree(pid)
+            new_default = [str(x) for x in strays if x.exists() and str(x) not in snap and str(x) not in pre]
+            checks.note('csv-cancel-panel-closed', f'panel_closed={panel_gone(after)}')
+            checks.check('csv-cancel-wrote-nothing', not ctarget.exists() and not new_default, f'exists={ctarget.exists()} new_in_default_folder={new_default}')
     except Fail as e:
         checks.bad('csv-driver', str(e))
     finally:
+        for x in strays:
+            if x.exists() and str(x) not in pre:
+                try: x.unlink()
+                except OSError: pass
         try: stop_apps()
         except Fail: pass
         shutil.rmtree(work, ignore_errors=True)

@@ -4,7 +4,7 @@ import CoreGraphics
 import Darwin
 setbuf(stdout, nil)
 // Accessibility and key-event driver for the ship-candidate run. External process, never prompts for trust.
-// Usage: ship-ui trust | tree <pid> | press <pid> <role> <needle> | set <pid> <role> <needle> <value> | focus <pid> | key|keytap <pid> <keycode> [cmd|shift|opt|ctrl]...
+// Usage: ship-ui trust | tree <pid> | press <pid> <role> <needle> | set <pid> <role> <needle> <value> | focus <pid> | key|keytap <pid> <keycode> [cmd|shift|opt|ctrl]... | focusel <pid> <role> <needle> | typetext <pid> <text>
 // Output is one JSON object per line on stdout so a Python judge can parse it. Exit 0 = the call ran; the judge decides pass/fail.
 func emit(_ o: [String: Any]) {
     if let d = try? JSONSerialization.data(withJSONObject: o, options: [.sortedKeys]), let s = String(data: d, encoding: .utf8) { print(s) }
@@ -62,7 +62,7 @@ case "tree":
     var n = 0
     walk(app) { _, d in emit(d); n += 1; return true }
     emit(["cmd": "tree", "nodes": n])
-case "press", "set":
+case "press", "set", "focusel":
     guard args.count >= 5 else { emit(["error": "args"]); exit(2) }
     let role = args[3], needle = args[4]
     var done = false, err = Int32(0), hit: [String: Any] = [:]
@@ -70,6 +70,7 @@ case "press", "set":
         guard matches(d, role: role, needle: needle) else { return true }
         hit = d
         if cmd == "press" { err = AXUIElementPerformAction(e, kAXPressAction as CFString).rawValue }
+        else if cmd == "focusel" { err = AXUIElementSetAttributeValue(e, kAXFocusedAttribute as CFString, kCFBooleanTrue).rawValue }
         else {
             guard args.count >= 6 else { err = -1; return false }
             err = AXUIElementSetAttributeValue(e, kAXValueAttribute as CFString, args[5] as CFString).rawValue
@@ -98,6 +99,21 @@ case "key", "keytap":
         usleep(40_000)
     }
     emit(["cmd": cmd, "keycode": Int(code), "flags": args.dropFirst(4).joined(separator: "+"), "eventsPosted": posted])
+case "typetext":
+    // Types real characters through the session event tap (unicode key events), so the focused field's own text system receives them.
+    guard args.count >= 4 else { emit(["error": "args"]); exit(2) }
+    var typed = 0
+    for unit in Array(args[3].utf16) {
+        var u = [unit]
+        for down in [true, false] {
+            if let ev = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down) {
+                ev.keyboardSetUnicodeString(stringLength: 1, unicodeString: &u); ev.post(tap: .cgSessionEventTap)
+            }
+            usleep(8_000)
+        }
+        typed += 1
+    }
+    emit(["cmd": "typetext", "units": typed])
 default:
     emit(["error": "unknown command " + cmd]); exit(2)
 }
