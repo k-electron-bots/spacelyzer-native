@@ -148,10 +148,16 @@ if over; then note "SKIPPED trash flow: time budget"; elif step select ax select
           snap trash-dismissed-live
           # Native footer gate (run 40194081483: the footer stayed at "118 items" after the removal while the bytes dropped).
           # Compare the footer item count in the pre-dialog snapshot with the post-removal one: exactly one file was removed.
-          fc() { grep -oE 'in [0-9][0-9,]* items?' "$1" 2>/dev/null | head -1 | tr -dc '0-9'; }
+          # Anchored to the status line: a byte-size token then "in N items" (no other element matches that shape).
+          fc() { grep -oE '[0-9][0-9.,]* ?(B|KB|MB|GB|TB|bytes?) in [0-9][0-9,]* items?' "$1" 2>/dev/null | head -1 | grep -oE '[0-9][0-9,]* items?$' | tr -dc '0-9'; }
           fc_before=$(fc "$OUT/v1-snapshot-select-target.txt"); fc_after=$(fc "$OUT/v1-snapshot-trash-dismissed-live.txt")
+          # A late re-render may land just after the dialog closes: re-read up to 4 times (about 2s) until the count settles.
+          for _ in 1 2 3 4; do
+            { [ -n "$fc_before" ] && [ -n "$fc_after" ] && [ "$fc_after" -eq $((fc_before - 1)) ]; } && break
+            nap 0.5; ax snapshot > "$OUT/v1-snapshot-footer-settle.txt" 2>&1; fc_after=$(fc "$OUT/v1-snapshot-footer-settle.txt")
+          done
           if [ -n "$fc_before" ] && [ -n "$fc_after" ] && [ "$fc_after" -eq $((fc_before - 1)) ]; then note "footer-count OK: $fc_before -> $fc_after items after removing one file"
-          else note "STEP-FAIL footer-count: footer item count before=${fc_before:-unreadable} after=${fc_after:-unreadable}, expected after=before-1 (stale or unreadable footer count)"; fi
+          else note "STEP-FAIL footer-count: footer item count before=${fc_before:-unreadable} after=${fc_after:-unreadable} (still wrong after settle re-reads), expected after=before-1"; fi
           shot trash-done
           # At960wide the button can be in the native toolbar overflow (retained AX snapshot).
           snap history-before-open
