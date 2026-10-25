@@ -73,6 +73,9 @@ class HelperUI:
         rc, rows = self._run('focus', pid); return rows[-1] if rows else {}
     def key(self, pid, code, *mods):
         rc, rows = self._run('key', pid, code, *mods); return rows[-1] if rows else {'eventsPosted': 0, 'rc': rc}
+    def key_tap(self, pid, code, *mods):
+        """Post through the session event tap (goes to the frontmost app, including a remote Open/Save panel), not to the app pid."""
+        rc, rows = self._run('keytap', pid, code, *mods); return rows[-1] if rows else {'eventsPosted': 0, 'rc': rc}
 
 
 def find(nodes, role, needle='', subrole=None):
@@ -98,3 +101,22 @@ def stop_apps(run=subprocess.run, sleep=time.sleep):
     run(['pkill', '-9', '-x', 'Spacelyzer'], check=False); sleep(.3)
     if run(['pgrep', '-x', 'Spacelyzer'], capture_output=True).returncode != 1:
         raise Fail('prior app still running')
+
+
+APP_NAME = 'Spacelyzer'
+
+
+def real_frontmost():
+    p = subprocess.run(['osascript', '-e', 'tell application "System Events" to get name of first process whose frontmost is true'],
+                       capture_output=True, text=True, timeout=20)
+    return p.stdout.strip()
+
+
+def guarded_key(ui, pid, code, mods, tap, frontmost):
+    """Post one key ONLY while the app is frontmost (a session tap keys whatever is frontmost). One delivery path per call.
+    Returns (result, path, frontmost_name); result is {'eventsPosted': 0, 'refused': name} and nothing is posted when refused."""
+    name = frontmost()
+    path = 'session-tap' if tap else 'pid'
+    if name != APP_NAME: return {'eventsPosted': 0, 'refused': name}, path, name
+    r = ui.key_tap(pid, code, *mods) if tap else ui.key(pid, code, *mods)
+    return r, path, name

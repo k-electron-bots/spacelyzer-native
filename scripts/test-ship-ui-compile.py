@@ -38,7 +38,9 @@ struct CGEventFlags: OptionSet { let rawValue: UInt64; static let maskCommand = 
   static let maskAlternate = CGEventFlags(rawValue: 4); static let maskControl = CGEventFlags(rawValue: 8) }
 final class CGEvent { var flags: CGEventFlags = []
   init?(keyboardEventSource: AnyObject?, virtualKey: UInt16, keyDown: Bool) {}
-  func postToPid(_ p: Int32) { print("{\\"stub\\":\\"post\\",\\"flags\\":\\(flags.rawValue)}") } }
+  func postToPid(_ p: Int32) { print("{\\"stub\\":\\"post\\",\\"flags\\":\\(flags.rawValue)}") }
+  func post(tap: CGEventTapLocation) { print("{\\"stub\\":\\"tap\\",\\"flags\\":\\(flags.rawValue)}") } }
+enum CGEventTapLocation { case cgSessionEventTap }
 '''
 # Harness: the helper text is its top-level script; the stub fake tree is built by a prelude selected by SHIP_FAKE.
 prelude = '''
@@ -69,6 +71,8 @@ with tempfile.TemporaryDirectory() as d:
     rc, o = run('ok', 'press', '42', 'AXButton', 'Nope'); assert o[-1]['found'] is False, o
     rc, o = run('ok', 'set', '42', 'AXTextField', 'saveAsNameTextField', '/tmp/x.csv'); assert o[-1]['found'], o
     rc, o = run('ok', 'focus', '42'); assert o[-1]['node']['desc'].startswith('Export'), o
+    rc, o = run('ok', 'keytap', '42', '53'); assert o[-1]['cmd'] == 'keytap' and o[-1]['eventsPosted'] == 2 and sum(1 for x in o if x.get('stub') == 'tap') == 2 and not any(x.get('stub') == 'post' for x in o), o
+    rc, o = run('ok', 'key', '42', '53'); assert sum(1 for x in o if x.get('stub') == 'post') == 2 and not any(x.get('stub') == 'tap' for x in o), o
     rc, o = run('ok', 'key', '42', '31', 'cmd', 'shift'); assert o[-1]['eventsPosted'] == 2 and o[-1]['flags'] == 'cmd+shift', o
     assert any(x.get('stub') == 'post' and x['flags'] == 3 for x in o), o
     rc, o = run('ok', 'key', '42', '31', 'bogus'); assert rc == 2, (rc, o)

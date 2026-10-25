@@ -53,7 +53,7 @@ class FakeUI:
     def trusted(s): return s.k.get('trusted', True)
     def tree(s, pid):
         s.polls += 1
-        nodes = [] if s.k.get('no_export_button') else [{'role': 'AXButton', 'desc': 'Export the Largest list as CSV', 'enabled': s.largest and s.polls > 2 and not s.k.get('never_enabled')}]
+        nodes = [] if s.k.get('no_export_button') else [{'role': 'AXButton', 'desc': s.k.get('export_desc', 'Export CSV'), 'enabled': s.largest and s.polls > 2 and not s.k.get('never_enabled')}]
         if not s.k.get('no_tab'):
             nodes += [{'role': s.k.get('tab_role', 'AXRadioButton'), 'title': t} for t in ('Treemap', 'Kinds', 'Largest', 'Folders')]
         if s.panel and not s.k.get('no_panel'):
@@ -74,6 +74,7 @@ class FakeUI:
             s.panel = False; return {'found': True, 'axError': 0}
         return {'found': False}
     def set_(s, pid, role, needle, value): s.target = value; return {'found': True, 'axError': 0}
+    def key_tap(s, pid, code, *mods): return s.key(pid, code, *mods)
     def key(s, pid, code, *mods):
         if code == 36 and s.target and not s.k.get('save_writes_nothing'): pathlib.Path(s.target).write_bytes(s.h['raw']()); s.panel = False
         return {'eventsPosted': 2}
@@ -86,7 +87,7 @@ def drive(**k):
     m.pid_of = lambda *a, **kw: 4242; m.stop_apps = lambda *a, **kw: None
     sc.pid_of = m.pid_of
     with tempfile.TemporaryDirectory() as o:
-        c = m.run('app', ui, o, launch, clock=clk, sleep=clk.sleep)
+        c = m.run('app', ui, o, launch, clock=clk, sleep=clk.sleep, frontmost=lambda: 'Spacelyzer')
         good, problems = c.verdict()
         c.write(o)
         assert (pathlib.Path(o) / 'result.txt').read_text().startswith('PASS' if good else 'FAIL')
@@ -96,7 +97,7 @@ g, p, ui = drive(); assert g, p
 assert 'Cancel' in ui.pressed
 for name, kw, needle in [
     ('untrusted', dict(trusted=False), 'csv-ax-trusted'),
-    ('toolbar overflow hides Export', dict(no_export_button=True), 'csv-toolbar-not-overflowed'), ('no Largest control', dict(no_tab=True), 'csv-largest-tab-selected'), ('Largest press fails', dict(tab_press_fails=True), 'csv-largest-tab-selected'), ('export never enabled', dict(never_enabled=True), 'csv-export-enabled'),
+    ('Export carries the old wrong description', dict(export_desc='Export the Largest list as CSV'), 'csv-toolbar-not-overflowed'), ('toolbar overflow hides Export', dict(no_export_button=True), 'csv-toolbar-not-overflowed'), ('no Largest control', dict(no_tab=True), 'csv-largest-tab-selected'), ('Largest press fails', dict(tab_press_fails=True), 'csv-largest-tab-selected'), ('export never enabled', dict(never_enabled=True), 'csv-export-enabled'),
     ('no panel', dict(no_panel=True), 'csv-panel-opened'), ('save writes nothing', dict(save_writes_nothing=True), 'csv-file-written'),
     ('cancel writes file', dict(cancel_writes=True), 'csv-cancel-wrote-nothing'), ('BOM export', dict(csv=dict(bom=True)), 'csv-utf8-no-bom-crlf'),
     ('unsorted export', dict(csv=dict(shuffle=True)), 'csv-ranks-and-order')]:

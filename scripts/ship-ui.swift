@@ -4,7 +4,7 @@ import CoreGraphics
 import Darwin
 setbuf(stdout, nil)
 // Accessibility and key-event driver for the ship-candidate run. External process, never prompts for trust.
-// Usage: ship-ui trust | tree <pid> | press <pid> <role> <needle> | set <pid> <role> <needle> <value> | focus <pid> | key <pid> <keycode> [cmd|shift|opt|ctrl]...
+// Usage: ship-ui trust | tree <pid> | press <pid> <role> <needle> | set <pid> <role> <needle> <value> | focus <pid> | key|keytap <pid> <keycode> [cmd|shift|opt|ctrl]...
 // Output is one JSON object per line on stdout so a Python judge can parse it. Exit 0 = the call ran; the judge decides pass/fail.
 func emit(_ o: [String: Any]) {
     if let d = try? JSONSerialization.data(withJSONObject: o, options: [.sortedKeys]), let s = String(data: d, encoding: .utf8) { print(s) }
@@ -83,7 +83,7 @@ case "focus":
     let r = AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &f)
     if r == .success, let f { emit(["cmd": "focus", "axError": 0, "node": describe(f as! AXUIElement, depth: 0, path: "focused")]) }
     else { emit(["cmd": "focus", "axError": Int(r.rawValue)]) }
-case "key":
+case "key", "keytap":
     guard args.count >= 4, let code = UInt16(args[3]) else { emit(["error": "keycode"]); exit(2) }
     var flags: CGEventFlags = []
     for m in args.dropFirst(4) {
@@ -91,10 +91,13 @@ case "key":
     }
     var posted = 0
     for down in [true, false] {
-        if let ev = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down) { ev.flags = flags; ev.postToPid(pid); posted += 1 }
+        if let ev = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down) { ev.flags = flags
+            // "key" posts to the app pid; "keytap" posts to the session event tap (the frontmost app, incl. a remote Open/Save panel).
+            if cmd == "keytap" { ev.post(tap: .cgSessionEventTap) } else { ev.postToPid(pid) }
+            posted += 1 }
         usleep(40_000)
     }
-    emit(["cmd": "key", "keycode": Int(code), "flags": args.dropFirst(4).joined(separator: "+"), "eventsPosted": posted])
+    emit(["cmd": cmd, "keycode": Int(code), "flags": args.dropFirst(4).joined(separator: "+"), "eventsPosted": posted])
 default:
     emit(["error": "unknown command " + cmd]); exit(2)
 }

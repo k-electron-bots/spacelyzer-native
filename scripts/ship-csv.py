@@ -4,7 +4,7 @@ real Export CSV toolbar button, drives the real NSSavePanel through accessibilit
 Cancel writes nothing. Mac execution is not proved by Linux tests."""
 import argparse, csv, io, os, pathlib, random, shutil, subprocess, sys, tempfile, time
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from ship_common import Checks, Fail, HelperUI, find, pid_of, poll, stop_apps
+from ship_common import Checks, Fail, HelperUI, find, guarded_key, pid_of, poll, real_frontmost, stop_apps
 
 REQUIRED = ['csv-ax-trusted', 'csv-app-launched', 'csv-largest-tab-selected', 'csv-toolbar-not-overflowed', 'csv-export-enabled', 'csv-panel-opened', 'csv-panel-saved',
             'csv-file-written', 'csv-utf8-no-bom-crlf', 'csv-header', 'csv-ranks-and-order', 'csv-roundtrip-names',
@@ -68,7 +68,7 @@ def judge_csv(raw, root):
 
 def drive_panel(ui, pid, target, checks, prefix, out, clock=time.time, sleep=time.sleep, wait=20):
     """Press Export, wait for the Save panel, put `target` in the name field. Returns the panel nodes (or None)."""
-    ex = ui.press(pid, 'AXButton', '=Export the Largest list as CSV')
+    ex = ui.press(pid, 'AXButton', '=' + EXPORT_DESC)
     if not ex.get('found') or ex.get('axError') != 0:
         checks.bad(f'{prefix}-panel-opened', f'press export failed {ex}'); return None
     def panel():
@@ -87,6 +87,15 @@ def drive_panel(ui, pid, target, checks, prefix, out, clock=time.time, sleep=tim
     if not s.get('found') or s.get('axError') != 0:
         checks.bad(f'{prefix}-panel-saved' if prefix == 'csv' else f'{prefix}-wrote-nothing', f'set name failed {s}'); return None
     return nodes
+
+
+EXPORT_DESC = 'Export CSV'   # the REAL AX description seen on the Mac (run 40226372270 tree); the accessibilityLabel text is not what AX reports
+
+
+def find_export(nodes):
+    for n in nodes:
+        if n.get('role') == 'AXButton' and n.get('desc') == EXPORT_DESC: return n
+    return None
 
 
 TAB_ROLES = ('AXRadioButton', 'AXButton', 'AXTab', 'AXSegment', 'AXMenuItem')
@@ -112,7 +121,7 @@ def select_largest(ui, pid, checks, out, clock=time.time, sleep=time.sleep):
     return checks.check('csv-largest-tab-selected', ok, f"role={node['role']} press={r.get('axError')} found={r.get('found')}")
 
 
-def run(app, ui, out, launch, clock=time.time, sleep=time.sleep, root=None):
+def run(app, ui, out, launch, clock=time.time, sleep=time.sleep, root=None, frontmost=real_frontmost):
     out = pathlib.Path(out); out.mkdir(parents=True, exist_ok=True)
     checks = Checks(REQUIRED)
     work = pathlib.Path(tempfile.mkdtemp(prefix='spz-csv-'))
@@ -124,11 +133,11 @@ def run(app, ui, out, launch, clock=time.time, sleep=time.sleep, root=None):
         pid = poll(lambda: pid_of(), 30, .5, clock, sleep)
         if not checks.check('csv-app-launched', pid, f'pid={pid}'): return checks
         if not select_largest(ui, pid, checks, out, clock, sleep): return checks
-        present = poll(lambda: find(ui.tree(pid), 'AXButton', 'Export the Largest list as CSV'), 30, 1, clock, sleep)
+        present = poll(lambda: find_export(ui.tree(pid)), 30, 1, clock, sleep)
         if not checks.check('csv-toolbar-not-overflowed', present, 'Export button present in the AX tree (not collapsed into the toolbar overflow)'):
             (out / 'no-export-button-tree.jsonl').write_text('\n'.join(map(repr, ui.tree(pid)))); return checks
         enabled = poll(lambda: (lambda n: n if n and n.get('enabled') else None)(
-            find(ui.tree(pid), 'AXButton', 'Export the Largest list as CSV')), 90, 1, clock, sleep)
+            find_export(ui.tree(pid))), 90, 1, clock, sleep)
         if not checks.check('csv-export-enabled', enabled, 'toolbar button enabled after the scan'):
             (out / 'no-export-tree.jsonl').write_text('\n'.join(map(repr, ui.tree(pid)))); return checks
         target = dest / 'export.csv'
@@ -138,7 +147,7 @@ def run(app, ui, out, launch, clock=time.time, sleep=time.sleep, root=None):
             pressed = bool(sv.get('found')) and sv.get('axError') == 0
             fallback = 0
             if not pressed:
-                fallback = ui.key(pid, 36).get('eventsPosted', 0)   # Return as the fallback for a default button the AX press could not reach
+                fallback = guarded_key(ui, pid, 36, (), True, frontmost)[0].get('eventsPosted', 0)   # Return as the fallback for a default button the AX press could not reach
             checks.check('csv-panel-saved', pressed or fallback > 0, f"save press={sv.get('axError')} found={sv.get('found')} fallbackKeyEvents={fallback}")
             wrote = poll(lambda: target.is_file() and target.stat().st_size > 0 and target, 20, .5, clock, sleep)
             if checks.check('csv-file-written', wrote, str(target)):
@@ -149,7 +158,7 @@ def run(app, ui, out, launch, clock=time.time, sleep=time.sleep, root=None):
         nodes = drive_panel(ui, pid, str(ctarget), checks, 'csv-cancel', out, clock, sleep, wait=20)
         if nodes is not None:
             cx = ui.press(pid, 'AXButton', 'Cancel')
-            if not cx.get('found'): ui.key(pid, 53)   # Escape
+            if not cx.get('found'): guarded_key(ui, pid, 53, (), True, frontmost)   # Escape
             sleep(2)
             checks.check('csv-cancel-wrote-nothing', not ctarget.exists(), f'exists={ctarget.exists()}')
     except Fail as e:
