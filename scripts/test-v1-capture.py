@@ -13,8 +13,11 @@ def ck(n, ok, d=''):
     EXECUTED[0] += 1
     print(('ok   ' if ok else 'FAIL ') + n + ('' if ok else ' :: ' + str(d))); (ok or fails.append(n))
 def run(env_extra):
+    env_extra = dict(env_extra); mutate = env_extra.pop('MUTATE_STAGES', None)
     t = tempfile.mkdtemp(); os.makedirs(t + '/stubs'); os.makedirs(t + '/scripts')
     for f in ['v1-capture.sh', 'run-bounded.py','capture-history-wide.sh','capture-stages.py','v1-capture-phase.sh','run-v1-capture.py','session-resize.py']: shutil.copy(R + '/scripts/' + f, t + '/scripts/' + f)
+    if mutate:
+        src = open(t + '/scripts/capture-stages.py').read(); assert mutate[0] in src; open(t + '/scripts/capture-stages.py', 'w').write(src.replace(mutate[0], mutate[1]))
     open(t + '/scripts/make-docs-fixture.sh', 'w').write('#!/bin/bash\nmkdir -p "$1"; echo x > "$1/f"\n')
     open(t + '/stubs/pkill', 'w').write('#!/bin/bash\nexit 0\n')
     open(t + '/stubs/open', 'w').write('#!/bin/bash\necho "open $*" >> "$LOG"\nexit 0\n')
@@ -48,6 +51,7 @@ case "$2" in
  nosheet) [ -n "$AXUNAVAILABLE" ] && exit 1; [ ! -f "$STATE/dialog" ]; exit $?;;
  sheettext) grep -q -- "$3" "$STATE/dialog" 2>/dev/null || exit 1;;
  choose) [ -n "$NOMENU" ] && exit 1
+   [ -n "$NOOVERFLOW" ] && [ -f "$STATE/wide" ] && [ "$3 $4" = "more toolbar items Removed" ] && { echo "menu button not found: more toolbar items"; exit 1; }
    if [ "$3 $4" = "more toolbar items Removed" ]; then
      [ -f "$STATE/dialog" ] && exit 1
      [ -n "$HISTORYNOOPEN" ] && exit 0
@@ -64,6 +68,9 @@ case "$2" in
      if [ -n "$LATEFOOTER" ]; then N=$(cat "$STATE/snapn" 2>/dev/null || echo 0); echo $((N+1)) > "$STATE/snapn"; [ "$N" -ge 2 ] && echo "1.27 GB in 117 items" || echo "1.27 GB in 118 items"
      elif [ -n "$STALEFOOTER" ]; then echo "1.27 GB in 118 items"; else echo "1.27 GB in 117 items"; fi; else echo "1.46 GB in 118 items"; fi; exit 0;;
  press) if [ "$3" = "OK" ]; then [ -z "$OKSTUCK" ] && rm -f "$STATE/dialog"; exit 0; fi
+   if [ -f "$STATE/wide" ] && [ "$3" = "Removed" ] && [ -z "$WIDEALTLABEL" ]; then [ -n "$WIDENOOPEN" ] && exit 0; echo "Backup 2025.zip moved to Trash · Put Back" > "$STATE/dialog"; exit 0; fi
+   if [ -f "$STATE/wide" ] && [ "$3" = "Removed" ]; then echo "not found: Removed" >&2; echo "not found: Removed"; exit 1; fi
+   if [ -f "$STATE/wide" ] && [ "$3" = "Removal history" ] && [ -z "$WIDEALTLABEL" ]; then echo "not found: Removal history"; exit 1; fi
    if [ "$3" = "Removal history" ] && [ -f "$STATE/wide" ] && [ -n "$WIDENOOPEN" ]; then exit 0; fi
    if [ "$3" = "Removal history" ] && { [ -f "$STATE/dialog" ] || [ -n "$HISTORYOVERFLOW" ]; }; then exit 1; fi
    [ "$3" = "Move selected item to Trash" ] && [ -n "$NOPRESS" ] && exit 1
@@ -192,6 +199,17 @@ _h = run({})[1]
 ck('footer gate executed on a fresh happy-path run: reads 118 -> 117 and records footer-count OK', 'footer-count OK: 118 -> 117' in _h and 'STEP-FAIL footer-count' not in _h, _h)
 rc, st, log, shots, dumps, snaps, bodies = run({'LATEFOOTER': '1'})
 ck('late footer re-render (118 for two reads, then 117) settles inside the bounded re-read and passes', rc == 0 and 'footer-count OK: 118 -> 117' in st and 'STEP-FAIL footer-count' not in st, (rc, st))
+# Wide layout as observed natively (run 40198570175): no overflow menu, history is the AXButton labeled "Removed".
+_fx = open(R + '/scripts/fixtures/wide-toolbar-snapshot-run40198570175.txt').read()
+_stage_src = open(R + '/scripts/capture-stages.py').read()
+ck('PIN: the real wide-layout AX snapshot has an AXButton with desc=Removed, no "Removal history" label and no overflow popup; the stage presses exactly that label first',
+   'role=AXButton subrole= selected=false focused=false frame=1267,31,41,52 title= desc=Removed' in _fx and 'Removal history' not in _fx and 'more toolbar items' not in _fx and "ax('press','Removed')" in _stage_src.split("s.run('open-direct'")[1].split('\n')[0], _fx[-400:])
+_r = run({'NOOVERFLOW': '1'})
+ck('wide happy path with the observed no-overflow layout: direct press of "Removed", COMPLETE, rc 0', _r[0] == 0 and 'V1-CAPTURE COMPLETE' in _r[1] and 'WIDE-HISTORY OK:' in _r[1], (_r[0], _r[1][-300:]))
+_r = run({'NOOVERFLOW': '1', 'WIDEALTLABEL': '1'})
+ck('alternate label only ("Removal history"): open-direct fails, open-direct-alt passes, COMPLETE', _r[0] == 0 and 'V1-CAPTURE COMPLETE' in _r[1], (_r[0], _r[1][-300:]))
+_r = run({'NOOVERFLOW': '1', 'MUTATE_STAGES': ("ax('press','Removed')", "ax('press','Removal history')")})
+ck('MUTATION: the pre-fix stage (presses "Removal history", no overflow in wide) -> wide history blocked, never COMPLETE (reproduces run 40198570175)', _r[0] == 1 and 'V1-CAPTURE COMPLETE' not in _r[1] and 'STEP-FAIL history-wide' in _r[1], (_r[0], _r[1][-300:]))
 rc, st, log, shots, dumps, snaps, bodies = run({'STALEFOOTER': '1'})
 ck('MUTATION: footer stays at 118 after the removal (the run 40194081483 defect) -> STEP-FAIL footer-count, rc 1, shots still captured as evidence', rc == 1 and 'STEP-FAIL footer-count' in st and 'before=118 after=118' in st and 'still wrong after settle' in st and 'screenshot-v1-trash-done.png' in shots and 'screenshot-v1-removal-history.png' in shots, (rc, st, shots))
 rc, st, log, shots, dumps, snaps, bodies = run({'DUPTIMEOUT': '1'})

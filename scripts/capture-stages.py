@@ -64,11 +64,18 @@ def wide(helper,pid,out,bound):
  s.run('resize',[sys.executable,'scripts/session-resize.py',pid,'1280','800'],needs=['no-panel'],timeout=7,stdout_path=out/'history-wide-resize.txt')
  s.run('geometry-after',ax('geometry'),timeout=2)
  s.run('snapshot-after-resize',ax('snapshot'),timeout=2,stdout_path=out/'v1-snapshot-history-wide-before.txt')
- direct=s.run('open-direct',ax('press','Removal history'),needs=['resize'],timeout=2)
+ # Wide layout (run 40198570175 AX snapshot): the history button is an AXButton whose description is "Removed"
+ # (the SwiftUI accessibilityLabel "Removal history" does not surface on the toolbar item). The compact layout has no
+ # such direct button; it has the "more toolbar items" overflow whose menu item is also "Removed". The popover is anchored
+ # to the content host, not the button, and AXPress does not depend on the item being on the display.
+ direct=s.run('open-direct',ax('press','Removed'),needs=['resize'],timeout=2)
+ if not direct:
+  # Alternate spelling only (same control, other label), before any overflow route.
+  direct=s.run('open-direct-alt',ax('press','Removal history'),needs=['resize'],timeout=2)
  if not direct:
   # Only a failed direct open with successful resize permits overflow fallback.
   s.run('open-overflow',ax('choose','more toolbar items','Removed'),needs=['resize'],timeout=3)
- opened='open-direct' if direct else 'open-overflow'
+ opened=('open-direct' if any(r['id']=='open-direct' and r['status']=='passed' for r in s.records) else 'open-direct-alt') if direct else 'open-overflow'
  s.run('content',ax('sheettext','Backup 2025.zip'),needs=[opened],timeout=2,stdout_path=out/'history-wide-content.txt')
  s.run('snapshot-live',ax('snapshot'),timeout=2,stdout_path=out/'v1-snapshot-history-wide-live.txt')
  # A rect capture is clipped to the display (run 40098663789: a 1280-wide window gave a 992-wide image), so the
