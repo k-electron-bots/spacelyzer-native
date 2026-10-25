@@ -211,6 +211,12 @@ unsafe fn spz_tree_node_count_impl(t: *const Tree) -> u64 {
     (*t).len() as u64
 }
 
+/// Nodes still present after removals (the arena count in `spz_tree_node_count` never shrinks).
+#[no_mangle]
+pub unsafe extern "C" fn spz_tree_live_node_count(t: *const Tree) -> u64 {
+    legacy(0, || if t.is_null() { 0 } else { (*t).live_len() as u64 })
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn spz_tree_cancelled(t: *const Tree) -> u8 {
     legacy(0, || spz_tree_cancelled_impl(t))

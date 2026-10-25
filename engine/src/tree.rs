@@ -15,6 +15,9 @@ pub struct SizeTable {
     /// captured a table sees sizes and removals from one version. A size of 0 alone cannot tell a removed node from a
     /// legitimate zero-byte file, so the outline projection hides rows by this list, never by size.
     pub forgotten: Vec<NodeId>,
+    /// Nodes still present (arena length minus removed subtrees), computed once when the table is built, never per read.
+    /// Meaningful only when `forgotten` is non-empty; `Tree::live_len` returns the arena length otherwise.
+    pub live: usize,
 }
 
 /// Number of SizeTable values currently alive (current, retired-but-pinned, and under construction). Test support.
@@ -33,9 +36,9 @@ pub fn admission_cap(n: usize) -> usize {
 }
 
 impl SizeTable {
-    fn new(version: u64, sizes: Vec<u64>, forgotten: Vec<NodeId>) -> SizeTable {
+    fn new(version: u64, sizes: Vec<u64>, forgotten: Vec<NodeId>, live: usize) -> SizeTable {
         LIVE_TABLES.fetch_add(1, Ordering::Relaxed);
-        SizeTable { version, sizes, forgotten }
+        SizeTable { version, sizes, forgotten, live }
     }
 }
 impl SizeTable {
@@ -70,7 +73,7 @@ impl SizeTable {
     }
 }
 impl Default for SizeTable {
-    fn default() -> SizeTable { SizeTable::new(0, Vec::new(), Vec::new()) }
+    fn default() -> SizeTable { SizeTable::new(0, Vec::new(), Vec::new(), 0) }
 }
 impl Drop for SizeTable {
     fn drop(&mut self) { LIVE_TABLES.fetch_sub(1, Ordering::Relaxed); }
@@ -250,6 +253,12 @@ impl Tree {
     pub fn len(&self) -> usize {
         self.names.len()
     }
+    /// Nodes still present: `len()` minus every removed root and everything below it. `len()` is the arena size and never
+    /// shrinks (removal tombstones), so the footer's item count must use this one.
+    pub fn live_len(&self) -> usize {
+        let tab = self.table();
+        if tab.forgotten.is_empty() { self.len() } else { tab.live }
+    }
     pub fn is_empty(&self) -> bool {
         self.names.is_empty()
     }
@@ -396,7 +405,7 @@ impl Tree {
     /// Move build-time sizes into the published table. Called once when a tree is complete.
     pub(crate) fn seal(mut self) -> Tree {
         let v = std::mem::take(&mut self.size);
-        self.table.store(Arc::new(SizeTable::new(0, v, Vec::new())));
+        self.table.store(Arc::new(SizeTable::new(0, v, Vec::new(), 0)));
         self
     }
 
@@ -483,9 +492,27 @@ impl Tree {
         copy.extend_from_slice(&cur.sizes);
         self.apply_forget(&mut copy, id, removed);
         failpoint(2);
-        let next = Arc::new(SizeTable::new(cur.version + 1, copy, gone));
+        let live = self.live_after(&gone)?;
+        let next = Arc::new(SizeTable::new(cur.version + 1, copy, gone, live));
         failpoint(3);
         Ok(Some(next))
+    }
+
+    /// Nodes left after removing the subtrees rooted at `gone` (ascending). One sweep per removal, never per render.
+    /// Parents precede children in the arena, so one forward pass marks every descendant.
+    fn live_after(&self, gone: &[NodeId]) -> Result<usize, MutationError> {
+        let n = self.len();
+        let mut dead: Vec<bool> = Vec::new();
+        dead.try_reserve_exact(n).map_err(|_| MutationError::AllocFailed)?;
+        dead.resize(n, false);
+        for &f in gone { if (f as usize) < n { dead[f as usize] = true; } }
+        let mut removed = 0usize;
+        for i in 0..n {
+            let p = self.parent[i];
+            if i > 0 && p != NO_NODE && (p as usize) < n && dead[p as usize] { dead[i] = true; }
+            if dead[i] { removed += 1; }
+        }
+        Ok(n - removed)
     }
 
     /// Zero the subtree and subtract from ancestors, without allocating: a pre-order walk using parent links.

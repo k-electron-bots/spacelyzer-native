@@ -227,11 +227,12 @@ struct StatusBar: View {
         .onAppear { if Perf.on { demoDetailsCaptured?(fullDetails) } }
     }
     @ViewBuilder private func summary(compact: Bool) -> some View {
+        let _ = model.revision   // a Trash removal bumps revision; the live item count must re-read then, even if bytes are unchanged
         HStack(spacing: compact ? 5 : 8) {
             if model.scanning {
                 Text("Scanning · \(itemCount(model.progress.items)) · \(formatBytes(model.progress.bytes))")
             } else if let t = model.tree {
-                Text("\((model.publishedTotalBytes.map(formatBytes) ?? "…")) in \(itemCount(UInt64(t.nodeCount - 1)))")
+                Text("\((model.publishedTotalBytes.map(formatBytes) ?? "…")) in \(itemCount(max(t.liveNodeCount, 1) - 1))")
                 if partial { Text(compact ? "Partial" : "Stopped early, partial").foregroundStyle(.orange) }
                 if let f = model.activeFilter {
                     Text("Filter: \(formatBytes(f.totalBytes)) · \(fileCount(UInt64(f.totalCount)))").foregroundStyle(.blue)
@@ -259,7 +260,7 @@ struct StatusBar: View {
         if model.scanning {
             parts.append("Scanning: \(itemCount(model.progress.items)), \(formatBytes(model.progress.bytes)), \(String(format: "%.1f", model.elapsed)) seconds")
         } else if let t = model.tree {
-            parts.append("\((model.publishedTotalBytes.map(formatBytes) ?? "…")) in \(itemCount(UInt64(t.nodeCount - 1)))")
+            parts.append("\((model.publishedTotalBytes.map(formatBytes) ?? "…")) in \(itemCount(max(t.liveNodeCount, 1) - 1))")
             if partial { parts.append("Stopped early, partial accounting") }
             if let elapsed = model.lastScanSeconds { parts.append("Scanned in \(String(format: "%.2f", elapsed)) seconds") }
             if let f = model.activeFilter { parts.append("Filter: \(formatBytes(f.totalBytes)), \(fileCount(UInt64(f.totalCount)))" + (Perf.on ? ", \(String(format: "%.1f", model.filterMillis)) milliseconds" : "")) }

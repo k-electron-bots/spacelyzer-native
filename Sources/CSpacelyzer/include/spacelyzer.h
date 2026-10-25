@@ -32,6 +32,7 @@ void spz_ci_scan_gate_release(const SpzScan *s);
 
 void spz_tree_free(SpzTree *t);
 uint64_t spz_tree_node_count(const SpzTree *t);
+uint64_t spz_tree_live_node_count(const SpzTree *t);
 uint8_t spz_tree_cancelled(const SpzTree *t);
 SpzNode spz_tree_node(const SpzTree *t, uint32_t id);
 char *spz_tree_name(const SpzTree *t, uint32_t id);

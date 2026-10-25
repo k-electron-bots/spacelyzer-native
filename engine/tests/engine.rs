@@ -917,3 +917,60 @@ fn layout_with_equal_size_dirs_deterministic_under_rect_cap() {
     let names: Vec<&str> = r1.iter().skip(1).map(|x| tree.name(x.node)).collect();
     assert_eq!(names, ["aa", "zz", "f0"]);
 }
+
+/// Footer item count: `len()` is the arena size and never shrinks after a removal; `live_len()` must.
+#[test]
+fn live_len_drops_with_removals_while_node_count_does_not() {
+    let d = tempdir::T::new();
+    let r = d.path();
+    fs::write(r.join("keep.bin"), vec![1u8; 100]).unwrap();
+    fs::write(r.join("gone.bin"), vec![2u8; 100]).unwrap();
+    fs::create_dir_all(r.join("gonedir")).unwrap();
+    fs::write(r.join("gonedir/a.bin"), vec![3u8; 100]).unwrap();
+    fs::write(r.join("gonedir/b.bin"), vec![3u8; 100]).unwrap();
+    let tree = scan(r, &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    let id = |n: &str| tree.find(&format!("{}/{}", tree.root_path(), n)).unwrap();
+    let all = tree.len();
+    assert_eq!(all, 6, "root + keep + gone + gonedir + 2 inner");
+    assert_eq!(tree.live_len(), all, "nothing removed yet");
+    assert!(tree.forget(id("gone.bin")).is_ok());
+    assert_eq!(tree.len(), all, "arena never shrinks");
+    assert_eq!(tree.live_len(), all - 1, "one file removed");
+    assert!(tree.forget(id("gonedir")).is_ok());
+    assert_eq!(tree.live_len(), all - 4, "folder and its two files removed too");
+    assert!(tree.forget(id("gone.bin")).is_ok());
+    assert_eq!(tree.live_len(), all - 4, "removing twice changes nothing");
+    let p = Box::into_raw(Box::new(tree));
+    unsafe {
+        use spacelyzer_engine::ffi::*;
+        assert_eq!(spz_tree_live_node_count(p), 2);
+        assert_eq!(spz_tree_node_count(p), all as u64);
+        assert_eq!(spz_tree_live_node_count(std::ptr::null()), 0);
+        drop(Box::from_raw(p));
+    }
+}
+
+/// The count is cached in the table at forget time and stays correct for nested and root removals.
+#[test]
+fn live_len_nested_and_root_removals() {
+    let d = tempdir::T::new();
+    let r = d.path();
+    fs::create_dir_all(r.join("a/b")).unwrap();
+    fs::write(r.join("a/b/x.bin"), vec![1u8; 10]).unwrap();
+    fs::write(r.join("a/y.bin"), vec![1u8; 10]).unwrap();
+    fs::write(r.join("z.bin"), vec![1u8; 10]).unwrap();
+    let tree = scan(r, &ScanOptions::default(), &ScanProgress::default()).unwrap();
+    let id = |n: &str| tree.find(&format!("{}/{}", tree.root_path(), n)).unwrap();
+    assert_eq!(tree.len(), 6);
+    tree.forget(id("a/b")).unwrap();                       // b + x
+    assert_eq!(tree.live_len(), 4);
+    tree.forget(id("a")).unwrap();                         // a, y (b, x already gone: not subtracted twice)
+    assert_eq!(tree.live_len(), 2, "root + z");
+    tree.forget(id("a/b")).unwrap();
+    assert_eq!(tree.live_len(), 2, "repeat is a no-op");
+    let before = std::sync::Arc::as_ptr(&tree.table());
+    assert_eq!(tree.live_len(), 2);
+    assert_eq!(before, std::sync::Arc::as_ptr(&tree.table()), "reading never rebuilds the table");
+    tree.forget(0).unwrap();
+    assert_eq!(tree.live_len(), 0, "root removed: zero, so callers must not subtract 1 blindly");
+}

@@ -418,12 +418,6 @@ final class Tree: @unchecked Sendable {
         return false
     }
 
-    func children(_ id: UInt32) -> Range<UInt32> {
-        let n = info(id)
-        guard n.childCount > 0 else { return 0..<0 }
-        return n.firstChild..<(n.firstChild + UInt32(n.childCount))
-    }
-
     func categoryTotals(filter: FilterResult? = nil) -> [(category: FileCategory, bytes: UInt64, items: UInt64)] {
         var out = [UInt64](repeating: 0, count: 22)
         out.withUnsafeMutableBufferPointer { b in
@@ -643,6 +637,8 @@ final class ScanSession: @unchecked Sendable {
 
 extension Tree {
     var nodeCount: UInt64 { spz_tree_node_count(ptr) }
+    /// Arena size minus removed subtrees. The footer's item count; nodeCount never shrinks after a Trash removal.
+    var liveNodeCount: UInt64 { spz_tree_live_node_count(ptr) }
 }
 
 
