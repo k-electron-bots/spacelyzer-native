@@ -58,6 +58,6 @@ steps=workflow['jobs']['macos']['steps'];ids={x.get('id'):x for x in steps}
 order=[x.get('id') for x in steps]
 assert order.index('demo_artifact')<order.index('ordering')<order.index('ordering_artifact')
 assert ids['ordering_artifact']['if']=='${{ always() }}' and ids['ordering_artifact']['timeout-minutes']==2
-assert workflow['jobs']['macos']['timeout-minutes']==35
-assert 'SPZ_JOB_DEADLINE_EPOCH - 1380' in pathlib.Path('.github/workflows/demo-only.yml').read_text()
-print('PASS early artifact ordering, always bounded ordering artifact, unchanged720compile/2100job')
+assert workflow['jobs']['macos']['timeout-minutes']==25
+assert 'SPZ_JOB_DEADLINE_EPOCH - 780' in pathlib.Path('.github/workflows/demo-only.yml').read_text()
+print('PASS early artifact ordering, always bounded ordering artifact, unchanged720compile/1500job')

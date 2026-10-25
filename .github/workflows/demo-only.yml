@@ -178,19 +178,19 @@ jobs:
   macos:
     needs: identity-guard
     runs-on: macos-latest
-    timeout-minutes: 35
+    timeout-minutes: 25
     steps:
-      - name: Anchor hard35min job clock before checkout and builds
+      - name: Anchor hard25min job clock before checkout and builds
         run: |
-          echo "SPZ_JOB_DEADLINE_EPOCH=$(( $(date +%s) + 2100 ))" >> "$GITHUB_ENV"
+          echo "SPZ_JOB_DEADLINE_EPOCH=$(( $(date +%s) + 1500 ))" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
       - name: Prepare artifact dir and shared compile deadline (after checkout, which cleans the workspace)
         run: |
           mkdir -p "$GITHUB_WORKSPACE/diag-out" "$GITHUB_WORKSPACE/dist"; echo "SPZ_DIAG_DIR=$GITHUB_WORKSPACE/diag-out" >> "$GITHUB_ENV"
-          # Builds must end by job-1380s (the 35-min clock is anchored before checkout): reset 2 + demo 12 + v1 window captures 3 + assertions + upload 3 + gate fit in the rest.
-          echo "SPZ_COMPILE_DEADLINE_EPOCH=$(( SPZ_JOB_DEADLINE_EPOCH - 1380 ))" >> "$GITHUB_ENV"
+          # Builds must end by job-780s (the 25-min clock is anchored before checkout): reset 2 + demo 12 + v1 window captures 3 + assertions + upload 3 + gate fit in the rest.
+          echo "SPZ_COMPILE_DEADLINE_EPOCH=$(( SPZ_JOB_DEADLINE_EPOCH - 780 ))" >> "$GITHUB_ENV"
       - name: Toolchain versions
         run: |
           sw_vers; xcodebuild -version; swift --version; rustc --version || true

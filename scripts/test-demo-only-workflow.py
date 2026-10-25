@@ -16,7 +16,7 @@ ck('permissions contents:read only', d['permissions'] == {'contents': 'read'})
 ck('jobs are exactly identity-guard and macos; macos needs identity-guard', set(d['jobs']) == {'identity-guard', 'macos'} and d['jobs']['macos']['needs'] == 'identity-guard')
 def block(t): i = t.index('  identity-guard:'); return t[i:t.index('  macos:')]
 ck('identity-guard byte-identical to accuracy-only and scale-only', block(txt) == block(open(R + '/.github/workflows/accuracy-only.yml').read()) == block(open(R + '/.github/workflows/scale-only.yml').read()))
-m = d['jobs']['macos']; ck('macos runner, 35 min job cap', m['runs-on'] == 'macos-latest' and m['timeout-minutes'] == 35)
+m = d['jobs']['macos']; ck('macos runner, 25 min job cap', m['runs-on'] == 'macos-latest' and m['timeout-minutes'] == 25)
 ck('no secrets, signing, DMG, release, 1M scale, docs captures, Rust test, bulk or write permission',
    not re.search(r'secrets\.|sign-setup|package-dmg|\.dmg|run-scale-check|gh release|softprops|contents:\s*write|cargo test|docs-capture-2x|bulk-vs', re.sub(r'(?m)^#.*$', '', txt)))
 ck('optional perf/2x code can never be selected (every guard compares the literal "false")', len(re.findall(r'\[ "(\w+)" = "true" \]', tb_txt := mine_all(txt))) == 3 and set(re.findall(r'\[ "(\w+)" = "true" \]', tb_txt)) == {'false'})
@@ -35,7 +35,8 @@ def mine(prefix):
     for k, s in enumerate(st):
         if wl[s].startswith('      - name: ' + prefix): return '\n'.join(wl[s:(st[k + 1] if k + 1 < len(st) else len(wl))]).rstrip('\n') + '\n'
     raise SystemExit('demo-only step missing: ' + prefix)
-for p in ['Anchor hard35min', 'Toolchain versions', 'Build universal engine', 'Build Swift app', 'Typecheck the on-demand helper tools']:
+# Deliberate divergence from ci.yml: the demo-only job clock anchor is 1500s (25 min cap); it is pinned explicitly below, not verbatim.
+for p in ['Toolchain versions', 'Build universal engine', 'Build Swift app', 'Typecheck the on-demand helper tools']:
     ck(f'verbatim from ci.yml: {p}', dropif(mine(p)) == dropif(cstep(p)))
 ck('verbatim (version output only): Version', dropif(mine('Version')) == dropif(cstep('Version')))
 tb = dropif(cstep('Build TEST-ONLY app')); 
@@ -48,7 +49,7 @@ ck('UI assertions verbatim (178 expected, 81 shots, check-demo-state)', dropif(m
 ids = {s.get('id'): s for s in m['steps']}
 ck('reset and test build stop the job on failure (success()); launch needs both; assertions run after any launch outcome but not when skipped',
    ids['testbuild'].get('if') == '${{ success() }}' and ids['reset'].get('if') == '${{ success() }}' and 'steps.reset.outcome' in ids['ui_launch']['if'] and 'steps.testbuild.outcome' in ids['ui_launch']['if'] and ids['asserts']['if'] == "${{ always() && steps.ui_launch.outcome != 'skipped' }}")
-ck('job clock anchored 2100s; builds must end 1380s before it; reset 2 + demo 12 min caps', '+ 2100' in mine('Anchor') and 'SPZ_JOB_DEADLINE_EPOCH - 1380' in mine('Prepare artifact') and ids['reset']['timeout-minutes'] == 2 and ids['ui_launch']['timeout-minutes'] == 12)
+ck('job clock anchored 1500s; builds must end 780s before it; reset 2 + demo 12 min caps', '+ 1500' in mine('Anchor') and 'SPZ_JOB_DEADLINE_EPOCH - 780' in mine('Prepare artifact') and ids['reset']['timeout-minutes'] == 2 and ids['ui_launch']['timeout-minutes'] == 12)
 ck('artifact upload always, fails if nothing found, carries shots, state records, assertions, timing, reset evidence',
    ids['demo_artifact']['if'] == '${{ always() }}' and ids['demo_artifact']['with']['if-no-files-found'] == 'error' and all(x in ids['demo_artifact']['with']['path'] for x in ['screenshot-demo-*.png', 'dist/demo-state/', 'ui-assertions.txt', 'ui-timing.txt', 'docs-reset-evidence.txt']))
 v1 = ids['v1cap']; vorder = [s.get('id') for s in m['steps']]
@@ -59,7 +60,7 @@ ck('v1 captures are uploaded; capture script uses the test-only app and no DMG, 
    and not re.search(r'dmg|sign|release|secrets', open(R + '/scripts/v1-capture.sh').read(), re.I))
 hb = next(x for x in m['steps'] if x.get('name', '').startswith('Build the capture helper'))
 ck('capture helper is built inside the compile budget (run-with-deadline, before reset and the demo), not inside the v1 capture budget',
-   'run-with-deadline.py swiftc scripts/docs-capture.swift -o /tmp/spz-docs-capture' in hb['run'] and m['steps'].index(hb) < vorder.index('reset') and 'job-1380s' in txt and 'FAIL-CLOSED' in v1['name'])
+   'run-with-deadline.py swiftc scripts/docs-capture.swift -o /tmp/spz-docs-capture' in hb['run'] and m['steps'].index(hb) < vorder.index('reset') and 'job-780s' in txt and 'FAIL-CLOSED' in v1['name'])
 # --- executed: evidence gate
 gate_step = [s for s in m['steps'] if s.get('name', '').startswith('Demo-validation evidence gate')][0]; ck('gate runs always', gate_step['if'] == '${{ always() }}')
 GK = ['engine', 'swiftapp', 'testbuild', 'reset', 'ui_launch', 'asserts', 'v1cap', 'demo_artifact', 'ordering', 'ordering_artifact']
