@@ -90,7 +90,8 @@ class FakeUI:
     def do_save(s):
         if s.k.get('save_writes_nothing'): s.panel = False; return
         nm = s.name if s.name is not None else s.default
-        dest = pathlib.Path(nm) if os.path.isabs(nm) else pathlib.Path(s.folder or s.sdir) / ('spacelyzer-largest.csv' if '/' in nm else (nm if nm.endswith('.csv') else nm + '.csv'))
+        if os.path.isabs(nm): nm = os.path.basename(nm)   # real panel keeps only the NAME of a pasted full path
+        dest = pathlib.Path(s.folder or s.sdir) / ('spacelyzer-largest.csv' if '/' in nm else (nm if nm.endswith('.csv') else nm + '.csv'))
         s.write_to(dest); s.panel = False
         if not s.k.get('no_alert'): s.alert = True
     def key_tap(s, pid, code, *mods):
@@ -122,7 +123,7 @@ def drive(**k):
     holder = {}
     def launch(app, fixture): holder['raw'] = lambda: make_csv(fixture, **holder.get('csvkw', {}))
     holder['csvkw'] = k.pop('csv', {})
-    k.setdefault('accept_paste', True)
+    k.setdefault('accept_paste', True); k.setdefault('accept_goto', True)
     sd = tempfile.mkdtemp(); front = k.pop('front', None)
     ui = FakeUI(holder, sdir=sd, **({'front': front} if front else {}), **k); clk = Clock()
     m.pid_of = lambda *a, **kw: 4242; m.stop_apps = lambda *a, **kw: None
@@ -140,7 +141,7 @@ def drive(**k):
 g, p, ui = drive(); assert g, p
 rows = str(drive.checks.rows)
 assert 'Cancel' in ui.pressed and ui.clicked == 2 and all(k in rows for k in ('csv-name-click', 'csv-name-readback', 'method=paste', 'csv-post-save', 'csv-post-save-alert', 'csv-post-save-alert-dismissed', 'csv-pre-cancel-state', 'csv-new-csv-files', 'csv-cancel-panel-closed')), rows
-assert 'method=keys' not in rows and 'csv-name-goto' not in rows, rows   # rungs after a landed paste are skipped
+assert 'method=keys' not in rows and 'csv-name-goto' in rows and 'name_landed=True' in rows, rows   # keys skipped after a landed paste; go-to-folder always runs on the save leg
 assert ui.keylog[0] == (m.KEY_A, ('cmd',)) and (m.KEY_V, ('cmd',)) in ui.keylog
 for name, kw, needle in [
     ('untrusted', dict(trusted=False), 'csv-ax-trusted'),
@@ -167,7 +168,7 @@ print('PASS csv: the real launch sets SPZ_WINDOW_SIZE=1280x800; an Export button
 
 # The entry ladder. Each fake accepts only one way of getting the path into the field.
 g, p, ui = drive(accept_paste=False, accept_keys=True); assert g, p
-rows = str(drive.checks.rows); assert 'method=paste' in rows and 'method=keys' in rows and 'csv-name-goto' not in rows, rows
+rows = str(drive.checks.rows); assert 'method=paste' in rows and 'method=keys' in rows and 'name_landed=True' in rows, rows
 assert [c for c, mo in ui.keylog if c != m.KEY_A and c != m.KEY_V and c != m.KEY_RETURN] and all(isinstance(c, int) for c, _ in ui.keylog)
 # keys use real keycodes only: the uppercase/underscore characters need shift, digits and / . - do not
 assert m.keys_for('/a_B.c-9') == [(44, ()), (0, ()), (27, ('shift',)), (11, ('shift',)), (47, ()), (8, ()), (27, ()), (25, ())], m.keys_for('/a_B.c-9')
@@ -175,15 +176,19 @@ assert m.landed('export', '/t/dest/export.csv') and m.landed('export.csv', '/t/d
 assert m.keys_for('a b') is None and m.keys_for('\u00e9') is None
 # go-to-folder rung: neither paste nor keys land; the default name goes to dest and the judge still reads the bytes at dest/spacelyzer-largest.csv
 g, p, ui = drive(accept_paste=False, accept_keys=False, accept_goto=True); assert g, p
-rows = str(drive.checks.rows); assert 'csv-name-goto' in rows and 'method=keys' in rows and 'dest/spacelyzer-largest.csv' in rows, rows
+rows = str(drive.checks.rows); assert 'name_landed=False' in rows and 'method=keys' in rows and 'dest/spacelyzer-largest.csv' in rows, rows
+# Run 40238740556: the panel ignores the folder of a pasted full path, so without go-to-folder the file lands in the default folder: red with the stray named.
+g, p, ui = drive(accept_goto=False); assert not g and any('csv-file-written' in x for x in p), p
+assert 'csv-stray-files' in str(drive.checks.rows) and 'export.csv' in str(drive.checks.rows), drive.checks.rows
 # nothing lands anywhere: red on csv-file-written, the stray diagnostic names the default-folder file, and every rung left a readback NOTE
-g, p, ui = drive(accept_paste=False, accept_keys=False)
+g, p, ui = drive(accept_paste=False, accept_keys=False, accept_goto=False)
 assert not g and any('csv-file-written' in x for x in p), p
 rows = str(drive.checks.rows); assert 'csv-stray-files' in rows and 'spacelyzer-largest.csv' in rows and 'method=paste' in rows and 'method=keys' in rows and 'csv-name-goto' in rows, rows
 # driver mutation: no select-all, so the paste appends to the default name and the file lands elsewhere
 real_gk = m.guarded_key
 m.guarded_key = lambda ui, pid, code, mods, tap, fm: ({'eventsPosted': 2}, 'session-tap', 'Spacelyzer') if code == m.KEY_A else real_gk(ui, pid, code, mods, tap, fm)
-g, p, ui = drive(); assert not g and any('csv-file-written' in x for x in p), p
+g, p, ui = drive(accept_goto=False); assert not g and any('csv-file-written' in x for x in p), p
+g, p, ui = drive(); assert g, p   # with go-to-folder the default-name fallback still lands dest/spacelyzer-largest.csv
 m.guarded_key = real_gk
 # not frontmost: nothing is posted at all
 g, p, ui = drive(front='Finder', front_by_alert=False); assert not g and ui.keylog == [] and any('csv-panel-saved' in x and 'refused' in x for x in p), (p, ui.keylog)

@@ -176,17 +176,18 @@ def drive_panel(ui, pid, target, checks, prefix, out, clock=time.time, sleep=tim
             sleep(.5); value = read_back(ui, pid)
             checks.note(f'{prefix}-name-readback', f'method=keys events={posted} typed={target!r} field_value={value!r} frontmost={frontmost()!r}')
     expected = target
-    # Rung 4 (save leg only): go to the destination folder with Cmd-Shift-G and keep the default name. The filename is a harness choice;
-    # the bytes are judged the same way.
-    if not landed(value, target) and dest is not None:
+    name_landed = landed(value, target)
+    # Folder: run 40238740556 (real Mac) showed the panel keeps only the file NAME from a pasted full path and saves into its own default folder
+    # (~/Documents). So the save leg always goes to the destination folder with Cmd-Shift-G. If no name landed, keep the default name and expect it in dest.
+    if dest is not None:
         try:
             g, _, gf = guarded_key(ui, pid, KEY_G, ('cmd', 'shift'), True, frontmost)
             if g.get('refused') is None:
                 sleep(1.0); clip(str(dest))
                 guarded_key(ui, pid, KEY_A, ('cmd',), True, frontmost); guarded_key(ui, pid, KEY_V, ('cmd',), True, frontmost); sleep(.5)
                 guarded_key(ui, pid, KEY_RETURN, (), True, frontmost); sleep(1.0)
-                expected = str(pathlib.Path(dest) / (default_name if default_name.endswith('.csv') else default_name + '.csv'))
-                checks.note(f'{prefix}-name-goto', f'go-to-folder dest={str(dest)!r} default_name={default_name!r} expected={expected!r} field_value={read_back(ui, pid)!r}')
+                if not name_landed: expected = str(pathlib.Path(dest) / (default_name if default_name.endswith('.csv') else default_name + '.csv'))
+                checks.note(f'{prefix}-name-goto', f'go-to-folder dest={str(dest)!r} name_landed={name_landed} default_name={default_name!r} expected={expected!r} field_value={read_back(ui, pid)!r}')
             else:
                 checks.note(f'{prefix}-name-goto', f"refused: frontmost={g.get('refused')!r}")
         except (OSError, subprocess.SubprocessError) as e:
