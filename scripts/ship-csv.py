@@ -6,7 +6,7 @@ import argparse, csv, io, os, pathlib, random, shutil, subprocess, sys, tempfile
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from ship_common import Checks, Fail, HelperUI, find, pid_of, poll, stop_apps
 
-REQUIRED = ['csv-ax-trusted', 'csv-app-launched', 'csv-export-enabled', 'csv-panel-opened', 'csv-panel-saved',
+REQUIRED = ['csv-ax-trusted', 'csv-app-launched', 'csv-largest-tab-selected', 'csv-export-enabled', 'csv-panel-opened', 'csv-panel-saved',
             'csv-file-written', 'csv-utf8-no-bom-crlf', 'csv-header', 'csv-ranks-and-order', 'csv-roundtrip-names',
             'csv-sizes-plausible', 'csv-formula-row-marked', 'csv-cancel-panel-opened', 'csv-cancel-wrote-nothing']
 HEADER = ['rank', 'size_bytes_on_disk_at_scan', 'path', 'note']
@@ -89,6 +89,29 @@ def drive_panel(ui, pid, target, checks, prefix, out, clock=time.time, sleep=tim
     return nodes
 
 
+TAB_ROLES = ('AXRadioButton', 'AXButton', 'AXTab', 'AXSegment', 'AXMenuItem')
+
+
+def find_tab(nodes, name='Largest'):
+    """Role-agnostic: the segmented Picker item can surface as a radio button, button or tab. Exact name match, so the
+    toolbar button 'Export the Largest list as CSV' is never mistaken for it."""
+    for n in nodes:
+        if n.get('role') in TAB_ROLES and name in (n.get('title'), n.get('desc'), n.get('value')): return n
+    return None
+
+
+def select_largest(ui, pid, checks, out, clock=time.time, sleep=time.sleep):
+    """The Export button is disabled unless the Largest tab is selected, and the app opens on Treemap."""
+    node = poll(lambda: find_tab(ui.tree(pid)), 30, 1, clock, sleep)
+    if not node:
+        (out / 'no-largest-tab-tree.jsonl').write_text('\n'.join(map(repr, ui.tree(pid))))
+        checks.bad('csv-largest-tab-selected', 'no Largest tab control in the AX tree (tree dumped)'); return False
+    r = ui.press(pid, node['role'], '=Largest')
+    ok = bool(r.get('found')) and r.get('axError') == 0
+    if not ok: (out / 'largest-press-tree.jsonl').write_text('\n'.join(map(repr, ui.tree(pid))))
+    return checks.check('csv-largest-tab-selected', ok, f"role={node['role']} press={r.get('axError')} found={r.get('found')}")
+
+
 def run(app, ui, out, launch, clock=time.time, sleep=time.sleep, root=None):
     out = pathlib.Path(out); out.mkdir(parents=True, exist_ok=True)
     checks = Checks(REQUIRED)
@@ -100,6 +123,7 @@ def run(app, ui, out, launch, clock=time.time, sleep=time.sleep, root=None):
         launch(app, fixture)
         pid = poll(lambda: pid_of(), 30, .5, clock, sleep)
         if not checks.check('csv-app-launched', pid, f'pid={pid}'): return checks
+        if not select_largest(ui, pid, checks, out, clock, sleep): return checks
         enabled = poll(lambda: (lambda n: n if n and n.get('enabled') else None)(
             find(ui.tree(pid), 'AXButton', 'Export the Largest list as CSV')), 90, 1, clock, sleep)
         if not checks.check('csv-export-enabled', enabled, 'toolbar button enabled after the scan'):

@@ -64,6 +64,8 @@ with tempfile.TemporaryDirectory() as d:
     rc, o = run('ok', 'tree', '42'); assert rc == 0 and o[-1] == {'cmd': 'tree', 'nodes': 6}, o
     assert any(x.get('desc') == 'Export the Largest list as CSV' for x in o)
     rc, o = run('ok', 'press', '42', 'AXButton', 'Export the Largest'); assert o[-1]['found'] and o[-1]['axError'] == 0, o
+    rc, o = run('ok', 'press', '42', 'AXButton', '=Largest'); assert o[-1]['found'] is False, o   # exact: not the Export button
+    rc, o = run('ok', 'press', '42', 'AXButton', '=Export the Largest list as CSV'); assert o[-1]['found'] and o[-1]['axError'] == 0, o
     rc, o = run('ok', 'press', '42', 'AXButton', 'Nope'); assert o[-1]['found'] is False, o
     rc, o = run('ok', 'set', '42', 'AXTextField', 'saveAsNameTextField', '/tmp/x.csv'); assert o[-1]['found'], o
     rc, o = run('ok', 'focus', '42'); assert o[-1]['node']['desc'].startswith('Export'), o

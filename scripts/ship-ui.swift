@@ -43,7 +43,10 @@ func walk(_ root: AXUIElement, limit: Int = 800, _ visit: (AXUIElement, [String:
 func matches(_ d: [String: Any], role: String, needle: String) -> Bool {
     guard (d["role"] as? String) == role else { return false }
     if needle.isEmpty { return true }
-    for k in ["title", "desc", "id", "value"] { if let s = d[k] as? String, !s.isEmpty, s.contains(needle) { return true } }
+    // A leading "=" asks for an exact field match, so "=Largest" cannot hit "Export the Largest list as CSV".
+    let exact = needle.hasPrefix("=")
+    let want = exact ? String(needle.dropFirst()) : needle
+    for k in ["title", "desc", "id", "value"] { if let s = d[k] as? String, !s.isEmpty, exact ? s == want : s.contains(want) { return true } }
     return false
 }
 let args = CommandLine.arguments

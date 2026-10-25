@@ -49,16 +49,21 @@ class Clock:
 
 class FakeUI:
     def __init__(s, root_holder, **k):
-        s.k = k; s.h = root_holder; s.polls = 0; s.panel = False; s.target = None; s.pressed = []
+        s.k = k; s.h = root_holder; s.polls = 0; s.largest = False; s.panel = False; s.target = None; s.pressed = []
     def trusted(s): return s.k.get('trusted', True)
     def tree(s, pid):
         s.polls += 1
-        nodes = [{'role': 'AXButton', 'desc': 'Export the Largest list as CSV', 'enabled': s.polls > 2 and not s.k.get('never_enabled')}]
+        nodes = [{'role': 'AXButton', 'desc': 'Export the Largest list as CSV', 'enabled': s.largest and s.polls > 2 and not s.k.get('never_enabled')}]
+        if not s.k.get('no_tab'):
+            nodes += [{'role': s.k.get('tab_role', 'AXRadioButton'), 'title': t} for t in ('Treemap', 'Kinds', 'Largest', 'Folders')]
         if s.panel and not s.k.get('no_panel'):
             nodes += [{'role': 'AXTextField', 'id': 'saveAsNameTextField', 'value': 'spacelyzer-largest.csv'}, {'role': 'AXButton', 'title': 'Save'}, {'role': 'AXButton', 'title': 'Cancel'}]
         return nodes
     def press(s, pid, role, needle):
         s.pressed.append(needle)
+        if needle == '=Largest':
+            if s.k.get('tab_press_fails'): return {'found': True, 'axError': -25205}
+            s.largest = True; return {'found': True, 'axError': 0}
         if needle.startswith('Export'): s.panel = True; return {'found': True, 'axError': 0}
         if needle == 'Save':
             if s.k.get('save_not_found'): return {'found': False}
@@ -90,10 +95,18 @@ def drive(**k):
 g, p, ui = drive(); assert g, p
 assert 'Cancel' in ui.pressed
 for name, kw, needle in [
-    ('untrusted', dict(trusted=False), 'csv-ax-trusted'), ('export never enabled', dict(never_enabled=True), 'csv-export-enabled'),
+    ('untrusted', dict(trusted=False), 'csv-ax-trusted'),
+    ('no Largest control', dict(no_tab=True), 'csv-largest-tab-selected'), ('Largest press fails', dict(tab_press_fails=True), 'csv-largest-tab-selected'), ('export never enabled', dict(never_enabled=True), 'csv-export-enabled'),
     ('no panel', dict(no_panel=True), 'csv-panel-opened'), ('save writes nothing', dict(save_writes_nothing=True), 'csv-file-written'),
     ('cancel writes file', dict(cancel_writes=True), 'csv-cancel-wrote-nothing'), ('BOM export', dict(csv=dict(bom=True)), 'csv-utf8-no-bom-crlf'),
     ('unsorted export', dict(csv=dict(shuffle=True)), 'csv-ranks-and-order')]:
     g, p, _ = drive(**kw); assert not g and any(needle in x for x in p), (name, p)
+g, p, ui = drive(tab_role='AXButton'); assert g, p   # role-agnostic: a button-role tab works
 g, p, ui = drive(save_not_found=True); assert g, p   # AX Save press missing, Return fallback saves: still a pass
 print('PASS csv driver: green on a correct fake, red on untrusted, disabled export, missing panel, no write, cancel that writes, BOM, unsorted; Return fallback works')
+# Driver mutation (the reviewer's defect): a driver that never presses Largest must go red, because the fake export stays disabled.
+orig = m.select_largest
+m.select_largest = lambda ui, pid, checks, out, clock=None, sleep=None: checks.check('csv-largest-tab-selected', True, 'mutant skips the press')
+g, p, _ = drive(); assert not g and any('csv-export-enabled' in x for x in p), p
+m.select_largest = orig
+print('PASS csv driver mutations: no Largest control, failing Largest press, and a driver that never presses Largest all go red; the real helper source proves "=Largest" exact match does not hit the Export button (Linux stubs)')
