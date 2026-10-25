@@ -33,6 +33,10 @@ def evaluate(result, pid, token, req_w, req_h):
     lines.append('resize requested=%sx%s frame=%sx%s visibleHeight=%s expectedHeight=%s heightLimitedByScreen=%s'
                  % (req_w, req_h, fw, fh, vis, exp_h, exp_h < float(req_h)))
     if abs(fw - float(req_w)) > TOL: return bad('width %s != requested %s (+-%s); not genuinely wide' % (fw, req_w, TOL))
+    atts = result.get('attempts')
+    if isinstance(atts, list) and atts:
+        lines.append('resize attempts=%s' % ','.join(str(a.get('name')) for a in atts if isinstance(a, dict)))
+        if result.get('lateSettleDelta') not in (None, 0, 0.0): lines.append('resize lateSettleDelta=%s' % result.get('lateSettleDelta'))
     if abs(fh - exp_h) > TOL: return bad('height %s != min(requested %s, visible %s) = %s' % (fh, req_h, vis, exp_h))
     lines.append('resized %dx%d' % (round(fw), round(fh)))
     return True, lines

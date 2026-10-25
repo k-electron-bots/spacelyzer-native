@@ -16,9 +16,18 @@ import Foundation
 typealias NSSize = CGSize
 class NSWindow { var isVisible = true; var isSheet = false; var canBecomeMain = true; var attachedSheet: NSWindow?
   var frame = CGRect(x: 32, y: 42, width: 960, height: 652); var contentLayoutRect = CGRect(x: 0, y: 0, width: 960, height: 625)
-  var screen: NSScreen? = NSScreen(); var contentMaxSize = CGSize(); var maxSize = CGSize()
+  var screen: NSScreen? = NSScreen(); var contentMaxSize = CGSize(); var maxSize = CGSize(); var contentMinSize = CGSize(width: 960, height: 600); var minSize = CGSize()
+  struct StyleMask { var rawValue: UInt }
+  struct OcclusionState: OptionSet { let rawValue: Int; static let visible = OcclusionState(rawValue: 2) }
+  var styleMask = NSWindow.StyleMask(rawValue: 15); var isZoomed = false; var occlusionState: NSWindow.OcclusionState = .visible
+  static var ignoreContentHeight = false, ignoreFrameHeight = false
+  func contentRect(forFrameRect f: CGRect) -> CGRect { CGRect(x: 0, y: 0, width: f.width, height: f.height - (frame.height - contentLayoutRect.height)) }
+  func setFrame(_ r: CGRect, display: Bool) { let chrome = frame.height - contentLayoutRect.height
+    frame = NSWindow.ignoreFrameHeight ? CGRect(x: r.minX, y: r.minY, width: r.width, height: frame.height) : r
+    contentLayoutRect.size = CGSize(width: frame.width, height: frame.height - chrome) }
   func setContentSize(_ s: CGSize) { let chrome = frame.height - contentLayoutRect.height
-    frame.size = CGSize(width: s.width, height: min(s.height + chrome, NSScreen.visibleH)); contentLayoutRect.size = CGSize(width: s.width, height: frame.height - chrome) } }
+    let h = NSWindow.ignoreContentHeight ? frame.height : min(s.height + chrome, NSScreen.visibleH)
+    frame.size = CGSize(width: s.width, height: h); contentLayoutRect.size = CGSize(width: s.width, height: frame.height - chrome) } }
 final class NSPanel: NSWindow {}
 final class NSScreen { static var visibleH = 677.0; var visibleFrame: CGRect { CGRect(x: 0, y: 60, width: 1024, height: NSScreen.visibleH) } }
 enum NSApp { static var windows: [NSWindow] = [NSWindow()] }
@@ -52,6 +61,8 @@ let pid = ProcessInfo.processInfo.processIdentifier
 SessionSizeRequest.start(env: CommandLine.arguments.contains("--off") ? [:] : ["SPZ_SIZE_REQUESTS": "1"])
 let mode = CommandLine.arguments.last!
 if mode == "tall" { NSScreen.visibleH = 1000 }
+if mode == "stubborn" { NSWindow.ignoreContentHeight = true }
+if mode == "stubborn-both" { NSWindow.ignoreContentHeight = true; NSWindow.ignoreFrameHeight = true }
 if mode == "twowin" { NSApp.windows.append(NSWindow()) }
 if mode == "sheet" { NSApp.windows[0].attachedSheet = NSWindow() }
 try? "TOKEN1 1280x800\\n".write(toFile: "/tmp/spz-size-request-\\(pid)", atomically: true, encoding: .utf8)
@@ -79,6 +90,17 @@ with tempfile.TemporaryDirectory() as td:
     r = run('tall'); ck('tall screen: frame height 800', r and abs(r['frameHeight'] - 800) < 1, r)
     r = run('twowin'); ck('two ordinary windows reported as 2 and not resized', r and r['ordinaryWindowCount'] == 2 and r['frameWidth'] == 960, r)
     r = run('sheet'); ck('attached sheet reported', r and r['sheetAttached'] is True, r)
+    r = run('stubborn'); ck('content-size path ignoring height: set-frame fallback reaches 1280x677 and the report lists both attempts', r and abs(r['frameHeight'] - 677) < 1 and r['frameWidth'] == 1280 and [a['name'] for a in r['attempts']] == ['content-size', 'set-frame'] and abs(r['attempts'][0]['frame'][3] - 652) < 1, r)
+    import importlib.util
+    sp = importlib.util.spec_from_file_location('sr', 'scripts/session-resize.py'); sm = importlib.util.module_from_spec(sp); sp.loader.exec_module(sm)
+    r = run('stubborn-both'); jok, jl = sm.evaluate(r, r['pid'], 'TOKEN1', 1280, 800)
+    ck('stubborn-both: the REAL judge (evaluate) FAILS the shortfall and prints the attempt names', jok is False and any('height 652' in l and 'FAIL' in l for l in jl) and any('attempts=content-size,set-frame' in l for l in jl), jl)
+    r = run('stubborn'); jok, jl = sm.evaluate(r, r['pid'], 'TOKEN1', 1280, 800)
+    ck('stubborn: the REAL judge PASSES the fallback result and prints attempts=content-size,set-frame', jok is True and any('attempts=content-size,set-frame' in l for l in jl), jl)
+    r = run('stubborn'); a = r['attempts'][0]
+    ck('per-attempt cause fields present: requestedContentHeight=650, targetH=677, chromeUsed=27, styleMask, isZoomed, occluded; late-settle fields', a['targetH'] == 677 and a['chromeUsed'] == 27 and a['requestedContentHeight'] == 650 and 'styleMask' in a and 'isZoomed' in a and 'occluded' in a and r['lateSettleDelta'] == 0 and r['lastAttemptFrameHeight'] == 677, r)
+    r = run('stubborn-both'); ck('both paths ignoring height: report still lists both attempts and the shortfall (the judge, not the responder, fails it)', r and abs(r['frameHeight'] - 652) < 1 and len(r['attempts']) == 2 and 'before' in r and r['before']['chromeFromLayout'] == 27, r)
+    r = run('wide677'); ck('normal path: single content-size attempt, no fallback, geometry record present', r and [a['name'] for a in r['attempts']] == ['content-size'] and 'contentMinSize' in r['before'], r)
     r = run('wide677', off=True); ck('inert without SPZ_SIZE_REQUESTS=1: no report written', r is None, r)
     (t / 'cg.swift').write_text(cg.replace('list(pid: 5)\n', '') + '\nlist(pid: 5)\n'); (t / 'cgmain.swift').write_text(cg)
     # compile the real windowinfo case as top-level code (main.swift) so `exit` and the loop are exercised as written
