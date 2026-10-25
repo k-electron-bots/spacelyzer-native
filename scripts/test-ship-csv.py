@@ -8,7 +8,7 @@ import ship_common as sc
 
 def lcsv_field(s):
     return '"' + s.replace('"', '""') + '"' if any(c in s for c in ',"\n\r') else s
-def make_csv(root, sizes=None, mark=True, crlf=True, bom=False, shuffle=False, header=None, drop=()):
+def make_csv(root, sizes=None, mark=False, crlf=True, bom=False, shuffle=False, header=None, drop=()):
     real = os.path.realpath(root); rows = []
     items = sorted(m.FIXTURE, key=lambda x: -x[1])
     for name, size in items:
@@ -18,7 +18,8 @@ def make_csv(root, sizes=None, mark=True, crlf=True, bom=False, shuffle=False, h
     nl = '\r\n' if crlf else '\n'
     out = (header or ','.join(m.HEADER)) + nl
     for i, (name, b) in enumerate(rows):
-        if name.startswith('=') and mark: out += f'{i+1},{b},,{lcsv_field("path starts with a formula character")}{nl}'
+        if name.startswith('=') and mark == 'bare': out += f'{i+1},{b},{lcsv_field(name)},{nl}'
+        elif name.startswith('=') and mark == 'marked': out += f'{i+1},{b},,{lcsv_field("path starts with a formula character")}{nl}'
         else: out += f'{i+1},{b},{lcsv_field(os.path.join(real, name))},{nl}'
     return ('\ufeff' if bom else '').encode('utf-8') + out.encode('utf-8')
 
@@ -30,7 +31,7 @@ with tempfile.TemporaryDirectory() as t:
     muts = {
         'BOM': (make_csv(fx, bom=True), 'csv-utf8-no-bom-crlf'), 'LF-only': (make_csv(fx, crlf=False), 'csv-utf8-no-bom-crlf'),
         'bad header': (make_csv(fx, header='a,b,c'), 'csv-header'), 'unsorted': (make_csv(fx, shuffle=True), 'csv-ranks-and-order'),
-        'formula unmarked': (make_csv(fx, mark=False), 'csv-formula-row-marked'),
+        'formula path cell starts with =': (make_csv(fx, mark='bare'), 'csv-formula-row-marked'), 'formula row wrongly emptied': (make_csv(fx, mark='marked'), 'csv-formula-row-marked'), 'formula row dropped': (make_csv(fx, drop=('=formula.bin',)), 'csv-formula-row-marked'),
         'name missing': (make_csv(fx, drop=('plain.bin',)), 'csv-roundtrip-names'),
         'size too small': (make_csv(fx, sizes={n: 10 for n, _ in m.FIXTURE}), 'csv-sizes-plausible'),
         'latin1 bytes': (make_csv(fx).replace('é'.encode(), b'\xe9'), 'csv-utf8-no-bom-crlf'),
@@ -39,7 +40,7 @@ with tempfile.TemporaryDirectory() as t:
     for name, (raw, key) in muts.items():
         r = m.judge_csv(raw, fx)
         assert key in r and not r[key][0], (name, key, r.get(key))
-print('PASS csv judge accepts a correct export and rejects 9 mutations (BOM, LF, header, order, formula, missing name, size, latin1, empty)')
+print('PASS csv judge accepts a correct export and rejects 11 mutations (BOM, LF, header, order, formula bare, formula emptied, formula dropped, missing name, size, latin1, empty)')
 
 # ---- whole driver against a fake UI
 class Clock:

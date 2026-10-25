@@ -81,8 +81,11 @@ def judge_csv(raw, root):
         b = int(r[1])
         if not (size <= b <= size + 2 * MB): bad.append((name, b, size))
     put('csv-sizes-plausible', not bad and bool(by_path), f'out_of_range={bad!r}')
-    marked = [r for r in data if len(r) == 4 and r[2] == '' and 'formula' in r[3]]
-    put('csv-formula-row-marked', len(marked) == 1 and not any(os.path.join(real, '=formula.bin') == r[2] for r in data), f'marked={len(marked)}')
+    # The app marks (empty path + note) only a path whose FIRST character is a formula character. The engine's paths are absolute, so
+    # '=formula.bin' is exported exactly as '<root>/=formula.bin' with an empty note, and no path cell may start with a formula character.
+    frow = by_path.get(os.path.join(real, '=formula.bin'))
+    bare = [r[2] for r in data if len(r) == 4 and r[2][:1] in ('=', '+', '-', '@', '\t', '\r')]
+    put('csv-formula-row-marked', frow is not None and frow[3] == '' and not bare and len(data) == len(FIXTURE), f'formula_row_exact={frow is not None and frow[3] == ""} cells_starting_with_formula_char={bare!r} rows={len(data)}')
     return out
 
 
