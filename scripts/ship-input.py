@@ -36,7 +36,7 @@ def run(app, ui, out, launch, activate, ime_probe, alive, clock=time.time, sleep
         stop_apps(); launch(app, work / 'fx')
         pid = poll(lambda: pid_of(), 30, .5, clock, sleep)
         if not checks.check('input-app-launched', pid, f'pid={pid}'): return checks
-        sleep(4); activate(pid); sleep(1)
+        sleep(4); checks.note('input-activate', activate(pid)); sleep(1)
         base = ui.tree(pid)
         f0 = ui.focus(pid).get('node')
         checks.check('input-focus-readable', bool(f0), f'focus={f0}')
@@ -45,18 +45,40 @@ def run(app, ui, out, launch, activate, ime_probe, alive, clock=time.time, sleep
         checks.check('input-cmd-o-opens-panel', k.get('eventsPosted') == 2 and opened and not panel_open(base),
                      f"events={k.get('eventsPosted')} opened={bool(opened)} baselinePanel={panel_open(base)}")
         (out / 'after-cmd-o-tree.jsonl').write_text('\n'.join(map(repr, ui.tree(pid))))
-        ui.key(pid, KEY_ESC)
-        closed = poll(lambda: (not panel_open(ui.tree(pid))) or None, 10, .5, clock, sleep)
-        checks.check('input-escape-closes-panel', bool(closed), f'closed={bool(closed)}')
-        # Tab moves focus: judged against the focus read right before each key.
-        before = (ui.focus(pid).get('node') or {})
-        moved = None
-        for _ in range(3):
-            ui.key(pid, KEY_TAB); sleep(.6)
-            after = (ui.focus(pid).get('node') or {})
-            if after and focus_key(after) != focus_key(before): moved = after; break
-        checks.check('input-tab-moves-focus', bool(moved), f'before={focus_key(before)} after={focus_key(moved or {})}')
-        if moved:
+        # Escape (cancelOperation) needs a KEY window; Cmd-O does not. Wait until the dialog is focused (or settle), never post at once.
+        keyed = poll(lambda: any(n.get('role') == 'AXWindow' and n.get('subrole') in ('AXDialog', 'AXSystemDialog') and n.get('focused')
+                                 for n in ui.tree(pid)) or None, 5, .5, clock, sleep)
+        if not keyed: sleep(1.5)
+        checks.note('input-dialog-key-state', f'dialog focused before Escape={bool(keyed)} (else a 1.5s settle was used)')
+        closed, tries = False, 0
+        for tries in range(1, 4):
+            ui.key(pid, KEY_ESC)
+            closed = bool(poll(lambda: (not panel_open(ui.tree(pid))) or None, 3, .5, clock, sleep))
+            if closed: break
+        checks.check('input-escape-closes-panel', closed, f'closed={closed} escape_posts={tries}')
+        still_open = panel_open(ui.tree(pid))
+        if still_open:
+            # cleanup only AFTER the FAIL is recorded; never part of the Escape verdict
+            cx = ui.press(pid, 'AXButton', '=Cancel'); sleep(1)
+            checks.note('input-cleanup-cancel', f'Cancel pressed after the Escape FAIL: found={cx.get("found")} axError={cx.get("axError")} panelStillOpen={panel_open(ui.tree(pid))}')
+            checks.bad('input-tab-moves-focus', 'panel still open: the Tab leg did not run')
+            checks.bad('input-shift-tab-reverses', 'panel still open: the Tab leg did not run')
+            moved = None
+        else:
+            # Tab moves focus: judged against the focus read right before each key (a bounded retry on an unreadable read).
+            before = {}
+            for _ in range(3):
+                before = ui.focus(pid).get('node') or {}
+                if before: break
+                sleep(.5)
+            moved = None
+            for _ in range(3):
+                ui.key(pid, KEY_TAB); sleep(.6)
+                after = (ui.focus(pid).get('node') or {})
+                if before and after and focus_key(after) != focus_key(before): moved = after; break
+            checks.check('input-tab-moves-focus', bool(moved), f'before={focus_key(before)} after={focus_key(moved or {})}')
+        if still_open: pass
+        elif moved:
             ui.key(pid, KEY_TAB, 'shift'); sleep(.6)
             back = (ui.focus(pid).get('node') or {})
             checks.check('input-shift-tab-reverses', bool(back) and focus_key(back) != focus_key(moved), f'moved={focus_key(moved)} back={focus_key(back)}')
@@ -76,7 +98,9 @@ def real_launch(app, fx):
     subprocess.run(['open', '-n', str(app), '--env', f'SPZ_AUTOSCAN={fx}'], check=True, timeout=30)
 
 def real_activate(pid):
-    subprocess.run(['osascript', '-e', f'tell application "System Events" to set frontmost of (first process whose unix id is {pid}) to true'], timeout=20, check=False)
+    r = subprocess.run(['osascript', '-e', f'tell application "System Events" to set frontmost of (first process whose unix id is {pid}) to true'], capture_output=True, text=True, timeout=20)
+    f = subprocess.run(['osascript', '-e', 'tell application "System Events" to get name of first process whose frontmost is true'], capture_output=True, text=True, timeout=20)
+    return f'activate rc={r.returncode} err={r.stderr.strip()[:120]!r} frontmost={f.stdout.strip()!r}'
 
 def real_ime():
     p = subprocess.run(['defaults', 'read', 'com.apple.HIToolbox', 'AppleEnabledInputSources'], capture_output=True, text=True, timeout=20)

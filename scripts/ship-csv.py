@@ -6,7 +6,7 @@ import argparse, csv, io, os, pathlib, random, shutil, subprocess, sys, tempfile
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 from ship_common import Checks, Fail, HelperUI, find, pid_of, poll, stop_apps
 
-REQUIRED = ['csv-ax-trusted', 'csv-app-launched', 'csv-largest-tab-selected', 'csv-export-enabled', 'csv-panel-opened', 'csv-panel-saved',
+REQUIRED = ['csv-ax-trusted', 'csv-app-launched', 'csv-largest-tab-selected', 'csv-toolbar-not-overflowed', 'csv-export-enabled', 'csv-panel-opened', 'csv-panel-saved',
             'csv-file-written', 'csv-utf8-no-bom-crlf', 'csv-header', 'csv-ranks-and-order', 'csv-roundtrip-names',
             'csv-sizes-plausible', 'csv-formula-row-marked', 'csv-cancel-panel-opened', 'csv-cancel-wrote-nothing']
 HEADER = ['rank', 'size_bytes_on_disk_at_scan', 'path', 'note']
@@ -68,7 +68,7 @@ def judge_csv(raw, root):
 
 def drive_panel(ui, pid, target, checks, prefix, out, clock=time.time, sleep=time.sleep, wait=20):
     """Press Export, wait for the Save panel, put `target` in the name field. Returns the panel nodes (or None)."""
-    ex = ui.press(pid, 'AXButton', 'Export the Largest list as CSV')
+    ex = ui.press(pid, 'AXButton', '=Export the Largest list as CSV')
     if not ex.get('found') or ex.get('axError') != 0:
         checks.bad(f'{prefix}-panel-opened', f'press export failed {ex}'); return None
     def panel():
@@ -124,6 +124,9 @@ def run(app, ui, out, launch, clock=time.time, sleep=time.sleep, root=None):
         pid = poll(lambda: pid_of(), 30, .5, clock, sleep)
         if not checks.check('csv-app-launched', pid, f'pid={pid}'): return checks
         if not select_largest(ui, pid, checks, out, clock, sleep): return checks
+        present = poll(lambda: find(ui.tree(pid), 'AXButton', 'Export the Largest list as CSV'), 30, 1, clock, sleep)
+        if not checks.check('csv-toolbar-not-overflowed', present, 'Export button present in the AX tree (not collapsed into the toolbar overflow)'):
+            (out / 'no-export-button-tree.jsonl').write_text('\n'.join(map(repr, ui.tree(pid)))); return checks
         enabled = poll(lambda: (lambda n: n if n and n.get('enabled') else None)(
             find(ui.tree(pid), 'AXButton', 'Export the Largest list as CSV')), 90, 1, clock, sleep)
         if not checks.check('csv-export-enabled', enabled, 'toolbar button enabled after the scan'):
@@ -159,7 +162,7 @@ def run(app, ui, out, launch, clock=time.time, sleep=time.sleep, root=None):
 
 
 def real_launch(app, fixture):
-    subprocess.run(['open', '-n', str(app), '--env', f'SPZ_AUTOSCAN={fixture}'], check=True, timeout=30)
+    subprocess.run(['open', '-n', str(app), '--env', f'SPZ_AUTOSCAN={fixture}', '--env', 'SPZ_WINDOW_SIZE=1280x800'], check=True, timeout=30)
 
 
 def main():

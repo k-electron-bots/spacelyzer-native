@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Linux controls for scripts/ship-input.py against a stateful fake UI: green path, and red for each broken behavior.
 Not Mac execution: real key delivery, panels and focus traversal stay native-unverified."""
-import importlib.util, pathlib, sys, tempfile
+import importlib.util, importlib.machinery, pathlib, sys, tempfile
 sys.path.insert(0, 'scripts')
 spec = importlib.util.spec_from_file_location('shipinput', 'scripts/ship-input.py'); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 import ship_common as sc
@@ -13,26 +13,33 @@ class Clock:
 
 class FakeUI:
     ORDER = [{'role': 'AXButton', 'desc': 'Scan', 'path': '/0'}, {'role': 'AXButton', 'desc': 'Export', 'path': '/1'}, {'role': 'AXOutline', 'desc': 'Items', 'path': '/2'}]
-    def __init__(s, **k): s.k = k; s.panel = False; s.i = 0
+    def __init__(s, clk=None, **k): s.k = k; s.panel = False; s.i = 0; s.clk = clk; s.opened_at = None; s.esc_seen = 0
+    def keyed(s): return s.clk is not None and s.opened_at is not None and s.clk.t - s.opened_at >= s.k.get('key_after', 0)
     def trusted(s): return s.k.get('trusted', True)
+    def press(s, pid, role, needle):
+        if needle == '=Cancel' and s.panel: s.panel = False; return {'found': True, 'axError': 0}
+        return {'found': False}
     def tree(s, pid):
         n = [{'role': 'AXWindow', 'title': 'Spacelyzer', 'depth': 1}]
-        if s.panel: n.append({'role': 'AXWindow', 'subrole': 'AXDialog', 'title': 'Open', 'depth': 1})
+        if s.panel: n.append({'role': 'AXWindow', 'subrole': 'AXDialog', 'title': 'Open', 'depth': 1, 'focused': bool(s.keyed() and not s.k.get('no_focused_attr'))})
         return n
     def focus(s, pid): return {} if s.k.get('no_focus') else {'node': s.ORDER[s.i % 3]}
     def key(s, pid, code, *mods):
         if s.k.get('no_events'): return {'eventsPosted': 0}
-        if code == m.KEY_O and 'cmd' in mods and not s.k.get('cmdo_dead'): s.panel = True
-        if code == m.KEY_ESC and not s.k.get('esc_dead'): s.panel = False
+        if code == m.KEY_O and 'cmd' in mods and not s.k.get('cmdo_dead'): s.panel = True; s.opened_at = s.clk.t if s.clk else None
+        if code == m.KEY_ESC and not s.k.get('esc_dead') and s.keyed():
+            s.esc_seen += 1
+            if s.esc_seen > s.k.get('drop_escapes', 0): s.panel = False
         if code == m.KEY_TAB and not s.k.get('tab_dead'): s.i += -1 if 'shift' in mods and not s.k.get('shift_dead') else (0 if 'shift' in mods else 1)
         return {'eventsPosted': 2}
 
-def drive(**k):
-    clk = Clock(); ui = FakeUI(**k)
-    m.stop_apps = lambda *a, **kw: None; m.pid_of = lambda *a, **kw: 77
+def drive(mod=None, **k):
+    mod = mod or m
+    clk = Clock(); ui = FakeUI(clk, **k)
+    mod.stop_apps = lambda *a, **kw: None; mod.pid_of = lambda *a, **kw: 77
     with tempfile.TemporaryDirectory() as o:
-        c = m.run('app', ui, o, lambda a, f: None, lambda pid: None, lambda: 'sources', lambda pid: not k.get('dead'), clock=clk, sleep=clk.sleep)
-        g, p = c.verdict(); c.write(o)
+        c = mod.run('app', ui, o, lambda a, f: None, lambda pid: None, lambda: 'sources', lambda pid: not k.get('dead'), clock=clk, sleep=clk.sleep)
+        g, p = c.verdict(); c.write(o); drive.checks = c
         assert (pathlib.Path(o) / 'result.txt').read_text().startswith('PASS' if g else 'FAIL')
         return g, p
 
@@ -42,5 +49,29 @@ for name, kw, needle in [('untrusted', dict(trusted=False), 'input-ax-trusted'),
         ('escape dead', dict(esc_dead=True), 'input-escape-closes-panel'), ('tab dead', dict(tab_dead=True), 'input-tab-moves-focus'),
         ('shift-tab does not reverse', dict(shift_dead=True), 'input-shift-tab-reverses'), ('app died', dict(dead=True), 'input-app-alive-after')]:
     g, p = drive(**kw); assert not g and any(needle in x for x in p), (name, p)
+# Escape before the dialog is key (a real-Mac hypothesis): green only with the key-state wait / settle and the retry.
+g, p = drive(key_after=1.2); assert g, p
+g, p = drive(key_after=1.2, no_focused_attr=True); assert g, p                      # the 1.5s settle path
+g, p = drive(key_after=1.2, drop_escapes=1); assert g, p                              # first Escape dropped, the retry closes it
+assert 'escape_posts=2' in str(drive.checks.rows), drive.checks.rows
+src = open('scripts/ship-input.py').read()
+def variant(a, b):
+    assert a in src, a
+    sp = importlib.util.spec_from_loader('v', loader=None); v = importlib.util.module_from_spec(sp); v.__file__ = 'scripts/ship-input.py'
+    exec(compile(src.replace(a, b), 'v', 'exec'), v.__dict__); return v
+nowait = variant("if not keyed: sleep(1.5)", "pass"); nowait = variant("if not keyed: sleep(1.5)", "pass") if False else nowait
+nowait_src = src.replace("if not keyed: sleep(1.5)", "pass").replace("for tries in range(1, 4):", "for tries in range(1, 2):")
+assert "for n in ui.tree(pid)) or None, 5, .5" in nowait_src
+nowait_src = nowait_src.replace("for n in ui.tree(pid)) or None, 5, .5", "for n in ui.tree(pid)) or None, 0, .5")
+sp = importlib.util.spec_from_loader('v2', loader=None); nowait = importlib.util.module_from_spec(sp); nowait.__file__ = 'scripts/ship-input.py'
+exec(compile(nowait_src, 'v2', 'exec'), nowait.__dict__)             # driver mutation: Escape posted at once, no settle, no retry
+g, p = drive(nowait, key_after=1.2, no_focused_attr=True); assert not g and any('input-escape-closes-panel' in x for x in p), p
+noretry = variant("for tries in range(1, 4):", "for tries in range(1, 2):")   # driver mutation: no retry
+g, p = drive(noretry, key_after=1.2, drop_escapes=1); assert not g and any('input-escape-closes-panel' in x for x in p), p
+# Escape never closes: red, the Tab legs are red because the panel is open, and Cancel is only a NOTE after the FAIL.
+g, p = drive(esc_dead=True); assert not g
+need = [x for x in p if 'input-escape-closes-panel' in x] and [x for x in p if 'input-tab-moves-focus' in x and 'panel still open' in x] and [x for x in p if 'input-shift-tab-reverses' in x]
+assert need, p
+assert 'input-cleanup-cancel' in str(drive.checks.rows) and 'input-dialog-key-state' in str(drive.checks.rows), drive.checks.rows
 assert m.panel_open([{'role': 'AXWindow', 'title': 'Spacelyzer'}]) is False and m.panel_open([{'role': 'AXSheet'}]) is True and m.panel_open([{'role': 'AXButton', 'title': 'Open'}]) is False
-print('PASS input driver: green on a correct fake, red for untrusted, unreadable focus, Cmd-O dead, no events, Escape dead, Tab dead, Shift-Tab not reversing, dead app')
+print('PASS input driver: green on a correct fake, red for untrusted, unreadable focus, Cmd-O dead, no events, Escape dead, Tab dead, Shift-Tab not reversing, dead app; Escape before the dialog is key goes green only with the key-state wait or settle plus retry (a driver without both goes red); Escape that never closes goes red with Tab legs red and Cancel only a NOTE after the FAIL')

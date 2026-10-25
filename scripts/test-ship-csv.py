@@ -53,7 +53,7 @@ class FakeUI:
     def trusted(s): return s.k.get('trusted', True)
     def tree(s, pid):
         s.polls += 1
-        nodes = [{'role': 'AXButton', 'desc': 'Export the Largest list as CSV', 'enabled': s.largest and s.polls > 2 and not s.k.get('never_enabled')}]
+        nodes = [] if s.k.get('no_export_button') else [{'role': 'AXButton', 'desc': 'Export the Largest list as CSV', 'enabled': s.largest and s.polls > 2 and not s.k.get('never_enabled')}]
         if not s.k.get('no_tab'):
             nodes += [{'role': s.k.get('tab_role', 'AXRadioButton'), 'title': t} for t in ('Treemap', 'Kinds', 'Largest', 'Folders')]
         if s.panel and not s.k.get('no_panel'):
@@ -64,8 +64,8 @@ class FakeUI:
         if needle == '=Largest':
             if s.k.get('tab_press_fails'): return {'found': True, 'axError': -25205}
             s.largest = True; return {'found': True, 'axError': 0}
-        if needle.startswith('Export'): s.panel = True; return {'found': True, 'axError': 0}
-        if needle == 'Save':
+        if needle.lstrip('=').startswith('Export'): s.panel = True; return {'found': True, 'axError': 0}
+        if needle.lstrip('=') == 'Save':
             if s.k.get('save_not_found'): return {'found': False}
             if not s.k.get('save_writes_nothing') and s.target: pathlib.Path(s.target).write_bytes(s.h['raw']())
             s.panel = False; return {'found': True, 'axError': 0}
@@ -96,7 +96,7 @@ g, p, ui = drive(); assert g, p
 assert 'Cancel' in ui.pressed
 for name, kw, needle in [
     ('untrusted', dict(trusted=False), 'csv-ax-trusted'),
-    ('no Largest control', dict(no_tab=True), 'csv-largest-tab-selected'), ('Largest press fails', dict(tab_press_fails=True), 'csv-largest-tab-selected'), ('export never enabled', dict(never_enabled=True), 'csv-export-enabled'),
+    ('toolbar overflow hides Export', dict(no_export_button=True), 'csv-toolbar-not-overflowed'), ('no Largest control', dict(no_tab=True), 'csv-largest-tab-selected'), ('Largest press fails', dict(tab_press_fails=True), 'csv-largest-tab-selected'), ('export never enabled', dict(never_enabled=True), 'csv-export-enabled'),
     ('no panel', dict(no_panel=True), 'csv-panel-opened'), ('save writes nothing', dict(save_writes_nothing=True), 'csv-file-written'),
     ('cancel writes file', dict(cancel_writes=True), 'csv-cancel-wrote-nothing'), ('BOM export', dict(csv=dict(bom=True)), 'csv-utf8-no-bom-crlf'),
     ('unsorted export', dict(csv=dict(shuffle=True)), 'csv-ranks-and-order')]:
@@ -110,3 +110,9 @@ m.select_largest = lambda ui, pid, checks, out, clock=None, sleep=None: checks.c
 g, p, _ = drive(); assert not g and any('csv-export-enabled' in x for x in p), p
 m.select_largest = orig
 print('PASS csv driver mutations: no Largest control, failing Largest press, and a driver that never presses Largest all go red; the real helper source proves "=Largest" exact match does not hit the Export button (Linux stubs)')
+calls = []
+m.subprocess.run = lambda cmd, **kw: calls.append(cmd)
+m.real_launch('A.app', '/tmp/fx')
+assert 'SPZ_WINDOW_SIZE=1280x800' in calls[0] and 'SPZ_AUTOSCAN=/tmp/fx' in calls[0], calls
+assert 'csv-toolbar-not-overflowed' in m.REQUIRED
+print('PASS csv: the real launch sets SPZ_WINDOW_SIZE=1280x800; an Export button collapsed into the toolbar overflow goes red on the new required check csv-toolbar-not-overflowed')
