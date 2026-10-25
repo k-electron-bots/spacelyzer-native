@@ -63,7 +63,7 @@ class FakeUI:
         if not s.k.get('no_tab'):
             nodes += [{'role': s.k.get('tab_role', 'AXRadioButton'), 'title': t} for t in ('Treemap', 'Kinds', 'Largest', 'Folders')]
         if s.panel and not s.k.get('no_panel'):
-            nodes += [{'role': 'AXTextField', 'id': 'saveAsNameTextField', 'value': s.name if s.name is not None else s.default}, {'role': 'AXButton', 'title': 'Save'}, {'role': 'AXButton', 'title': 'Cancel'}]
+            nodes += [{'role': 'AXTextField', 'id': 'saveAsNameTextField', 'value': (os.path.splitext(os.path.basename(s.name))[0] if os.path.isabs(s.name) else s.name) if s.name is not None else s.default}, {'role': 'AXButton', 'title': 'Save'}, {'role': 'AXButton', 'title': 'Cancel'}]
         if s.alert:
             nodes += [{'role': 'AXSheet', 'desc': 'alert'}, {'role': 'AXStaticText', 'value': 'Exported 6 items (UTF-8, no byte order mark).'}]
         return nodes
@@ -171,6 +171,7 @@ rows = str(drive.checks.rows); assert 'method=paste' in rows and 'method=keys' i
 assert [c for c, mo in ui.keylog if c != m.KEY_A and c != m.KEY_V and c != m.KEY_RETURN] and all(isinstance(c, int) for c, _ in ui.keylog)
 # keys use real keycodes only: the uppercase/underscore characters need shift, digits and / . - do not
 assert m.keys_for('/a_B.c-9') == [(44, ()), (0, ()), (27, ('shift',)), (11, ('shift',)), (47, ()), (8, ()), (27, ()), (25, ())], m.keys_for('/a_B.c-9')
+assert m.landed('export', '/t/dest/export.csv') and m.landed('export.csv', '/t/dest/export.csv') and m.landed('/t/dest/export.csv', '/t/dest/export.csv') and not m.landed('spacelyzer-largest', '/t/dest/export.csv') and not m.landed('', '/t/dest/export.csv') and not m.landed(None, '/t/dest/export.csv')
 assert m.keys_for('a b') is None and m.keys_for('\u00e9') is None
 # go-to-folder rung: neither paste nor keys land; the default name goes to dest and the judge still reads the bytes at dest/spacelyzer-largest.csv
 g, p, ui = drive(accept_paste=False, accept_keys=False, accept_goto=True); assert g, p

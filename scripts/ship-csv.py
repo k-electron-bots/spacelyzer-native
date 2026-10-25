@@ -106,6 +106,14 @@ def new_csvs(dest, docs, pre):
             'documents': sorted(x.name for x in pathlib.Path(docs).glob('*.csv') if str(x) not in pre) if pathlib.Path(docs).exists() else []}
 
 
+def landed(value, target):
+    """True when the field holds the target. Run 40235311568 (real Mac): after a pasted full path the panel shows only the file stem
+    ('export') and navigates to the folder, and the file did land at the pasted path. So accept the full path, the base name or its stem."""
+    if not value: return False
+    base = os.path.basename(target)
+    return value in (target, base, os.path.splitext(base)[0])
+
+
 def read_back(ui, pid):
     f = find(ui.tree(pid), 'AXTextField', PANEL_NEEDLE_FIELD)
     return (f or {}).get('value')
@@ -154,7 +162,7 @@ def drive_panel(ui, pid, target, checks, prefix, out, clock=time.time, sleep=tim
     sleep(.5); value = read_back(ui, pid)
     checks.note(f'{prefix}-name-readback', f'method=paste typed={target!r} field_value={value!r} frontmost={fm!r}')
     # Rung 3: real US-layout keys, only if the paste did not land.
-    if value != target:
+    if not landed(value, target):
         seq = keys_for(target)
         if seq is None:
             checks.note(f'{prefix}-name-readback', 'method=keys skipped: a character has no mapped US keycode')
@@ -170,7 +178,7 @@ def drive_panel(ui, pid, target, checks, prefix, out, clock=time.time, sleep=tim
     expected = target
     # Rung 4 (save leg only): go to the destination folder with Cmd-Shift-G and keep the default name. The filename is a harness choice;
     # the bytes are judged the same way.
-    if value != target and dest is not None:
+    if not landed(value, target) and dest is not None:
         try:
             g, _, gf = guarded_key(ui, pid, KEY_G, ('cmd', 'shift'), True, frontmost)
             if g.get('refused') is None:
