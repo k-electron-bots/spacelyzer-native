@@ -61,7 +61,7 @@ def wide(helper,pid,out,bound):
  # Read-only observations do not depend on presentation success.
  s.run('geometry-before',ax('geometry'),timeout=2)
  s.run('no-panel',ax('nosheet'),timeout=2)
- s.run('resize',[sys.executable,'scripts/session-resize.py',pid,'1280','800'],needs=['no-panel'],timeout=3,stdout_path=out/'history-wide-resize.txt')
+ s.run('resize',[sys.executable,'scripts/session-resize.py',pid,'1280','800'],needs=['no-panel'],timeout=7,stdout_path=out/'history-wide-resize.txt')
  s.run('geometry-after',ax('geometry'),timeout=2)
  s.run('snapshot-after-resize',ax('snapshot'),timeout=2,stdout_path=out/'v1-snapshot-history-wide-before.txt')
  direct=s.run('open-direct',ax('press','Removal history'),needs=['resize'],timeout=2)

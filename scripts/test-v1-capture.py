@@ -58,7 +58,8 @@ case "$2" in
  escape) [ -n "$STICKYRESULT" ] && grep -q "Moved Backup" "$STATE/dialog" 2>/dev/null && exit 0; rm -f "$STATE/dialog"; exit 0;;
  frame) if [ "$3" = "Open System Settings" ]; then echo 800,60,150,22; else echo 20,${FIELDY:-95},300,24; fi;;
  dump) echo tree;;
- snapshot) DSTATE=ABSENT; [ -f "$STATE/dialog" ] && DSTATE=LIVE; echo "snapshot dialog=$DSTATE" >> "$LOG"; echo "== tree =="; echo "dialog-state: $DSTATE"; exit 0;;
+ snapshot) DSTATE=ABSENT; [ -f "$STATE/dialog" ] && DSTATE=LIVE; echo "snapshot dialog=$DSTATE" >> "$LOG"; echo "== tree =="; echo "dialog-state: $DSTATE"
+   if [ -f "$STATE/confirmed" ]; then if [ -n "$STALEFOOTER" ]; then echo "1.27 GB in 118 items"; else echo "1.27 GB in 117 items"; fi; else echo "1.46 GB in 118 items"; fi; exit 0;;
  press) if [ "$3" = "OK" ]; then [ -z "$OKSTUCK" ] && rm -f "$STATE/dialog"; exit 0; fi
    if [ "$3" = "Removal history" ] && [ -f "$STATE/wide" ] && [ -n "$WIDENOOPEN" ]; then exit 0; fi
    if [ "$3" = "Removal history" ] && { [ -f "$STATE/dialog" ] || [ -n "$HISTORYOVERFLOW" ]; }; then exit 1; fi
@@ -184,6 +185,10 @@ ck('AXPress error after the alert really dismissed (element invalidated mid-acti
 rc, st, log, shots, dumps, snaps, bodies = run({'NOOPEN': '1'})
 ck('MUTATION: Exclusions sheet never opens -> readiness gate refuses, no shot, rc 1 (a successful menu press is not proof)',
    rc == 1 and 'STEP-FAIL exclusions-content' in st and 'screenshot-v1-exclusions.png' not in shots, (rc, st, shots))
+_h = run({})[1]
+ck('footer gate executed on a fresh happy-path run: reads 118 -> 117 and records footer-count OK', 'footer-count OK: 118 -> 117' in _h and 'STEP-FAIL footer-count' not in _h, _h)
+rc, st, log, shots, dumps, snaps, bodies = run({'STALEFOOTER': '1'})
+ck('MUTATION: footer stays at 118 after the removal (the run 40194081483 defect) -> STEP-FAIL footer-count, rc 1, shots still captured as evidence', rc == 1 and 'STEP-FAIL footer-count' in st and 'before=118 after=118' in st and 'screenshot-v1-trash-done.png' in shots and 'screenshot-v1-removal-history.png' in shots, (rc, st, shots))
 rc, st, log, shots, dumps, snaps, bodies = run({'DUPTIMEOUT': '1'})
 ck('MUTATION: Duplicates markers never appear -> the wait is a GATE, no shot, rc 1 (missing readiness never counts OK)',
    rc == 1 and 'STEP-FAIL duplicates-content' in st and 'screenshot-v1-duplicates.png' not in shots, (rc, st, shots))

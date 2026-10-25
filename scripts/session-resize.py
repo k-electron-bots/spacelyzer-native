@@ -48,7 +48,7 @@ def main(argv):
     res.unlink(missing_ok=True)
     token = str(uuid.uuid4()).upper()
     tmp = req.with_suffix('.tmp'); tmp.write_text('%s %dx%d\n' % (token, req_w, req_h)); tmp.replace(req)
-    result, deadline = None, time.monotonic() + float(os.environ.get('SPZ_SIZE_WAIT', '2.5'))
+    result, deadline = None, time.monotonic() + float(os.environ.get('SPZ_SIZE_WAIT', '5'))
     while time.monotonic() < deadline:
         try:
             data = json.loads(res.read_text())
