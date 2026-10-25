@@ -16,13 +16,14 @@ class Stages:
   blocked=[r['id'] for r in self.records if r['status']=='blocked']
   data=dict(complete=False,failed=failed,blocked=blocked,stages=self.records)
   temp=self.output/'stages.tmp';temp.write_text(json.dumps(data,indent=2));temp.replace(self.output/'stages.json')
- def run(self,name,argv,*,needs=(),timeout=4,stdout_path=None):
+ def run(self,name,argv,*,needs=(),timeout=4,stdout_path=None,force=False):
   if any(r['id']==name for r in self.records):raise ValueError('duplicate stage '+name)
   blockers=[x for x in needs if not any(r['id']==x and r['status']=='passed' for r in self.records)]
   record=dict(id=name,argv=list(map(str,argv)),needs=list(needs),timeoutSeconds=timeout,status='blocked' if blockers else 'running',blockedBy=blockers)
   self.records.append(record);self.save()
   if blockers:return False
   remaining=self.deadline-time.monotonic()
+  if force:remaining=max(remaining,float(timeout))  # restore steps may use a little past the stage budget, never skipped
   if remaining<=0:
    record.update(status='blocked',blockedBy=['capture-deadline'],reason='original stage budget exhausted');self.save();return False
   started=time.monotonic();outpath=pathlib.Path(stdout_path) if stdout_path else self.output/(name+'-stdout.txt');errpath=self.output/(name+'-stderr.txt')
@@ -93,17 +94,56 @@ def wide(helper,pid,out,bound):
    s.run('image',['screencapture','-x','-o','-l',main[0],img],needs=['content','resize','bounds-width'],timeout=3)
    s.run('image-nonempty',['test','-s',img],needs=['image'],timeout=1)
    s.run('image-width',[sys.executable,'scripts/session-resize.py','--png-width',img,'1280'],needs=['image-nonempty'],timeout=2,stdout_path=out/'history-wide-image-width.txt')
-   s.run('image-content',[sys.executable,'scripts/session-resize.py','--png-content',img],needs=['image-width'],timeout=3,stdout_path=out/'history-wide-image-content.txt')
+   # Run 40201792105: a window-id capture of a 1280pt window at origin x=32 on a 1024pt display had alpha=0 from x=992 on
+   # (display edge 1024 minus origin 32). Each capture is judged only on the columns that WindowServer bounds say are on
+   # the display (alpha > 0 and real content), and two positions must together cover the whole width. Never stitched.
+   geo=s.output/'geometry-before-stdout.txt'
    pop=out/'screenshot-v1-removal-history-wide-popover.png'
    if others:
     top=max(others,key=lambda r:r[4]*r[5])
-    s.run('popover-image',['screencapture','-x','-o','-l',top[0],pop],needs=['image'],timeout=3)
+    # Run 40201792105: `screencapture -l <popover id>` returned the byte-identical 1280x677 main-window image (md5 equal), so
+    # it never proved a separate popover picture. Capture the popover's own on-display rectangle instead.
+    prect='%d,%d,%d,%d'%(top[2],top[3],top[4],top[5])
+    s.run('popover-image',['screencapture','-x','-R',prect,pop],needs=['image'],timeout=3)
     s.run('popover-nonempty',['test','-s',pop],needs=['popover-image'],timeout=1)
+    s.run('popover-width',[sys.executable,'scripts/session-resize.py','--png-width',pop,top[4]],needs=['popover-nonempty'],timeout=2,stdout_path=out/'history-wide-popover-width.txt')
+    s.run('popover-colours',[sys.executable,'scripts/session-resize.py','--png-colours',pop],needs=['popover-width'],timeout=3,stdout_path=out/'history-wide-popover-colours.txt')
     # The pictures only count if the history entry was still shown when they were taken and both windows are the
     # same ones listed before the captures; a non-empty popover file alone proves neither.
     s.run('content-after',ax('sheettext','Backup 2025.zip'),needs=['popover-nonempty'],timeout=2,stdout_path=out/'history-wide-content-after.txt')
     s.run('windows-after',ax('windowinfo'),needs=['popover-nonempty'],timeout=2,stdout_path=out/'history-wide-windows-after.txt')
     s.run('bound-windows',[sys.executable,'scripts/session-resize.py','--same-windows',s.output/'windows-stdout.txt',out/'history-wide-windows-after.txt',main[0],top[0]],needs=['windows-after'],timeout=2,stdout_path=out/'history-wide-bound-windows.txt')
+    # Position 2: move the window left so its right edge lands on the display (x=-256 puts a 1280pt window's right edge
+    # at 1024), capture the same two things again, then move back. Every gate is repeated per position.
+    sx=-256;dx=sx-main[2]
+    # The window is only moved when the budget also covers the restore (move 3s + restore windowinfo/check 5s + margin).
+    if s.deadline-time.monotonic()<9:s.blocked('move-left',['insufficient-budget-for-move-and-restore'])
+    else:s.run('move-left',ax('move',sx,main[3]),needs=['bound-windows'],timeout=3,stdout_path=out/'history-wide-move-left.txt')
+    s.run('windows-shifted',ax('windowinfo'),needs=['move-left'],timeout=2,stdout_path=out/'history-wide-windows-shifted.txt')
+    s.run('shifted-origin',[sys.executable,'scripts/session-resize.py','--bounds-x',out/'history-wide-windows-shifted.txt',main[0],sx],needs=['windows-shifted'],timeout=2,stdout_path=out/'history-wide-shifted-origin.txt')
+    s.run('shifted-windows',[sys.executable,'scripts/session-resize.py','--shifted-windows',s.output/'windows-stdout.txt',out/'history-wide-windows-shifted.txt',main[0],top[0],dx],needs=['shifted-origin'],timeout=2,stdout_path=out/'history-wide-shifted-windows.txt')
+    s.run('content-shifted',ax('sheettext','Backup 2025.zip'),needs=['shifted-windows'],timeout=2,stdout_path=out/'history-wide-content-shifted.txt')
+    simg=out/'screenshot-v1-removal-history-wide-shifted.png'
+    s.run('image-shifted',['screencapture','-x','-o','-l',main[0],simg],needs=['shifted-windows'],timeout=3)
+    s.run('image-shifted-nonempty',['test','-s',simg],needs=['image-shifted'],timeout=1)
+    s.run('image-shifted-width',[sys.executable,'scripts/session-resize.py','--png-width',simg,'1280'],needs=['image-shifted-nonempty'],timeout=2,stdout_path=out/'history-wide-shifted-image-width.txt')
+    s.run('image-range-b',[sys.executable,'scripts/session-resize.py','--png-range',simg,out/'history-wide-windows-shifted.txt',main[0],geo,s.output/'windows-stdout.txt'],needs=['image-shifted-width'],timeout=4,stdout_path=out/'history-wide-image-range-b.txt')
+    s.run('image-range-a',[sys.executable,'scripts/session-resize.py','--png-range',img,s.output/'windows-stdout.txt',main[0],geo,out/'history-wide-windows-shifted.txt'],needs=['image-width','shifted-windows'],timeout=4,stdout_path=out/'history-wide-image-range-a.txt')
+    s.run('coverage',[sys.executable,'scripts/session-resize.py','--coverage',s.output/'windows-stdout.txt',out/'history-wide-windows-shifted.txt',main[0],geo],needs=['image-range-a','image-range-b'],timeout=2,stdout_path=out/'history-wide-coverage.txt')
+    pshift=out/'screenshot-v1-removal-history-wide-popover-shifted.png'
+    srect='%d,%d,%d,%d'%(top[2]+dx,top[3],top[4],top[5])
+    s.run('popover-shifted-image',['screencapture','-x','-R',srect,pshift],needs=['shifted-windows'],timeout=3)
+    s.run('popover-shifted-width',[sys.executable,'scripts/session-resize.py','--png-width',pshift,top[4]],needs=['popover-shifted-image'],timeout=2,stdout_path=out/'history-wide-popover-shifted-width.txt')
+    s.run('popover-shifted-colours',[sys.executable,'scripts/session-resize.py','--png-colours',pshift],needs=['popover-shifted-width'],timeout=3,stdout_path=out/'history-wide-popover-shifted-colours.txt')
+    s.run('content-shifted-after',ax('sheettext','Backup 2025.zip'),needs=['popover-shifted-image'],timeout=2,stdout_path=out/'history-wide-content-shifted-after.txt')
+    # Put the window back whenever a move was ATTEMPTED (passed, failed or timed out: a failed gate or a timeout can still
+    # have displaced it). Only a move that never ran (blocked) needs no restore. Restore steps are forced: they run even
+    # when the stage budget is spent. Completion is gated on restored-bounds (same x, y, size; popover present).
+    if any(r['id']=='move-left' and r['status'] in ('passed','failed','timed-out') for r in s.records):
+     s.run('move-back',ax('move',main[2],main[3]),needs=[],timeout=3,stdout_path=out/'history-wide-move-back.txt',force=True)
+     s.run('windows-restored',ax('windowinfo'),needs=[],timeout=2,stdout_path=out/'history-wide-windows-restored.txt',force=True)
+     s.run('restored-bounds',[sys.executable,'scripts/session-resize.py','--restored',s.output/'windows-stdout.txt',out/'history-wide-windows-restored.txt',main[0],top[0]],needs=['move-back','windows-restored'],timeout=2,stdout_path=out/'history-wide-restored-bounds.txt',force=True)
+    else:s.blocked('move-back',['move-never-attempted'])
    else:s.blocked('popover-image',['no-popover-window-in-list'])
   except ValueError as e:
    s.blocked('image',['invalid-window-list']);(s.output/'windows-invalid.txt').write_text(str(e))
@@ -111,7 +151,7 @@ def wide(helper,pid,out,bound):
  # Escape is allowed only after an open action returned success, not blind input
  # from a stage that never opened. Diagnostic snapshots remain independent.
  s.run('dismiss',ax('escape'),needs=[opened],timeout=2)
- return s.finish(['resize','content','image','image-nonempty','bounds-width','image-width','image-content','popover-image','popover-nonempty','content-after','bound-windows','dismiss'])
+ return s.finish(['resize','content','image','image-nonempty','bounds-width','image-width','image-range-a','popover-image','popover-nonempty','popover-width','popover-colours','content-after','bound-windows','move-left','shifted-origin','shifted-windows','content-shifted','content-shifted-after','image-shifted','image-shifted-nonempty','image-shifted-width','image-range-b','coverage','popover-shifted-image','popover-shifted-width','popover-shifted-colours','move-back','restored-bounds','dismiss'])
 
 if __name__=='__main__':
  if len(sys.argv)==6 and sys.argv[1]=='wide':sys.exit(not wide(*sys.argv[2:]))

@@ -107,6 +107,28 @@ case "resize":
     guard setRC == .success, afterRC == .success, decoded,
           abs(actual.width-width) <= 2, abs(actual.height-height) <= 2 else { print("resize dimensions not observed"); exit(1) }
     print("resized \(Int(actual.width))x\(Int(actual.height))")
+case "move":
+    // Moves the one ordinary window so a window-id capture can render a part that sits past the display edge (run
+    // 40201792105: the right 200 columns of a 1280pt window on a 1024pt display came back flat). Same lookup as resize.
+    guard args.count == 5, let mx = Double(args[3]), let my = Double(args[4]), mx >= -2000, mx <= 2000, my >= 0, my <= 1400 else { print("move invalid request"); exit(2) }
+    var mwindowsRef: CFTypeRef?
+    let mwindowsRC = AXUIElementCopyAttributeValue(app, "AXWindows" as CFString, &mwindowsRef)
+    print("move operation=AXWindows error=\(mwindowsRC.rawValue)")
+    guard mwindowsRC == .success, let mwindows = mwindowsRef as? [AXUIElement] else { print("move windows unreadable"); exit(1) }
+    let mmain = mwindows.filter { string($0, "AXRole") == "AXWindow" && string($0, "AXSubrole") == "AXStandardWindow" }
+    guard mmain.count == 1 else { print("move requires one ordinary window"); exit(1) }
+    var target = CGPoint(x: mx, y: my)
+    guard let mvalue = AXValueCreate(.cgPoint, &target) else { print("move AXValueCreate failed"); exit(1) }
+    let msetRC = AXUIElementSetAttributeValue(mmain[0], "AXPosition" as CFString, mvalue)
+    print("move operation=setAXPosition error=\(msetRC.rawValue)")
+    usleep(500_000)
+    var mactualRef: CFTypeRef?
+    let mafterRC = AXUIElementCopyAttributeValue(mmain[0], "AXPosition" as CFString, &mactualRef)
+    var mactual = CGPoint.zero
+    let mdecoded = mactualRef.map { AXValueGetValue($0 as! AXValue, .cgPoint, &mactual) } ?? false
+    print("move after error=\(mafterRC.rawValue) decoded=\(mdecoded) x=\(mactual.x) y=\(mactual.y) requestedX=\(mx) requestedY=\(my)")
+    guard msetRC == .success, mafterRC == .success, mdecoded, abs(mactual.x-mx) <= 2, abs(mactual.y-my) <= 2 else { print("move position not observed"); exit(1) }
+    print("moved \(Int(mactual.x)),\(Int(mactual.y))")
 case "windowid":
     let info = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
     var best: (id: Int, area: Double)? = nil

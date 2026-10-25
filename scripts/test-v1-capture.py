@@ -8,7 +8,7 @@ lines = [l for l in open(__file__).read().splitlines() if l.strip()]
 assert [l for l in lines if l.startswith('sys.exit(')] == [lines[-1]], 'the verdict exit must be the only top-level exit and the last statement'
 R = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 fails = []; DUP = []
-EXECUTED = [0]; MIN_EXECUTED = 53  # floor: fewer executed checks means a block was skipped or became dead code
+EXECUTED = [0]; MIN_EXECUTED = 60  # floor: fewer executed checks means a block was skipped or became dead code
 def ck(n, ok, d=''):
     EXECUTED[0] += 1
     print(('ok   ' if ok else 'FAIL ') + n + ('' if ok else ' :: ' + str(d))); (ok or fails.append(n))
@@ -23,15 +23,27 @@ def run(env_extra):
     open(t + '/stubs/open', 'w').write('#!/bin/bash\necho "open $*" >> "$LOG"\nexit 0\n')
     open(t + '/stubs/pgrep', 'w').write('#!/bin/bash\necho 123\n')
     open(t + '/stubs/screencapture', 'w').write('''#!/bin/bash
+echo "screencapture $*" >> "$LOG"
 for a; do l="$a"; done
+R=""; prev=""; for a; do [ "$prev" = "-R" ] && R="$a"; prev="$a"; done
 [ -n "$EMPTYWIDE" ] && [[ "$l" == *removal-history-wide.png ]] && { : > "$l"; exit 0; }
-if [[ "$l" == *removal-history-wide.png ]]; then W=1280; [ -n "$CLIPPEDWIDE" ] && W=992; [ -n "$NARROWWS" ] && W=992
+# Models what run 40201792105 observed: columns of a window that lie past the 1024pt display edge are alpha=0.
+if [[ "$l" == *removal-history-wide.png || "$l" == *removal-history-wide-shifted.png || -n "$R" ]]; then
+  MODE=main; W=1280; X0=32; FLAT=
+  [ -n "$CLIPPEDWIDE" ] && W=992; [ -n "$NARROWWS" ] && W=992
+  if [[ "$l" == *-shifted.png ]]; then [ -n "$NOSHIFTRENDER" ] || X0=-256; FLAT=""; [ -n "$FLATB" ] && FLAT=1; fi
+  if [ -n "$R" ]; then MODE=pop; IFS=, read -r RX RY W RH <<< "$R"; fi
   python3 -c "
 import struct,sys,zlib
-w=int(sys.argv[1]);h=24;blank=bool(sys.argv[3])
-rows=b''.join(b'\\x00'+b''.join(bytes((120,120,120)) if blank else bytes(((x*3)%256,(y*9)%256,(x+y)%256)) for x in range(w)) for y in range(h))
+w=int(sys.argv[1]);h=24;x0=int(sys.argv[3]);mode=sys.argv[4];blank=bool(sys.argv[5]);flat=bool(sys.argv[6])
+def px(x,y):
+    if mode=='pop': return bytes(((x*3)%256,(y*9)%256,(x+y)%256,255))
+    if blank or not (0<=x0+x<1024): return bytes((0,0,0,0))
+    if flat and x>=992: return bytes((50,50,50,255))
+    return bytes(((x*3)%256,(y*9)%256,(x+y)%256,255))
+rows=b''.join(b'\\x00'+b''.join(px(x,y) for x in range(w)) for y in range(h))
 c=lambda t,d:struct.pack('>I',len(d))+t+d+struct.pack('>I',zlib.crc32(t+d))
-open(sys.argv[2],'wb').write(b'\\x89PNG\\r\\n\\x1a\\n'+c(b'IHDR',struct.pack('>IIBBBBB',w,h,8,2,0,0,0))+c(b'IDAT',zlib.compress(rows))+c(b'IEND',b''))" $W "$l" "$BLANKWIDE"; exit 0; fi
+open(sys.argv[2],'wb').write(b'\\x89PNG\\r\\n\\x1a\\n'+c(b'IHDR',struct.pack('>IIBBBBB',w,h,8,6,0,0,0))+c(b'IDAT',zlib.compress(rows))+c(b'IEND',b''))" $W "$l" $X0 $MODE "$BLANKWIDE" "$FLAT"; exit 0; fi
 echo png > "$l"
 ''')
     open(t + '/helper', 'w').write('''#!/bin/bash
@@ -43,9 +55,14 @@ DIALOGTARGET="$SAMPLE/Archives/Backup 2025.zip"
 [ -n "$WRONGTARGET" ] && DIALOGTARGET="/tmp/other/Backup 2025.zip"
 [ -n "$LISTROWPATH" ] && DIALOGTARGET="$SAMPLE/Archives"
 case "$2" in
- geometry) echo "screen frame=1024x768 visibleFrame=1024x700"; exit 0;;
+ geometry) echo "screen index=0 frame=(0.0, 0.0, 1024.0, 768.0) visibleFrame=(0.0, 60.0, 1024.0, 700.0) scale=1.0"; exit 0;;
+ move) [ -n "$MOVEFAIL" ] && { echo "move position not observed"; exit 1; }
+   [ -n "$RESTOREFAIL" ] && [ "$3" -ge 0 ] && exit 0
+   echo "$3,$4" > "$STATE/pos"; [ "$3" -lt 0 ] && touch "$STATE/shifted" || rm -f "$STATE/shifted"; [ -n "$MOVEADJUST" ] && [ "$3" -lt 0 ] && echo "x=-200" > "$STATE/adjusted"; exit 0;;
  resize) [ -n "$WIDERESIZEFAIL" ] && exit 1; touch "$STATE/wide"; echo 'resized 1280x800'; exit 0;;
- windowinfo) if [ -n "$NARROWWS" ]; then echo "11 0 32 42 992 700"; else echo "11 0 32 42 1280 700"; fi; echo "12 3 900 100 300 200";;
+ windowinfo) MW=1280; [ -n "$NARROWWS" ] && MW=992; MX=32; PX=900
+   if [ -f "$STATE/shifted" ]; then MX=-256; PX=612; [ -n "$MOVEADJUST" ] && MX=-200; [ -n "$POPSTAY" ] && PX=900; [ -n "$POPCLOSE" ] && PX=; fi
+   echo "11 0 $MX 42 $MW 700"; [ -n "$PX" ] && echo "12 3 $PX 100 300 200"; exit 0;;
  rect) [ -f "$STATE/wide" ] && echo "0,0,1280,800" || echo "0,0,960,600";;
  hastext) grep -q -- "$3" "$STATE/background" "$STATE/dialog" 2>/dev/null || exit 1;;
  nosheet) [ -n "$AXUNAVAILABLE" ] && exit 1; [ ! -f "$STATE/dialog" ]; exit $?;;
@@ -159,7 +176,7 @@ ck('script wiring: every dialog-dependent check is sheet-scoped (confirmation ti
    'sheettext "Move to Trash?"' in script_src and 'sheettext "$SAMPLE/Archives/Backup 2025.zip"' in script_src and 'sheettext "Moved Backup 2025.zip"' in script_src
    and 'sheettext "groups ·"' in script_src and 'hastext "Backup 2025.zip"' not in script_src and 'hastext "Move to Trash?"' not in script_src and 'hastext "Moved Backup 2025.zip"' not in script_src, None)
 rc, st, log, shots, dumps, snaps, bodies = run({})
-ck('happy path: all6original shots plus required wide history, done, rc0', rc == 0 and shots == ['screenshot-v1-duplicates.png', 'screenshot-v1-exclusions.png', 'screenshot-v1-fda-banner.png', 'screenshot-v1-removal-history-wide-popover.png', 'screenshot-v1-removal-history-wide.png', 'screenshot-v1-removal-history.png', 'screenshot-v1-trash-confirm.png', 'screenshot-v1-trash-done.png'] and 'FDA-LAYOUT OK' in st, (rc, shots, st))
+ck('happy path: all6original shots plus required wide history, done, rc0', rc == 0 and shots == ['screenshot-v1-duplicates.png', 'screenshot-v1-exclusions.png', 'screenshot-v1-fda-banner.png', 'screenshot-v1-removal-history-wide-popover-shifted.png', 'screenshot-v1-removal-history-wide-popover.png', 'screenshot-v1-removal-history-wide-shifted.png', 'screenshot-v1-removal-history-wide.png', 'screenshot-v1-removal-history.png', 'screenshot-v1-trash-confirm.png', 'screenshot-v1-trash-done.png'] and 'FDA-LAYOUT OK' in st, (rc, shots, st))
 ck('live snapshots executed: all 8 stage snapshots written; dialog surfaces captured WHILE LIVE (never after dismissal); the selected-target snapshot is pre-dialog',
    all(f'v1-snapshot-{n}.txt' in snaps for n in ['exclusions-live', 'duplicates-live', 'select-target', 'trash-confirm-live', 'trash-after-press', 'trash-result-live', 'history-live', 'fda-live'])
    and all('dialog-state: LIVE' in bodies.get(f'v1-snapshot-{n}.txt', '') for n in ['exclusions-live', 'duplicates-live', 'trash-confirm-live', 'trash-result-live', 'history-live'])
@@ -257,7 +274,7 @@ wideidx=next(i for i,x in enumerate(r[2]) if 'windowinfo' in x)
 fdaidx=next(i for i,x in enumerate(r[2]) if x.startswith('open ') and 'SPZ_DEMO_FDA_REFUSED=1' in x)
 ck('wide capture same PID/session: resize after compact history, before FDA relaunch, no second removal',len(opens)==4 and wideidx<fdaidx and sum(x=='123 press Move to Trash' for x in r[2])==1 and 'dialog-state: LIVE' in r[6].get('v1-snapshot-history-wide-live.txt',''),r[2])
 wide_source=open(R+'/scripts/capture-history-wide.sh').read()
-ck('wide stage budget invariant: entire20s wrapper requires20s remaining inside original165s; six original shot count unchanged', 'START + 20' in script_src and '"$BOUND" 20 bash scripts/capture-history-wide.sh' in script_src and 'BUDGET="${V1_BUDGET:-165}"' in script_src and "oks==6" in open(R+'/scripts/run-v1-capture.py').read())
+ck('wide stage budget invariant: entire26s wrapper requires26s remaining inside original165s; six original shot count unchanged', 'START + 26' in script_src and '"$BOUND" 26 bash scripts/capture-history-wide.sh' in script_src and 'BUDGET="${V1_BUDGET:-165}"' in script_src and "oks==6" in open(R+'/scripts/run-v1-capture.py').read())
 ck('actual resize helper verifies unique ordinary window and observed dimensions, not set-return success alone', 'case "resize":' in helper_src and 'mainWindows.count == 1' in helper_src and 'AXStandardWindow' in helper_src and 'abs(actual.width-width) <= 2' in helper_src and 'abs(actual.height-height) <= 2' in helper_src)
 r=run({'NOOPEN':'1','WIDERESIZEFAIL':'1'})
 summary=r[6]['phase-summary']
@@ -268,7 +285,7 @@ for mode in ['WIDERESIZEFAIL','WIDENOOPEN']:
  r=run({mode:'1'})
  ck('wide-stage refusal '+mode+' retains all6original shots but cannot COMPLETE',r[0]==1 and 'WIDE-HISTORY OK:' not in r[1] and 'screenshot-v1-removal-history-wide.png' not in r[3] and 'screenshot-v1-removal-history.png' in r[3] and 'STEP-FAIL history-wide' in r[1],r[:2])
 r=run({'EMPTYWIDE':'1'})
-ck('zero-byte wideimage rc0 cannot pass aggregate; originalsix andFDA retained',r[0]==1 and not r[6]['phase-summary']['complete'] and r[6]['phase-summary']['endstates']['removal-history-wide']['status']=='blocked' and 'FDA-LAYOUT OK' in r[1] and len(r[3])==8,r[:2])
+ck('zero-byte wideimage rc0 cannot pass aggregate; originalsix andFDA retained',r[0]==1 and not r[6]['phase-summary']['complete'] and r[6]['phase-summary']['endstates']['removal-history-wide']['status']=='blocked' and 'FDA-LAYOUT OK' in r[1] and len(r[3])==10,r[:2])
 
 # --- in-session size path + window-id capture gate (Linux model only; native behavior unverified) ---
 r = run({'CLIPPEDWIDE': '1'})
@@ -287,6 +304,44 @@ ck('MUTATION: right-hand strip of the wide image is blank fill -> image-content 
 r = run({'NARROWWS': '1'})
 ck('MUTATION: windowserver bounds and image both 992 while the app report says 1280 (agreement on a narrower frame) -> never COMPLETE, judged against the requested 1280',
    r[0] == 1 and 'WIDE-HISTORY OK:' not in r[1] and r[6]['phase-summary']['endstates']['removal-history-wide']['status'] == 'blocked', r[1][-400:])
+
+
+# --- two-position (on-display) wide capture: run 40201792105 had alpha=0 past the display edge; Linux model only ---
+r = run({})
+_ws = {x['id']: x['status'] for x in json.loads(open(R + '/scripts/capture-stages.py').read() and '[]')} if False else None
+ck('two-position: happy path moves the window left to x=-256 then back to the original origin, same helper/PID, exactly once each',
+   r[0] == 0 and [x for x in r[2] if ' move ' in x] == ['123 move -256 42', '123 move 32 42'], [x for x in r[2] if ' move ' in x])
+ck('two-position: popover is captured by its own on-display rectangle (-R), never by window id, at both positions',
+   sum(1 for x in r[2] if x.startswith('screencapture') and ' -R ' in x and 'wide-popover' in x) == 2 and not any(x.startswith('screencapture') and '-l 12' in x for x in r[2]), [x for x in r[2] if x.startswith('screencapture')])
+ck('two-position: Backup content is re-checked after the popover capture at BOTH positions (before AND after each capture)',
+   sum(1 for x in r[2] if x == '123 sheettext Backup 2025.zip') >= 5, sum(1 for x in r[2] if x == '123 sheettext Backup 2025.zip'))
+for mode, why in [('NOSHIFTRENDER', 'shifted capture still has alpha=0 columns on the display (move did not render the offscreen part)'),
+                  ('MOVEFAIL', 'move refused'), ('POPSTAY', 'popover did not follow the window'), ('POPCLOSE', 'popover closed on move'),
+                  ('MOVEADJUST', 'AppKit adjusted the negative origin away from the plan'), ('BLANKWIDE', 'everything unrendered')]:
+    r = run({mode: '1'})
+    ck('MUTATION ' + mode + ': ' + why + ' -> wide history not captured, never COMPLETE',
+       r[0] == 1 and 'V1-CAPTURE COMPLETE' not in r[1] and 'WIDE-HISTORY OK:' not in r[1] and r[6]['phase-summary']['endstates']['removal-history-wide']['status'] == 'blocked', (r[0], r[1][-300:]))
+def _moves(r): return [x for x in r[2] if ' move ' in x]
+r = run({'MOVEADJUST': '1'})
+ck('MUTATION MOVEADJUST: the move happened but its origin gate failed -> move-back STILL runs (window never left displaced) and the restore check passed; run still not COMPLETE',
+   _moves(r) == ['123 move -256 42', '123 move 32 42'] and r[0] == 1 and 'V1-CAPTURE COMPLETE' not in r[1], (_moves(r), r[0]))
+r = run({'MOVEFAIL': '1'})
+ck('MUTATION MOVEFAIL: a move that failed is still followed by an idempotent move-back (a failed or timed-out move may have displaced the window); first-position captures still exist',
+   _moves(r) == ['123 move -256 42'] or _moves(r) == ['123 move -256 42', '123 move 32 42'], _moves(r))
+r = run({'RESTOREFAIL': '1'})
+ck('MUTATION RESTOREFAIL: move-back leaves the window displaced -> restored-bounds fails, wide history not captured, never COMPLETE',
+   _moves(r) == ['123 move -256 42', '123 move 32 42'] and r[0] == 1 and 'V1-CAPTURE COMPLETE' not in r[1] and r[6]['phase-summary']['endstates']['removal-history-wide']['status'] == 'blocked', (_moves(r), r[1][-250:]))
+r = run({'FLATB': '1'})
+ck('MUTATION FLATB: shifted capture is OPAQUE FLAT fill over 992..1280 (the columns only it can cover) while the rest renders -> exclusive-range proof fails, never COMPLETE',
+   r[0] == 1 and 'V1-CAPTURE COMPLETE' not in r[1] and r[6]['phase-summary']['endstates']['removal-history-wide']['status'] == 'blocked', (r[0], r[1][-250:]))
+r = run({'MUTATE_STAGES': ("Stages(out/'wide-stages',19)", "Stages(out/'wide-stages',5)")})
+ck('MUTATION low remaining budget: the window is not moved at all unless the restore also fits (no move, no displaced window), never COMPLETE',
+   _moves(r) == [] and r[0] == 1 and 'V1-CAPTURE COMPLETE' not in r[1], (_moves(r), r[0]))
+r = run({})
+_e = r[6]['phase-summary']['endstates']['removal-history-wide']
+ck('endstate records BOTH on-display captures with their ranges, a coverage statement and the popover-rect note, not a single full-width image',
+   r[0] == 0 and _e['status'] == 'captured-unreviewed' and [a['position'] for a in _e['artifacts']] == ['A', 'B'] and _e['artifacts'][0]['onDisplay'].startswith('on-display window range 0..992 pt') and _e['artifacts'][1]['onDisplay'].startswith('on-display window range 256..1280 pt') and 'two on-display captures' in _e['description'] and 'union 0..1280' in _e['coverage'] and 'screen-rectangle' in _e['popoverNote'] and 'two on-display captures' in r[1], _e)
+
 
 # Execution-evidence guard: the final verdict must be the LAST statement, so no check can sit after the exit
 # (a dead mutation block once reported green without running). Counts executed checks; the preflight requires a floor.

@@ -102,15 +102,119 @@ def png_pixels(path):
         rows.append(line); prev = line
     return w, h, rows, bpp
 
-def judge_content(path, strip=200, need=8):
-    """Rendered-content proof for a genuinely wide image: the right-most `strip` pixel columns (the part past a 1024pt
-    display) must hold real rendering, not blank fill: at least `need` distinct colours."""
+def judge_content(path, strip=200, need=8, side='right'):
+    """Rendered-content proof for a genuinely wide image: the `strip` pixel columns on the given side must hold real
+    rendering, not blank fill: at least `need` distinct colours. Run 40201792105: with the window origin at x=32 on a
+    1024pt display the right edge came back flat, so each capture position is judged on the edge that is on the display
+    at that position (position 1: left edge; shifted position: right edge)."""
     d = png_pixels(path)
     if d is None: return False, 'png not decodable (need 8-bit RGB/RGBA)'
-    w, h, rows, bpp = d; x0 = max(0, w - strip); colours = set()
-    for r in rows: colours.update(bytes(r[x*bpp:x*bpp+3]) for x in range(x0, w))
+    w, h, rows, bpp = d; x0, x1 = (max(0, w - strip), w) if side == 'right' else (0, min(w, strip)); colours = set()
+    for r in rows: colours.update(bytes(r[x*bpp:x*bpp+3]) for x in range(x0, x1) if bpp == 3 or r[x*bpp+3] > 0)  # alpha=0 is not rendered
     ok = len(colours) >= need
-    return ok, 'SMOKE check only, native pixel review remains the gate: right-most %d columns of %dx%d image hold %d distinct colours (need >= %d): %s' % (w - x0, w, h, len(colours), need, 'OK' if ok else 'BLANK/UNRENDERED')
+    return ok, 'SMOKE check only, native pixel review remains the gate: %s-most %d columns of %dx%d image hold %d distinct colours (need >= %d): %s' % (side, x1 - x0, w, h, len(colours), need, 'OK' if ok else 'BLANK/UNRENDERED')
+
+def display_x_range(geometry_text):
+    """x extent of display 0 from the helper's own `geometry` output (NSScreen frame)."""
+    import re
+    for l in geometry_text.splitlines():
+        m = re.match(r'screen index=0 frame=\(([-\d.]+), ([-\d.]+), ([\d.]+), ([\d.]+)\)', l)
+        if m: return float(m[1]), float(m[1]) + float(m[3])
+    return None
+
+def on_display_range(windows_text, main_id, geometry_text):
+    """Window-relative point range [lo, hi) of the main window that lies on display 0, from WindowServer bounds
+    intersected with the display (never a fixed strip)."""
+    r = _rows(windows_text).get(main_id); dr = display_x_range(geometry_text)
+    if r is None or dr is None: return None
+    x, w = r[1], r[3]
+    lo, hi = max(x, dr[0]) - x, min(x + w, dr[1]) - x
+    return (lo, hi, w) if hi > lo else None
+
+def judge_range(path, windows_text, main_id, geometry_text, need=8, other_windows_text=None):
+    """Capture proof for ONE position: every pixel column inside the on-display range must be rendered (alpha > 0)
+    and the range must hold real content (>= need distinct opaque colours). With the OTHER position's window list the
+    columns this capture alone is responsible for (its range minus the other capture's range) must ALSO hold >= need
+    distinct opaque colours, so a flat opaque fill over those columns cannot hide behind colours the other capture
+    already covers. Columns outside the range are not asked for. Run 40201792105: columns past the display edge were alpha=0."""
+    rg = on_display_range(windows_text, main_id, geometry_text)
+    if rg is None: return False, 'no on-display range (window or display bounds unreadable / window fully off-display)'
+    d = png_pixels(path)
+    if d is None: return False, 'png not decodable (need 8-bit RGB/RGBA)'
+    lo, hi, w = rg; pw, ph, rows, bpp = d; k = pw / w
+    c0, c1 = int(round(lo * k)), int(round(hi * k)); empty = []; colours = set(); excl = set(); excl_cols = 0
+    ex = None
+    if other_windows_text is not None:
+        og = on_display_range(other_windows_text, main_id, geometry_text)
+        if og is None: return False, 'other position has no on-display range'
+        ex = [(max(lo, a), min(hi, b)) for a, b in ((lo, min(hi, og[0])), (max(lo, og[1]), hi)) if min(hi, b) > max(lo, a)]
+        ex = [(int(round(a * k)), int(round(b * k))) for a, b in ex]
+    for x in range(c0, c1):
+        seen = False; mine = ex is not None and any(a <= x < b for a, b in ex)
+        if mine: excl_cols += 1
+        for r in rows:
+            if bpp == 3 or r[x*bpp+3] > 0:
+                seen = True; cl = bytes(r[x*bpp:x*bpp+3]); colours.add(cl)
+                if mine: excl.add(cl)
+        if not seen: empty.append(x)
+    ok = not empty and len(colours) >= need
+    msg = 'on-display window range %g..%g pt = columns %d..%d of %d: %d columns with no rendered (alpha>0) pixel%s, %d distinct opaque colours (need >= %d)' % (lo, hi, c0, c1, pw, len(empty), (' (first %d)' % empty[0]) if empty else '', len(colours), need)
+    if ex is not None:
+        ok2 = excl_cols > 0 and len(excl) >= need; ok = ok and ok2
+        msg += '; exclusive columns %s (%d cols) hold %d distinct opaque colours (need >= %d): %s' % (ex, excl_cols, len(excl), need, 'OK' if ok2 else 'NOT RENDERED')
+    return ok, msg + ': %s' % ('OK' if ok else 'NOT RENDERED')
+
+def judge_restored(before, after, main_id, pop_id):
+    """After move-back the main window must be where it started (x, y, size, +-TOL) and the popover still present."""
+    b, a = _rows(before).get(main_id), _rows(after).get(main_id)
+    if b is None or a is None: return False, 'main window %s missing before or after the restore' % main_id
+    ok = all(abs(a[i] - b[i]) <= TOL for i in (1, 2, 3, 4)) and pop_id in _rows(after)
+    return ok, 'restored main window %s vs original %s (x,y,w,h +-%s), popover %s present: %s' % (a[1:], b[1:], TOL, pop_id in _rows(after), 'OK' if ok else 'NOT RESTORED')
+
+def judge_coverage(windows_a, windows_b, main_id, geometry_text):
+    """Two on-display captures together must cover the whole window width [0, w). Never stitched: this is a statement
+    about two separate files, not a full-width image."""
+    a, b = on_display_range(windows_a, main_id, geometry_text), on_display_range(windows_b, main_id, geometry_text)
+    if a is None or b is None: return False, 'a position has no on-display range'
+    if a[2] != b[2]: return False, 'window width differs between positions: %s vs %s' % (a[2], b[2])
+    lo, hi = min(a[0], b[0]), max(a[1], b[1]); gap = a[1] < b[0] or b[1] < a[0]
+    ok = lo <= 0 and hi >= a[2] and not gap
+    return ok, 'capture A covers %g..%g pt, capture B covers %g..%g pt, union %g..%g of window width %g%s: %s' % (a[0], a[1], b[0], b[1], lo, hi, a[2], ' (GAP)' if gap else '', 'two on-display captures cover the window' if ok else 'COVERAGE INCOMPLETE')
+
+def judge_colours(path, need=8):
+    """Whole-image rendered-content proof for a small capture (the popover): at least `need` distinct colours."""
+    d = png_pixels(path)
+    if d is None: return False, 'png not decodable (need 8-bit RGB/RGBA)'
+    w, h, rows, bpp = d; colours = set()
+    for r in rows: colours.update(bytes(r[x*bpp:x*bpp+3]) for x in range(w) if bpp == 3 or r[x*bpp+3] > 0)
+    ok = len(colours) >= need
+    return ok, 'SMOKE check only, native pixel review remains the gate: %dx%d image holds %d distinct colours (need >= %d): %s' % (w, h, len(colours), need, 'OK' if ok else 'BLANK/UNRENDERED')
+
+def _rows(text):
+    out = {}
+    for l in text.splitlines():
+        f = l.split()
+        if len(f) == 6: out[int(f[0])] = tuple(int(v) for v in f[1:])
+    return out
+
+def judge_shifted(before, after, main_id, pop_id, dx):
+    """Window move pin: same main and popover windows, both moved by dx (+-TOL) with unchanged size. The popover must
+    follow the window or a popover capture at the new position would show the wrong place."""
+    b, a = _rows(before), _rows(after)
+    if main_id not in b or pop_id not in b: return False, 'main %s / popover %s not in the window list before the move' % (main_id, pop_id)
+    if main_id not in a or pop_id not in a: return False, 'main %s / popover %s not in the window list after the move' % (main_id, pop_id)
+    msgs, ok = [], True
+    for name, i in (('main', main_id), ('popover', pop_id)):
+        moved = a[i][1] - b[i][1]; same = a[i][3] == b[i][3] and a[i][4] == b[i][4] and abs(a[i][2] - b[i][2]) <= TOL
+        good = abs(moved - dx) <= TOL and same; ok = ok and good
+        msgs.append('%s moved %s (want %s +-%s), size %s: %s' % (name, moved, dx, TOL, 'unchanged' if same else 'CHANGED', 'OK' if good else 'WRONG'))
+    return ok, '; '.join(msgs)
+
+def judge_bounds_x(windows_text, main_id, want_x):
+    r = _rows(windows_text).get(main_id)
+    if r is None: return False, 'main window %s not in windowserver list' % main_id
+    ok = abs(r[1] - want_x) <= TOL
+    return ok, 'windowserver origin x %s vs wanted %s (+-%s): %s' % (r[1], want_x, TOL, 'OK' if ok else 'NOT AT POSITION')
 
 def judge_bounds(windows_text, main_id, req_w):
     """WindowServer's own bounds for the main window must be the REQUESTED width, independent of the app's report
@@ -130,8 +234,22 @@ def judge_same_windows(before, after, main_id, pop_id):
 if __name__ == '__main__':
     if len(sys.argv) == 5 and sys.argv[1] == '--bounds-width':
         ok, msg = judge_bounds(open(sys.argv[2]).read(), int(sys.argv[3]), float(sys.argv[4])); print(msg); sys.exit(0 if ok else 1)
-    if len(sys.argv) == 3 and sys.argv[1] == '--png-content':
-        ok, msg = judge_content(sys.argv[2]); print(msg); sys.exit(0 if ok else 1)
+    if len(sys.argv) in (3, 4) and sys.argv[1] == '--png-content':
+        side = sys.argv[3] if len(sys.argv) == 4 else 'right'
+        if side not in ('left', 'right'): print('side must be left or right'); sys.exit(2)
+        ok, msg = judge_content(sys.argv[2], side=side); print(msg); sys.exit(0 if ok else 1)
+    if len(sys.argv) in (6, 7) and sys.argv[1] == '--png-range':
+        ok, msg = judge_range(sys.argv[2], open(sys.argv[3]).read(), int(sys.argv[4]), open(sys.argv[5]).read(), other_windows_text=open(sys.argv[6]).read() if len(sys.argv) == 7 else None); print(msg); sys.exit(0 if ok else 1)
+    if len(sys.argv) == 6 and sys.argv[1] == '--restored':
+        ok, msg = judge_restored(open(sys.argv[2]).read(), open(sys.argv[3]).read(), int(sys.argv[4]), int(sys.argv[5])); print(msg); sys.exit(0 if ok else 1)
+    if len(sys.argv) == 6 and sys.argv[1] == '--coverage':
+        ok, msg = judge_coverage(open(sys.argv[2]).read(), open(sys.argv[3]).read(), int(sys.argv[4]), open(sys.argv[5]).read()); print(msg); sys.exit(0 if ok else 1)
+    if len(sys.argv) == 3 and sys.argv[1] == '--png-colours':
+        ok, msg = judge_colours(sys.argv[2]); print(msg); sys.exit(0 if ok else 1)
+    if len(sys.argv) == 7 and sys.argv[1] == '--shifted-windows':
+        ok, msg = judge_shifted(open(sys.argv[2]).read(), open(sys.argv[3]).read(), int(sys.argv[4]), int(sys.argv[5]), float(sys.argv[6])); print(msg); sys.exit(0 if ok else 1)
+    if len(sys.argv) == 5 and sys.argv[1] == '--bounds-x':
+        ok, msg = judge_bounds_x(open(sys.argv[2]).read(), int(sys.argv[3]), float(sys.argv[4])); print(msg); sys.exit(0 if ok else 1)
     if len(sys.argv) == 6 and sys.argv[1] == '--same-windows':
         ok, msg = judge_same_windows(open(sys.argv[2]).read(), open(sys.argv[3]).read(), int(sys.argv[4]), int(sys.argv[5])); print(msg); sys.exit(0 if ok else 1)
     if len(sys.argv) == 4 and sys.argv[1] == '--png-width':

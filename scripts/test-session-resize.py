@@ -38,6 +38,53 @@ ck('popover window gone after capture FAILS the binding', not m.judge_same_windo
 ck('windowserver bounds 1280 for the main window PASS', m.judge_bounds('11 0 32 42 1280 677', 11, 1280)[0])
 ck('windowserver bounds 992 FAIL against the requested 1280', not m.judge_bounds('11 0 32 42 992 677', 11, 1280)[0])
 ck('main window missing from windowserver list FAILS', not m.judge_bounds('12 0 1 1 1280 600', 11, 1280)[0])
+# --- two-position on-display judging (alpha-based, bounds-derived; Linux logic only) ---
+def mkrgba(w, x0, x1, h=12, mode='ok'):
+    """RGBA png: columns [x0,x1) rendered with varied opaque pixels, the rest alpha=0 (what run 40201792105 showed)."""
+    c = lambda t, d: struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d))
+    px = lambda x, y: bytes(((x * 3) % 256, (y * 9) % 256, (x + y) % 256, 255)) if x0 <= x < x1 else bytes((7, 7, 7, 0))
+    rows = b''.join(b'\x00' + b''.join(px(x, y) for x in range(w)) for y in range(h))
+    t = pathlib.Path(tempfile.mkdtemp()) / 'a.png'
+    t.write_bytes(b'\x89PNG\r\n\x1a\n' + c(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 6, 0, 0, 0)) + c(b'IDAT', zlib.compress(rows)) + c(b'IEND', b'')); return t
+GEO = 'screen index=0 frame=(0.0, 0.0, 1024.0, 768.0) visibleFrame=(0.0, 60.0, 1024.0, 677.0) scale=1.0\n'
+WA, WB = '195 0 32 31 1280 677\n207 0 309 173 406 110\n', '195 0 -256 31 1280 677\n207 0 21 173 406 110\n'
+ck('display range of display 0 comes from the helper geometry line', m.display_x_range(GEO) == (0.0, 1024.0))
+ck('position A on-display range is exactly 0..992 (1024 minus origin 32)', m.on_display_range(WA, 195, GEO) == (0, 992, 1280))
+ck('position B on-display range is exactly 256..1280', m.on_display_range(WB, 195, GEO) == (256, 1280, 1280))
+ck('capture A rendered exactly over 0..992 PASSES', m.judge_range(mkrgba(1280, 0, 992), WA, 195, GEO)[0])
+ck('capture A with the on-display part unrendered FAILS (alpha=0 counts as not rendered)', not m.judge_range(mkrgba(1280, 0, 700), WA, 195, GEO)[0])
+ck('capture B rendered over 256..1280 PASSES', m.judge_range(mkrgba(1280, 256, 1280), WB, 195, GEO)[0])
+ck('MUTATION: capture B equal to capture A (move did not render the right part) FAILS', not m.judge_range(mkrgba(1280, 0, 992), WB, 195, GEO)[0])
+ck('2x capture scales the on-display columns', m.judge_range(mkrgba(2560, 0, 1984), WA, 195, GEO)[0])
+ck('union of A and B covers the width', m.judge_coverage(WA, WB, 195, GEO)[0])
+ck('MUTATION: a move that only reaches x=0 leaves columns 1024..1280 uncovered and FAILS coverage', not m.judge_coverage(WA, '195 0 0 31 1280 677\n', 195, GEO)[0])
+ck('window fully off-display has no range and FAILS', not m.judge_range(mkrgba(1280, 0, 1280), '195 0 -2000 31 1280 677\n', 195, GEO)[0])
+ck('shift pin: main and popover both moved by -288 PASS', m.judge_shifted(WA, WB, 195, 207, -288)[0])
+ck('MUTATION: popover did not follow the window FAILS', not m.judge_shifted(WA, '195 0 -256 31 1280 677\n207 0 309 173 406 110\n', 195, 207, -288)[0])
+ck('MUTATION: popover gone after the move FAILS', not m.judge_shifted(WA, '195 0 -256 31 1280 677\n', 195, 207, -288)[0])
+ck('achieved origin differing from the plan FAILS the origin gate', not m.judge_bounds_x('195 0 -200 31 1280 677\n', 195, -256)[0] and m.judge_bounds_x(WB, 195, -256)[0])
+ck('popover colours gate rejects an all-transparent capture', not m.judge_colours(mkrgba(406, 0, 0))[0] and m.judge_colours(mkrgba(406, 0, 406))[0])
+def mkflat(w, x0, x1, fx, fl=0):
+    """opaque everywhere in [x0,x1); columns >= fx are ONE opaque flat colour, the rest varied."""
+    c = lambda t, d: struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d))
+    px = lambda x, y: (bytes((50, 50, 50, 255)) if fl <= x and x >= fx else bytes(((x * 3) % 256, (y * 9) % 256, (x + y) % 256, 255))) if x0 <= x < x1 else bytes((7, 7, 7, 0))
+    rows = b''.join(b'\x00' + b''.join(px(x, y) for x in range(w)) for y in range(12))
+    t = pathlib.Path(tempfile.mkdtemp()) / 'f.png'
+    t.write_bytes(b'\x89PNG\r\n\x1a\n' + c(b'IHDR', struct.pack('>IIBBBBB', w, 12, 8, 6, 0, 0, 0)) + c(b'IDAT', zlib.compress(rows)) + c(b'IEND', b'')); return t
+def mkflat2(w, x0, x1, fend):
+    c = lambda t, d: struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d))
+    px = lambda x, y: (bytes((50, 50, 50, 255)) if x < fend else bytes(((x * 3) % 256, (y * 9) % 256, (x + y) % 256, 255))) if x0 <= x < x1 else bytes((7, 7, 7, 0))
+    rows = b''.join(b'\x00' + b''.join(px(x, y) for x in range(w)) for y in range(12))
+    t = pathlib.Path(tempfile.mkdtemp()) / 'g.png'
+    t.write_bytes(b'\x89PNG\r\n\x1a\n' + c(b'IHDR', struct.pack('>IIBBBBB', w, 12, 8, 6, 0, 0, 0)) + c(b'IDAT', zlib.compress(rows)) + c(b'IEND', b'')); return t
+ck('B with real content over its exclusive 992..1280 PASSES the exclusive-range proof', m.judge_range(mkrgba(1280, 256, 1280), WB, 195, GEO, other_windows_text=WA)[0])
+ck('MUTATION: B opaque and FLAT over 992..1280 (colours only from columns A covers) FAILS even though 8+ colours exist overall', not m.judge_range(mkflat(1280, 256, 1280, 992), WB, 195, GEO, other_windows_text=WA)[0] and m.judge_range(mkflat(1280, 256, 1280, 992), WB, 195, GEO)[0])
+ck('A with real content over its exclusive 0..256 PASSES', m.judge_range(mkrgba(1280, 0, 992), WA, 195, GEO, other_windows_text=WB)[0])
+ck('MUTATION: A flat opaque over 0..256 only (rest varied) FAILS the exclusive proof', not m.judge_range(mkflat2(1280, 0, 992, 256), WA, 195, GEO, other_windows_text=WB)[0] and m.judge_range(mkflat2(1280, 0, 992, 256), WA, 195, GEO)[0])
+ck('identical positions leave no exclusive columns, so the second capture has no purpose and FAILS', not m.judge_range(mkrgba(1280, 0, 992), WA, 195, GEO, other_windows_text=WA)[0])
+ck('restore: window back at its start with popover present PASSES', m.judge_restored(WA, WA, 195, 207)[0])
+ck('MUTATION: window left displaced FAILS the restore check', not m.judge_restored(WA, WB, 195, 207)[0])
+ck('MUTATION: restored but popover gone FAILS', not m.judge_restored(WA, '195 0 32 31 1280 677\n', 195, 207)[0])
 src = pathlib.Path('Sources/Spacelyzer/SessionSizeRequest.swift').read_text()
 ck('app responder is CI-only, env-gated, reports pid+token+frame, uses the app sizing path', src.startswith('#if SPZ_CI_TESTS') and 'SPZ_SIZE_REQUESTS' in src and 'setContentSizeExact' in src and '"token"' in src and '"pid"' in src)
 ck('responder started from the app only under SPZ_CI_TESTS and requested only by the cleanup session', 'SessionSizeRequest.start' in pathlib.Path('Sources/Spacelyzer/SpacelyzerApp.swift').read_text() and pathlib.Path('scripts/v1-capture-phase.sh').read_text().count('SPZ_SIZE_REQUESTS=1') == 1)

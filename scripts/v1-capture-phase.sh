@@ -175,11 +175,11 @@ if over; then note "SKIPPED trash flow: time budget"; elif step select ax select
           ax escape; nap 1
           if [ "$hist_ok" -eq 1 ]; then
             # Same PID/session/journal entry, no new removal. The entire added
-            # wide stage has a 20s cap within the unchanged 165s v1 budget.
-            if [ $(( $(date +%s) - START + 20 )) -gt "$BUDGET" ]; then
+            # wide stage has a 26s cap (19s of stages plus up to 5s of forced restore, plus margin) within the unchanged 165s v1 budget.
+            if [ $(( $(date +%s) - START + 26 )) -gt "$BUDGET" ]; then
               note "STEP-FAIL history-wide: insufficient remaining original budget"
-            elif python3 "$BOUND" 20 bash scripts/capture-history-wide.sh "$HELPER" "$PID" "$OUT" "$BOUND"; then
-              note "WIDE-HISTORY OK: same-session 1280x800 actual entry captured"
+            elif python3 "$BOUND" 26 bash scripts/capture-history-wide.sh "$HELPER" "$PID" "$OUT" "$BOUND"; then
+              note "WIDE-HISTORY OK: same-session 1280x800 actual entry captured as two on-display captures (window at x=32 and shifted to x=-256; not a full-width image; popover files are screen-rect smoke captures)"
             else
               note "STEP-FAIL history-wide: capture refused or timed out"
             fi

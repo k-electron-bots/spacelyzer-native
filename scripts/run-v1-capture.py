@@ -33,9 +33,22 @@ def run(app,output):
   wide_ok=True
   if name=='removal-history-wide':
    try:
-    ws={x['id']:x['status'] for x in json.loads((out/'wide-stages'/'stages.json').read_text())['stages']};wide_ok=all(ws.get(k)=='passed' for k in ['resize','bounds-width','image-width','image-content','popover-nonempty','content-after','bound-windows'])
+    ws={x['id']:x['status'] for x in json.loads((out/'wide-stages'/'stages.json').read_text())['stages']};wide_ok=all(ws.get(k)=='passed' for k in ['resize','bounds-width','image-width','image-range-a','popover-nonempty','popover-width','popover-colours','content-after','bound-windows','move-left','shifted-origin','shifted-windows','content-shifted','content-shifted-after','image-shifted-width','image-range-b','coverage','popover-shifted-width','popover-shifted-colours','move-back','restored-bounds'])
    except Exception:wide_ok=False
-  if image.exists() and image.stat().st_size>0 and wide_ok:endstates[name]=dict(status='captured-unreviewed',artifact=str(image),phase=phase)
+  if name=='removal-history-wide' and wide_ok:
+   # Two on-display captures, never one full-width image: record both files with the window columns each one covers.
+   shifted=out/'screenshot-v1-removal-history-wide-shifted.png'
+   def rng(f):
+    try:return (out/f).read_text().strip().split(': ')[0]
+    except Exception:return 'unreadable'
+   if image.exists() and image.stat().st_size>0 and shifted.exists() and shifted.stat().st_size>0:
+    endstates[name]=dict(status='captured-unreviewed',artifact=str(image),phase=phase,description='two on-display captures (not a full-width image, never stitched)',
+     artifacts=[dict(position='A',file=str(image),onDisplay=rng('history-wide-image-range-a.txt'),popoverRect=str(out/'screenshot-v1-removal-history-wide-popover.png')),
+                dict(position='B',file=str(shifted),onDisplay=rng('history-wide-image-range-b.txt'),popoverRect=str(out/'screenshot-v1-removal-history-wide-popover-shifted.png'))],
+     coverage=rng('history-wide-coverage.txt'),
+     popoverNote='popover files are screen-rectangle captures (smoke check only); popover presence is evidenced by AX content checks, same-windows and shifted-windows pins')
+    continue
+  if image.exists() and image.stat().st_size>0 and wide_ok and name!='removal-history-wide':endstates[name]=dict(status='captured-unreviewed',artifact=str(image),phase=phase)
   else:endstates[name]=dict(status='blocked',blockedBy=[phase],phaseStatus=phase_record['status'],reason='required visible end state not captured',causalFailures=[x for x in (out/('v1-phase-'+phase+'-status.txt')).read_text().splitlines() if x.startswith(('FAIL','STEP-FAIL','SKIPPED'))] if (out/('v1-phase-'+phase+'-status.txt')).exists() else [phase_record.get('reason','phase not executed or timed out')])
  summary['endstates']=endstates;(out/'phase-stages'/'stages.json').write_text(json.dumps(summary,indent=2))
  original=['exclusions','duplicates','trash-confirm','trash-done','removal-history','fda-banner']
