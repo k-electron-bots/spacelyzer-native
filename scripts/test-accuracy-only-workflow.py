@@ -33,8 +33,9 @@ ck('accuracy is bounded by the shared work epoch (1690s), not only its step cap;
 ck('controls keep BOTH suites running and logged', 'rc=1' in ids['controls']['run'] and ids['controls']['run'].count('tee') == 2)
 ck('accuracy step captures its exit code before tail (set -e safe)', '|| rc=$?' in acc)
 ck('referenced scripts exist', all(os.path.exists(R + '/scripts/' + x) for x in ('run-with-deadline.py', 'accuracy-preflight.py', 'accuracy-gate.py', 'accuracy-scale.py', 'independent-size-oracle.py', 'test-accuracy-controls.py', 'test-accuracy-scale-controls.py', 'tamper-dump.py')))
+# Reviewed-base pin: re-pinned from 6a476eb8 (stale: ci/demo-only/readiness-verify/accuracy-only legitimately changed since) to main 2e770684 (the 25-min demo cap). Any later workflow change outside accuracy-only.yml must re-pin this deliberately, with the reason.
 try:
-    ch = subprocess.run(['git', '-C', R, 'diff', '--name-only', '6a476eb88aeeb019f891ffeffaf91f551be66e78', '--', '.github/workflows'], capture_output=True, text=True).stdout.split()
+    ch = subprocess.run(['git', '-C', R, 'diff', '--name-only', '2e770684aa5613f34eede06ad54fd8e96641592c', '--', '.github/workflows'], capture_output=True, text=True).stdout.split()
     ck('no other workflow changed vs reviewed base (others stay as they are)', set(ch) <= {'.github/workflows/accuracy-only.yml'}, ch)
 except OSError: print('NOT-RUN git unavailable')
 # executed: preflight and gate failure matrix
