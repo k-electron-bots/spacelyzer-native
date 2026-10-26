@@ -59,5 +59,12 @@ for f in "$OUT"/app-rss-*.txt; do [ -f "$f" ] && echo "$(basename "$f"): $(awk '
 # --- verdict
 v=PASS; while read -r name status rest; do [ "$status" = PASS ] || v=FAIL; done < "$OUT/parts.txt"
 grep -q ' INCOMPLETE ' "$OUT/parts.txt" && [ "$v" = FAIL ] && ! grep -q ' FAIL ' "$OUT/parts.txt" && v=INCOMPLETE
+# every required part must appear EXACTLY once; a skipped or duplicated part (script error) can never be accepted
+missing=""
+for need in expansion-10k typing-200k hover app-alive engine-plateau no-new-crash-report; do
+  c=$(awk -v n="$need" '$1==n' "$OUT/parts.txt" | wc -l | tr -d ' ')
+  [ "$c" = 1 ] || { missing="$missing $need(x$c)"; echo "$need REQUIREMENT-VIOLATION appears $c times" >> "$OUT/parts.txt"; }
+done
+[ -z "$missing" ] || { [ "$v" = PASS ] && v=INCOMPLETE; echo "required parts missing or duplicated:$missing" >> "$OUT/parts.txt"; }
 { echo "$v"; cat "$OUT/parts.txt"; echo "app RSS (informational, not gated):"; cat "$OUT/app-rss-summary.txt" 2>/dev/null; } > "$OUT/verdict.txt"
 exit 0

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Judge the in-app perf driver output (PerfDriver.swift, SPZ_CHECKS=perf). Usage: perf2-cancel-verdict.py RESDIR OUTVERDICT EXPECTED_RUNS
 PASS = result.txt first line PERF-COMPLETE, exactly EXPECTED_RUNS cancel lines, and every cancel hit mid-scan (items_at_cancel below the full-scan node count from the
-same run). Otherwise INCONCLUSIVE (driver incomplete / cancel not proven mid-scan) or FAIL (driver reported nothing). Latency values are listed, never gated: no owner-approved
+same run). Otherwise INCONCLUSIVE (driver incomplete / cancel not proven mid-scan) or FAIL (driver reported nothing). Harness criterion (not an owner threshold): each cancel must end the scan early, cancel_to_scanning_false_ms < 50% of the full-scan duration in the same run, so a cancel that did nothing cannot pass. Latency values are listed, never gated: no owner-approved
 threshold exists (the 1000 ms bar in the old readiness-verify design was a proposal, shown only as a note)."""
 import re, sys
 res, out, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
@@ -18,8 +18,12 @@ cancels = re.findall(r'^cancel\[(\d+)\] items_at_cancel=(\d+) cancel_call_ms=(\S
 full = re.search(r'^full_scan nodes=(\d+)', p or '', re.M)
 if len(cancels) != n: put('INCONCLUSIVE', f'{len(cancels)} of {n} cancel samples recorded')
 if not full: put('INCONCLUSIVE', 'full_scan nodes line missing, mid-scan cancel cannot be proven')
+dur = re.search(r'^full_scan nodes=\d+ .*?last_scan_seconds=(\d+(?:\.\d+)?)', p or '', re.M)
+if not dur: put('INCONCLUSIVE', 'full-scan duration (last_scan_seconds) missing, early termination cannot be judged')
 for i, items, call, eng, idle in cancels:
     mid = bool(full) and int(items) < int(full.group(1))
+    if dur and re.fullmatch(r'\d+(\.\d+)?', idle) and float(idle) >= 0.5 * float(dur.group(1)) * 1000:
+        put('INCONCLUSIVE', f'cancel[{i}] did not end the scan early: cancel_to_scanning_false {idle} ms is not below half the full-scan duration ({0.5 * float(dur.group(1)) * 1000:.0f} ms)')
     lines.append(f'cancel[{i}]: items_at_cancel={items} of {full.group(1) if full else "?"}, cancel_call={call} ms, to_engine_returned={eng} ms, to_scanning_false={idle} ms, mid_scan={mid}')
     if not mid: put('INCONCLUSIVE', f'cancel[{i}] not proven mid-scan')
     if any(not re.fullmatch(r'\d+(\.\d+)?', x) for x in (call, eng, idle)): put('FAIL', f'cancel[{i}] has a non-numeric timing')
