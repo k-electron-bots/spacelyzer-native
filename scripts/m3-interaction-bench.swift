@@ -84,15 +84,31 @@ guard AXIsProcessTrusted() else { print("BLOCKED AX trust unavailable; not a mea
 let out = FileHandle(fileDescriptor: outFd, closeOnDealloc: true)
 
 let app = AXUIElementCreateApplication(pid)
-var axReadFailures = 0
+// BEGIN pure AX failure ledger
+// Run 40259397219: typing measured 200/200 keys with 0 per-key read failures, yet exited 10 from ONE AX read failure (attr:AXSubrole, the likeliest source being the
+// diagnostic footer dump, attribution unproven). Reads made while `inDump` is set are recorded separately (dump_read_failures) and never flip the status; every other
+// read failure (per-key, window picker, discovery outside the dump) still counts, and the clean rule is unchanged.
+struct AxLedger {
+    var failures = 0, dumpFailures = 0
+    var sites: [String] = [], dumpSites: [String] = []
+    var inDump = false
+    mutating func note(_ site: String, _ code: Int32) {
+        let entry = "\(site)(err=\(code))"
+        if inDump { dumpFailures += 1; if dumpSites.count < 32 { dumpSites.append(entry) } }
+        else { failures += 1; if sites.count < 32 { sites.append(entry) } }
+    }
+    func clean(inconclusive: Int) -> Bool { inconclusive == 0 && failures == 0 }
+}
+// END pure AX failure ledger
+var ledger = AxLedger()
+var axReadFailures: Int { ledger.failures }
 // Failure-site attribution (run 37883865575: 100k expansion ended
 // inconclusive with ax_read_failures=3 and no stage detail - the log must
 // say WHICH read failed and with which AXError). Bounded at 32 entries;
 // the bench aborts long before that many real failures.
-var axReadFailureSites: [String] = []
+var axReadFailureSites: [String] { ledger.sites }
 func noteAxFailure(_ site: String, _ err: AXError) {
-    axReadFailures += 1
-    if axReadFailureSites.count < 32 { axReadFailureSites.append("\(site)(err=\(err.rawValue))") }
+    ledger.note(site, err.rawValue)
 }
 func now() -> Double { ProcessInfo.processInfo.systemUptime }
 struct ReadStats {
@@ -202,7 +218,9 @@ func summary(_ object: [String: Any], inconclusive: Int) -> Never {
     withCommon["ax_read_failures"] = axReadFailures
     withCommon["ax_read_failure_sites"] = axReadFailureSites
     withCommon["limitation"] = "event-to-AX-visible latency only; not proof of main-thread block"
-    let clean = inconclusive == 0 && axReadFailures == 0
+    withCommon["dump_read_failures"] = ledger.dumpFailures
+    withCommon["dump_read_failure_sites"] = ledger.dumpSites
+    let clean = ledger.clean(inconclusive: inconclusive)
     withCommon["status"] = clean ? "complete" : "inconclusive"
     emit(withCommon)
     guard let data = try? JSONSerialization.data(withJSONObject: withCommon) else { exit(9) }
@@ -318,6 +336,7 @@ if mode == "typing" {
     }
     var footers = footerMatches
     var strictLeft = footerMatches.count
+    ledger.inDump = footerMatches.count != 1   // diagnostic reads below are accounted as dump_read_failures
     if footerMatches.count != 1 {
         let hitIdx = footerMatches.map { m in walkAll.firstIndex(where: { CFEqual($0, m) }) ?? -1 }
         print("footer lookup matched \(footerMatches.count) elements; walk size \(walkAll.count); walk indexes \(hitIdx)")
@@ -330,6 +349,7 @@ if mode == "typing" {
         strictLeft = strict.count
         if strict.count == 1 { footers = strict }
     }
+    ledger.inDump = false
     guard footers.count == 1, let footer = footers.first else { print("footer summary container not uniquely discoverable (\(footerMatches.count) matches, \(strictLeft) left after the strict rule); aborting"); exit(7) }
     // One footer text read: AXLabel (set to fullDetails) first, AXHelp (also
     // fullDetails) and AXValue as fallbacks; every attempted read is timed

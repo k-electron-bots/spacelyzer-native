@@ -5,9 +5,12 @@ one strict match (proceeds, dump written), two strict (abort 7), none strict (ab
 import json, os, pathlib, subprocess, sys, tempfile
 src = pathlib.Path('scripts/m3-interaction-bench.swift').read_text()
 a = src.index('    let walkAll = descendants()'); b = src.index('    // One footer text read'); block = src[a:b]
+ledger_src = src[src.index('// BEGIN pure AX failure ledger'):src.index('// END pure AX failure ledger')]
 assert 'exit(7)' in block and 'footer_nonunique_dump' in block
 swift = pathlib.Path(os.environ.get('SWIFT_BIN', '/tmp/swift-6.1.2-RELEASE-ubuntu22.04/usr/bin')) / 'swiftc'
 prog = '''import Foundation
+__LEDGER__
+var ledger = AxLedger()
 final class AXUIElement { let a: [String: String]; init(_ a: [String: String]) { self.a = a } }
 func CFEqual(_ x: AXUIElement, _ y: AXUIElement) -> Bool { x === y }
 struct R { var x = 0.0 }
@@ -38,7 +41,7 @@ run()
 let d = try! JSONSerialization.data(withJSONObject: emitted.map { $0.keys.sorted() })
 print("EMITTED " + String(data: d, encoding: .utf8)!)
 '''
-t = pathlib.Path(tempfile.mkdtemp()); (t / 'm.swift').write_text(prog.replace('exit(7)', 'Foundation.exit(7)'))
+t = pathlib.Path(tempfile.mkdtemp()); (t / 'm.swift').write_text(prog.replace('__LEDGER__', ledger_src).replace('exit(7)', 'Foundation.exit(7)'))
 r = subprocess.run([str(swift), '-swift-version', '5', str(t / 'm.swift'), '-o', str(t / 'm')], capture_output=True, text=True); assert r.returncode == 0, r.stderr[-1500:]
 def go(m): return subprocess.run([str(t / 'm'), m], capture_output=True, text=True)
 u = go('unique'); assert u.returncode == 0 and 'PROCEEDED' in u.stdout and 'footer_nonunique_dump' not in u.stdout and 'footer-candidate' not in u.stdout, u.stdout
