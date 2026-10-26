@@ -291,11 +291,43 @@ if mode == "typing" {
     // <size> in <N> items..."). The "Scanned folder:" path Text is a sibling
     // that never carries " items"; outline rows (which do) sit under the
     // AXTable the walker skips. Not unique -> abort, never guess.
-    let footers = descendants().filter { el in
+    // Run 40249523646 evidence: on typing-200k this lookup matched THREE elements
+    // (exit 7), while the 6-item CSV-run tree showed one. On any non-unique match
+    // the bench now DUMPS every match plus the bounded-walk element list into the
+    // jsonl (record "footer_nonunique_dump") and stdout BEFORE deciding. Then one
+    // strict, fail-closed disambiguation: keep only matches whose AXLabel (set to
+    // fullDetails) contains "in <N> items"; proceed ONLY if exactly one remains,
+    // otherwise abort exactly as before. Never guess among several.
+    let walkAll = descendants()
+    let footerMatches = walkAll.filter { el in
         for attr in ["AXLabel", "AXHelp", "AXValue"] where string(el, attr).contains(" items") { return true }
         return false
     }
-    guard footers.count == 1, let footer = footers.first else { print("footer summary container not uniquely discoverable (\(footers.count) matches); aborting"); exit(7) }
+    func clip(_ t: String) -> String { String(t.prefix(200)) }
+    func footerEntry(_ i: Int, _ el: AXUIElement) -> [String: Any] {
+        let f = frame(el).map { "\($0)" } ?? "nil"
+        return ["i": i, "role": string(el, "AXRole"), "subrole": string(el, "AXSubrole"), "label": clip(string(el, "AXLabel")),
+                "help": clip(string(el, "AXHelp")), "value": clip(string(el, "AXValue")), "title": clip(string(el, "AXTitle")),
+                "description": clip(string(el, "AXDescription")), "frame": f]
+    }
+    func isFootersummaryLabel(_ el: AXUIElement) -> Bool {
+        string(el, "AXLabel").range(of: " in [0-9,]+ items", options: .regularExpression) != nil
+    }
+    var footers = footerMatches
+    var strictLeft = footerMatches.count
+    if footerMatches.count != 1 {
+        let hitIdx = footerMatches.map { m in walkAll.firstIndex(where: { CFEqual($0, m) }) ?? -1 }
+        print("footer lookup matched \(footerMatches.count) elements; walk size \(walkAll.count); walk indexes \(hitIdx)")
+        for (k, m) in footerMatches.enumerated() { print("footer-candidate[\(k)] \(footerEntry(hitIdx[k], m))") }
+        emit(["footer_nonunique_dump": true, "match_count": footerMatches.count, "match_walk_indexes": hitIdx, "walk_count": walkAll.count,
+              "walk": walkAll.enumerated().map { footerEntry($0.offset, $0.element) }])
+        let strict = footerMatches.filter(isFootersummaryLabel)
+        print("strict rule (AXLabel contains 'in <N> items'): \(strict.count) of \(footerMatches.count) remain")
+        emit(["footer_strict_rule": "AXLabel matches ' in [0-9,]+ items'", "remaining": strict.count, "of": footerMatches.count])
+        strictLeft = strict.count
+        if strict.count == 1 { footers = strict }
+    }
+    guard footers.count == 1, let footer = footers.first else { print("footer summary container not uniquely discoverable (\(footerMatches.count) matches, \(strictLeft) left after the strict rule); aborting"); exit(7) }
     // One footer text read: AXLabel (set to fullDetails) first, AXHelp (also
     // fullDetails) and AXValue as fallbacks; every attempted read is timed
     // and accounted in stats.

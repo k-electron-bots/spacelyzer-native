@@ -13,6 +13,44 @@ final class PerfMarks: @unchecked Sendable {
     func clear() { lock.lock(); rows.removeAll(); lock.unlock() }
 }
 
+/// Pure milestone logic for the full-scan section (testable without AppKit). Run 40249523646: the four bare-predicate milestones
+/// (outline rows, outline/derived/layout version) were already true from launch state when the full scan started, so they were
+/// "observed" before the engine-returned mark and the driver correctly refused the durations. A milestone now counts only when it
+/// DIFFERS from the state captured right before model.scan(root); a milestone whose state was already non-empty/non-nil is NOT
+/// silently dropped, it is reported as a NOTE by the driver. A genuine change before the engine-returned mark still ends INCOMPLETE.
+struct PerfState: Equatable {
+    var rows: Int
+    var outline: UInt64?
+    var derived: UInt64?
+    var layout: UInt64?
+}
+enum PerfMilestones {
+    enum Outcome: Equatable { case after(UInt64), beforeEngine, never }
+    /// nil: the milestone cannot be observed by change because its state was already non-empty at start (reported as a NOTE).
+    static func observed(_ name: String, state: PerfState, base: PerfState) -> Bool? {
+        switch name {
+        case "outline_rows_nonempty": return base.rows > 0 ? nil : state.rows > 0
+        case "outline_version": return state.outline != base.outline
+        case "derived_version": return state.derived != base.derived
+        case "layout_version": return state.layout != base.layout
+        default: return nil
+        }
+    }
+    static func staleAtStart(_ name: String, base: PerfState) -> Bool {
+        switch name {
+        case "outline_rows_nonempty": return base.rows > 0
+        case "outline_version": return base.outline != nil
+        case "derived_version": return base.derived != nil
+        case "layout_version": return base.layout != nil
+        default: return false
+        }
+    }
+    static func classify(seen: UInt64?, engine: UInt64) -> Outcome {
+        guard let t = seen else { return .never }
+        return t >= engine ? .after(t - engine) : .beforeEngine
+    }
+}
+
 @MainActor enum PerfDriver {
     private static func now() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
     private static func ms(_ a: UInt64, _ b: UInt64) -> String { b >= a ? String(format: "%.1f", Double(b - a) / 1_000_000) : "negative(\(Int64(b) - Int64(a))ns)" }
@@ -77,19 +115,23 @@ final class PerfMarks: @unchecked Sendable {
 
         // B. Full scan: engine return, then each publication milestone, each timestamped the first time it is observed.
         marks.clear()
+        func perfState() -> PerfState { PerfState(rows: model.outlineRows.count, outline: model.outlineVersion, derived: model.derivedVersion, layout: model.layoutVersion) }
+        let base = perfState()
+        lines.append("full_scan baseline_before_scan rows=\(base.rows) outline_version=\(base.outline.map(String.init) ?? "nil") derived_version=\(base.derived.map(String.init) ?? "nil") layout_version=\(base.layout.map(String.init) ?? "nil") tree_present=\(model.tree != nil)")
         let s0 = now()
         model.scan(root)
         let milestones: [(String, @MainActor () -> Bool)] = [
             ("tree_published", { !model.scanning && model.tree != nil }),
-            ("outline_rows_nonempty", { !model.outlineRows.isEmpty }),
-            ("outline_version", { model.outlineVersion != nil }),
-            ("derived_version", { model.derivedVersion != nil }),
-            ("layout_version", { model.layoutVersion != nil }),
+            ("outline_rows_nonempty", { PerfMilestones.observed("outline_rows_nonempty", state: perfState(), base: base) ?? false }),
+            ("outline_version", { PerfMilestones.observed("outline_version", state: perfState(), base: base) ?? false }),
+            ("derived_version", { PerfMilestones.observed("derived_version", state: perfState(), base: base) ?? false }),
+            ("layout_version", { PerfMilestones.observed("layout_version", state: perfState(), base: base) ?? false }),
         ]
         var seen: [String: UInt64] = [:]
         let fullDeadline = now() + 600_000_000_000
-        while now() < fullDeadline && seen.count < milestones.count {
-            for (n, cond) in milestones where seen[n] == nil && cond() { seen[n] = now() }
+        let unobservable = Set(milestones.map { $0.0 }.filter { PerfMilestones.staleAtStart($0, base: base) && $0 == "outline_rows_nonempty" })
+        while now() < fullDeadline && seen.count + unobservable.count < milestones.count {
+            for (n, cond) in milestones where seen[n] == nil && !unobservable.contains(n) && cond() { seen[n] = now() }
             try? await Task.sleep(nanoseconds: 2_000_000)
         }
         let engine = marks.first("engine-returned")
@@ -98,10 +140,16 @@ final class PerfMarks: @unchecked Sendable {
         if let e = engine {
             lines.append("full_scan start_to_engine_returned_ms=\(ms(s0, e))")
             for (n, _) in milestones {
-                if let t = seen[n] {
-                    if t >= e { lines.append("full_scan engine_returned_to_\(n)_ms=\(ms(e, t))") }
-                    else { problems.append("full_scan: \(n) observed before the engine-returned mark; ordering anomaly, no duration recorded") }
-                } else { problems.append("full_scan: milestone \(n) never observed; no duration recorded") }
+                if unobservable.contains(n) {
+                    lines.append("full_scan NOTE \(n): state was already non-empty before the scan started (stale baseline); not observable by change, no duration recorded")
+                    continue
+                }
+                if PerfMilestones.staleAtStart(n, base: base) { lines.append("full_scan NOTE \(n): had a stale value before the scan; counted only because it changed") }
+                switch PerfMilestones.classify(seen: seen[n], engine: e) {
+                case .after: lines.append("full_scan engine_returned_to_\(n)_ms=\(ms(e, seen[n]!))")
+                case .beforeEngine: problems.append("full_scan: \(n) observed before the engine-returned mark; ordering anomaly, no duration recorded")
+                case .never: problems.append("full_scan: milestone \(n) never observed; no duration recorded")
+                }
             }
         } else { problems.append("full_scan: engine-returned mark missing; no durations recorded") }
 
