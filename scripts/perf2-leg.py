@@ -22,7 +22,7 @@ def main(argv):
         elif k == '--prereq': pre.append(a.pop(0))
         else: print('bad arg', k, file=sys.stderr); return 64
     if not a or a.pop(0) != '--' or not a or not (leg and out and work): print('usage error', file=sys.stderr); return 64
-    verdict = os.path.join(out, 'verdict.txt')
+    os.makedirs(out, exist_ok=True); verdict = os.path.join(out, 'verdict.txt')
     if os.path.exists(verdict): os.remove(verdict)
     bad = [p for p in pre if p.split('=', 1)[1] != 'success']
     if bad: write(out, 'NOT-RUN', f'{leg}: prerequisite not success: ' + ', '.join(bad)); print('NOT-RUN', leg, bad); return 0
