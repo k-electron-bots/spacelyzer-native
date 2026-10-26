@@ -11,14 +11,17 @@ enum TreemapColoring: String, CaseIterable, Identifiable {
 enum TrailingTab: Hashable { case treemap, kinds, largest, folders }
 
 // BEGIN pure filter debounce policy
-/// How long a typed filter edit waits before the engine runs. Run 40259397219 measured footer republish p50 278 ms at 200k nodes; earlier runs
-/// (37885969873, 37890769939) reported the app's own filter time at 3-4 ms, so the fixed 150 ms wait was the largest app-controlled part of the delay.
-/// The wait now scales with the last measured filter cost on this tree: 3x that cost, never below 25 ms and never above the old 150 ms. A tree where a
-/// filter pass costs 50 ms or more (about 1M nodes: 31-57 ms) keeps the old 150 ms; unknown cost (first edit on a tree) also keeps 150 ms.
+/// How long a typed filter edit waits before the engine runs.
+/// - Idle (no filter pass pending or running): 0. The newest edit starts at once (leading edge).
+/// - Burst (a pass is still pending or running): 3x the last measured ACTIVE filter cost on this tree, floor 25 ms, cap 150 ms (unknown cost keeps 150 ms),
+///   so a run of keystrokes collapses into one trailing pass.
+/// Evidence: run 40259397219 measured footer republish p50 278 ms at 200k nodes; earlier runs (37885969873, 37890769939) reported the app's own filter time at
+/// 3-4 ms, so the fixed 150 ms wait was the largest app-controlled part of the delay. A tree where a pass costs 50 ms or more (about 1M nodes: 31-57 ms) keeps 150 ms in a burst.
 enum FilterDebounce {
     static let maxNs: UInt64 = 150_000_000
     static let minNs: UInt64 = 25_000_000
-    static func delayNs(lastFilterMs: Double?) -> UInt64 {
+    static func delayNs(lastFilterMs: Double?, idle: Bool = false) -> UInt64 {
+        if idle { return 0 }
         guard let ms = lastFilterMs, ms.isFinite, ms >= 0 else { return maxNs }
         let ns = ms * 3.0 * 1_000_000
         if ns >= Double(maxNs) { return maxNs }
@@ -26,6 +29,26 @@ enum FilterDebounce {
     }
 }
 // END pure filter debounce policy
+
+// BEGIN pure filter coalescer
+/// Latest-request-wins start for one filter pass. The caller cancels the predecessor, then calls this with it. The new task:
+/// 1. waits for the predecessor to finish (a cancelled predecessor wakes from its sleep at once; one inside the non-interruptible engine call finishes that call),
+///    so two engine passes over the same tree never overlap;
+/// 2. returns without running if it was superseded meanwhile (an intermediate keystroke never reaches the engine once a newer one exists);
+/// 3. sleeps the debounce (0 = start now), returning if superseded during the sleep;
+/// 4. runs the pass. `work` still checks cancellation and its generation before it publishes.
+enum FilterCoalescer {
+    static func start(after predecessor: Task<Void, Never>?, delayNs: UInt64, _ work: @escaping @Sendable () async -> Void) -> Task<Void, Never> {
+        Task.detached(priority: .userInitiated) {
+            await predecessor?.value
+            if Task.isCancelled { return }
+            if delayNs > 0 { try? await Task.sleep(nanoseconds: delayNs) }
+            if Task.isCancelled { return }
+            await work()
+        }
+    }
+}
+// END pure filter coalescer
 
 /// One journaled removal. The id keys per-item restore from the removal history; a restored record is forgotten.
 struct RemovedItem: Identifiable { var id = UUID(); var original: URL; var trashed: URL; var size: UInt64 }
@@ -231,9 +254,11 @@ final class AppModel {
     /// Filtering runs in Rust off the main thread, debounced; the UI keeps the last result until the new one lands.
     func scheduleFilter(immediate: Bool = false) {
         if !immediate { retryDone("filter") }
-        filterTask?.cancel()
+        let predecessor = filterTask
+        predecessor?.cancel()
         filterGeneration &+= 1
         let generation = filterGeneration, barrier = beforePublish, completed = afterPublish
+        let wasIdle = !filterPending
         filterPending = true
         guard let tree else { filterPending = false; return }
         let text = filterText, kind = filterKind, minB: UInt64? = filterMinMB > 0 ? UInt64(filterMinMB) * 1_000_000 : nil
@@ -241,10 +266,8 @@ final class AppModel {
         let from: Int64? = filterModifiedDays > 0 ? Int64(Date().timeIntervalSince1970) - Int64(filterModifiedDays) * 86_400 : nil
         let ext = filterExt.trimmingCharacters(in: .whitespaces)
         let active = filterIsActive
-        let debounceNs = FilterDebounce.delayNs(lastFilterMs: lastActiveFilterMs)
-        filterTask = Task.detached(priority: .userInitiated) { [weak self] in
-            if !immediate { try? await Task.sleep(nanoseconds: debounceNs) }
-            if Task.isCancelled { return }
+        let debounceNs = immediate ? 0 : FilterDebounce.delayNs(lastFilterMs: lastActiveFilterMs, idle: wasIdle)
+        filterTask = FilterCoalescer.start(after: predecessor, delayNs: debounceNs) { [weak self] in
             let t0 = DispatchTime.now().uptimeNanoseconds
             var r: FilterResult? = nil
             var failure: EngineStatus? = nil
