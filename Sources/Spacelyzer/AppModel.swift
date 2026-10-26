@@ -10,6 +10,23 @@ enum TreemapColoring: String, CaseIterable, Identifiable {
 
 enum TrailingTab: Hashable { case treemap, kinds, largest, folders }
 
+// BEGIN pure filter debounce policy
+/// How long a typed filter edit waits before the engine runs. Run 40259397219 measured footer republish p50 278 ms at 200k nodes; earlier runs
+/// (37885969873, 37890769939) reported the app's own filter time at 3-4 ms, so the fixed 150 ms wait was the largest app-controlled part of the delay.
+/// The wait now scales with the last measured filter cost on this tree: 3x that cost, never below 25 ms and never above the old 150 ms. A tree where a
+/// filter pass costs 50 ms or more (about 1M nodes: 31-57 ms) keeps the old 150 ms; unknown cost (first edit on a tree) also keeps 150 ms.
+enum FilterDebounce {
+    static let maxNs: UInt64 = 150_000_000
+    static let minNs: UInt64 = 25_000_000
+    static func delayNs(lastFilterMs: Double?) -> UInt64 {
+        guard let ms = lastFilterMs, ms.isFinite, ms >= 0 else { return maxNs }
+        let ns = ms * 3.0 * 1_000_000
+        if ns >= Double(maxNs) { return maxNs }
+        return max(minNs, UInt64(ns))
+    }
+}
+// END pure filter debounce policy
+
 /// One journaled removal. The id keys per-item restore from the removal history; a restored record is forgotten.
 struct RemovedItem: Identifiable { var id = UUID(); var original: URL; var trashed: URL; var size: UInt64 }
 
@@ -196,6 +213,8 @@ final class AppModel {
     /// True from the moment a filter input changes until its result lands. Views may be showing the previous filter.
     var filterPending = false
     var filterMillis: Double = 0
+    /// Engine time of the last ACTIVE filter pass on the current tree (nil until one lands, and after a tree swap). Drives FilterDebounce.
+    @ObservationIgnored private var lastActiveFilterMs: Double?
     private var filterTask: Task<Void, Never>?
     private var filterGeneration: UInt64 = 0
     private var outlineGeneration: UInt64 = 0
@@ -222,8 +241,9 @@ final class AppModel {
         let from: Int64? = filterModifiedDays > 0 ? Int64(Date().timeIntervalSince1970) - Int64(filterModifiedDays) * 86_400 : nil
         let ext = filterExt.trimmingCharacters(in: .whitespaces)
         let active = filterIsActive
+        let debounceNs = FilterDebounce.delayNs(lastFilterMs: lastActiveFilterMs)
         filterTask = Task.detached(priority: .userInitiated) { [weak self] in
-            if !immediate { try? await Task.sleep(nanoseconds: 150_000_000) }
+            if !immediate { try? await Task.sleep(nanoseconds: debounceNs) }
             if Task.isCancelled { return }
             let t0 = DispatchTime.now().uptimeNanoseconds
             var r: FilterResult? = nil
@@ -266,6 +286,7 @@ final class AppModel {
                 self.activeFilter = rFinal
                 self.filterPending = false
                 self.filterMillis = ms
+                if active { self.lastActiveFilterMs = ms }
                 self.filterRevision += 1
                 self.refreshOutline()
                 self.refreshDerived()
@@ -697,6 +718,7 @@ final class AppModel {
                     markOutOfDate("Files were moved while this scan ran, so it may not match the disk. Rescan.")
                 } else { viewOutOfDate = false; outOfDateReason = nil }
                 tree = t
+                lastActiveFilterMs = nil   // a different tree may cost far more or less; the first edit waits the full 150 ms again
                 panicBaseline = s.validatedPanicCount   // exactly the value ScanSession validated, not a fresh read
                 poisoned = false
                 startPoisonWatch()
