@@ -113,6 +113,9 @@ enum PerfMilestones {
             lines.append("cancel[\(i)] items_at_cancel=\(itemsAtCancel) cancel_call_ms=\(ms(t0, t1)) cancel_to_engine_returned_ms=\(ms(t0, te)) cancel_to_scanning_false_ms=\(ms(t0, ti)) tree_present_after_cancel=\(model.tree != nil) error=\(model.error ?? "none")")
         }
 
+        // Keep the cancel evidence on disk even if part B hangs or the process is killed (run 40251234968 lost it).
+        try? (lines.joined(separator: "\n") + "\n").write(toFile: perfPath, atomically: true, encoding: .utf8)
+
         // B. Full scan: engine return, then each publication milestone, each timestamped the first time it is observed.
         marks.clear()
         func perfState() -> PerfState { PerfState(rows: model.outlineRows.count, outline: model.outlineVersion, derived: model.derivedVersion, layout: model.layoutVersion) }
@@ -131,9 +134,9 @@ enum PerfMilestones {
         let fullDeadline = now() + 120_000_000_000   // the cancel leg waits at most 200 s for a result; never outlive it
         let unobservable = Set(milestones.map { $0.0 }.filter { PerfMilestones.staleAtStart($0, base: base) && $0 == "outline_rows_nonempty" })
         // Run 40251234968: a milestone that never changes from its baseline made this loop wait the full 600 s and the driver never wrote a result.
-        // Once the engine has returned, wait only a bounded grace (8 s) for the remaining milestones; anything still unobserved is recorded as
+        // Once the engine has returned, wait only a bounded grace (30 s) for the remaining milestones; anything still unobserved is recorded as
         // "never observed" and the run ends INCOMPLETE with the baseline lines as evidence.
-        let graceNs: UInt64 = 8_000_000_000
+        let graceNs: UInt64 = 30_000_000_000
         while now() < fullDeadline && seen.count + unobservable.count < milestones.count {
             if let eng = marks.first("engine-returned"), now() > eng + graceNs { break }
             for (n, cond) in milestones where seen[n] == nil && !unobservable.contains(n) && cond() { seen[n] = now() }
