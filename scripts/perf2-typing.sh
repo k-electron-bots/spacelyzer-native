@@ -20,6 +20,8 @@ else
     if [ "$rs" != 0 ]; then part typing-200k INCOMPLETE "readiness probe exit $rs (rc 3 = AX trust unavailable)"
     else
       "$BENCH" typing "$PID" "$OUT/typing-200k.jsonl" 200 > "$OUT/typing-200k.log" 2>&1; ts=$?
+      cp /tmp/spz-timing.txt "$OUT/app-timing.txt" 2>/dev/null   # SPZ_TIMING app-side stamps (filter-key / pass-start / pass-end / publish + counters)
+      python3 "$SD/typing-filter-stats.py" "$OUT/typing-200k.jsonl" "$OUT/app-timing.txt" > "$OUT/typing-filter-stats.json" 2> "$OUT/typing-filter-stats.err"   # summary only; never affects the verdict
       [ "$ts" = 0 ] && part typing-200k PASS "bench exit 0 (200 keys measured)" || part typing-200k FAIL "bench exit $ts"
     fi
     if kill -0 "$PID" 2>/dev/null; then part app-alive PASS "app process alive after typing"; else part app-alive FAIL "app process exited"; fi

@@ -430,6 +430,7 @@ if mode == "typing" {
         let footerLow = (r ?? .infinity) > ftrWindow * 1000
         let degraded = fieldLow || footerLow || stats.failures > 0
         var event: [String: Any] = ["event": "key", "i": i, "char": expanding ? "i" : "delete", "expected_field": expected,
+            "t0_ns": UInt64(t0 * 1_000_000_000),   // same mach-uptime clock as the app's SPZ_TIMING stamps
             "field_ms": f, "field_low_quality": fieldLow,
             "footer_ms": r ?? -1, "footer_verdict": r != nil ? "republished" : "inconclusive",
             "footer_low_quality": footerLow,

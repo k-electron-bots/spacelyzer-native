@@ -48,6 +48,23 @@ enum FilterCoalescer {
         }
     }
 }
+
+/// Verification counters for the coalescer (CI-only output, see Perf.timingLog). Thread-safe; pure, so Linux tests compile it as is.
+/// - overlaps: a pass entered the engine while another was still inside it (must stay 0).
+/// - stalePublished: a result was published although a newer edit existed (must stay 0).
+/// - staleDropped: a finished result was discarded because a newer edit existed (expected; shows coalescing at work).
+final class FilterPassStats: @unchecked Sendable {
+    private let lock = NSLock()
+    private var inEngine = 0
+    private(set) var scheduled = 0, passes = 0, overlaps = 0, maxInEngine = 0, published = 0, stalePublished = 0, staleDropped = 0
+    func edit() { lock.lock(); scheduled += 1; lock.unlock() }
+    func passBegin() { lock.lock(); passes += 1; inEngine += 1; if inEngine > 1 { overlaps += 1 }; maxInEngine = max(maxInEngine, inEngine); lock.unlock() }
+    func passEnd() { lock.lock(); inEngine -= 1; lock.unlock() }
+    func dropped() { lock.lock(); staleDropped += 1; lock.unlock() }
+    func publish(generation: UInt64, latest: UInt64) { lock.lock(); published += 1; if generation != latest { stalePublished += 1 }; lock.unlock() }
+    var summary: String { lock.lock(); defer { lock.unlock() }
+        return "scheduled=\(scheduled) passes=\(passes) skipped=\(scheduled - passes) overlaps=\(overlaps) max_in_engine=\(maxInEngine) published=\(published) stale_published=\(stalePublished) stale_dropped=\(staleDropped)" }
+}
 // END pure filter coalescer
 
 /// One journaled removal. The id keys per-item restore from the removal history; a restored record is forgotten.
@@ -238,6 +255,7 @@ final class AppModel {
     var filterMillis: Double = 0
     /// Engine time of the last ACTIVE filter pass on the current tree (nil until one lands, and after a tree swap). Drives FilterDebounce.
     @ObservationIgnored private var lastActiveFilterMs: Double?
+    @ObservationIgnored let filterStats = FilterPassStats()
     private var filterTask: Task<Void, Never>?
     private var filterGeneration: UInt64 = 0
     private var outlineGeneration: UInt64 = 0
@@ -259,6 +277,9 @@ final class AppModel {
         filterGeneration &+= 1
         let generation = filterGeneration, barrier = beforePublish, completed = afterPublish
         let wasIdle = !filterPending
+        let stats = filterStats
+        stats.edit()
+        Perf.timingLog("filter-key gen=\(generation) at_ns=\(Perf.now()) idle=\(wasIdle)")
         filterPending = true
         guard let tree else { filterPending = false; return }
         let text = filterText, kind = filterKind, minB: UInt64? = filterMinMB > 0 ? UInt64(filterMinMB) * 1_000_000 : nil
@@ -269,6 +290,8 @@ final class AppModel {
         let debounceNs = immediate ? 0 : FilterDebounce.delayNs(lastFilterMs: lastActiveFilterMs, idle: wasIdle)
         filterTask = FilterCoalescer.start(after: predecessor, delayNs: debounceNs) { [weak self] in
             let t0 = DispatchTime.now().uptimeNanoseconds
+            stats.passBegin()
+            Perf.timingLog("filter-pass-start gen=\(generation) at_ns=\(t0) wait_ms=\(Double(debounceNs) / 1e6)")
             var r: FilterResult? = nil
             var failure: EngineStatus? = nil
             if active {
@@ -278,7 +301,9 @@ final class AppModel {
                 }
             }
             let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
-            if Task.isCancelled { return }
+            stats.passEnd()
+            Perf.timingLog("filter-pass-end gen=\(generation) at_ns=\(Perf.now()) engine_ms=\(ms)")
+            if Task.isCancelled { stats.dropped(); return }
             if let failure {
                 // BUSY (admission) or any other status: keep the previous result, never publish an empty one.
                 await MainActor.run { [weak self] in
@@ -299,6 +324,7 @@ final class AppModel {
             await MainActor.run { [weak self] in
                 guard let self, !Task.isCancelled, self.filterGeneration == generation, self.tree === tree,
                       (rFinal == nil || rFinal!.version == tree.version) else {
+                    stats.dropped()
                     // computed on a table that a commit has since replaced: a newer filter run is queued by that commit
                     if let self, self.filterGeneration == generation, self.tree === tree { self.scheduleFilter(immediate: true) }
                     return
@@ -308,6 +334,8 @@ final class AppModel {
                 self.acceptedFilterVersions.append(rFinal?.version ?? 0); if self.acceptedFilterVersions.count > 64 { self.acceptedFilterVersions.removeFirst() }
                 self.activeFilter = rFinal
                 self.filterPending = false
+                stats.publish(generation: generation, latest: self.filterGeneration)
+                Perf.timingLog("filter-publish gen=\(generation) at_ns=\(Perf.now()) \(stats.summary)")
                 self.filterMillis = ms
                 if active { self.lastActiveFilterMs = ms }
                 self.filterRevision += 1
@@ -741,7 +769,7 @@ final class AppModel {
                     markOutOfDate("Files were moved while this scan ran, so it may not match the disk. Rescan.")
                 } else { viewOutOfDate = false; outOfDateReason = nil }
                 tree = t
-                lastActiveFilterMs = nil   // a different tree may cost far more or less; the first edit waits the full 150 ms again
+                lastActiveFilterMs = nil   // a different tree may cost far more or less; the next burst edit waits the full 150 ms again (an idle first edit starts at once)
                 panicBaseline = s.validatedPanicCount   // exactly the value ScanSession validated, not a fresh read
                 poisoned = false
                 startPoisonWatch()
