@@ -128,9 +128,14 @@ enum PerfMilestones {
             ("layout_version", { PerfMilestones.observed("layout_version", state: perfState(), base: base) ?? false }),
         ]
         var seen: [String: UInt64] = [:]
-        let fullDeadline = now() + 600_000_000_000
+        let fullDeadline = now() + 120_000_000_000   // the cancel leg waits at most 200 s for a result; never outlive it
         let unobservable = Set(milestones.map { $0.0 }.filter { PerfMilestones.staleAtStart($0, base: base) && $0 == "outline_rows_nonempty" })
+        // Run 40251234968: a milestone that never changes from its baseline made this loop wait the full 600 s and the driver never wrote a result.
+        // Once the engine has returned, wait only a bounded grace (8 s) for the remaining milestones; anything still unobserved is recorded as
+        // "never observed" and the run ends INCOMPLETE with the baseline lines as evidence.
+        let graceNs: UInt64 = 8_000_000_000
         while now() < fullDeadline && seen.count + unobservable.count < milestones.count {
+            if let eng = marks.first("engine-returned"), now() > eng + graceNs { break }
             for (n, cond) in milestones where seen[n] == nil && !unobservable.contains(n) && cond() { seen[n] = now() }
             try? await Task.sleep(nanoseconds: 2_000_000)
         }

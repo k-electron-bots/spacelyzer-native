@@ -295,8 +295,7 @@ if mode == "typing" {
     // (exit 7), while the 6-item CSV-run tree showed one. On any non-unique match
     // the bench now DUMPS every match plus the bounded-walk element list into the
     // jsonl (record "footer_nonunique_dump") and stdout BEFORE deciding. Then one
-    // strict, fail-closed disambiguation: keep only matches whose AXLabel (set to
-    // fullDetails) contains "in <N> items"; proceed ONLY if exactly one remains,
+    // strict, fail-closed disambiguation: keep only matches that are an AXStaticText whose AXValue contains "in <N> items"; proceed ONLY if exactly one remains,
     // otherwise abort exactly as before. Never guess among several.
     let walkAll = descendants()
     let footerMatches = walkAll.filter { el in
@@ -310,8 +309,12 @@ if mode == "typing" {
                 "help": clip(string(el, "AXHelp")), "value": clip(string(el, "AXValue")), "title": clip(string(el, "AXTitle")),
                 "description": clip(string(el, "AXDescription")), "frame": f]
     }
+    // Run 40251234968 dump (typing-200k, 193-element walk): the three matches were [17] AXStaticText value="Scan summary" with the summary only in AXHelp,
+    // [18] AXStaticText whose AXValue IS the summary text ("<root>\n0 KB in 202,000 items\nScanned in 1.64 seconds", AXHelp the same), and [120] the treemap
+    // (AXUnknown, AXHelp prose mentioning "items", AXValue empty). AXLabel was empty on all three, so the earlier AXLabel rule matched nothing. The strict rule is
+    // therefore: an AXStaticText whose AXValue (the displayed text) contains "in <N> items". Exactly one must remain or the bench still aborts.
     func isFootersummaryLabel(_ el: AXUIElement) -> Bool {
-        string(el, "AXLabel").range(of: " in [0-9,]+ items", options: .regularExpression) != nil
+        string(el, "AXRole") == "AXStaticText" && string(el, "AXValue").range(of: " in [0-9,]+ items", options: .regularExpression) != nil
     }
     var footers = footerMatches
     var strictLeft = footerMatches.count
@@ -322,8 +325,8 @@ if mode == "typing" {
         emit(["footer_nonunique_dump": true, "match_count": footerMatches.count, "match_walk_indexes": hitIdx, "walk_count": walkAll.count,
               "walk": walkAll.enumerated().map { footerEntry($0.offset, $0.element) }])
         let strict = footerMatches.filter(isFootersummaryLabel)
-        print("strict rule (AXLabel contains 'in <N> items'): \(strict.count) of \(footerMatches.count) remain")
-        emit(["footer_strict_rule": "AXLabel matches ' in [0-9,]+ items'", "remaining": strict.count, "of": footerMatches.count])
+        print("strict rule (AXStaticText with AXValue containing 'in <N> items'): \(strict.count) of \(footerMatches.count) remain")
+        emit(["footer_strict_rule": "AXStaticText and AXValue matches ' in [0-9,]+ items'", "remaining": strict.count, "of": footerMatches.count])
         strictLeft = strict.count
         if strict.count == 1 { footers = strict }
     }
