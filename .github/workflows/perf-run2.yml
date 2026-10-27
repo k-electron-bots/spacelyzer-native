@@ -18,7 +18,7 @@ permissions:
 jobs:
   identity-guard:
     # Fail-closed author/committer identity check for commits this event introduces.
-    # NEW is bounded by pinned trusted baselines audited clean on 2026-10-22 (see
+    # NEW is bounded by pinned trusted baselines audited clean on 2026-10-27 (full ancestry, after the identity rewrite; see
     # BASELINES in the script), never by other refs - a bad commit reachable from a
     # surviving branch/tag cannot be laundered out of the set. ci.yml is currently
     # disabled: this is a check that runs when CI runs (epic-* tag push,
@@ -48,7 +48,7 @@ jobs:
           # author or committer email outside the approved set (blank/missing email included).
           #
           # NEW is defined against PINNED TRUSTED BASELINES - commits audited clean on
-          # 2026-10-22 (author+committer, full ancestry). A commit counts as new only when it
+          # 2026-10-27 (author+committer, full ancestry, after the identity rewrite). A commit counts as new only when it
           # is in NO baseline ancestry. Bounding by "other refs" was rejected in review: a
           # bad commit reachable from any surviving branch/tag would be laundered out of the
           # set. Baseline ancestry itself is never scanned: it is the audited-clean past.
@@ -71,17 +71,17 @@ jobs:
           #   IG_MAX_NEW  = cap on the bounded new-commit set (default 500; over-cap fails closed)
           set -euo pipefail
           # Approved identities, grounded in measured current history (%ae/%ce counts on
-          # 2026-10-22): k-electron-ai noreply (69), k.electron.ai@gmail.com (1066),
-          # GitHub web-merge committer noreply@github.com (948). Historical use is not
+          # 2026-10-27, whole history after the rewrite): k-electron-ai noreply (582), k.electron.ai@gmail.com (775),
+          # GitHub web-merge committer noreply@github.com (561). Historical use is not
           # ownership, so no other identity is allowed for FUTURE commits.
           ALLOW='^(k-electron-ai@users\.noreply\.github\.com|k\.electron\.ai@gmail\.com|noreply@github\.com)$'
           ZERO=0000000000000000000000000000000000000000
           MAX_NEW="${IG_MAX_NEW:-500}"
-          # Trusted baselines, audited clean (author+committer, full ancestry) 2026-10-22.
+          # Trusted baselines, audited clean (author+committer, full ancestry) 2026-10-27, after the identity rewrite; the earlier 2026-10-22 baselines were NOT clean (their ancestry carried unapproved identities).
           BASELINES=(
-            a6f105b8537ae7f8cad084dae915ae1ddd9f64ce   # main
-            0e325fdd97f48bda730c880fca4a80b22af4c196   # mac-readiness-00aa46a2
-            62d3ba80e38a1ac54c813000f8318d5c5c37a1c7   # mac-stall-soak-00aa46a2
+            9dddf523440815f010e61c2be0005e64e33ee255   # main
+            da1b255f055564ca0524c90afc6a99da23329b3e   # mac-readiness-00aa46a2
+            29453a13a3f37221242eb10815a6a0368d4f9aaf   # mac-stall-soak-00aa46a2
           )
 
           fail() { echo "::error::identity-guard FAIL-CLOSED: $1"; exit 1; }
