@@ -10,7 +10,7 @@ macOS 14 or later. Spacelyzer is early software (version 0.9.x); see [verificati
 
 ![The install window: drag Spacelyzer onto Applications](../images/install-dmg-window.png)
 
-Historical image: captured October 2026 on a CI Mac from an earlier development build, 0.1.185 (its title bar shows that version, not the current release). A label-contrast fix for this window merged after the capture, so the current window looks slightly different. It will be replaced with a screenshot of the released DMG once one is captured.
+Captured on a shared CI Mac from the 0.9.0 DMG in [run 40507867386](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/40507867386) (the DMG install check on the tested commit de2d6e2; its title bar shows version 0.9.0). The window is shown as the CI Mac rendered it, not a personal Mac.
 
 ## First launch
 The build is self-signed, not notarized, so macOS blocks the first open. On macOS 14 and later (steps verified against the macOS 14+ Gatekeeper flow):
