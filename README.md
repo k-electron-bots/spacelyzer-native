@@ -17,7 +17,7 @@ See what is using your disk. A native macOS disk-space analyzer with a SwiftUI i
 - Check a scanned item on disk before deciding: preview, full path, size, then Move to Trash with Undo.
 - Move several reviewed items at once, and put any of them back from the removal history.
 - Review duplicate groups and move extra copies to the Trash.
-- Export the Largest list as a CSV file (built, awaiting Mac verification).
+- Export the Largest list as a CSV file (the save-panel export was exercised on a CI Mac, see Install below).
 - Skip chosen locations with exclusions; the Not scanned list shows what was skipped and why.
 
 ![Removal History showing a sample file moved to Trash and its Put Back action](docs/images/removal-history.png)
@@ -32,7 +32,7 @@ Sizes describe allocated disk space, with hard links counted once. Scans stay on
 
 ## Install
 
-Requires macOS 14 or later. [Development DMGs](https://github.com/k-electron-bots/spacelyzer-native/releases) are self-signed, not notarized. This is **not a release-ready app**. Keyboard-focus checks passed on a CI Mac (run 39843869589); actual IME input and CSV export are not yet verified on a Mac. Details: [verification status](docs/verification/README.md). VoiceOver speech is untested - the accessibility features are built, but VoiceOver is not a v1 gate.
+Requires macOS 14 or later. Spacelyzer 0.9.x is early software. The DMG is self-signed and not notarized, and validation of the public candidate build is still pending. On a CI Mac (run [40498184629](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/40498184629), development build 0.1.10) the demo UI assertions, the ordering checks, the DMG install checks, a real save-panel CSV export (header, order, encoding and a cancel path) and a real mounted-volume test passed. A scripted Cmd-O, Escape and Tab/Shift-Tab check also passed; that is keyboard focus only and does not verify actual IME text composition, which is still unverified. Not yet done: a manual 1M-item test, native Mac verification of burst coalescing, and an explanation for a possible slowdown reading some fields. Details: [verification status](docs/verification/README.md). VoiceOver speech is untested - the accessibility features are built, but VoiceOver is not a v1 gate.
 
 1. Download the DMG and open it.
 2. Drag Spacelyzer onto Applications.
