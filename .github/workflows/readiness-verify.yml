@@ -1,3 +1,8 @@
+# KNOWN-BROKEN ON MAIN - INTERNAL ONLY, NOT A SHIP GATE. This is the measurement-branch workflow as it was
+# (landed verbatim; only the base-ref pin was remapped to the rewritten-history SHA 83f2560e). Its source-bound
+# check asserts HEAD equals that candidate plus three named files, which cannot hold on main, so it fails
+# closed here by design. Do not dispatch it from main; it is kept for the record of how the readiness
+# measurements were taken.
 name: readiness-verify
 # ONE bounded manual readiness attempt for the 00aa46a2 candidate: compile/correctness guard,
 # product-true cancel, and 1M app publication.
