@@ -7,7 +7,7 @@ name: Combined perf run 2
 #   2. stability/responsiveness - scripts/perf2-stability.sh: expansion-10k x5, typing 200 keys on 200k, hover 60 sweeps, same-session liveness, engine rescan memory
 #      plateau (60 scans, median windows 15/15, 5%, engine process only), crash-report check, app RSS series (informational)
 #   3. cancel latency n=3 through the in-app PerfDriver (no accessibility) at 20k items of a 200k tree - scripts/perf2-cancel.sh
-# No 1M fixture, no 1M timing. Latency numbers are BASELINE evidence; no latency threshold is gated (none owner-approved).
+# No 1M fixture, no 1M timing. Latency numbers are BASELINE evidence; no latency threshold is gated (none set).
 # Time: 2100 s job clock anchored before checkout; every leg is admitted only if work seconds + a 410 s reserve (upload 120, teardown 200, margin 90) remain.
 on:
   workflow_dispatch:
