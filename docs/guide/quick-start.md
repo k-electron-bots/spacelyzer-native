@@ -1,6 +1,6 @@
 # Quick start
 
-Four steps from download to a safe first cleanup. Images come from a shared CI Mac; names, counts and times are examples, not expected values for your Mac.
+Four steps from download to a safe first cleanup. Screenshots use sample data; names, counts and times are examples, not what you will see on your Mac.
 
 ## 1. Open the app
 After [installing](install.md), open Spacelyzer from Applications. The first window is the welcome screen.

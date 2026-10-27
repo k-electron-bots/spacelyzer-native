@@ -1,7 +1,7 @@
 name: Combined perf run 2
 
 # Engineering option, NOT approval to run and NOT a CI cadence. Dispatch-only, no inputs, no schedule, no push/PR/tag trigger.
-# Must stay disabled until the owner approves a specific run; one attempt, no retry, no release, no tag, no upload to GitHub releases, no notarization.
+# Keep disabled except while a run is intended; one attempt, no retry, no release, no tag, no upload to GitHub releases, no notarization.
 # Purpose: ONE Mac run, priority-ordered, each leg isolated (own continue-on-error step, own verdict file, honest NOT-RUN/INCOMPLETE/INCONCLUSIVE, never faked):
 #   1. accuracy 1k/10k/100k (default + portable engine legs, tamper controls first) - scripts/perf2-accuracy.py
 #   2. stability/responsiveness - scripts/perf2-stability.sh: expansion-10k x5, typing 200 keys on 200k, hover 60 sweeps, same-session liveness, engine rescan memory

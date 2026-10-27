@@ -1,10 +1,10 @@
 # Troubleshooting
 
-Each entry is a failure mode seen in the app's code or logs: the symptom, what it means, and what to do.
+Each entry gives the symptom, what it means, and what to do.
 
 ## macOS blocks the first launch
 **Symptom:** a warning says the app cannot be opened, or that Apple cannot check it for malicious software.
-**Meaning:** the build is self-signed, not notarized, so Gatekeeper stops the first open.
+**Meaning:** the app is self-signed and not notarized, so Gatekeeper stops the first open.
 **Fix:** open **System Settings > Privacy & Security** and choose **Open Anyway** for Spacelyzer, as in [Install and permissions](install.md). Do not disable Gatekeeper or clear quarantine flags.
 
 ## A banner asks for Full Disk Access
@@ -34,4 +34,4 @@ Each entry is a failure mode seen in the app's code or logs: the symptom, what i
 
 ## A scan is taking a while
 **Meaning:** scanning runs off the main thread, so the interface stays responsive while a large folder is read.
-**Reference:** historical, informational measurements (not a benchmark) are in [performance notes](../development/performance.md): a 153k-item folder scanned in about 2 seconds on a shared CI Mac.
+**Tip:** large folders take longer. Scanning runs in the background, so the window stays responsive, and you can cancel a scan.

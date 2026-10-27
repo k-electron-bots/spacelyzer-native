@@ -1,8 +1,8 @@
 name: Demo-validation (lean)
 
 # Engineering option, NOT approval to run and NOT a CI cadence. Dispatch-only, no inputs, no schedule, no push/PR/tag trigger.
-# A run needs fresh explicit owner approval per dispatch, one attempt, no retry. It is dispatchable as soon as it exists on the default branch:
-# it must be disabled (or never pushed) until the owner approves a specific run.
+# Manual dispatch only; one attempt, no retry. It is dispatchable as soon as it exists on the default branch:
+# keep it disabled except while a run is intended.
 # Purpose: one Mac run of the FULL 81-step scripted demo (steps 71-81 need the earlier steps) on the TEST-ONLY app, with the per-step state records
 # (scripts/check-demo-state.py) and the retained UI assertions, to validate the capture/state fix by pixels and state. The build, reset, demo-launch and
 # assertion steps are copied verbatim from ci.yml (scripts/test-demo-only-workflow.py compares them), with only input references resolved to the

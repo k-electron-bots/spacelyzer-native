@@ -15,7 +15,5 @@ Rust owns datasets, filter/sort, aggregation, layout and hit-testing. SwiftUI do
 
 The previous picture may remain while new work computes; that does not authorize interaction with stale layout coordinates. Main-actor publication gates are part of correctness, not merely a performance detail.
 
-## Native focus boundary
-The current source explicitly moves plain forward Tab from the outline to the known name-filter field and unmarked backtab from its actual editor to the outline. It checks source identity, visible/enabled controls and the active key window, and verifies the destination. Refused or unexpected moves have restoration handling; failed restoration consumes the command rather than masking an unknown landing with native fallback.
-
-Other routes retain native handling. This is a deliberate functional-boundary design, **not** proof that the old native key-view graph was repaired. Runtime acceptance, real modified-key/fallback behavior and actual IME remain separate gates in [verification](../verification/README.md).
+## Keyboard focus
+Plain forward Tab moves from the outline to the name-filter field, and backtab from that field returns to the outline. The move checks that the controls are visible and enabled and that the window is active, and it confirms the destination. If a move is refused or lands somewhere unexpected, focus is restored. All other keys keep native handling.

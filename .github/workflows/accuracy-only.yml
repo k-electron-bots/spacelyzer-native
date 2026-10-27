@@ -1,8 +1,8 @@
 name: Accuracy-only verification
 
 # Engineering option, NOT approval to run and NOT a CI cadence. Dispatch-only, no inputs, no schedule, no push/PR/tag trigger.
-# A run needs fresh explicit owner approval per dispatch, one attempt, no retry. It is dispatchable as soon as it exists on the default branch:
-# it must be disabled (or never pushed) until the owner approves a specific run.
+# Manual dispatch only; one attempt, no retry. It is dispatchable as soon as it exists on the default branch:
+# keep it disabled except while a run is intended.
 # Purpose: one Mac run of the INDEPENDENT count/size accuracy check (scripts/independent-size-oracle.py + accuracy-scale.py) on the engine CLI only:
 # isolated tamper controls, then 1k/10k/100k-item trees compared against a stdlib oracle for BOTH engine backend legs (default = getattrlistbulk on macOS,
 # and portable), per-node and skipped accounting. No Swift build, no app, no demos, no 1M fixture, no packaging, DMG, signing or release.

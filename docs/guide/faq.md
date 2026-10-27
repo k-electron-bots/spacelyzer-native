@@ -7,13 +7,13 @@ A native macOS disk analyzer. It scans a folder or volume and shows where the sp
 macOS 14 or later.
 
 **Is Spacelyzer free?**
-Yes. It is open source under the MIT license. Development DMGs are published on [GitHub releases](https://github.com/k-electron-bots/spacelyzer-native/releases). Builds are in development; [verification status](../verification/README.md) says what has and has not been checked.
+Yes. It is open source under the MIT license. Releases are published on [GitHub releases](https://github.com/k-electron-bots/spacelyzer-native/releases). This is early software; see [known limitations](known-limitations.md).
 
 **Does it connect to the internet?**
 No. The app contains no networking code. Scanning, filtering and removal all run locally.
 
 **Why does macOS warn me the first time I open it?**
-Builds are self-signed, not notarized, so Gatekeeper blocks the first launch. The supported way past it takes under a minute: see [Install and permissions](install.md).
+The app is self-signed and not notarized, so Gatekeeper blocks the first launch. The supported way past it takes under a minute: see [Install and permissions](install.md).
 
 **What do the sizes mean?**
 Sizes are allocated bytes (filesystem blocks), not logical file lengths, so a small file can take more space than its contents suggest. Hard-linked files count once.

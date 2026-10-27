@@ -1,10 +1,10 @@
 name: Perf follow-up (typing + cancel)
 
 # Engineering option, NOT approval to run and NOT a CI cadence. Dispatch-only, no inputs, no schedule, no push/PR/tag trigger.
-# Must stay disabled until the owner approves a specific run; one attempt, no retry, no release, no tag, no upload to GitHub releases, no notarization.
+# Keep disabled except while a run is intended; one attempt, no retry, no release, no tag, no upload to GitHub releases, no notarization.
 # Purpose: narrow follow-up to run 40249523646: ONLY (1) typing 200 keys on the 200k tree with footer-candidate dump and one strict fail-closed disambiguation, and
 # (2) cancel latency n=3 through the in-app PerfDriver with stale-baseline-safe full-scan milestones. Each leg isolated, honest verdicts, no thresholds.
-# 35-min job clock, legs admitted only with their work seconds + a 410 s reserve left. Needs fresh owner approval per dispatch.
+# 35-min job clock, legs admitted only with their work seconds + a 410 s reserve left. Manual dispatch only.
 on:
   workflow_dispatch:
 
