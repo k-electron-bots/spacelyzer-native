@@ -1,10 +1,13 @@
 # Verification status
 
-Status as of October 25, 2026. **Not release-ready.** No release, DMG distribution or notarization has been done. Every result below is from a named CI run; none is a guarantee.
+Status as of October 27, 2026. Spacelyzer 0.9.x is early, self-signed, unnotarized software, and validation of the public candidate build (the rewritten-history head) is still pending; do not read the results below as release-ready. Every result below is from a named CI run; none is a guarantee.
 
 Older snapshot: [HISTORY-2026-10-06.md](HISTORY-2026-10-06.md). Ledger: [checkpoints.md](checkpoints.md). Open Mac items: [mac-batch-backlog.md](mac-batch-backlog.md).
 
-Newest completed native run: [40218097822](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/40218097822)
+Newest completed native run: [40498184629](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/40498184629)
+on `aaf0f5f` (October 27, development build 0.1.10, before the history rewrite) was fully green on a shared CI Mac: 178/178 UI assertions, 166/166 ordering checks, DMG package and install checks 11/11, a real save-panel CSV export 16/16 (header, order, UTF-8/CRLF, cancel path), scripted key events 8/8 and real mounted-volume tests 8/8. The key-event check is Cmd-O, Escape and Tab/Shift-Tab focus movement only; it does not verify actual IME text composition, which remains unverified. Still open: a manual 1M-item test, native Mac verification of burst coalescing, and an unexplained possible slowdown reading some fields. The final run on the rewritten head has not run yet.
+
+Previous run: [40218097822](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/40218097822)
 on `1063230` (October 25). It is the first run with every job step and the
 evidence gate green: 178 UI assertions (0 failed), 166 ordering checks (each
 exactly once), 7 of 7 required v1 end states, and the wide-history capture
@@ -31,7 +34,8 @@ images remain dated earlier evidence. No new DMG or release.
 
 | Area | Run | Result | Limit |
 |---|---|---|---|
-| Latest completed native run | [40218097822](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/40218097822) on `1063230` | All steps and the gate green; 178 UI assertions and 166 ordering checks passed; 7 of 7 v1 end states; wide history as two on-display captures | Pixel review pending; shared CI Mac; not release-ready |
+| Latest completed native run (dev build 0.1.10) | [40498184629](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/40498184629) on `aaf0f5f` | Fully green: 178/178 UI, 166/166 ordering, DMG 11/11, CSV export 16/16, key events 8/8 (focus only, not IME), volumes 8/8 | Shared CI Mac; before the history rewrite; manual 1M test, burst-coalescing native check and IME unverified |
+| Earlier green run | [40218097822](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/40218097822) on `1063230` | All steps and the gate green; 178 UI assertions and 166 ordering checks passed; 7 of 7 v1 end states; wide history as two on-display captures | Pixel review pending; shared CI Mac; not release-ready |
 | Earlier native run | [40098663789](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/40098663789) on `ca736b6` | 178 UI assertions and 166 ordering checks passed; external-sheet capture recovered; six original v1 shots OK | Whole run failed: wide-history resize measured 992x665 on a 1024x768 runner (visible 1024x677), not 1280 wide. Not release-ready |
 | Earlier native check execution | [40050466225](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/40050466225) | 178 UI assertions and 166 required ordering checks passed; shipping/test/helper builds passed; compact history visible | Whole run failed external observed identity and wide-history capture; not release-ready |
 | Functional UI and ordering | [39683697776](https://github.com/k-electron-bots/spacelyzer-native/actions/runs/39683697776) | 178/178 UI assertions, 159/159 ordering checks | Fixture data on a shared CI Mac |
