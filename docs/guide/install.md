@@ -1,16 +1,16 @@
 # Install and permissions
 
 ## Requirements
-macOS 14 or later. Builds are in development; see [verification status](../verification/README.md) before relying on them for important cleanup.
+macOS 14 or later. Spacelyzer is early software (version 0.9.x); see [verification status](../verification/README.md) before relying on it for important cleanup.
 
 ## Install from the DMG
-1. Download a development DMG from [GitHub releases](https://github.com/k-electron-bots/spacelyzer-native/releases).
+1. Download the latest DMG from [GitHub releases](https://github.com/k-electron-bots/spacelyzer-native/releases).
 2. Open the DMG. You get one window: the app on the left, your Applications folder on the right.
 3. Drag Spacelyzer onto Applications.
 
 ![The install window: drag Spacelyzer onto Applications](../images/install-dmg-window.png)
 
-Historical image: captured October 2026 on a CI Mac from development build 0.1.185 (its title bar shows that version, not the current build). A label-contrast background fix for this window merged after the capture; the updated Finder window still awaits Mac verification. Development builds only; this is not a release.
+Historical image: captured October 2026 on a CI Mac from an earlier development build, 0.1.185 (its title bar shows that version, not the current release). A label-contrast fix for this window merged after the capture, so the current window looks slightly different. It will be replaced with a screenshot of the released DMG once one is captured.
 
 ## First launch
 The build is self-signed, not notarized, so macOS blocks the first open. On macOS 14 and later (steps verified against the macOS 14+ Gatekeeper flow):
