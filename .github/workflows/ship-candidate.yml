@@ -77,8 +77,6 @@ jobs:
           # Trusted baselines, audited clean (author+committer, full ancestry) 2026-10-27, after the identity rewrite; the earlier 2026-10-22 baselines were NOT clean (their ancestry carried unapproved identities).
           BASELINES=(
             9dddf523440815f010e61c2be0005e64e33ee255   # main
-            da1b255f055564ca0524c90afc6a99da23329b3e   # mac-readiness-00aa46a2
-            29453a13a3f37221242eb10815a6a0368d4f9aaf   # mac-stall-soak-00aa46a2
           )
 
           fail() { echo "::error::identity-guard FAIL-CLOSED: $1"; exit 1; }
