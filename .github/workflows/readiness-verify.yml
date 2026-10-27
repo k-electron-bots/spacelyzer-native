@@ -4,7 +4,7 @@ name: readiness-verify
 # workflow_dispatch ONLY: no push trigger, no pull_request trigger, no tag handling, no release,
 # no publish, no DMG upload. Measurement apps are built, probed and discarded on the runner.
 # SOURCE BOUND: the dispatch ref is the measurement branch whose product source equals
-# 3aed0496ba98a884e6908094d89916abaf625671 EXCEPT the three named additions below, enforced
+# 83f2560e880c58d74294bbc250633070a009698e EXCEPT the three named additions below, enforced
 # fail-closed by the allowlist check in the pin step:
 #   .github/workflows/readiness-verify.yml   (this file)
 #   scripts/measure/readiness-driver.swift   (reviewed stall-driver d875d10e byte-preserved modes
@@ -112,9 +112,9 @@ jobs:
           mkdir -p measure-out
           {
             echo "measurement head: $(git rev-parse HEAD)"
-            echo "candidate (base ref): 3aed0496ba98a884e6908094d89916abaf625671"
+            echo "candidate (base ref): 83f2560e880c58d74294bbc250633070a009698e"
             echo "--- diff candidate..HEAD (allowlist-enforced below) ---"
-            git diff --name-status 3aed0496ba98a884e6908094d89916abaf625671 HEAD
+            git diff --name-status 83f2560e880c58d74294bbc250633070a009698e HEAD
             for f in .github/workflows/readiness-verify.yml scripts/measure/readiness-driver.swift scripts/measure/make-cancel-fixture.sh; do
               echo "pin $f blob=$(git rev-parse HEAD:$f) sha256=$(shasum -a 256 "$f" | cut -d' ' -f1)"
             done
@@ -122,7 +122,7 @@ jobs:
           # FAIL-CLOSED source allowlist: the ONLY files that may differ from the reviewed
           # candidate 00aa46a2 are the three named additions. Any other changed, added or
           # deleted file means unreviewed source could run: refuse.
-          changed=$(git diff --name-only 3aed0496ba98a884e6908094d89916abaf625671 HEAD | sort)
+          changed=$(git diff --name-only 83f2560e880c58d74294bbc250633070a009698e HEAD | sort)
           expected=$(printf '%s\n' \
             ".github/workflows/readiness-verify.yml" \
             "scripts/measure/make-cancel-fixture.sh" \
@@ -133,7 +133,7 @@ jobs:
           fi
           # Quiet tree diff re-assertion: every OTHER path must be byte-identical to the
           # candidate so a tooling surprise fails closed here, not silently later.
-          git diff --quiet 3aed0496ba98a884e6908094d89916abaf625671 HEAD -- \
+          git diff --quiet 83f2560e880c58d74294bbc250633070a009698e HEAD -- \
             . ':(exclude).github/workflows/readiness-verify.yml' \
               ':(exclude)scripts/measure/make-cancel-fixture.sh' \
               ':(exclude)scripts/measure/readiness-driver.swift' \
