@@ -225,7 +225,9 @@ jobs:
           python3 scripts/run-with-deadline.py cargo test --manifest-path engine/Cargo.toml --test real_volume --no-run
       - name: Version
         id: ver
-        run: echo "version=0.1.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+        # Public release line is 0.9.x (owner decision 2026-10-27). First public build is 0.9.0. Bump this constant deliberately
+        # for each later release; it is NOT derived from run_number, so a fresh repo or a re-run cannot change the number.
+        run: echo "version=0.9.0" >> "$GITHUB_OUTPUT"
       - name: Build TEST-ONLY app with SPZ_CI_TESTS (never packaged or released; the packaged DMG is built without the flag)
         id: testbuild
         # compile_only: depends on the VERIFIED shipping archive (engine step) and the signing import; never runs against a
