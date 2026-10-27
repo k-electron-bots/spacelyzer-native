@@ -25,7 +25,7 @@ def edit(path,fn):
  d=json.loads(path.read_text());fn(d);path.write_text(json.dumps(d))
 def resign(b):
  edit(b/'binding.json',lambda d:d.update(raw_sha256=m.digest(b/'raw-native.txt'),external_sha256=m.digest(b/'external.json'),image_sha256=m.digest(b/'capture.png')))
-scenarios=['good','native-positive','native-missing','missing-raw','missing-ready','missing-pin','missing-image','missing-manifest','missing-external','tamper-raw','tamper-image','tamper-external','summary','pid','start','executable','source','token','step','replay','supervisor-timeout','supervisor-failed','supervisor-missing','prepost-missing','prepost-extra','hash-both-images','post-pid','post-source','post-raw','post-ready','post-ack','post-order','post-late','text','qualifier','rows','scope','reason','complete','identity','conflict','external-token','external-pid','external-step','canonical-image','native-no-sheet','native-key','native-alert','native-rows','native-size','path-token','pin-copy','producer-copy']
+scenarios=['good','native-positive','native-missing','missing-raw','missing-ready','missing-pin','missing-image','missing-manifest','missing-external','tamper-raw','tamper-image','tamper-external','summary','pid','start','executable','source','token','step','replay','replay-valid','supervisor-timeout','supervisor-failed','supervisor-missing','prepost-missing','prepost-extra','hash-both-images','post-pid','post-source','post-raw','post-ready','post-ack','post-order','post-late','text','qualifier','rows','scope','reason','complete','identity','conflict','external-token','external-pid','external-step','canonical-image','native-no-sheet','native-key','native-alert','native-rows','native-size','path-token','pin-copy','producer-copy']
 for scenario in scenarios:
  with tempfile.TemporaryDirectory() as t:
   p=pathlib.Path(t);root,b=fixture(p);raw=p/'spz-demo-state-78';manifest=b/'binding.json';external=b/'external.json'
@@ -36,6 +36,9 @@ for scenario in scenarios:
   elif scenario in ['pid','start','executable','source']:edit(p/'pin',lambda d:d.update({scenario:99 if scenario=='pid' else 'wrong'}))
   elif scenario=='token':(p/'spz-demo-ready-78').write_text('different-unique-token')
   elif scenario=='step':raw.write_text(raw.read_text().replace('step=78','step=77'))
+  elif scenario=='replay-valid':
+   # A second, individually valid attempt: only the single-attempt rule can reject it, whatever order the directory lists.
+   (p/'out'/'attempt-valid2').mkdir();(p/'out'/'attempt-valid2'/'supervisor.json').write_text((p/'out'/'attempt-abc'/'supervisor.json').read_text())
   elif scenario=='replay':
    (p/'out'/'attempt-replay').mkdir();(p/'out'/'attempt-replay'/'supervisor.json').write_text('{}')
   elif scenario in ['supervisor-timeout','supervisor-failed']:edit(p/'out'/'attempt-abc'/'supervisor.json',lambda d:d.update(status=scenario.split('-')[1]))

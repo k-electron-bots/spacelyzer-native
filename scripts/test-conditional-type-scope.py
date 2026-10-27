@@ -6,6 +6,7 @@ compiled by this model. Duplicate nested names are excluded and listed, never si
 represented as unique. Comment/string masking is lexical, not a Swift semantic parser.
 """
 import pathlib,re,subprocess,tempfile,os,sys,collections
+import sys; sys.path.insert(0,str(__import__('pathlib').Path(__file__).resolve().parent)); from historical_fixture import load, load_bytes
 ROOT=pathlib.Path(__file__).resolve().parent.parent
 # Mask comments/strings while preserving newlines. Swift raw-string delimiters and
 # multiline strings handled. String interpolation contents intentionally excluded:
@@ -76,7 +77,7 @@ for bad in ['#if FLAG\nenum Broken {}', '#else\nenum Broken {}', '#unsupported t
 print('PASS lexical controls + unsupported/malformed directives fail closed')
 files={str(p.relative_to(ROOT)):p.read_text() for p in sorted((ROOT/'Sources/Spacelyzer').glob('*.swift'))}
 old=dict(files);oldpath='Sources/Spacelyzer/SpacelyzerApp.swift'
-old[oldpath]=subprocess.run(['git','show','b1ce2312d0e4cfe9723a86453d41b9bfe37157b7:'+oldpath],cwd=ROOT,capture_output=True,text=True,check=True).stdout
+old[oldpath]=load('app-before-observer-scope-fix.swift')
 swift=pathlib.Path(os.environ.get('SWIFT_BIN','/tmp/swift-6.1.2-RELEASE-ubuntu22.04/usr/bin'))/'swiftc'
 with tempfile.TemporaryDirectory() as d:
  for label,source in [('old',old),('fixed',files),('mutation',dict(files,**{'scope-mutation.swift':'#if SPZ_CI_TESTS\nenum NewlyAddedObserver {}\n#endif\nfunc leaked() { _ = NewlyAddedObserver.self }\n'}))]:

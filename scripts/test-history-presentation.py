@@ -5,9 +5,10 @@ seams. Structural host lifetime model removes toolbar hosts under overflow;
 proves old dependency and new stable attachment, NOT native presentation/pixels.
 """
 import pathlib,re,subprocess,tempfile,os
+import sys; sys.path.insert(0,str(__import__('pathlib').Path(__file__).resolve().parent)); from historical_fixture import load, load_bytes
 path='Sources/Spacelyzer/ContentView.swift'
 new=pathlib.Path(path).read_text()
-old=subprocess.run(['git','show','efa2e9fe96c0705e4315575a9147795b23841ed6:'+path],check=True,capture_output=True,text=True).stdout
+old=load('contentview-before-history-popover-move.swift')
 
 def block(source,start):
  opening=source.index('{',start);depth=1;i=opening+1
@@ -39,7 +40,7 @@ for overflow in [False,True]:
 print('PASS source-derived invariant: history attachment outside toolbar; declared lifetime model only, NOT old/new native behavior proof')
 # Existing content and Put Back actions must be byte-identical to reviewed base.
 view='Sources/Spacelyzer/RemovalHistoryView.swift'
-prior=subprocess.run(['git','show','efa2e9fe96c0705e4315575a9147795b23841ed6:'+view],check=True,capture_output=True,text=True).stdout
+prior=load('removal-history-view-reviewed.swift')
 assert pathlib.Path(view).read_text()==prior
 print('PASS same history content and Put Back implementation unchanged')
 assert all(x in new for x in ['history-transition action-delivered','history-transition state=','history-transition content-appeared','history-transition content-disappeared'])

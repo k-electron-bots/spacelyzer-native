@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Execute real pure sheet classifier + source-scoping checks; not Mac AX evidence."""
 import pathlib, subprocess, tempfile,os
+import sys; sys.path.insert(0,str(__import__('pathlib').Path(__file__).resolve().parent)); from historical_fixture import load, load_bytes
 s=pathlib.Path('Sources/Spacelyzer/SpacelyzerApp.swift').read_text()
 a=s.index('    static func observedSheetIdentity(');b=s.index('\n    }',a)+6
 method=s[a:b]
-old=subprocess.run(['git','show','d9d2b7544cc65f2827bc0d37de8fdf1bef5eb6bf:Sources/Spacelyzer/SpacelyzerApp.swift'],capture_output=True,text=True,check=True).stdout
+old=load('app-before-sheet-text-collector-fix.swift')
 oldline=next(x.strip() for x in old.splitlines() if 'let texts = allViews(of: NSTextField.self).filter' in x)
 oldcontrol='class Win {}\nclass NSTextField { var window:Win?; var stringValue="" }\nlet attached=Win()\nfunc allViews<T>(of type:T.Type)->[T] { [] }\n'+oldline+'\nprecondition(!texts.contains("Not scanned")); print("PASS original collector misses proxy-only text, real AX classifier recovers it")\n'
 checks=oldcontrol+'''

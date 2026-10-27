@@ -1,0 +1,27 @@
+{
+ "app-before-observer-scope-fix.swift": {
+  "bytes": 325758,
+  "description": "Earlier SpacelyzerApp.swift whose shipping build referenced the test-only footer observer",
+  "git_blob_sha1": "4a541f57051d30d685de5c17e388f058d76ba2b7"
+ },
+ "app-before-sheet-text-collector-fix.swift": {
+  "bytes": 324137,
+  "description": "Earlier SpacelyzerApp.swift whose sheet text collector missed proxy-only text",
+  "git_blob_sha1": "673ea141010d78ed69644b2247063c2c7e3138a4"
+ },
+ "check-no-ci-symbols-apple-nm.sh": {
+  "bytes": 519,
+  "description": "Earlier symbol check that used Apple nm",
+  "git_blob_sha1": "04b20f8fe9ae7218bcb88c52c766ff10d1fd6abc"
+ },
+ "contentview-before-history-popover-move.swift": {
+  "bytes": 26594,
+  "description": "Earlier ContentView.swift with the removal-history popover attached inside the toolbar",
+  "git_blob_sha1": "4eb9bfa097dfda082ef033e752c7bb23a27720d0"
+ },
+ "removal-history-view-reviewed.swift": {
+  "bytes": 1975,
+  "description": "Reviewed RemovalHistoryView.swift that must stay unchanged",
+  "git_blob_sha1": "8e3e2d269d71f56e3280f19529d1a6e9825e0ec4"
+ }
+}

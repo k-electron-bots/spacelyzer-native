@@ -6,8 +6,9 @@ rustup llvm-tools component installed; this test FAILS if neither exists). Fixtu
 objects in BSD-style archives and a hand-built fat wrapper (not produced by Apple lipo), plus optional
 REAL rustc aarch64/x86_64-apple-darwin staticlibs (SPZ_REAL_APPLE_ARCHIVES). Not Apple nm/lipo evidence."""
 import os,pathlib,shutil,struct,subprocess,tempfile
+import sys; sys.path.insert(0,str(__import__('pathlib').Path(__file__).resolve().parent)); from historical_fixture import load, load_bytes
 repo=pathlib.Path(__file__).resolve().parent.parent
-old=subprocess.run(['git','show','6a7465427e83b355ba281cfbc5b8bd593423101a:scripts/check-no-ci-symbols.sh'],cwd=repo,stdout=subprocess.PIPE,check=True).stdout
+old=load_bytes('check-no-ci-symbols-apple-nm.sh')
 
 def macho(defined,undefined=(),stab=False,cpu=0x0100000c):
     names=list(defined)+list(undefined);strtab=b'\0';offs=[]

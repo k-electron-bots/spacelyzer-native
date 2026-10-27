@@ -4,9 +4,10 @@ AppKit is stubbed, observer BODY is stubbed at the same conditional location.
 This proves symbol visibility across shipping/test modes, NOT the native SDK.
 """
 import pathlib,subprocess,tempfile,os
+import sys; sys.path.insert(0,str(__import__('pathlib').Path(__file__).resolve().parent)); from historical_fixture import load, load_bytes
 srcpath='Sources/Spacelyzer/SpacelyzerApp.swift'
 s=pathlib.Path(srcpath).read_text()
-old=subprocess.run(['git','show','b1ce2312d0e4cfe9723a86453d41b9bfe37157b7:'+srcpath],capture_output=True,text=True,check=True).stdout
+old=load('app-before-observer-scope-fix.swift')
 stub='''import Foundation
 class NSWindow { var contentView:NSView?; var attachedSheet:NSWindow?; var isSheet=false }
 class NSView { var frame=CGRect.zero; var window:NSWindow? }
