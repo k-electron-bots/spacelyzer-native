@@ -1,196 +1,48 @@
-# Milestone 3 measurement protocol: UI stalls
+# UI responsiveness measurement (developer reference)
 
-Status: protocol, fixtures, and a reproducible engine bench only. No stall is
-claimed measured end-to-end, and no stall is claimed removed, until before/after
-numbers exist from the Mac harness.
-
-Scope: three interaction stalls - typing in the filter field, hover over treemap
-and outline, expanding a huge folder.
+How to generate test fixtures and measure interaction latency for three cases: typing in the filter field, hovering over the treemap and outline, and expanding a very large folder. This page is for contributors.
 
 ## Fixtures (scripts/make_fixtures.py)
 
-Deterministic trees: same profile -> same names, entry types, sizes, mtimes (ns),
-counts, and spec_sha256 on any machine. `verify` compares the EXACT inventory
-(lstat only): any missing, extra, retyped, or symlink entry fails it.
+Fixtures are deterministic trees: the same profile gives the same names, entry types, sizes, modification times (ns) and counts on any machine. `verify` compares the exact inventory (lstat only); any missing, extra, retyped or symlinked entry fails it.
 
-  python3 scripts/make_fixtures.py generate ROOT --profile NAME
-  python3 scripts/make_fixtures.py verify   ROOT --profile NAME
+    python3 scripts/make_fixtures.py generate ROOT --profile NAME
+    python3 scripts/make_fixtures.py verify   ROOT --profile NAME
 
 Profiles:
-- expansion-10k / expansion-100k / expansion-1m: one directory with
-  10,000 / 100,000 / 1,000,000 direct file children (plus one zz_nested subdir so
-  the row keeps a chevron). The huge-folder expansion stall.
-- typing-200k: 2,000 dirs x 100 files (202,001 nodes), rotating name words
-  (invoice, backup, photo, archive, render, cache, export, draft). The
-  filter-typing stall at scale.
+- `expansion-10k`, `expansion-100k`, `expansion-1m`: one directory with 10,000 / 100,000 / 1,000,000 direct file children, plus one `zz_nested` subdirectory so the row keeps a disclosure chevron. Used for the huge-folder expansion case.
+- `typing-200k`: 2,000 directories of 100 files each (202,001 nodes) with rotating name words (invoice, backup, photo, archive, render, cache, export, draft). Used for filter typing at scale.
 
-Safety and honesty rules (enforced by the script):
-- generate REFUSES a destination that exists and is not empty; it never deletes
-  anything and never writes into a user path with other content.
-- Files are sparse (os.truncate): holes avoid data-block allocation on
-  filesystems that support them; per-entry metadata cost remains and allocation
-  behavior varies by filesystem.
-- spec_sha256 hashes the SPEC TEXT (every entry's path, type, size, mtime-ns):
-  it proves the tree matches the spec inventory exactly, not file byte contents.
-  File bytes are all holes (read as zeros) by construction.
+Safety rules enforced by the script:
+- `generate` refuses a destination that exists and is not empty. It never deletes anything and never writes into a directory that has other content.
+- Files are sparse (`os.truncate`), so no data blocks are allocated on filesystems that support holes. Per-entry metadata cost remains, and allocation behavior varies by filesystem.
+- `spec_sha256` hashes the spec text (each entry's path, type, size and mtime-ns). It proves the tree matches the spec inventory, not the file bytes, which are all holes.
 
-## What the Mac harness scans
+## What the harness scans
 
-Typing scans the PROFILE DIRECTORY directly (ROOT/typing-200k). Expansion
-scans the profile's WRAPPER directory (a harness-created dir containing
-exactly one fixture): run 37864247016 proved the app's outline lists the
-scanned root's CHILDREN at depth 0 and the root itself is never a row, so
-under a direct scan the huge folder is pre-materialized and has no
-disclosure triangle - the named row never existed and both fixtures exited
-6 without measuring. Scanning the wrapper makes the profile dir a real
-top-level row whose expansion is the stall being measured; it adds exactly
-one scan node (the wrapper). Never scan the fixtures ROOT with sibling
-fixtures: that changes every count in this protocol.
+- Typing scans the profile directory directly (`ROOT/typing-200k`).
+- Expansion scans the profile's wrapper directory (a directory that contains exactly one fixture). The outline lists the scanned root's children at depth 0 and never shows the root itself, so a direct scan would leave the huge folder already expanded with no chevron. Scanning the wrapper makes the profile directory a real top-level row.
+- Never scan a fixtures root that holds several fixtures; it changes every count.
 
-## Linux engine bench (reproducible from this repo)
+## Engine benchmark (Linux or macOS)
 
-Recipe: on a Linux machine with a Rust toolchain, from the repo root at this
-commit, generate a fixture, then run the shipped example:
+From the repo root, with a Rust toolchain:
 
-  python3 scripts/make_fixtures.py generate /tmp/m3fix --profile expansion-1m
-  cargo run --release --example m3bench -- /tmp/m3fix/expansion-1000000
+    python3 scripts/make_fixtures.py generate /tmp/m3fix --profile expansion-1m
+    cargo run --release --example m3bench -- /tmp/m3fix/expansion-1000000
 
-Results from the authoring container (cargo 1.99.0, release; raw run log at the
-end of this doc; ranges across repeated runs in parentheses where they varied):
+The example prints scan time, expansion time for size and name order, filter time and treemap layout time. Some filesystems report `st_blocks=0`, so scanned sizes are zero; the example then measures layout with synthesized sizes. These are engine-side costs only and say nothing about main-thread behavior in the app.
 
-| profile | scan | expand SizeDesc | expand NameAsc | filter "invoice" | treemap layout |
-| --- | --- | --- | --- | --- | --- |
-| expansion-1m | 6.9-9.8s (1,000,004 nodes) | 13-15ms | 113-134ms | 31-57ms (0 matches) | 24-25ms |
-| typing-200k | 0.23-1.3s (202,001 nodes) | 0.0ms | 0.1-0.3ms | 4.7-6.1ms (25,000 matches) | 2.6-2.9ms (30,000-rect cap) |
-| expansion-10k | 68-83ms (10,004 nodes) | 0.1ms | 0.5-0.6ms | 0.4-0.5ms | 0.7-1.0ms |
+## Interaction harness (macOS)
 
-Container caveats: this container's filesystem reports st_blocks=0 for every
-file, so scanned sizes are all zero and the example measures layout through
-`layout_with` with synthesized per-node sizes (macOS reads real allocated sizes
-via ATTR_FILE_ALLOCSIZE and is unaffected); scan wall time varies with fs cache.
-These are engine-side costs only - they say nothing about SwiftUI main-thread
-stalls, which are Mac-gated below.
+`scripts/m3-interaction-bench.swift` drives the app through the Accessibility API and ordinary mouse and key input on disposable fixtures. It makes no attribute writes and uses no menus or Trash.
 
-Candidates, ranked (Linux numbers + static read; each UNMEASURED for UI until
-the Mac run):
-1. Per-expansion sort of the expanded folder: NameAsc costs 113-134ms at 1m
-   direct children versus 13-15ms in native SizeDesc order - above the 100ms
-   jank bar. Top candidate for the expansion stall.
-2. Full-tree filter pass per keystroke batch: 31-57ms at 1m nodes. The Rust
-   layer runs the filter off-main per static read; whether the UI thread still
-   stalls applying results is UNMEASURED.
-3. Treemap layout: 24-25ms at 1m siblings (sort-dominated; rect emission folds
-   under min_edge), 2.6-2.9ms at 202k nodes.
-Static read (Sources/Spacelyzer, UNMEASURED): filter/outline/layout/derived data
-are computed off-main in Rust, and the slice-C preview driver SUPPORTS off-main
-draining of scan publications - but that driver is not wired into the UI, so no
-off-main claim is made for the shipping app. Per-row sorting and identity churn
-in OutlineView/TreemapView remain to be confirmed by the harness.
+It measures event-to-visible latency: the time from an input event until the expected change is observable through the Accessibility tree. This is user-visible latency, not proof the main thread was blocked, because event delivery, coalescing and scheduling add delay. Main-thread blocked time needs separate instrumentation, such as a main-thread watchdog or `os_signpost` intervals.
 
-## Mac-gated measurement (each run needs its own approval)
+- Typing: key event to the filter field's value updating, and to the footer summary republishing the filter result, as p50/p95 over 200 keystrokes in a `typing-200k` tree.
+- Hover: pointer move to the element under the pointer resolving, as a latency distribution over a window grid sweep.
+- Expansion: click on a row's chevron button to the outline's children count changing and the chevron state flipping, on the 10k, 100k and 1M fixtures. The row is re-resolved before each repetition and before the post-click check. Expansions over 100 ms are reported as candidates for jank.
 
-Harness: scripts/m3-interaction-bench.swift (M3-B slice), driving AX plus
-ordinary mouse/key input on disposable fixtures - the same envelope
-scripts/ui-calibrate.swift declares (no attribute writes, no menus/Trash).
+## Before and after comparisons
 
-What the harness measures is EVENT-TO-AX-VISIBLE latency: the time from an
-input event until the expected change is observable through AX. That is
-user-visible jank evidence, but it is NOT proof the main thread was blocked -
-AX callbacks, coalescing, and scheduling also add delay. Main-thread blocked
-time needs separate instrumentation (for example a main-thread watchdog ping or
-os_signpost intervals inside the app); that instrumentation is specified as
-follow-up work and is NOT part of this protocol's harness claims.
-
-- typing: key event -> filter field AX value updated; key event -> the app's
-  own footer summary container republishes the filter result (ContentView
-  fullDetails, exposed on the combined summary container's AXLabel/AXHelp;
-  first measured 200/200 in run 37877990327); p50/p95 over N=200 keystrokes
-  into a scanned typing-200k tree. The earlier row-count signal was dropped
-  after run 37870201922 proved it blind (the count never moved across 200
-  keys under filter "i"). The app-reported filter ms parsed from the footer
-  is corroboration only, not independently verified.
-- hover: pointer move -> the element under the pointer resolves via
-  AXUIElementCopyElementAtPosition; lag distribution over a window grid sweep.
-  Whether the app exposes any hover-HIGHLIGHT state through AX is unverified;
-  no highlight-visibility measurement is claimed.
-- expansion: click the row's chevron AXButton -> the outline's top-level
-  children count moves and the chevron state flips, on expansion-10k/100k/1m
-  fixtures; expansions slower than 100ms are reported as jank candidates
-  (event-to-visible latency, per the caveat above). The app renders its own
-  chevron NSButton whose state text "Expand <name>"/"Collapse <name>" sits on
-  AXDescription (AXLabel/AXTitle empty; run 37877990327's failure-path dump)
-  - there is no AXDisclosureTriangle/AXDisclosing. The target row is
-  re-resolved through a bounded chunked scan before every rep and before the
-  post-click state check (run 37880172301: the pre-loop row handle went stale
-  after rep 0's expansion; exit 6). First successfully measured in run
-  37882191076 (expansion-10k: 3/3 expands, p50 149.99ms, p95 220.90ms, all
-  three over the 100ms jank bar; expansion-100k: 2/2 expands, p50 114.44ms;
-  BASELINE ONLY, event-to-AX-visible latency).
-
-First all-segments-complete full run: 37885969873 (main 177435144). Typing
-200/200 (footer p50 236.38ms, p95 256.78ms; field p50 31.60ms; app-reported
-filter p50 4.2ms - corroboration only, not independently verified); hover 60
-sweeps (hit-test p50 2.39ms, p95 6.39ms, no event over 100ms); expansion-10k
-3/3 (p50 131.67ms, p95 148.82ms); expansion-100k 2/2 (p50 169.65ms). Every
-summary reported ax_read_failures=0 and status complete; the footer gate was
-VERIFIED. This run followed the bench's window-picker fix: run 37883865575's
-diagnostic had shown two AXWindows after launch (one a 222x32 surface that
-is not a standard window); the bench selects the single qualifying window
-(AXWindow role, AXStandardWindow subrole, real frame) and still asserts
-uniqueness among qualifying windows. All numbers BASELINE ONLY,
-event-to-AX-visible latency.
-
-First correlated-timestamp full run: 37890769939 (main 022f566c, the
-SPZ_TIMING at_ns stamps plus per-rep bench t0_ns, same mach-uptime clock).
-Typing 200/200 (footer p50 252.17ms, p95 306.04ms; field p50 31.46ms;
-app-reported filter p50 2.90ms - corroboration only, not independently
-verified); hover 60 sweeps (hit-test p50 2.38ms, p95 6.49ms, no event over
-100ms); expansion-10k 3/5 reps measured (p50 176.07ms, p95 184.69ms, 3 jank
-candidates); expansion-100k 2/3 reps measured (p50 170.01ms, ran with 1517s
-of the cap remaining). Every summary reported ax_read_failures=0 and status
-complete; the footer gate was VERIFIED. The per-rep correlation splits each
-expansion measurement into three parts: event delivery (bench CGEvent post
-to the app's toggle handler entry), app-side publish (toggle entry to the
-@Published outline update), and the AX-observation remainder (bench-visible
-time after NSOutlineView reloadData returned, candidates include AX
-tree invalidation/materialization and IPC, plus the bench's verified 10ms poll
-quantization).
-Medians, BASELINE ONLY: expansion-10k delivery 87.26ms, publish 1.53ms,
-reloadData 0.81ms, remainder 62.54ms; expansion-100k delivery 53.20ms,
-publish 5.17ms, reloadData 0.66ms, remainder 71.26ms. Per-rep ranges across
-both fixtures: delivery 50.45-101.97ms, publish 1.26-5.33ms, reloadData
-0.56-6.95ms, remainder 30.29-88.73ms.
-
-Relabel: expansion numbers are event-to-AX-visible bench latency dominated
-by synthetic event delivery and the AX observation path. App-internal
-publish+reloadData is 2-12ms per toggle at both fixture sizes; the app code
-is not where the measured time sits. The 100ms jank bar remains the
-bench-visible bar; these runs do not claim a user-perceptible stall of that
-size.
-
-Before/after protocol: same fixture, same machine, 3 runs each, medians, raw
-harness JSONL logs kept per run. A stall is reported removed only with the
-before/after median pair in the PR, after-run clearing the 100ms bar.
-
-## Raw bench log (authoring container, this commit's example)
-
-```
-=== expansion-1000000 ===
-scan: 1000004 nodes in 9790.5ms, root size=0
-expand SizeDesc: 1000001 rows in 15.3ms
-expand NameAsc: 1000001 rows in 134.4ms
-filter text=invoice: 0 matches in 56.7ms
-layout (synthesized sizes, st_blocks=0 on this fs): 2 rects in 24.4ms
-=== typing-200k ===
-scan: 202001 nodes in 1318.4ms, root size=0
-expand SizeDesc: 2000 rows in 0.0ms
-expand NameAsc: 2000 rows in 0.1ms
-filter text=invoice: 25000 matches in 5.8ms
-layout (synthesized sizes, st_blocks=0 on this fs): 30000 rects in 2.9ms
-=== expansion-10000 ===
-scan: 10004 nodes in 78.9ms, root size=0
-expand SizeDesc: 10001 rows in 0.1ms
-expand NameAsc: 10001 rows in 0.5ms
-filter text=invoice: 0 matches in 0.5ms
-layout (synthesized sizes, st_blocks=0 on this fs): 10004 rects in 0.7ms
-```
+Use the same fixture and machine, 3 runs each, compare medians, and keep the raw JSONL logs per run. Report an improvement only with the before and after median pair, with the after run under the 100 ms bar.
