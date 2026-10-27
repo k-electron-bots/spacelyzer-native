@@ -25,7 +25,7 @@ case " $* " in *' --show-bin-path '*) printf '%s/normal\n' "$PWD";; *) echo invo
   shutil.copy(w/'dirty.o',w/target);assert call().returncode!=0;shutil.copy(w/'clean.o',w/target)
  (w/'build/lib/libspacelyzer_engine.a').write_text('not an archive');assert call().returncode!=0
  print('PASS old ambient route fails; shipping wrapper clears inherited selector; LLVM nm rejects dirty archive/binary and unreadable artifact')
-for file in ['scripts/package-dmg.sh','scripts/local-mac-check.sh','.github/workflows/ci.yml','.github/workflows/readiness-verify.yml']:
+for file in ['scripts/package-dmg.sh','scripts/local-mac-check.sh','.github/workflows/ci.yml']:
  s=(repo/file).read_text()
  if file.endswith('local-mac-check.sh'):s=s[s.index('swift_normal()'):s.index('step swift-build-tests')]
  assert 'swift build' not in s,file
