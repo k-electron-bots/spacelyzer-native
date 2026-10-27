@@ -1553,12 +1553,21 @@ private func reviewTestAnswer(_ tree: Tree, _ id: UInt32, _ v: UInt64) -> ItemRe
         m.filterText = "not-present-old-filter"
         let parked = await wait { await filter.parked() }
         m.clearFilters()
-        let newer = await wait { !m.filterPending && m.activeFilter == nil }
+        // Latest-edit-wins coalescing (ebc0573): the new pass cancels the parked old one and WAITS for it, so while the old pass is
+        // parked the model correctly stays pending with the old result NOT published. Do not wait for idle before releasing.
+        // Notes: latest-edit latency is bounded below by an in-flight pass's remaining time (by design); "the engine call cannot
+        // hang forever" is not verified inside the Rust call; beforePublish/afterPublish are nil in production, so this park is test-only.
+        // Settle so the samples below are not trivially true: a removed predecessor-await would let the new pass publish in this window.
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        let heldNoPublish = m.activeFilter == nil
+        let pendingWhileParked = m.filterPending
         let revision = m.filterRevision
         let filterStillHeld = !(await filter.completed())
         await filter.release()
         let completed = await wait { await filter.completed() }
-        Check.expect("race-old-filter-after-newer-rejected", parked && newer && completed && filterStillHeld && m.activeFilter == nil && !m.filterPending && m.filterRevision == revision)
+        let newer = await wait { !m.filterPending && m.activeFilter == nil }
+        Check.expect("race-old-filter-after-newer-rejected", parked && newer && completed && filterStillHeld && heldNoPublish && pendingWhileParked && m.activeFilter == nil && !m.filterPending && m.filterRevision == revision + 1,
+                     "parked=\(parked) heldNoPublish=\(heldNoPublish) pendingWhileParked=\(pendingWhileParked) stillHeld=\(filterStillHeld) completed=\(completed) settled=\(newer) revisionDelta=\(m.filterRevision - revision) (exactly 1 = only the new pass published)")
 
         let outline = PublicationBarrier("outline")
         m.beforePublish = { await outline.before($0, $1, $2) }
